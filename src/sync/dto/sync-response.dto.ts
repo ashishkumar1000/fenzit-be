@@ -35,9 +35,17 @@ export interface SyncJobDto {
 }
 
 export class SyncResponseDto {
-  @ApiProperty({ type: 'object', additionalProperties: true, isArray: true, description: 'Jobs changed since last_synced_at' })
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: true,
+    isArray: true,
+    description: 'Jobs changed since last_synced_at',
+  })
   jobs: SyncJobDto[];
 
-  @ApiProperty({ description: 'UTC server timestamp at query execution — store as next last_synced_at' })
+  @ApiProperty({
+    description:
+      'UTC server timestamp at query execution — store as next last_synced_at',
+  })
   serverTime: string;
 }

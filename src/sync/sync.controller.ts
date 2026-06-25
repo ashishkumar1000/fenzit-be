@@ -1,10 +1,4 @@
-import {
-  Controller,
-  Post,
-  Body,
-  HttpCode,
-  HttpStatus,
-} from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -28,10 +22,19 @@ export class SyncController {
   @Post()
   @Roles(Role.TECHNICIAN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Delta sync — returns jobs changed since last_synced_at' })
-  @ApiResponse({ status: 200, description: 'Sync payload', type: SyncResponseDto })
+  @ApiOperation({
+    summary: 'Delta sync — returns jobs changed since last_synced_at',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Sync payload',
+    type: SyncResponseDto,
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
-  @ApiResponse({ status: 403, description: 'Forbidden — Owner JWT not allowed' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — Owner JWT not allowed',
+  })
   @ApiResponse({ status: 422, description: 'Invalid last_synced_at format' })
   sync(
     @CurrentUser() user: RequestUser,

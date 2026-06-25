@@ -185,8 +185,17 @@ describe('Offline Sync Integration — Story 4.3', () => {
       // First call: genuine advance from null → on_my_way
       buildChain({
         partialRow: { ...baseJob, status: 'scheduled', current_step: null },
-        fullRow: { ...baseJob, status: 'in_progress', current_step: 'on_my_way' },
-        rpcResult: { data: [{ ...baseJob, status: 'in_progress', current_step: 'on_my_way' }], error: null },
+        fullRow: {
+          ...baseJob,
+          status: 'in_progress',
+          current_step: 'on_my_way',
+        },
+        rpcResult: {
+          data: [
+            { ...baseJob, status: 'in_progress', current_step: 'on_my_way' },
+          ],
+          error: null,
+        },
       });
 
       const firstRes = await app.inject({

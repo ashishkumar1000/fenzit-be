@@ -165,7 +165,11 @@ describe('Idempotency (e2e) — Story 4.2', () => {
 
   describe('AC1 — duplicate key within 24h replays original body', () => {
     it('workflow step with same key → 200 with cached body, RPC not re-called', async () => {
-      const cached = { id: JOB_ID, status: 'in_progress', currentStep: 'on_my_way' };
+      const cached = {
+        id: JOB_ID,
+        status: 'in_progress',
+        currentStep: 'on_my_way',
+      };
       const chainInstance = mockAdmin({
         idempotencyLookup: { data: { response_body: cached }, error: null },
       });
@@ -192,10 +196,17 @@ describe('Idempotency (e2e) — Story 4.2', () => {
   describe('AC3 — cross-tenant: same key string is scoped per tenant', () => {
     it('Tenant A gets a cache hit; Tenant B (same key, different tenant) gets a miss and proceeds', async () => {
       // Tenant A: cache hit (idempotency_log lookup returns a row)
-      const cachedBodyA = { id: JOB_ID, status: 'in_progress', currentStep: 'arrived' };
+      const cachedBodyA = {
+        id: JOB_ID,
+        status: 'in_progress',
+        currentStep: 'arrived',
+      };
 
       mockAdmin({
-        idempotencyLookup: { data: { response_body: cachedBodyA }, error: null },
+        idempotencyLookup: {
+          data: { response_body: cachedBodyA },
+          error: null,
+        },
       });
 
       const resA = await app.inject({

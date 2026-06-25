@@ -81,11 +81,19 @@ describe('Sync (e2e)', () => {
   });
 
   function techJwt(techId: string = TECH_ID) {
-    return jwtService.sign({ sub: techId, tenantId: TENANT_ID, role: 'technician' });
+    return jwtService.sign({
+      sub: techId,
+      tenantId: TENANT_ID,
+      role: 'technician',
+    });
   }
 
   function ownerJwt() {
-    return jwtService.sign({ sub: OWNER_ID, tenantId: TENANT_ID, role: 'owner' });
+    return jwtService.sign({
+      sub: OWNER_ID,
+      tenantId: TENANT_ID,
+      role: 'owner',
+    });
   }
 
   function buildChain(rows: any[]) {
@@ -122,7 +130,10 @@ describe('Sync (e2e)', () => {
       expect(body.serverTime).toBeDefined();
       expect(body.jobs).toHaveLength(1);
       expect(body.jobs[0].id).toBe('job-uuid-sync-1');
-      expect(body.jobs[0].customer).toEqual({ name: 'Ravi Kumar', address: '12 MG Road, Bengaluru' });
+      expect(body.jobs[0].customer).toEqual({
+        name: 'Ravi Kumar',
+        address: '12 MG Road, Bengaluru',
+      });
       expect(body.jobs[0].attachments).toEqual([]);
       // gt() should NOT have been called for initial sync
       expect(chain.gt).not.toHaveBeenCalled();

@@ -30,7 +30,8 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
   const UPLOAD_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
   // Must match WORKER_WEBHOOK_SECRET in .env — ConfigService caches at app init
-  const WEBHOOK_SECRET = process.env['WORKER_WEBHOOK_SECRET'] ?? 'test-webhook-secret';
+  const WEBHOOK_SECRET =
+    process.env['WORKER_WEBHOOK_SECRET'] ?? 'test-webhook-secret';
 
   const WORKFLOW_URL = `/api/v1/jobs/${JOB_ID}/workflow`;
   const WEBHOOK_URL = '/internal/webhooks/storage';
@@ -132,16 +133,14 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
     const chain = () => {
       let table = '';
       const obj: Record<string, jest.Mock> = {};
-      let isSingleCall = false;
+      const isSingleCall = false;
 
       obj.from = jest.fn((t: string) => {
         table = t;
         return obj;
       });
       obj.rpc = jest.fn(() =>
-        Promise.resolve(
-          opts.rpcResult ?? { data: [baseJobRow], error: null },
-        ),
+        Promise.resolve(opts.rpcResult ?? { data: [baseJobRow], error: null }),
       );
       obj.select = jest.fn(() => obj);
       obj.eq = jest.fn(() => obj);
@@ -167,9 +166,7 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
         }
         return Promise.resolve({ data: null, error: null });
       });
-      obj.insert = jest.fn(() =>
-        Promise.resolve({ data: null, error: null }),
-      );
+      obj.insert = jest.fn(() => Promise.resolve({ data: null, error: null }));
 
       return obj;
     };
@@ -206,15 +203,11 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
       );
       obj.select = jest.fn(() => obj);
       obj.eq = jest.fn(() => obj);
-      obj.single = jest.fn(() =>
-        Promise.resolve({ data: null, error: null }),
-      );
+      obj.single = jest.fn(() => Promise.resolve({ data: null, error: null }));
       obj.maybeSingle = jest.fn(() =>
         Promise.resolve({ data: null, error: null }),
       );
-      obj.insert = jest.fn(() =>
-        Promise.resolve({ data: null, error: null }),
-      );
+      obj.insert = jest.fn(() => Promise.resolve({ data: null, error: null }));
 
       return obj;
     };
@@ -282,7 +275,10 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
           },
           error: null,
         },
-        rpcResult: { data: [{ ...baseJobRow, current_step: 'in_progress' }], error: null },
+        rpcResult: {
+          data: [{ ...baseJobRow, current_step: 'in_progress' }],
+          error: null,
+        },
       });
 
       const res = await app.inject({

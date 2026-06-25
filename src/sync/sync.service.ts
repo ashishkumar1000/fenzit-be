@@ -13,7 +13,10 @@ export class SyncService {
 
   constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
 
-  async sync(user: RequestUser, lastSyncedAt?: string): Promise<SyncResponseDto> {
+  async sync(
+    user: RequestUser,
+    lastSyncedAt?: string,
+  ): Promise<SyncResponseDto> {
     // Capture serverTime BEFORE the query — conservative: client re-fetches
     // anything that mutated during query execution on the next sync cycle.
     const serverTime = new Date().toISOString();
