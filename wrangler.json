@@ -2,5 +2,16 @@
   "name": "fenzit-be",
   "main": "dist/src/main.js",
   "compatibility_date": "2026-06-25",
-  "compatibility_flags": [ "nodejs_compat" ]
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "build": {
+    "command": "bun run build"
+  },
+  "alias": {
+    "@nestjs/microservices": "./node_modules/@nestjs/core/helpers/noop.js",
+    "@nestjs/platform-express": "./node_modules/@nestjs/core/helpers/noop.js",
+    "class-transformer/storage": "./node_modules/@nestjs/core/helpers/noop.js",
+    "@fastify/view": "./node_modules/@nestjs/core/helpers/noop.js"
+  }
 }
