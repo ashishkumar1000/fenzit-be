@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+
+# environment — never commit real secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# test coverage
+coverage/
+
+# bun
+.bun/
+
+# Rust (leftover from old scaffold)
+target/
+Cargo.lock
