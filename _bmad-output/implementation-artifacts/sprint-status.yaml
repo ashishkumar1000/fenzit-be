@@ -1,0 +1,77 @@
+# generated: 2026-06-19
+# last_updated: 2026-06-19
+# project: fenzit-be
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-06-19
+last_updated: 2026-06-21  # Story 4-3 server-side conflict resolution — done (code review complete)
+project: fenzit-be
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Project Foundation & Authentication
+  epic-1: in-progress
+  1-1-nestjs-fastify-bun-project-scaffold: done
+  1-2-mock-otp-authentication-jwt-issuance: done
+  1-3-tenant-company-onboarding: done
+  1-4-technician-invitation-auto-accept: done
+  1-5-tenant-skill-management: done
+  1-6-update-invite-to-skill-ids: done
+  epic-1-retrospective: done
+
+  # Epic 2: Customer Management
+  epic-2: done
+  2-1-create-customer: done
+  2-2-list-search-customers: done
+  2-3-customer-detail-with-job-history: done
+  epic-2-retrospective: done
+
+  # Epic 3: Job Lifecycle
+  epic-3: in-progress
+  3-1-create-job: done
+  3-2-list-jobs: done
+  3-3-job-detail: done
+  3-4-edit-reassign-cancel-job: done
+  3-5-technician-workflow-step-advancement: done
+  3-6-job-attachment-upload-via-cloudflare-r2: done
+  epic-3-retrospective: optional
+
+  # Epic 4: Offline-First Mobile Sync
+  epic-4: in-progress
+  4-1-delta-sync-endpoint: done
+  4-2-idempotent-action-replay: done
+  4-3-server-side-conflict-resolution: done
+  epic-4-retrospective: optional

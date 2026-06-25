@@ -1,0 +1,18 @@
+name = "fenzo-r2-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Cloudflare Queues requires Workers Paid plan ($5/mo).
+# Uncomment once on a paid plan and create the queues:
+#   wrangler queues create r2-upload-events
+#   wrangler queues create r2-upload-events-dlq
+# Then set up R2 event notification in Cloudflare dashboard → R2 → bucket → Settings → Event notifications.
+# [[queues.consumers]]
+# queue = "r2-upload-events"
+# max_retries = 3
+# dead_letter_queue = "r2-upload-events-dlq"
+
+[vars]
+BACKEND_URL = "https://your-backend.example.com"
+
+# Set secrets via: wrangler secret put WORKER_WEBHOOK_SECRET
