@@ -11,6 +11,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiBody,
 } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 import { AuthService } from './auth.service';
@@ -53,6 +54,18 @@ export class AuthController {
   @Post('otp/verify')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify OTP and get JWT' })
+  @ApiBody({
+    type: VerifyOtpDto,
+    description: 'OTP session ID and 6-digit OTP code',
+    examples: {
+      verification: {
+        value: {
+          otpSessionId: '550e8400-e29b-41d4-a716-446655440000',
+          otpCode: '123456',
+        },
+      },
+    },
+  })
   @ApiResponse({
     status: 200,
     description: 'OTP verified successfully',
