@@ -52,7 +52,7 @@ export class AuthService {
 
   async sendOtp(
     dto: SendOtpDto,
-  ): Promise<{ otp_session_id: string; expires_at: string }> {
+  ): Promise<{ otp_session_id: string; expires_at: string; otp: string }> {
     const { countryCode, phoneNumber } = dto;
     const e164 = `${countryCode}${phoneNumber}`;
 
@@ -86,6 +86,8 @@ export class AuthService {
     await this.otpSessionStore.set(sessionId, session, OTP_TTL_SECONDS);
     await this.otpDeliveryProvider.send(e164, otp);
 
+    this.logger.log(`OTP for ${e164}: ${otp}`);
+
     const expiresAt = new Date(
       Date.now() + OTP_TTL_SECONDS * 1000,
     ).toISOString();
@@ -93,6 +95,7 @@ export class AuthService {
     return {
       otp_session_id: sessionId,
       expires_at: expiresAt,
+      otp,
     };
   }
 

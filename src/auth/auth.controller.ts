@@ -41,6 +41,7 @@ export class AuthController {
       example: {
         otp_session_id: '550e8400-e29b-41d4-a716-446655440000',
         expires_at: '2026-06-19T21:51:00Z',
+        otp: '123456',
       },
     },
   })
