@@ -30,6 +30,8 @@ CREATE POLICY tenants_read_own ON tenants
 -- Atomic upsert + user FK update.
 -- Returns the tenant row plus an `inserted` flag (true on 201, false on 200).
 -- PostgREST auto-wraps RPC calls in a transaction.
+DROP FUNCTION IF EXISTS setup_tenant_for_owner(UUID, TEXT, TEXT, TEXT, TEXT, TEXT[], TEXT);
+
 CREATE OR REPLACE FUNCTION setup_tenant_for_owner(
   p_user_id            UUID,
   p_company_name       TEXT,
@@ -53,6 +55,7 @@ RETURNS TABLE (
   inserted BOOLEAN
 )
 LANGUAGE plpgsql AS $$
+#variable_conflict use_column
 DECLARE
   v_tenant_id  UUID;
   v_inserted   BOOLEAN;

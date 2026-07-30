@@ -342,15 +342,20 @@ export class AuthService {
     // Auto-seed tenant_skills from serviceCategories on first company creation
     if ((row['inserted'] as boolean) && dto.serviceCategories?.length) {
       const admin2 = this.supabaseClientFactory.createAdmin();
-      const { error: seedError } = await admin2.from('tenant_skills').upsert(
-        dto.serviceCategories.map((name) => ({
+      const uniqueNames = [
+        ...new Set(dto.serviceCategories.map((name) => name.toLowerCase())),
+      ];
+      const { error: seedError } = await admin2.from('tenant_skills').insert(
+        uniqueNames.map((name) => ({
           id: crypto.randomUUID(),
           tenant_id: tenant.id,
-          name: name.toLowerCase(),
+          name,
         })),
-        { onConflict: 'tenant_id,lower(name)', ignoreDuplicates: true },
       );
       if (seedError) {
+        // tenant is brand-new on this branch, so a 23505 here means a
+        // genuine race (e.g. concurrent createSkill call) rather than
+        // expected overlap — still logged so it isn't silently lost
         this.logger.warn(
           'Failed to seed tenant_skills from serviceCategories:',
           { error: seedError },

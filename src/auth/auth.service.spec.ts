@@ -266,7 +266,7 @@ describe('AuthService', () => {
           error: null,
         }),
         from: jest.fn().mockReturnValue({
-          upsert: jest.fn().mockResolvedValue({ error: null }),
+          insert: jest.fn().mockResolvedValue({ error: null }),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
@@ -353,7 +353,7 @@ describe('AuthService', () => {
           error: null,
         }),
         from: jest.fn().mockReturnValue({
-          upsert: jest.fn().mockResolvedValue({ error: null }),
+          insert: jest.fn().mockResolvedValue({ error: null }),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
@@ -377,13 +377,13 @@ describe('AuthService', () => {
         stateCode: 'MH',
         serviceCategories: ['AC Technician', 'Plumber'],
       };
-      const upsertFn = jest.fn().mockResolvedValue({ error: null });
+      const insertFn = jest.fn().mockResolvedValue({ error: null });
       const mockAdmin = {
         rpc: jest.fn().mockResolvedValue({
           data: [{ ...rpcRow, inserted: true }],
           error: null,
         }),
-        from: jest.fn().mockReturnValue({ upsert: upsertFn }),
+        from: jest.fn().mockReturnValue({ insert: insertFn }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
@@ -391,7 +391,7 @@ describe('AuthService', () => {
       await service.setupCompany(ownerUser, dtoWithCategories);
 
       expect(mockAdmin.from).toHaveBeenCalledWith('tenant_skills');
-      expect(upsertFn).toHaveBeenCalledWith(
+      expect(insertFn).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({
             name: 'ac technician',
@@ -402,7 +402,60 @@ describe('AuthService', () => {
             tenant_id: 'tenant-uuid',
           }),
         ]),
-        expect.objectContaining({ ignoreDuplicates: true }),
+      );
+    });
+
+    it('should de-duplicate case-insensitive serviceCategories before seeding', async () => {
+      const dtoWithDupes: SetupCompanyDto = {
+        companyName: 'ACME',
+        stateCode: 'MH',
+        serviceCategories: ['AC Technician', 'ac technician', 'Plumber'],
+      };
+      const insertFn = jest.fn().mockResolvedValue({ error: null });
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn().mockReturnValue({ insert: insertFn }),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
+
+      await service.setupCompany(ownerUser, dtoWithDupes);
+
+      expect(insertFn).toHaveBeenCalledWith([
+        expect.objectContaining({ name: 'ac technician' }),
+        expect.objectContaining({ name: 'plumber' }),
+      ]);
+    });
+
+    it('should log a warning when tenant_skills seed insert fails', async () => {
+      const dtoWithCategories: SetupCompanyDto = {
+        companyName: 'ACME',
+        stateCode: 'MH',
+        serviceCategories: ['AC Technician'],
+      };
+      const seedError = { code: '23505', message: 'dup' };
+      const insertFn = jest.fn().mockResolvedValue({ error: seedError });
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn().mockReturnValue({ insert: insertFn }),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
+      const warnSpy = jest
+        .spyOn(service['logger'], 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.setupCompany(ownerUser, dtoWithCategories);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to seed tenant_skills from serviceCategories:',
+        { error: seedError },
       );
     });
 
