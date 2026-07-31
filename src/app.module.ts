@@ -13,6 +13,7 @@ import { AuthModule } from './auth/auth.module';
 import { SkillsModule } from './skills/skills.module';
 import { CustomersModule } from './customers/customers.module';
 import { JobsModule } from './jobs/jobs.module';
+import { UsersModule } from './users/users.module';
 import { StorageModule } from './storage/storage.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SupabaseModule } from './supabase/supabase.module';
@@ -67,6 +68,7 @@ import { SyncModule } from './sync/sync.module';
     SkillsModule,
     CustomersModule,
     JobsModule,
+    UsersModule,
     StorageModule,
     WebhooksModule,
     SyncModule,
