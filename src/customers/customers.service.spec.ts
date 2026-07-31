@@ -163,6 +163,7 @@ describe('CustomersService', () => {
         name: `Cust ${id}`,
         country_code: '+91',
         phone_number: `98765432${id}`,
+        address: '12 MG Road',
         city: 'Bengaluru',
         created_at: createdAt,
       };
@@ -170,7 +171,13 @@ describe('CustomersService', () => {
 
     // Chainable query-builder mock. select/eq/or/order return the builder;
     // limit() resolves to { data, error }. Captures .or() args for assertions.
-    function mockQuery(result: { data: unknown; error: unknown }) {
+    // A second builder (dispatched by table name) backs the getJobStats
+    // lookup against the `jobs` table — defaults to an empty result so tests
+    // that don't care about job stats don't need to pass one.
+    function mockQuery(
+      result: { data: unknown; error: unknown },
+      jobsResult: { data: unknown; error: unknown } = { data: [], error: null },
+    ) {
       const orArgs: string[] = [];
       const builder: Record<string, jest.Mock> = {};
       builder.select = jest.fn(() => builder);
@@ -181,16 +188,38 @@ describe('CustomersService', () => {
       });
       builder.order = jest.fn(() => builder);
       builder.limit = jest.fn().mockResolvedValue(result);
-      const from = jest.fn(() => builder);
+
+      const jobsEqArgs: unknown[][] = [];
+      const jobsInArgs: unknown[][] = [];
+      const jobsBuilder: Record<string, jest.Mock> = {};
+      jobsBuilder.select = jest.fn(() => jobsBuilder);
+      jobsBuilder.eq = jest.fn((...args: unknown[]) => {
+        jobsEqArgs.push(args);
+        return jobsBuilder;
+      });
+      jobsBuilder.in = jest.fn((...args: unknown[]) => {
+        jobsInArgs.push(args);
+        return Promise.resolve(jobsResult);
+      });
+
+      const from = jest.fn((table: string) =>
+        table === 'jobs' ? jobsBuilder : builder,
+      );
       supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
-      return { from, builder, orArgs };
+      return { from, builder, jobsBuilder, orArgs, jobsEqArgs, jobsInArgs };
     }
 
-    it('should map rows to list items with jobCount 0 / lastJobDate null', async () => {
-      mockQuery({
-        data: [makeRow('1', '2026-06-21T00:00:02Z')],
-        error: null,
-      });
+    it('should compute jobCount and lastJobDate from the jobs table', async () => {
+      const { jobsEqArgs, jobsInArgs } = mockQuery(
+        { data: [makeRow('1', '2026-06-21T00:00:02Z')], error: null },
+        {
+          data: [
+            { customer_id: '1', scheduled_start: '2026-06-10T09:00:00Z' },
+            { customer_id: '1', scheduled_start: '2026-06-15T09:00:00Z' },
+          ],
+          error: null,
+        },
+      );
 
       const result = await service.listCustomers(ownerUser, {});
 
@@ -200,12 +229,46 @@ describe('CustomersService', () => {
         name: 'Cust 1',
         countryCode: '+91',
         phoneNumber: '987654321',
+        address: '12 MG Road',
+        city: 'Bengaluru',
+        jobCount: 2,
+        lastJobDate: '2026-06-15T09:00:00Z',
+      });
+      expect(result.nextCursor).toBeNull();
+      expect(result.hasMore).toBe(false);
+      expect(jobsEqArgs).toEqual([['tenant_id', 'tenant-uuid']]);
+      expect(jobsInArgs).toEqual([['customer_id', ['1']]]);
+    });
+
+    it('should default jobCount to 0 and lastJobDate to null when a customer has no jobs', async () => {
+      mockQuery(
+        { data: [makeRow('2', '2026-06-21T00:00:02Z')], error: null },
+        { data: [], error: null },
+      );
+
+      const result = await service.listCustomers(ownerUser, {});
+
+      expect(result.data[0]).toEqual({
+        id: '2',
+        name: 'Cust 2',
+        countryCode: '+91',
+        phoneNumber: '987654322',
+        address: '12 MG Road',
         city: 'Bengaluru',
         jobCount: 0,
         lastJobDate: null,
       });
-      expect(result.nextCursor).toBeNull();
-      expect(result.hasMore).toBe(false);
+    });
+
+    it('should surface a 500 when the job-stats lookup fails', async () => {
+      mockQuery(
+        { data: [makeRow('3', '2026-06-21T00:00:02Z')], error: null },
+        { data: null, error: { code: '08006', message: 'down' } },
+      );
+
+      await expect(service.listCustomers(ownerUser, {})).rejects.toThrow(
+        InternalServerErrorException,
+      );
     });
 
     it('should return empty page when no rows', async () => {

@@ -44,6 +44,7 @@ export interface CustomerListItem {
   name: string;
   countryCode: string;
   phoneNumber: string;
+  address: string | null;
   city: string | null;
   jobCount: number;
   lastJobDate: string | null;
@@ -54,6 +55,7 @@ interface CustomerListRow {
   name: string;
   country_code: string;
   phone_number: string;
+  address: string | null;
   city: string | null;
   created_at: string;
 }
@@ -260,7 +262,7 @@ export class CustomersService {
 
     let qb = admin
       .from('customers')
-      .select('id, name, country_code, phone_number, city, created_at')
+      .select('id, name, country_code, phone_number, address, city, created_at')
       .eq('tenant_id', owner.tenantId);
 
     const term = query.q ? this.sanitizeSearchTerm(query.q) : '';
@@ -277,10 +279,12 @@ export class CustomersService {
       );
     }
 
+    const pageSize = query.limit ?? PAGE_SIZE;
+
     const { data, error } = await qb
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
-      .limit(PAGE_SIZE + 1);
+      .limit(pageSize + 1);
 
     if (error) {
       this.logger.error('Failed to list customers:', { error });
@@ -291,23 +295,87 @@ export class CustomersService {
     }
 
     const rows = (data ?? []) as CustomerListRow[];
-    const hasMore = rows.length > PAGE_SIZE;
-    const pageRows = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
+    const hasMore = rows.length > pageSize;
+    const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last ? encodeCursor(last.id, last.created_at) : null;
 
-    const items: CustomerListItem[] = pageRows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      countryCode: row.country_code,
-      phoneNumber: row.phone_number,
-      city: row.city,
-      jobCount: 0, // jobs table arrives in Epic 3
-      lastJobDate: null, // jobs table arrives in Epic 3
-    }));
+    const jobStats = await this.getJobStats(
+      owner.tenantId,
+      pageRows.map((row) => row.id),
+    );
+
+    const items: CustomerListItem[] = pageRows.map((row) => {
+      const stats = jobStats.get(row.id);
+      return {
+        id: row.id,
+        name: row.name,
+        countryCode: row.country_code,
+        phoneNumber: row.phone_number,
+        address: row.address,
+        city: row.city,
+        jobCount: stats?.jobCount ?? 0,
+        lastJobDate: stats?.lastJobDate ?? null,
+      };
+    });
 
     return new PaginatedResponse(items, nextCursor);
+  }
+
+  /**
+   * jobCount / lastJobDate for a page of customers, computed from the jobs
+   * table directly (not via JobsService — customers has no dependency on
+   * jobs, per the module-boundary note on FindOrCreateCustomerInput above).
+   * Counts jobs of any status; lastJobDate is the most recent scheduledStart.
+   */
+  private async getJobStats(
+    tenantId: string,
+    customerIds: string[],
+  ): Promise<Map<string, { jobCount: number; lastJobDate: string | null }>> {
+    const stats = new Map<
+      string,
+      { jobCount: number; lastJobDate: string | null }
+    >();
+    if (customerIds.length === 0) return stats;
+
+    const admin = this.supabaseClientFactory.createAdmin();
+    const { data, error } = await admin
+      .from('jobs')
+      .select('customer_id, scheduled_start')
+      .eq('tenant_id', tenantId)
+      .in('customer_id', customerIds);
+
+    if (error) {
+      this.logger.error('Failed to fetch job stats for customers:', {
+        error,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to list customers',
+      });
+    }
+
+    const rows = (data ?? []) as {
+      customer_id: string;
+      scheduled_start: string;
+    }[];
+    for (const row of rows) {
+      const entry = stats.get(row.customer_id) ?? {
+        jobCount: 0,
+        lastJobDate: null,
+      };
+      entry.jobCount += 1;
+      if (
+        !entry.lastJobDate ||
+        new Date(row.scheduled_start) > new Date(entry.lastJobDate)
+      ) {
+        entry.lastJobDate = row.scheduled_start;
+      }
+      stats.set(row.customer_id, entry);
+    }
+
+    return stats;
   }
 
   async getCustomerDetail(
