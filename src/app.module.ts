@@ -55,7 +55,10 @@ import { SyncModule } from './sync/sync.module';
     JwtModule.registerAsync({
       useFactory: () => ({
         secret: process.env['SUPABASE_JWT_SECRET'],
-        signOptions: { expiresIn: '7d' },
+        // No expiresIn (and thus no `exp` claim) so tokens never expire.
+        // Interim measure until refresh tokens are implemented; only way to
+        // invalidate tokens right now is rotating SUPABASE_JWT_SECRET.
+        signOptions: {},
       }),
       global: true,
     }),
