@@ -2,15 +2,18 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
   Validate,
   ValidatorConstraint,
   ValidatorConstraintInterface,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { JobStatus } from '../enums/job-status.enum';
 
 const trim = ({ value }: { value: unknown }) =>
@@ -90,4 +93,15 @@ export class ListJobsQueryDto {
   @IsString()
   @MaxLength(512)
   cursor?: string;
+
+  @ApiPropertyOptional({
+    example: 20,
+    description: 'Max jobs to return (1-50). Defaults to 50 if omitted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
 }

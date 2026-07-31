@@ -17,6 +17,7 @@ import {
 import { JobsService, JobResponse, JobRow } from '../jobs/jobs.service';
 import { JobStatus } from '../jobs/enums/job-status.enum';
 import { GetProfileQueryDto } from './dto/get-profile-query.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 // Mirrors JOB_DETAIL_COLUMNS in jobs.service.ts — kept as a separate literal here
 // (rather than imported) so this service's `as JobRow[]` cast has the matching
@@ -49,6 +50,7 @@ export interface TechnicianSummary {
   phoneNumber: string;
   status: string;
   skills: string[];
+  skillIds: string[];
   createdAt: string;
 }
 
@@ -73,6 +75,7 @@ export interface OwnerProfileResponse extends UserProfileBase {
 export interface TechnicianProfileResponse extends UserProfileBase {
   role: Role.TECHNICIAN;
   skills: string[];
+  skillIds: string[];
   jobs: PaginatedResponse<JobResponse>;
   jobStatusCounts: JobStatusCounts;
 }
@@ -102,8 +105,9 @@ interface TenantRow {
 }
 
 // PostgREST embeds a to-one/to-many related resource; normalize both possible
-// shapes when flattening skill names (mirrors UserSkillRow in jobs.service.ts).
+// shapes when flattening skills (mirrors UserSkillRow in jobs.service.ts).
 interface TenantSkillEmbed {
+  id: string;
   name: string;
 }
 
@@ -179,6 +183,7 @@ export class UsersService {
           ...base,
           role: Role.TECHNICIAN,
           skills: [],
+          skillIds: [],
           jobs: new PaginatedResponse<JobResponse>([], null),
           jobStatusCounts: EMPTY_JOB_STATUS_COUNTS,
         };
@@ -228,7 +233,12 @@ export class UsersService {
     if (ownRow.role === Role.TECHNICIAN) {
       const [skills, jobs, jobStatusCounts] = await Promise.all([
         this.getOwnSkills(admin, user.userId, tenantId),
-        this.listProfileJobs(tenantId, user.userId, query.jobsCursor),
+        this.listProfileJobs(
+          tenantId,
+          user.userId,
+          query.jobsCursor,
+          query.jobsLimit,
+        ),
         this.getJobStatusCounts(tenantId, user.userId),
       ]);
 
@@ -236,7 +246,8 @@ export class UsersService {
         ...base,
         role: Role.TECHNICIAN,
         tenant,
-        skills,
+        skills: skills.map((s) => s.name),
+        skillIds: skills.map((s) => s.id),
         jobs,
         jobStatusCounts,
       };
@@ -250,9 +261,9 @@ export class UsersService {
       // swapped in yet, `user.tenantId` could still be null.
       this.customersService.listCustomers(
         { ...user, tenantId },
-        { cursor: query.customersCursor },
+        { cursor: query.customersCursor, limit: query.customersLimit },
       ),
-      this.listProfileJobs(tenantId, null, query.jobsCursor),
+      this.listProfileJobs(tenantId, null, query.jobsCursor, query.jobsLimit),
       this.getJobStatusCounts(tenantId, null),
     ]);
 
@@ -268,6 +279,28 @@ export class UsersService {
     };
   }
 
+  async updateMyProfile(
+    user: RequestUser,
+    dto: UpdateProfileDto,
+  ): Promise<UserProfileResponse> {
+    const admin = this.supabaseClientFactory.createAdmin();
+
+    const { error } = await admin
+      .from('users')
+      .update({ name: dto.name })
+      .eq('id', user.userId);
+
+    if (error) {
+      this.logger.error('Failed to update own name:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to update profile',
+      });
+    }
+
+    return this.getMyProfile(user, {});
+  }
+
   private async listTechnicians(
     admin: SupabaseClient,
     tenantId: string,
@@ -275,7 +308,7 @@ export class UsersService {
     const { data, error } = await admin
       .from('users')
       .select(
-        'id, name, country_code, phone_number, status, created_at, user_skills(tenant_skills(name))',
+        'id, name, country_code, phone_number, status, created_at, user_skills(tenant_skills(id, name))',
       )
       .eq('tenant_id', tenantId)
       .eq('role', Role.TECHNICIAN)
@@ -290,25 +323,29 @@ export class UsersService {
     }
 
     const rows = (data ?? []) as TechnicianListRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      countryCode: row.country_code,
-      phoneNumber: row.phone_number,
-      status: row.status,
-      skills: this.flattenSkillNames(row.user_skills ?? []),
-      createdAt: row.created_at,
-    }));
+    return rows.map((row) => {
+      const skills = this.flattenSkills(row.user_skills ?? []);
+      return {
+        id: row.id,
+        name: row.name,
+        countryCode: row.country_code,
+        phoneNumber: row.phone_number,
+        status: row.status,
+        skills: skills.map((s) => s.name),
+        skillIds: skills.map((s) => s.id),
+        createdAt: row.created_at,
+      };
+    });
   }
 
   private async getOwnSkills(
     admin: SupabaseClient,
     userId: string,
     tenantId: string,
-  ): Promise<string[]> {
+  ): Promise<TenantSkillEmbed[]> {
     const { data, error } = await admin
       .from('user_skills')
-      .select('tenant_skills!inner(name)')
+      .select('tenant_skills!inner(id, name)')
       .eq('user_id', userId)
       .eq('tenant_skills.tenant_id', tenantId);
 
@@ -320,17 +357,17 @@ export class UsersService {
       });
     }
 
-    return this.flattenSkillNames(data ?? []);
+    return this.flattenSkills(data ?? []);
   }
 
-  private flattenSkillNames(rows: UserSkillsEmbedRow[]): string[] {
+  private flattenSkills(rows: UserSkillsEmbedRow[]): TenantSkillEmbed[] {
     return rows
       .flatMap((r) => {
         const ts = r.tenant_skills;
-        if (Array.isArray(ts)) return ts.map((t) => t.name);
-        return ts ? [ts.name] : [];
+        if (Array.isArray(ts)) return ts;
+        return ts ? [ts] : [];
       })
-      .filter((name): name is string => Boolean(name));
+      .filter((s): s is TenantSkillEmbed => Boolean(s?.name));
   }
 
   /**
@@ -342,8 +379,10 @@ export class UsersService {
     tenantId: string,
     technicianId: string | null,
     cursor?: string,
+    limit?: number,
   ): Promise<PaginatedResponse<JobResponse>> {
     const admin = this.supabaseClientFactory.createAdmin();
+    const pageSize = limit ?? JOBS_PAGE_SIZE;
 
     let qb = admin.from('jobs').select(JOB_COLUMNS).eq('tenant_id', tenantId);
 
@@ -361,7 +400,7 @@ export class UsersService {
     const { data, error } = await qb
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
-      .limit(JOBS_PAGE_SIZE + 1);
+      .limit(pageSize + 1);
 
     if (error) {
       this.logger.error('Failed to list jobs for profile:', { error });
@@ -372,8 +411,8 @@ export class UsersService {
     }
 
     const rows = (data ?? []) as JobRow[];
-    const hasMore = rows.length > JOBS_PAGE_SIZE;
-    const pageRows = hasMore ? rows.slice(0, JOBS_PAGE_SIZE) : rows;
+    const hasMore = rows.length > pageSize;
+    const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last ? encodeCursor(last.id, last.created_at) : null;

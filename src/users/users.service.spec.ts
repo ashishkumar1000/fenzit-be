@@ -309,6 +309,33 @@ describe('UsersService', () => {
       });
     });
 
+    it('includes not-yet-accepted (status: invited) technicians alongside active ones', async () => {
+      const mixedStatusRows = [
+        { ...technicianListRows[0], id: 'tech-active', status: 'active' },
+        {
+          id: 'tech-invited',
+          name: 'Newly Invited',
+          country_code: '+91',
+          phone_number: '9222222222',
+          status: 'invited',
+          created_at: '2026-07-01T00:00:00Z',
+          user_skills: [{ tenant_skills: { id: 'skill-1', name: 'AC Repair' } }],
+        },
+      ];
+      mockAdmin({ technicians: { data: mixedStatusRows, error: null } });
+      customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.technicianCount).toBe(2);
+      expect(result.technicians.map((t) => t.status)).toEqual([
+        'active',
+        'invited',
+      ]);
+      expect(result.technicians[1].id).toBe('tech-invited');
+    });
+
     it('passes the DB-fresh tenantId (not a possibly-stale JWT claim) into customersService.listCustomers', async () => {
       // Simulate a stale JWT: the token's tenantId claim is null, but the DB
       // row (fetched fresh inside getMyProfile) already has a tenant set.

@@ -533,10 +533,12 @@ export class JobsService {
       );
     }
 
+    const pageSize = query.limit ?? PAGE_SIZE;
+
     const { data, error } = await qb
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
-      .limit(PAGE_SIZE + 1);
+      .limit(pageSize + 1);
 
     if (error) {
       this.logger.error('Failed to list jobs:', { error });
@@ -547,8 +549,8 @@ export class JobsService {
     }
 
     const rows = (data ?? []) as JobRow[];
-    const hasMore = rows.length > PAGE_SIZE;
-    const pageRows = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
+    const hasMore = rows.length > pageSize;
+    const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last ? encodeCursor(last.id, last.created_at) : null;
