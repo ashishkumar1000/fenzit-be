@@ -5,7 +5,12 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "packageManager": "bun@1.3.13",
+  "engines": {
+    "bun": ">=1.3"
+  },
   "scripts": {
+    "preinstall": "node -e \"if (!/bun\\//.test(process.env.npm_config_user_agent||'')) { console.error('\\nThis repo uses bun only. Run: bun install\\n'); process.exit(1); }\"",
     "build": "nest build",
     "typecheck": "tsc -p tsconfig.build.json --noEmit --incremental false",
     "prepare": "husky",

@@ -26,7 +26,6 @@ coverage/
 
 # bun
 .bun/
-bun.lock
 
 # Rust (leftover from old scaffold)
 target/
