@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19
-last_updated: 2026-06-21  # Story 4-3 server-side conflict resolution — done (code review complete)
+last_updated: 2026-09-03  # Story 2-4 customer-detail-job-history — review patches applied, done
 project: fenzit-be
 project_key: NOKEY
 tracking_system: file-system
@@ -53,11 +53,11 @@ development_status:
   epic-1-retrospective: done
 
   # Epic 2: Customer Management
-  epic-2: in-progress  # reopened 2026-09-01 — 2-4 added: customer-detail jobHistory placeholder was never wired after Epic 3
+  epic-2: done  # reopened 2026-09-01 for 2-4 (jobHistory placeholder); closed again 2026-09-03 — all stories + retrospective done
   2-1-create-customer: done
   2-2-list-search-customers: done
   2-3-customer-detail-with-job-history: done
-  2-4-customer-detail-job-history: ready-for-dev
+  2-4-customer-detail-job-history: done
   epic-2-retrospective: done
 
   # Epic 3: Job Lifecycle

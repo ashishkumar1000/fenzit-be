@@ -9,7 +9,11 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
-import { encodeCursor, decodeCursor } from '../common/utils/cursor.util';
+import {
+  encodeCursor,
+  decodeCursor,
+  CursorScope,
+} from '../common/utils/cursor.util';
 import {
   CustomersService,
   CustomerListItem,
@@ -25,6 +29,9 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 const JOB_COLUMNS =
   'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
 const JOBS_PAGE_SIZE = 50;
+// Cursor scope — a cursor minted for another paginated endpoint (e.g. the jobs
+// list, which also keys on created_at) is rejected (400) here.
+const PROFILE_JOBS_CURSOR_SCOPE: CursorScope = 'profile-jobs';
 
 export interface TenantSummary {
   id: string;
@@ -391,7 +398,7 @@ export class UsersService {
     }
 
     if (cursor) {
-      const c = decodeCursor(cursor);
+      const c = decodeCursor(cursor, PROFILE_JOBS_CURSOR_SCOPE);
       qb = qb.or(
         `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
       );
@@ -415,7 +422,9 @@ export class UsersService {
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && last ? encodeCursor(last.id, last.created_at) : null;
+      hasMore && last
+        ? encodeCursor(last.id, last.created_at, PROFILE_JOBS_CURSOR_SCOPE)
+        : null;
 
     return new PaginatedResponse(
       pageRows.map((row) => this.jobsService.toResponse(row)),

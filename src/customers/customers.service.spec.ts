@@ -9,7 +9,7 @@ import { CustomersService } from './customers.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import { decodeCursor } from '../common/utils/cursor.util';
+import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 
 describe('CustomersService', () => {
@@ -326,7 +326,11 @@ describe('CustomersService', () => {
 
     it('should apply a keyset .or() when a cursor is supplied', async () => {
       const cursor = Buffer.from(
-        JSON.stringify({ id: CURSOR_UUID, createdAt: '2026-06-21T00:00:00Z' }),
+        JSON.stringify({
+          id: CURSOR_UUID,
+          createdAt: '2026-06-21T00:00:00Z',
+          scope: 'customers-list',
+        }),
       ).toString('base64url');
       const { orArgs } = mockQuery({ data: [], error: null });
 
@@ -406,19 +410,61 @@ describe('CustomersService', () => {
   describe('getCustomerDetail', () => {
     const CUSTOMER_ID = '00000000-0000-4000-8000-000000000001';
 
-    // detail query terminal is .single() after two .eq() calls (id, tenant_id)
-    function mockSingle(result: { data: unknown; error: unknown }) {
-      const single = jest.fn().mockResolvedValue(result);
+    const jobRow = (n: number) => ({
+      id: `00000000-0000-4000-8000-00000000010${n}`,
+      job_number: `JOB-${n}`,
+      scheduled_start: `2026-0${n}-01T00:00:00Z`,
+      status: 'completed',
+      service_type: 'ac_service',
+    });
+
+    // Customer fetch terminal is .single() after two .eq() calls (id, tenant_id).
+    // Job-history fetch terminal is .limit() after .select/.eq/.eq(/.or)/.order/.order.
+    // Routed by table name since getCustomerDetail now queries both. eq/order
+    // args are captured so the tenant/customer scoping and sort order are asserted,
+    // not just the terminal result.
+    function mockDetail(
+      customerResult: { data: unknown; error: unknown },
+      jobHistoryResult: { data: unknown; error: unknown } = {
+        data: [],
+        error: null,
+      },
+    ) {
+      const single = jest.fn().mockResolvedValue(customerResult);
       const eqTenant = jest.fn().mockReturnValue({ single });
       const eqId = jest.fn().mockReturnValue({ eq: eqTenant });
-      const select = jest.fn().mockReturnValue({ eq: eqId });
-      const from = jest.fn().mockReturnValue({ select });
+      const customerSelect = jest.fn().mockReturnValue({ eq: eqId });
+
+      const orArgs: string[] = [];
+      const eqArgs: [string, unknown][] = [];
+      const orderArgs: [string, { ascending: boolean }][] = [];
+      const jobsBuilder: Record<string, jest.Mock> = {};
+      jobsBuilder.select = jest.fn(() => jobsBuilder);
+      jobsBuilder.eq = jest.fn((...args: [string, unknown]) => {
+        eqArgs.push(args);
+        return jobsBuilder;
+      });
+      jobsBuilder.or = jest.fn((arg: string) => {
+        orArgs.push(arg);
+        return jobsBuilder;
+      });
+      jobsBuilder.order = jest.fn(
+        (...args: [string, { ascending: boolean }]) => {
+          orderArgs.push(args);
+          return jobsBuilder;
+        },
+      );
+      jobsBuilder.limit = jest.fn().mockResolvedValue(jobHistoryResult);
+
+      const from = jest.fn((table: string) =>
+        table === 'jobs' ? jobsBuilder : { select: customerSelect },
+      );
       supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
-      return { from, select, eqId, eqTenant, single };
+      return { from, single, jobsBuilder, orArgs, eqArgs, orderArgs };
     }
 
     it('should return the full profile plus an empty jobHistory envelope', async () => {
-      mockSingle({ data: dbRow, error: null });
+      mockDetail({ data: dbRow, error: null });
 
       const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
 
@@ -437,8 +483,227 @@ describe('CustomersService', () => {
       });
     });
 
+    it('should return the first page of job history sorted scheduled_start DESC', async () => {
+      const row2 = jobRow(2);
+      const row1 = jobRow(1);
+      mockDetail(
+        { data: dbRow, error: null },
+        { data: [row2, row1], error: null },
+      );
+
+      const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(result.jobHistory.hasMore).toBe(false);
+      expect(result.jobHistory.nextCursor).toBeNull();
+      expect(result.jobHistory.data).toEqual([
+        {
+          id: row2.id,
+          jobNumber: row2.job_number,
+          scheduledStart: row2.scheduled_start,
+          status: row2.status,
+          serviceType: row2.service_type,
+        },
+        {
+          id: row1.id,
+          jobNumber: row1.job_number,
+          scheduledStart: row1.scheduled_start,
+          status: row1.status,
+          serviceType: row1.service_type,
+        },
+      ]);
+    });
+
+    it('should scope the job-history query to the tenant and customer, sorted scheduled_start/id DESC', async () => {
+      // createAdmin() bypasses RLS, so the .eq('tenant_id')/.eq('customer_id')
+      // filters are the ONLY isolation — this pins them (and the sort).
+      const { eqArgs, orderArgs } = mockDetail(
+        { data: dbRow, error: null },
+        { data: [], error: null },
+      );
+
+      await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(eqArgs).toContainEqual(['tenant_id', 'tenant-uuid']);
+      expect(eqArgs).toContainEqual(['customer_id', CUSTOMER_ID]);
+      expect(orderArgs).toEqual([
+        ['scheduled_start', { ascending: false }],
+        ['id', { ascending: false }],
+      ]);
+    });
+
+    it('should return a nextCursor and hasMore=true when more than 20 jobs exist', async () => {
+      // rows arrive from the DB newest-first (scheduled_start DESC)
+      const rows = Array.from({ length: 21 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-0000000010${String(i).padStart(2, '0')}`,
+        job_number: `JOB-${i}`,
+        scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
+        status: 'completed',
+        service_type: 'ac_service',
+      }));
+      const { jobsBuilder } = mockDetail(
+        { data: dbRow, error: null },
+        { data: rows, error: null },
+      );
+
+      const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(result.jobHistory.data).toHaveLength(20);
+      expect(result.jobHistory.hasMore).toBe(true);
+      expect(result.jobHistory.nextCursor).not.toBeNull();
+      expect(jobsBuilder.limit).toHaveBeenCalledWith(21);
+      expect(jobsBuilder.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: false,
+      });
+      expect(jobsBuilder.order).toHaveBeenCalledWith('id', { ascending: false });
+
+      // nextCursor must encode the 20th RETURNED row (index 19), not the 21st probe row
+      const decoded = decodeCursor(result.jobHistory.nextCursor as string);
+      expect(decoded.id).toBe(rows[19].id);
+      expect(decoded.createdAt).toBe(rows[19].scheduled_start);
+      expect(decoded.scope).toBe('customer-history');
+    });
+
+    it('should return hasMore=false and no nextCursor at exactly 20 jobs (boundary)', async () => {
+      const rows = Array.from({ length: 20 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-0000000020${String(i).padStart(2, '0')}`,
+        job_number: `JOB-${i}`,
+        scheduled_start: `2026-01-${(20 - i).toString().padStart(2, '0')}T00:00:00Z`,
+        status: 'completed',
+        service_type: 'ac_service',
+      }));
+      const { jobsBuilder } = mockDetail(
+        { data: dbRow, error: null },
+        { data: rows, error: null },
+      );
+
+      const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(result.jobHistory.data).toHaveLength(20);
+      expect(result.jobHistory.hasMore).toBe(false);
+      expect(result.jobHistory.nextCursor).toBeNull();
+      expect(jobsBuilder.limit).toHaveBeenCalledWith(21);
+    });
+
+    it('should return the second page when a valid nextCursor is passed back (round-trip)', async () => {
+      // page 1: 21 rows → 20 returned + probe row
+      const rows = Array.from({ length: 21 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-0000000030${String(i).padStart(2, '0')}`,
+        job_number: `JOB-${i}`,
+        scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
+        status: 'completed',
+        service_type: 'ac_service',
+      }));
+      mockDetail({ data: dbRow, error: null }, { data: rows, error: null });
+
+      const page1 = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+      expect(page1.jobHistory.nextCursor).not.toBeNull();
+
+      // page 2: only the probe row (index 20) is left past the cursor
+      mockDetail({ data: dbRow, error: null }, { data: [rows[20]], error: null });
+
+      const page2 = await service.getCustomerDetail(
+        ownerUser,
+        CUSTOMER_ID,
+        page1.jobHistory.nextCursor as string,
+      );
+
+      expect(page2.jobHistory.data).toEqual([
+        {
+          id: rows[20].id,
+          jobNumber: rows[20].job_number,
+          scheduledStart: rows[20].scheduled_start,
+          status: rows[20].status,
+          serviceType: rows[20].service_type,
+        },
+      ]);
+      expect(page2.jobHistory.hasMore).toBe(false);
+      expect(page2.jobHistory.nextCursor).toBeNull();
+    });
+
+    it('should apply the scheduled_start keyset predicate for a job-history cursor', async () => {
+      const cursorId = '00000000-0000-4000-8000-000000009999';
+      const cursor = Buffer.from(
+        JSON.stringify({
+          id: cursorId,
+          createdAt: '2026-02-01T00:00:00Z',
+          scope: 'customer-history',
+        }),
+      ).toString('base64url');
+      const { orArgs } = mockDetail(
+        { data: dbRow, error: null },
+        { data: [jobRow(1)], error: null },
+      );
+
+      await service.getCustomerDetail(ownerUser, CUSTOMER_ID, cursor);
+
+      expect(orArgs).toContain(
+        `scheduled_start.lt.2026-02-01T00:00:00Z,and(scheduled_start.eq.2026-02-01T00:00:00Z,id.lt.${cursorId})`,
+      );
+    });
+
+    it('should throw 400 for a cursor minted for a different endpoint (scope mismatch)', async () => {
+      // e.g. the jobs-list cursor (keyed on created_at) replayed here — before
+      // scope checks it decoded cleanly and silently filtered scheduled_start
+      const jobsListCursor = encodeCursor(
+        '00000000-0000-4000-8000-000000009999',
+        '2026-06-21T00:00:00Z',
+        'jobs-list',
+      );
+      mockDetail({ data: dbRow, error: null });
+
+      await expect(
+        service.getCustomerDetail(ownerUser, CUSTOMER_ID, jobsListCursor),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should return the first page (no .or() predicate) for an empty-string cursor', async () => {
+      // `?cursor=` must behave like no cursor — not a 400
+      const { orArgs } = mockDetail(
+        { data: dbRow, error: null },
+        { data: [jobRow(1)], error: null },
+      );
+
+      const result = await service.getCustomerDetail(
+        ownerUser,
+        CUSTOMER_ID,
+        '',
+      );
+
+      expect(orArgs).toHaveLength(0);
+      expect(result.jobHistory.data).toHaveLength(1);
+    });
+
+    it('should throw 400 for a malformed job-history cursor', async () => {
+      mockDetail({ data: dbRow, error: null });
+
+      await expect(
+        service.getCustomerDetail(ownerUser, CUSTOMER_ID, 'not-a-valid-cursor'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw 404 before 400 — missing customer + malformed cursor', async () => {
+      // ordering invariant: the customer lookup runs before the cursor decodes,
+      // so a bad cursor on a missing/cross-tenant customer yields 404, not 400
+      mockDetail({ data: null, error: { code: 'PGRST116' } });
+
+      await expect(
+        service.getCustomerDetail(ownerUser, CUSTOMER_ID, 'not-a-valid-cursor'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw 500 when the job-history query fails', async () => {
+      mockDetail(
+        { data: dbRow, error: null },
+        { data: null, error: { code: '08006', message: 'down' } },
+      );
+
+      await expect(
+        service.getCustomerDetail(ownerUser, CUSTOMER_ID),
+      ).rejects.toThrow(InternalServerErrorException);
+    });
+
     it('should throw 404 when the customer does not exist (PGRST116)', async () => {
-      mockSingle({ data: null, error: { code: 'PGRST116' } });
+      mockDetail({ data: null, error: { code: 'PGRST116' } });
 
       await expect(
         service.getCustomerDetail(ownerUser, CUSTOMER_ID),
@@ -447,7 +712,7 @@ describe('CustomersService', () => {
 
     it('should throw 404 when the row belongs to another tenant (empty result)', async () => {
       // tenant_id filter returns no rows → PGRST116, same as not-found
-      mockSingle({ data: null, error: { code: 'PGRST116' } });
+      mockDetail({ data: null, error: { code: 'PGRST116' } });
 
       await expect(
         service.getCustomerDetail(ownerUser, CUSTOMER_ID),
@@ -456,7 +721,7 @@ describe('CustomersService', () => {
 
     it('should throw 404 when single() returns no data and no error', async () => {
       // guards the (error: null, data: null) cell — must not 500, must 404
-      mockSingle({ data: null, error: null });
+      mockDetail({ data: null, error: null });
 
       await expect(
         service.getCustomerDetail(ownerUser, CUSTOMER_ID),
@@ -465,7 +730,7 @@ describe('CustomersService', () => {
 
     it('should throw 404 (defense-in-depth) if a returned row is from another tenant', async () => {
       // simulates a future dropped tenant filter: row present but wrong tenant
-      mockSingle({
+      mockDetail({
         data: { ...dbRow, tenant_id: 'other-tenant' },
         error: null,
       });
@@ -476,7 +741,7 @@ describe('CustomersService', () => {
     });
 
     it('should throw 500 on a non-PGRST116 DB error', async () => {
-      mockSingle({ data: null, error: { code: '08006', message: 'down' } });
+      mockDetail({ data: null, error: { code: '08006', message: 'down' } });
 
       await expect(
         service.getCustomerDetail(ownerUser, CUSTOMER_ID),

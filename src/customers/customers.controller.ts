@@ -18,6 +18,8 @@ import {
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
+import { GetCustomerDetailQueryDto } from './dto/get-customer-detail-query.dto';
+import { CustomerDetailResponseDto } from './dto/customer-detail-response.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '../common/enums/role.enum';
@@ -74,10 +76,15 @@ export class CustomersController {
   @ApiOperation({
     summary: 'Get a customer profile with paginated job history',
   })
-  @ApiResponse({ status: 200, description: 'Customer detail + job history' })
+  @ApiResponse({
+    status: 200,
+    description: 'Customer detail + job history',
+    type: CustomerDetailResponseDto,
+  })
   @ApiResponse({
     status: 400,
-    description: 'Company not set up or malformed id',
+    description:
+      'Company not set up, malformed id, or malformed/foreign cursor',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
@@ -88,7 +95,8 @@ export class CustomersController {
   getCustomerDetail(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: GetCustomerDetailQueryDto,
   ) {
-    return this.customersService.getCustomerDetail(user, id);
+    return this.customersService.getCustomerDetail(user, id, query.cursor);
   }
 }

@@ -10,7 +10,12 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
-import { encodeCursor, decodeCursor } from '../common/utils/cursor.util';
+import {
+  encodeCursor,
+  decodeCursor,
+  CursorScope,
+} from '../common/utils/cursor.util';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
 
@@ -61,10 +66,19 @@ interface CustomerListRow {
 }
 
 export interface JobHistoryItem {
+  id: string;
   jobNumber: string;
   scheduledStart: string;
   status: string;
   serviceType: string;
+}
+
+interface JobHistoryRow {
+  id: string;
+  job_number: string;
+  scheduled_start: string;
+  status: string;
+  service_type: string;
 }
 
 export interface CustomerDetailResponse extends CustomerResponse {
@@ -87,9 +101,11 @@ const CUSTOMER_COLUMNS =
   'id, name, country_code, phone_number, address, city, created_via, created_at, tenant_id';
 
 const PAGE_SIZE = 50;
-// NOTE (AC#5): job-history pagination is page size 20, sort scheduled_start DESC.
-// The live job query + JOB_HISTORY_PAGE_SIZE constant land in Epic 3 (jobs table);
-// until then jobHistory is an empty paginated envelope.
+const JOB_HISTORY_PAGE_SIZE = 20;
+// Cursor scopes — a cursor minted for one endpoint is rejected (400) on the
+// other, so a jobs-list cursor can never silently filter job history.
+const LIST_CUSTOMERS_CURSOR_SCOPE: CursorScope = 'customers-list';
+const JOB_HISTORY_CURSOR_SCOPE: CursorScope = 'customer-history';
 
 @Injectable()
 export class CustomersService {
@@ -272,7 +288,7 @@ export class CustomersService {
     }
 
     if (query.cursor) {
-      const c = decodeCursor(query.cursor); // throws 400 on malformed cursor
+      const c = decodeCursor(query.cursor, LIST_CUSTOMERS_CURSOR_SCOPE); // throws 400 on malformed/foreign cursor
       // Keyset paging under (created_at DESC, id DESC): rows strictly after the cursor.
       qb = qb.or(
         `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
@@ -299,7 +315,9 @@ export class CustomersService {
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && last ? encodeCursor(last.id, last.created_at) : null;
+      hasMore && last
+        ? encodeCursor(last.id, last.created_at, LIST_CUSTOMERS_CURSOR_SCOPE)
+        : null;
 
     const jobStats = await this.getJobStats(
       owner.tenantId,
@@ -381,6 +399,7 @@ export class CustomersService {
   async getCustomerDetail(
     owner: RequestUser,
     customerId: string,
+    cursor?: string,
   ): Promise<CustomerDetailResponse> {
     if (!owner.tenantId) {
       throw new BadRequestException({
@@ -420,11 +439,78 @@ export class CustomersService {
       });
     }
 
+    // NOTE (ordering invariant): the cursor decodes inside getJobHistory, i.e.
+    // AFTER the 404 check above — a malformed cursor on a missing/cross-tenant
+    // customer yields 404, not 400. That is deliberate: the customer lookup is
+    // the primary resource. A test pins this; don't reorder without updating it.
     return {
       ...this.toResponse(data),
-      // jobHistory is an empty envelope until the jobs table exists (Epic 3).
-      jobHistory: new PaginatedResponse<JobHistoryItem>([], null),
+      jobHistory: await this.getJobHistory(
+        admin,
+        owner.tenantId,
+        customerId,
+        cursor,
+      ),
     };
+  }
+
+  /**
+   * Paginated job history for the customer-detail response (AC#1-4). Keyset on
+   * (scheduled_start DESC, id DESC) — the same or-predicate + limit-N+1 pattern as
+   * jobs.service.ts#listJobs. Reuses the generic {id, createdAt} cursor.util
+   * shape with `createdAt` holding the scheduled_start value (Dev Notes choice),
+   * scoped so a cursor minted elsewhere is rejected.
+   */
+  private async getJobHistory(
+    admin: SupabaseClient,
+    tenantId: string,
+    customerId: string,
+    cursor?: string,
+  ): Promise<PaginatedResponse<JobHistoryItem>> {
+    let qb = admin
+      .from('jobs')
+      .select('id, job_number, scheduled_start, status, service_type')
+      .eq('tenant_id', tenantId)
+      .eq('customer_id', customerId);
+
+    if (cursor) {
+      const c = decodeCursor(cursor, JOB_HISTORY_CURSOR_SCOPE); // throws 400 on malformed/foreign cursor
+      qb = qb.or(
+        `scheduled_start.lt.${c.createdAt},and(scheduled_start.eq.${c.createdAt},id.lt.${c.id})`,
+      );
+    }
+
+    const { data, error } = await qb
+      .order('scheduled_start', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(JOB_HISTORY_PAGE_SIZE + 1);
+
+    if (error) {
+      this.logger.error('Failed to fetch customer job history:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to fetch customer job history',
+      });
+    }
+
+    const rows = (data ?? []) as JobHistoryRow[];
+    const hasMore = rows.length > JOB_HISTORY_PAGE_SIZE;
+    const pageRows = hasMore ? rows.slice(0, JOB_HISTORY_PAGE_SIZE) : rows;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && last
+        ? encodeCursor(last.id, last.scheduled_start, JOB_HISTORY_CURSOR_SCOPE)
+        : null;
+
+    const items: JobHistoryItem[] = pageRows.map((row) => ({
+      id: row.id,
+      jobNumber: row.job_number,
+      scheduledStart: row.scheduled_start,
+      status: row.status,
+      serviceType: row.service_type,
+    }));
+
+    return new PaginatedResponse(items, nextCursor);
   }
 
   /**

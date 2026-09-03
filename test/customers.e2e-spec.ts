@@ -368,7 +368,11 @@ describe('Customers (e2e)', () => {
     it('AC5 — should accept a cursor and return the next page', async () => {
       const cursorId = '00000000-0000-4000-8000-000000000001';
       const cursor = Buffer.from(
-        JSON.stringify({ id: cursorId, createdAt: '2026-06-21T00:00:00Z' }),
+        JSON.stringify({
+          id: cursorId,
+          createdAt: '2026-06-21T00:00:00Z',
+          scope: 'customers-list',
+        }),
       ).toString('base64url');
       const { orArgs } = mockListResult({ data: [listRow], error: null });
 
@@ -461,19 +465,43 @@ describe('Customers (e2e)', () => {
       tenant_id: TENANT_ID,
     };
 
-    // detail terminal is .single() after two .eq() calls (id, tenant_id)
-    function mockDetail(result: { data: unknown; error: unknown }) {
-      mockCreateAdmin.mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
+    // Customer fetch terminal is .single() after two .eq() calls (id, tenant_id).
+    // Job-history fetch terminal is .limit() — routed by table name since
+    // getCustomerDetail now queries both `customers` and `jobs`.
+    function mockDetail(
+      customerResult: { data: unknown; error: unknown },
+      jobHistoryResult: { data: unknown; error: unknown } = {
+        data: [],
+        error: null,
+      },
+    ) {
+      const customerBuilder = {
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
             eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                single: jest.fn().mockResolvedValue(result),
-              }),
+              single: jest.fn().mockResolvedValue(customerResult),
             }),
           }),
         }),
+      };
+
+      const orArgs: string[] = [];
+      const jobsBuilder: Record<string, jest.Mock> = {};
+      jobsBuilder.select = jest.fn(() => jobsBuilder);
+      jobsBuilder.eq = jest.fn(() => jobsBuilder);
+      jobsBuilder.or = jest.fn((arg: string) => {
+        orArgs.push(arg);
+        return jobsBuilder;
       });
+      jobsBuilder.order = jest.fn(() => jobsBuilder);
+      jobsBuilder.limit = jest.fn().mockResolvedValue(jobHistoryResult);
+
+      mockCreateAdmin.mockReturnValue({
+        from: jest.fn((table: string) =>
+          table === 'jobs' ? jobsBuilder : customerBuilder,
+        ),
+      });
+      return { jobsBuilder, orArgs };
     }
 
     it('AC1 — should return 200 with the full profile + empty jobHistory', async () => {
@@ -498,6 +526,129 @@ describe('Customers (e2e)', () => {
         nextCursor: null,
         hasMore: false,
       });
+    });
+
+    it('AC1/AC2 — should return real, paginated job history sorted scheduled_start DESC', async () => {
+      const jobRow = {
+        id: '00000000-0000-4000-8000-000000002001',
+        job_number: 'JOB-1',
+        scheduled_start: '2026-06-01T00:00:00Z',
+        status: 'completed',
+        service_type: 'ac_service',
+      };
+      mockDetail(
+        { data: detailRow, error: null },
+        { data: [jobRow], error: null },
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/customers/${CUSTOMER_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.jobHistory).toEqual({
+        data: [
+          {
+            id: jobRow.id,
+            jobNumber: 'JOB-1',
+            scheduledStart: '2026-06-01T00:00:00Z',
+            status: 'completed',
+            serviceType: 'ac_service',
+          },
+        ],
+        nextCursor: null,
+        hasMore: false,
+      });
+    });
+
+    it('AC3 — should return 400 for a malformed job-history cursor', async () => {
+      mockDetail({ data: detailRow, error: null });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/customers/${CUSTOMER_ID}?cursor=not-valid`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('AC3 — should return the second page when a valid nextCursor is passed back', async () => {
+      // page 1: 21 rows → 20 returned + a 21st probe row
+      const rows = Array.from({ length: 21 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-0000000040${String(i).padStart(2, '0')}`,
+        job_number: `JOB-${i}`,
+        scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
+        status: 'completed',
+        service_type: 'ac_service',
+      }));
+      mockDetail({ data: detailRow, error: null }, { data: rows, error: null });
+
+      const first = await app.inject({
+        method: 'GET',
+        url: `/api/v1/customers/${CUSTOMER_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(first.statusCode).toBe(200);
+      const page1 = JSON.parse(first.body);
+      expect(page1.jobHistory.data).toHaveLength(20);
+      expect(page1.jobHistory.hasMore).toBe(true);
+      expect(page1.jobHistory.nextCursor).not.toBeNull();
+
+      // page 2: only the probe row is left past the cursor
+      mockDetail(
+        { data: detailRow, error: null },
+        { data: [rows[20]], error: null },
+      );
+
+      const second = await app.inject({
+        method: 'GET',
+        url: `/api/v1/customers/${CUSTOMER_ID}?cursor=${page1.jobHistory.nextCursor}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(second.statusCode).toBe(200);
+      const page2 = JSON.parse(second.body);
+      expect(page2.jobHistory.data).toEqual([
+        {
+          id: rows[20].id,
+          jobNumber: rows[20].job_number,
+          scheduledStart: rows[20].scheduled_start,
+          status: rows[20].status,
+          serviceType: rows[20].service_type,
+        },
+      ]);
+      expect(page2.jobHistory.hasMore).toBe(false);
+      expect(page2.jobHistory.nextCursor).toBeNull();
+    });
+
+    it('AC3 — an empty cursor (?cursor=) behaves like no cursor (first page, 200)', async () => {
+      const jobRow = {
+        id: '00000000-0000-4000-8000-000000005001',
+        job_number: 'JOB-9',
+        scheduled_start: '2026-06-09T00:00:00Z',
+        status: 'completed',
+        service_type: 'ac_service',
+      };
+      const { orArgs } = mockDetail(
+        { data: detailRow, error: null },
+        { data: [jobRow], error: null },
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/customers/${CUSTOMER_ID}?cursor=`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).jobHistory.data).toHaveLength(1);
+      expect(orArgs).toHaveLength(0);
     });
 
     it('AC3 — should return 404 when the customer does not exist', async () => {

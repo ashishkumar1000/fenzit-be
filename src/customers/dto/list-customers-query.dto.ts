@@ -8,9 +8,7 @@ import {
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-
-const trim = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim() : value;
+import { trim, trimToUndefined } from '../../common/utils/trim.transformer';
 
 export class ListCustomersQueryDto {
   @ApiPropertyOptional({
@@ -28,7 +26,7 @@ export class ListCustomersQueryDto {
     description: 'Opaque pagination cursor from a previous response',
   })
   @IsOptional()
-  @Transform(trim)
+  @Transform(trimToUndefined)
   @IsString()
   @MaxLength(512)
   cursor?: string;

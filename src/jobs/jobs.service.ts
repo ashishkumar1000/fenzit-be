@@ -13,7 +13,11 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
-import { encodeCursor, decodeCursor } from '../common/utils/cursor.util';
+import {
+  encodeCursor,
+  decodeCursor,
+  CursorScope,
+} from '../common/utils/cursor.util';
 import { getIstDayRange } from '../common/utils/ist-day-range.util';
 import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
@@ -162,6 +166,10 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 const JOB_DETAIL_COLUMNS =
   'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
 const PAGE_SIZE = 50;
+// Cursor scope — a cursor minted for another paginated endpoint is rejected
+// (400) here. This endpoint keys on created_at; customer-history keys on
+// scheduled_start, so a cross-replay would silently filter on the wrong column.
+const JOBS_LIST_CURSOR_SCOPE: CursorScope = 'jobs-list';
 
 @Injectable()
 export class JobsService {
@@ -525,9 +533,9 @@ export class JobsService {
     }
 
     // AC #7 / #8 — keyset cursor under (created_at DESC, id DESC). decodeCursor
-    // throws 400 on a malformed cursor.
+    // throws 400 on a malformed cursor and on one minted for a different endpoint.
     if (query.cursor) {
-      const c = decodeCursor(query.cursor);
+      const c = decodeCursor(query.cursor, JOBS_LIST_CURSOR_SCOPE);
       qb = qb.or(
         `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
       );
@@ -553,7 +561,9 @@ export class JobsService {
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && last ? encodeCursor(last.id, last.created_at) : null;
+      hasMore && last
+        ? encodeCursor(last.id, last.created_at, JOBS_LIST_CURSOR_SCOPE)
+        : null;
 
     return new PaginatedResponse(
       pageRows.map((row) => this.toResponse(row)),

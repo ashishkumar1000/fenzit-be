@@ -471,6 +471,7 @@ describe('Jobs (e2e)', () => {
         JSON.stringify({
           id: CUSTOMER_ID,
           createdAt: '2026-06-21T00:00:00.000Z',
+          scope: 'jobs-list',
         }),
       ).toString('base64url');
 
