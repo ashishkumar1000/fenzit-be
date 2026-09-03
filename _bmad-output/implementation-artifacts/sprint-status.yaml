@@ -53,10 +53,11 @@ development_status:
   epic-1-retrospective: done
 
   # Epic 2: Customer Management
-  epic-2: done
+  epic-2: in-progress  # reopened 2026-09-01 — 2-4 added: customer-detail jobHistory placeholder was never wired after Epic 3
   2-1-create-customer: done
   2-2-list-search-customers: done
   2-3-customer-detail-with-job-history: done
+  2-4-customer-detail-job-history: ready-for-dev
   epic-2-retrospective: done
 
   # Epic 3: Job Lifecycle
