@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19
-last_updated: 2026-09-03  # Epic 3 & 4 retrospectives closed without a retro — skipped by user choice
+last_updated: 2026-09-03  # epic-3 reopened for 3-7 (jobs timeline scopes)
 project: fenzit-be
 project_key: NOKEY
 tracking_system: file-system
@@ -61,13 +61,14 @@ development_status:
   epic-2-retrospective: done
 
   # Epic 3: Job Lifecycle
-  epic-3: done  # all stories done; closed 2026-09-03
+  epic-3: in-progress  # reopened 2026-09-03 for 3-7 (jobs timeline scopes — dashboard/jobs-tab mismatch fix)
   3-1-create-job: done
   3-2-list-jobs: done
   3-3-job-detail: done
   3-4-edit-reassign-cancel-job: done
   3-5-technician-workflow-step-advancement: done
   3-6-job-attachment-upload-via-cloudflare-r2: done
+  3-7-jobs-timeline-scopes: ready-for-dev
   epic-3-retrospective: done  # marked done 2026-09-03 — no retro held, skipped by user choice
 
   # Epic 4: Offline-First Mobile Sync
