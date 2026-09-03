@@ -5,13 +5,17 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Logger, ValidationPipe } from '@nestjs/common';
+import { VALIDATION_PIPE_OPTIONS } from './common/validation-pipe-options';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ logger: false, ignoreTrailingSlash: true }),
+    new FastifyAdapter({
+      logger: false,
+      routerOptions: { ignoreTrailingSlash: true },
+    }),
   );
 
   // AR-22: Fastify's ignoreTrailingSlash normalizes paths in-place without redirect
@@ -21,14 +25,7 @@ async function bootstrap(): Promise<void> {
     exclude: ['health', 'internal/webhooks/storage'],
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: false,
-      transform: true,
-      errorHttpStatusCode: 422,
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 
   if (process.env['NODE_ENV'] !== 'production') {
     const config = new DocumentBuilder()

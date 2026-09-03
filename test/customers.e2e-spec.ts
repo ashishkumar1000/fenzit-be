@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation-pipe-options';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   FastifyAdapter,
@@ -31,14 +32,7 @@ describe('Customers (e2e)', () => {
     );
 
     app.setGlobalPrefix('api/v1', { exclude: ['health'] });
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: false,
-        transform: true,
-        errorHttpStatusCode: 422,
-      }),
-    );
+    app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 
     await app.init();
     await app.getHttpAdapter().getInstance().ready();

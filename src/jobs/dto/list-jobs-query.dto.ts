@@ -19,8 +19,9 @@ import { JobStatus } from '../enums/job-status.enum';
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-// Fastify/qs delivers a repeated query key as a string (one occurrence) or an
-// array (2+). Normalize to `string[] | undefined` so the service always sees an
+// Fastify's default parser delivers a repeated query key as a string (one
+// occurrence) or an array (2+). Normalize to `string[] | undefined` so the
+// service always sees an
 // array. The @IsEnum(..., { each: true }) then rejects any invalid member → 422.
 const toArray = ({ value }: { value: unknown }) =>
   value === undefined ? undefined : Array.isArray(value) ? value : [value];
