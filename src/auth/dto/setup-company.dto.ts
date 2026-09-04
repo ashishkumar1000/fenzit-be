@@ -11,6 +11,19 @@ import {
 import { Transform } from 'class-transformer';
 
 export class SetupCompanyDto {
+  @ApiPropertyOptional({
+    example: 'Ravi Kumar',
+    description: "The owner's display name — saved on the caller's users row",
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @IsNotEmpty({ message: 'name must not be empty or whitespace' })
+  @MaxLength(100, { message: 'name must be at most 100 characters' })
+  name?: string;
+
   @ApiProperty({ example: 'Jobzo Services Pvt Ltd' })
   @IsString()
   @IsNotEmpty({ message: 'companyName must not be empty or whitespace' })

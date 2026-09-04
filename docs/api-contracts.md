@@ -93,7 +93,12 @@ Create or update the tenant company profile. **Idempotent upsert** — first cal
 returns `201`, subsequent calls return `200`. Returns a fresh JWT containing
 the now-set `tenantId` claim.
 
-**Body:** `{ company_name, gstin?, address?, state_code (^[A-Z]{2}$), service_categories: string[], upi_vpa? }`
+**Body:** `{ name?, company_name, gstin?, address?, state_code (^[A-Z]{2}$), service_categories: string[], upi_vpa? }`
+
+`name` is the owner's display name — when sent, it is saved on the caller's
+users row (`users.name`) and returned by `GET /users/me`. Optional on the wire
+for backward compatibility; the app always sends it from the signup profile
+screen.
 
 **Responses:**
 - `201` — Company created; `{ token, tenant }`

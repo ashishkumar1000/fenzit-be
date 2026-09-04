@@ -339,6 +339,22 @@ export class AuthService {
       updatedAt: row['updated_at'] as string,
     };
 
+    // Persist the owner's name (collected on the signup profile screen) onto
+    // their users row. Optional: clients that don't send it leave
+    // `users.name` null. Non-fatal on failure — the tenant was already
+    // created, and `/users/me` consumers render a null name gracefully.
+    if (dto.name) {
+      const { error: nameError } = await admin
+        .from('users')
+        .update({ name: dto.name })
+        .eq('id', user.userId);
+      if (nameError) {
+        this.logger.warn('Failed to save owner name during company setup:', {
+          error: nameError,
+        });
+      }
+    }
+
     // Auto-seed tenant_skills from serviceCategories on first company creation
     if ((row['inserted'] as boolean) && dto.serviceCategories?.length) {
       const admin2 = this.supabaseClientFactory.createAdmin();

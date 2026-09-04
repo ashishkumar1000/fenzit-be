@@ -283,6 +283,73 @@ describe('AuthService', () => {
       });
     });
 
+    it('should save the owner name on their users row when provided', async () => {
+      const eq = jest.fn().mockResolvedValue({ error: null });
+      const update = jest.fn().mockReturnValue({ eq });
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn().mockReturnValue({ update }),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
+
+      const result = await service.setupCompany(ownerUser, {
+        ...dto,
+        name: 'Ravi Kumar',
+        serviceCategories: [],
+      });
+
+      expect(result.created).toBe(true);
+      expect(mockAdmin.from).toHaveBeenCalledWith('users');
+      expect(update).toHaveBeenCalledWith({ name: 'Ravi Kumar' });
+      expect(eq).toHaveBeenCalledWith('id', ownerUser.userId);
+    });
+
+    it('should not touch the users row when no name is sent (backward compat)', async () => {
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn().mockReturnValue({
+          insert: jest.fn().mockResolvedValue({ error: null }),
+        }),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
+
+      await service.setupCompany(ownerUser, dto);
+
+      expect(mockAdmin.from).not.toHaveBeenCalledWith('users');
+    });
+
+    it('should still create the tenant when saving the name fails (non-fatal)', async () => {
+      const eq = jest.fn().mockResolvedValue({ error: { message: 'db down' } });
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn().mockReturnValue({
+          update: jest.fn().mockReturnValue({ eq }),
+        }),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
+
+      const result = await service.setupCompany(ownerUser, {
+        ...dto,
+        name: 'Ravi Kumar',
+        serviceCategories: [],
+      });
+
+      expect(result.created).toBe(true);
+      expect(result.token).toBe('fresh-owner-jwt');
+    });
+
     it('should return tenant, created=false, and fresh JWT on idempotent re-call (200 path)', async () => {
       const mockAdmin = {
         rpc: jest.fn().mockResolvedValue({
