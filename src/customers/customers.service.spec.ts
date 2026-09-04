@@ -554,7 +554,9 @@ describe('CustomersService', () => {
       expect(jobsBuilder.order).toHaveBeenCalledWith('scheduled_start', {
         ascending: false,
       });
-      expect(jobsBuilder.order).toHaveBeenCalledWith('id', { ascending: false });
+      expect(jobsBuilder.order).toHaveBeenCalledWith('id', {
+        ascending: false,
+      });
 
       // nextCursor must encode the 20th RETURNED row (index 19), not the 21st probe row
       const decoded = decodeCursor(result.jobHistory.nextCursor as string);
@@ -599,7 +601,10 @@ describe('CustomersService', () => {
       expect(page1.jobHistory.nextCursor).not.toBeNull();
 
       // page 2: only the probe row (index 20) is left past the cursor
-      mockDetail({ data: dbRow, error: null }, { data: [rows[20]], error: null });
+      mockDetail(
+        { data: dbRow, error: null },
+        { data: [rows[20]], error: null },
+      );
 
       const page2 = await service.getCustomerDetail(
         ownerUser,
