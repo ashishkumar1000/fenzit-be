@@ -17,6 +17,7 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { ServiceType } from './enums/service-type.enum';
 import { JobStatus } from './enums/job-status.enum';
+import { JobListScope } from './enums/job-list-scope.enum';
 import { JobPriority } from './enums/job-priority.enum';
 
 describe('JobsService', () => {
@@ -64,6 +65,7 @@ describe('JobsService', () => {
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',
+    completed_at: null,
     current_step: null,
     priority: 'normal',
     require_completion_photo: false,
@@ -211,6 +213,26 @@ describe('JobsService', () => {
     expect(callArg.p_year).toBeGreaterThanOrEqual(2026);
   });
 
+  it('carries completed_at from the RPC row through toResponse (create route)', async () => {
+    mockAdmin({
+      rpc: {
+        data: [
+          {
+            ...jobRow,
+            status: JobStatus.COMPLETED,
+            completed_at: '2026-06-22T10:00:00Z',
+          },
+        ],
+        error: null,
+      },
+    });
+
+    const result = await service.createJob(owner, dtoExisting);
+
+    expect(result.status).toBe('completed');
+    expect(result.completedAt).toBe('2026-06-22T10:00:00Z');
+  });
+
   it('throws 404 when the technician is not in the tenant', async () => {
     mockAdmin({ technician: notFound });
 
@@ -313,6 +335,20 @@ describe('JobsService', () => {
     );
   });
 
+  it('toResponse trap: a row missing completed_at maps to undefined, not null', () => {
+    // Pairs with the select-list assertions above: any explicit select list
+    // that omits completed_at silently drops the key through the
+    // `as JobRow[]` cast — undefined (not null) is the tell.
+    const missingColumnRow = { ...jobRow } as Record<string, unknown>;
+    delete missingColumnRow.completed_at;
+
+    const response = service.toResponse(
+      missingColumnRow as unknown as Parameters<JobsService['toResponse']>[0],
+    );
+
+    expect(response.completedAt).toBeUndefined();
+  });
+
   describe('listJobs', () => {
     const technician: RequestUser = {
       userId: 'tech-self',
@@ -346,6 +382,12 @@ describe('JobsService', () => {
 
       expect(from).toHaveBeenCalledWith('jobs');
       expect(builder.eq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
+      // Story 3.7 — the explicit select list must name completed_at; omitting
+      // it silently drops the key through the `as JobRow[]` cast (see the
+      // toResponse trap test below).
+      expect(builder.select).toHaveBeenCalledWith(
+        expect.stringContaining('completed_at'),
+      );
       expect(builder.gte).toHaveBeenCalledWith(
         'scheduled_start',
         expect.any(String),
@@ -372,6 +414,7 @@ describe('JobsService', () => {
         scheduledStart: '2026-06-22T09:30:00Z',
         scheduledEnd: null,
         status: 'scheduled',
+        completedAt: null,
         currentStep: null,
         priority: 'normal',
         requireCompletionPhoto: false,
@@ -517,6 +560,192 @@ describe('JobsService', () => {
       await expect(service.listJobs(owner, {})).rejects.toThrow(
         InternalServerErrorException,
       );
+    });
+
+    describe('timeline scopes (Story 3.7)', () => {
+      // Cursor minted the way the service mints them for the scheduled_start-
+      // keyed scopes: the payload field stays `createdAt` (generic keyed
+      // timestamp); the scope tag carries the column semantics.
+      function mintCursor(
+        scope: string,
+        fields: { id: string; createdAt: string },
+      ): string {
+        return Buffer.from(JSON.stringify({ ...fields, scope })).toString(
+          'base64url',
+        );
+      }
+
+      it('upcoming: start-of-tomorrow window, forced scheduled status, ASC sort', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+
+        await service.listJobs(owner, { scope: JobListScope.UPCOMING });
+
+        expect(builder.eq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
+        // Start of tomorrow IST = today's range.end — no second boundary.
+        expect(builder.gte).toHaveBeenCalledWith(
+          'scheduled_start',
+          expect.any(String),
+        );
+        expect(builder.lt).not.toHaveBeenCalled();
+        expect(builder.eq).toHaveBeenCalledWith('status', 'scheduled');
+        expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+          ascending: true,
+        });
+        expect(builder.order).toHaveBeenCalledWith('id', { ascending: true });
+      });
+
+      it('overdue: pre-today window, scheduled+in_progress via .in(), ASC sort', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+
+        await service.listJobs(owner, { scope: JobListScope.OVERDUE });
+
+        expect(builder.lt).toHaveBeenCalledWith(
+          'scheduled_start',
+          expect.any(String),
+        );
+        expect(builder.gte).not.toHaveBeenCalled();
+        // .in — never .not.in (a chained .not.in throws at runtime on postgrest-js).
+        expect(builder.in).toHaveBeenCalledWith('status', [
+          'scheduled',
+          'in_progress',
+        ]);
+        expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+          ascending: true,
+        });
+        expect(builder.order).toHaveBeenCalledWith('id', { ascending: true });
+      });
+
+      it('history: completed+cancelled only, most recent planned date first', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+
+        await service.listJobs(owner, { scope: JobListScope.HISTORY });
+
+        expect(builder.in).toHaveBeenCalledWith('status', [
+          'completed',
+          'cancelled',
+        ]);
+        expect(builder.gte).not.toHaveBeenCalled();
+        expect(builder.lt).not.toHaveBeenCalled();
+        expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+          ascending: false,
+        });
+        expect(builder.order).toHaveBeenCalledWith('id', { ascending: false });
+      });
+
+      it('caller status filter intersects with the scope statuses (no special-casing)', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+
+        await service.listJobs(owner, {
+          scope: JobListScope.HISTORY,
+          status: [JobStatus.COMPLETED],
+        });
+
+        // Both the scope's forced set and the caller's filter are applied —
+        // the DB intersect gives a legitimately (possibly) empty page.
+        expect(builder.in).toHaveBeenCalledWith('status', [
+          'completed',
+          'cancelled',
+        ]);
+        expect(builder.in).toHaveBeenCalledWith('status', ['completed']);
+      });
+
+      it('applies the technician self-scope in non-today scopes too', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+        const tech: RequestUser = {
+          userId: 'tech-self',
+          tenantId: 'tenant-uuid',
+          role: Role.TECHNICIAN,
+          rawJwt: 'jwt',
+        };
+
+        await service.listJobs(tech, { scope: JobListScope.UPCOMING });
+
+        expect(builder.eq).toHaveBeenCalledWith('technician_id', 'tech-self');
+      });
+
+      it('paginates upcoming with an ASC keyset cursor on (scheduled_start, id)', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+        const cursor = mintCursor('jobs-upcoming', {
+          id: '22222222-2222-4222-8222-222222222222',
+          createdAt: '2026-06-23T09:30:00.000Z',
+        });
+
+        await service.listJobs(owner, { scope: JobListScope.UPCOMING, cursor });
+
+        expect(builder.or).toHaveBeenCalledWith(
+          'scheduled_start.gt.2026-06-23T09:30:00.000Z,' +
+            'and(scheduled_start.eq.2026-06-23T09:30:00.000Z,' +
+            'id.gt.22222222-2222-4222-8222-222222222222)',
+        );
+      });
+
+      it('paginates history with a DESC keyset cursor on (scheduled_start, id)', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+        const cursor = mintCursor('jobs-history', {
+          id: '33333333-3333-4333-8333-333333333333',
+          createdAt: '2026-06-23T09:30:00.000Z',
+        });
+
+        await service.listJobs(owner, { scope: JobListScope.HISTORY, cursor });
+
+        expect(builder.or).toHaveBeenCalledWith(
+          'scheduled_start.lt.2026-06-23T09:30:00.000Z,' +
+            'and(scheduled_start.eq.2026-06-23T09:30:00.000Z,' +
+            'id.lt.33333333-3333-4333-8333-333333333333)',
+        );
+      });
+
+      it('mints the next cursor from scheduled_start under the matching scope', async () => {
+        const rows = Array.from({ length: 51 }, (_, i) => ({
+          ...jobRow,
+          id: `job-${i}`,
+          scheduled_start: `2026-06-2${Math.floor(i / 10)}T0${i % 10}:00:00Z`,
+        }));
+        mockListAdmin({ data: rows, error: null });
+
+        const result = await service.listJobs(owner, {
+          scope: JobListScope.HISTORY,
+        });
+
+        expect(result.hasMore).toBe(true);
+        const decoded = JSON.parse(
+          Buffer.from(result.nextCursor as string, 'base64url').toString(
+            'utf-8',
+          ),
+        ) as { id: string; createdAt: string; scope: string };
+        expect(decoded.id).toBe('job-49');
+        expect(decoded.createdAt).toBe(rows[49].scheduled_start);
+        expect(decoded.scope).toBe('jobs-history');
+      });
+
+      it.each([
+        [
+          'jobs-list cursor against upcoming',
+          JobListScope.UPCOMING,
+          'jobs-list',
+        ],
+        [
+          'jobs-upcoming cursor against today',
+          JobListScope.TODAY,
+          'jobs-upcoming',
+        ],
+        [
+          'jobs-history cursor against overdue',
+          JobListScope.OVERDUE,
+          'jobs-history',
+        ],
+      ])('rejects a %s with 400', async (_label, scope, cursorScope) => {
+        mockListAdmin({ data: [], error: null });
+        const cursor = mintCursor(cursorScope, {
+          id: '44444444-4444-4444-8444-444444444444',
+          createdAt: '2026-06-23T09:30:00.000Z',
+        });
+
+        await expectStatus(
+          service.listJobs(owner, { scope, cursor }),
+          HttpStatus.BAD_REQUEST,
+        );
+      });
     });
   });
 
@@ -673,6 +902,29 @@ describe('JobsService', () => {
       ]);
       // AC#18 — attachments populated; empty when none confirmed.
       expect(result.attachments).toEqual([]);
+      // Story 3.7 — completedAt rides on the detail response too (null for an
+      // uncompleted job; the select-list trap is covered separately).
+      expect(result.completedAt).toBeNull();
+    });
+
+    it('selects completed_at and maps a completed job onto the detail response', async () => {
+      const { chains } = mockDetailAdmin({
+        job: {
+          data: {
+            ...jobRow,
+            status: 'completed',
+            completed_at: '2026-06-23T05:00:00Z',
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      expect(chains.jobs.select).toHaveBeenCalledWith(
+        expect.stringContaining('completed_at'),
+      );
+      expect(result.completedAt).toBe('2026-06-23T05:00:00Z');
     });
 
     it('orders the activity log oldest-first (created_at ASC)', async () => {

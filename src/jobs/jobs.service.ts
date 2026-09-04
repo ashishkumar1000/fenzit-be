@@ -24,6 +24,7 @@ import { StorageService } from '../storage/storage.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
+import { JobListScope } from './enums/job-list-scope.enum';
 import { ServiceType } from './enums/service-type.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobPriority } from './enums/job-priority.enum';
@@ -43,6 +44,10 @@ export interface JobResponse {
   scheduledStart: string;
   scheduledEnd: string | null;
   status: JobStatus;
+  // When the job actually completed — null until the advance_workflow_step RPC
+  // stamps it (or for rows created before the column existed). Cancelled jobs
+  // never get one.
+  completedAt: string | null;
   currentStep: string | null;
   priority: JobPriority;
   requireCompletionPhoto: boolean;
@@ -112,6 +117,7 @@ export interface JobRow {
   scheduled_start: string;
   scheduled_end: string | null;
   status: JobStatus;
+  completed_at: string | null;
   current_step: string | null;
   priority: JobPriority;
   require_completion_photo: boolean;
@@ -164,12 +170,19 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // CUSTOMER_COLUMNS). listJobs keeps an inline literal because its `as JobRow[]`
 // cast needs the literal column type.
 const JOB_DETAIL_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
 const PAGE_SIZE = 50;
-// Cursor scope — a cursor minted for another paginated endpoint is rejected
-// (400) here. This endpoint keys on created_at; customer-history keys on
-// scheduled_start, so a cross-replay would silently filter on the wrong column.
-const JOBS_LIST_CURSOR_SCOPE: CursorScope = 'jobs-list';
+// Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
+// rejected (400) when replayed against another — jobs-list keys on created_at,
+// the timeline scopes key on scheduled_start, and their sort directions differ.
+// The today scope's 'jobs-list' tag keeps existing today-cursors valid; a
+// cursor minted for another paginated endpoint is still rejected (400) here.
+const JOBS_CURSOR_SCOPE_BY_SCOPE: Record<JobListScope, CursorScope> = {
+  [JobListScope.TODAY]: 'jobs-list',
+  [JobListScope.UPCOMING]: 'jobs-upcoming',
+  [JobListScope.OVERDUE]: 'jobs-overdue',
+  [JobListScope.HISTORY]: 'jobs-history',
+};
 
 @Injectable()
 export class JobsService {
@@ -500,9 +513,17 @@ export class JobsService {
       });
     }
 
-    // AC #1 / #3 — the IST day window. For an explicit date, anchor on noon IST
-    // (06:30Z) so the instant is unambiguously inside that calendar day; default
-    // to the current IST day. Reuses getIstDayRange — no new util.
+    // Story 3.7 — timeline scopes. `today` keeps the Story 3.2 behaviour
+    // unchanged (IST day window, created_at sort, jobs-list cursor, date
+    // re-anchor); the other scopes model the full job timeline. The IST day
+    // boundary is a DAY boundary, not a time-of-day one, so the three
+    // day-buckets are mutually exclusive by construction.
+    const scope = query.scope ?? JobListScope.TODAY;
+
+    // AC #1 / #3 — the IST day window. For an explicit date (today scope only —
+    // the DTO rejects date on other scopes), anchor on noon IST (06:30Z) so the
+    // instant is unambiguously inside that calendar day; default to the current
+    // IST day. Reuses getIstDayRange — no new IST math anywhere.
     const range = query.date
       ? getIstDayRange(new Date(`${query.date}T06:30:00.000Z`))
       : getIstDayRange();
@@ -513,39 +534,72 @@ export class JobsService {
       .from('jobs')
       // prettier-ignore — single string literal so postgrest-js infers JobRow columns
       .select(
-        'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at',
+        'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at',
       )
-      .eq('tenant_id', user.tenantId)
-      .gte('scheduled_start', range.start.toISOString())
-      .lt('scheduled_start', range.end.toISOString());
+      .eq('tenant_id', user.tenantId);
 
-    // AC #2 — repeatable status filter.
+    // Scope predicate. upcoming/overdue/history force their own status sets;
+    // a caller status filter below is intersected with them (empty results are
+    // legitimate — the FE never sends such combinations).
+    if (scope === JobListScope.TODAY) {
+      qb = qb
+        .gte('scheduled_start', range.start.toISOString())
+        .lt('scheduled_start', range.end.toISOString());
+    } else if (scope === JobListScope.UPCOMING) {
+      // Start of tomorrow IST is exactly today's range.end (start + 24h) —
+      // zero new IST arithmetic, and today-scheduled jobs can never leak in.
+      qb = qb
+        .gte('scheduled_start', range.end.toISOString())
+        .eq('status', JobStatus.SCHEDULED);
+    } else if (scope === JobListScope.OVERDUE) {
+      // .in, not .not.in — postgrest-js's not() takes (column, operator, value);
+      // chaining .not.in(...) is a property access on a function object and
+      // throws at runtime. Equivalent given the status CHECK constraint.
+      qb = qb
+        .lt('scheduled_start', range.start.toISOString())
+        .in('status', [JobStatus.SCHEDULED, JobStatus.IN_PROGRESS]);
+    } else {
+      qb = qb.in('status', [JobStatus.COMPLETED, JobStatus.CANCELLED]);
+    }
+
+    // AC #2 — repeatable status filter (all scopes; intersects with the scope's
+    // forced statuses above, no special-casing).
     if (query.status?.length) {
       qb = qb.in('status', query.status);
     }
 
     // AC #4 / #5 — technician scoping. Technicians see ONLY their own jobs; the
     // technicianId query param is silently ignored for them. Owners may filter.
+    // Common to every scope.
     if (user.role === Role.TECHNICIAN) {
       qb = qb.eq('technician_id', user.userId);
     } else if (query.technicianId) {
       qb = qb.eq('technician_id', query.technicianId);
     }
 
-    // AC #7 / #8 — keyset cursor under (created_at DESC, id DESC). decodeCursor
-    // throws 400 on a malformed cursor and on one minted for a different endpoint.
+    // Keyset pagination. Today keys on created_at DESC; the timeline scopes key
+    // on scheduled_start (upcoming/overdue ASC — soonest/oldest problem first;
+    // history DESC — most recent planned date first). decodeCursor throws 400
+    // on a malformed cursor and on one minted for a different scope.
+    const ascending =
+      scope === JobListScope.UPCOMING || scope === JobListScope.OVERDUE;
+    const sortColumn =
+      scope === JobListScope.TODAY ? 'created_at' : 'scheduled_start';
+    const cursorScope = JOBS_CURSOR_SCOPE_BY_SCOPE[scope];
+
     if (query.cursor) {
-      const c = decodeCursor(query.cursor, JOBS_LIST_CURSOR_SCOPE);
+      const c = decodeCursor(query.cursor, cursorScope);
+      const op = ascending ? 'gt' : 'lt';
       qb = qb.or(
-        `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
+        `${sortColumn}.${op}.${c.createdAt},and(${sortColumn}.eq.${c.createdAt},id.${op}.${c.id})`,
       );
     }
 
     const pageSize = query.limit ?? PAGE_SIZE;
 
     const { data, error } = await qb
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: false })
+      .order(sortColumn, { ascending })
+      .order('id', { ascending })
       .limit(pageSize + 1);
 
     if (error) {
@@ -562,7 +616,7 @@ export class JobsService {
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last
-        ? encodeCursor(last.id, last.created_at, JOBS_LIST_CURSOR_SCOPE)
+        ? encodeCursor(last.id, last[sortColumn], cursorScope)
         : null;
 
     return new PaginatedResponse(
@@ -792,6 +846,7 @@ export class JobsService {
       scheduledStart: row.scheduled_start,
       scheduledEnd: row.scheduled_end,
       status: row.status,
+      completedAt: row.completed_at,
       currentStep: row.current_step,
       priority: row.priority,
       requireCompletionPhoto: row.require_completion_photo,

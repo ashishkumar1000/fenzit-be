@@ -10,11 +10,13 @@ import {
   MaxLength,
   Min,
   Validate,
+  ValidationArguments,
   ValidatorConstraint,
   ValidatorConstraintInterface,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { JobStatus } from '../enums/job-status.enum';
+import { JobListScope } from '../enums/job-list-scope.enum';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -55,7 +57,35 @@ class IsCalendarDateConstraint implements ValidatorConstraintInterface {
   }
 }
 
+// Cross-field rule: the timeline scopes other than `today` key on the full
+// timeline (tomorrow-onward / pre-today / all-time), so re-anchoring them to a
+// calendar day is meaningless — reject scope+date combinations with a 422 via
+// the global ValidationPipe. scope='today' + date stays legal: today IS the
+// default scope and `date` re-anchors its IST day window.
+@ValidatorConstraint({ name: 'scopeDateExclusivity', async: false })
+class ScopeDateExclusivityConstraint implements ValidatorConstraintInterface {
+  validate(scope: unknown, args: ValidationArguments): boolean {
+    if (scope === undefined || scope === null) return true;
+    const date = (args.object as ListJobsQueryDto).date;
+    return scope === JobListScope.TODAY || date === undefined;
+  }
+
+  defaultMessage(): string {
+    return 'date cannot be combined with scope (only scope=today accepts a date)';
+  }
+}
+
 export class ListJobsQueryDto {
+  @ApiPropertyOptional({
+    enum: JobListScope,
+    description:
+      'Timeline scope: today (default, IST day window), upcoming (tomorrow onward, scheduled), overdue (pre-today, scheduled/in_progress), history (completed/cancelled). Mutually exclusive with date except today.',
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsEnum(JobListScope)
+  @Validate(ScopeDateExclusivityConstraint)
+  scope?: JobListScope;
   @ApiPropertyOptional({
     example: '2026-06-20',
     description:

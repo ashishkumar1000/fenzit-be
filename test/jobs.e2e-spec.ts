@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import { StorageService } from '../src/storage/storage.service';
+import { getIstDayRange } from '../src/common/utils/ist-day-range.util';
 
 describe('Jobs (e2e)', () => {
   let app: NestFastifyApplication;
@@ -19,6 +20,9 @@ describe('Jobs (e2e)', () => {
   const OWNER_ID = 'owner-uuid-jobs-e2e';
   const CUSTOMER_ID = '11111111-1111-4111-8111-111111111111';
   const TECH_ID = '22222222-2222-4222-8222-222222222222';
+  // Cursor keysets carry a JOB id, not a customer id — keep the fixture honest
+  // even though the mocked list chain ignores its value.
+  const JOB_CURSOR_ID = '33333333-3333-4333-8333-333333333333';
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
@@ -81,6 +85,7 @@ describe('Jobs (e2e)', () => {
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',
+    completed_at: null,
     current_step: null,
     priority: 'normal',
     require_completion_photo: false,
@@ -380,6 +385,8 @@ describe('Jobs (e2e)', () => {
       const body = JSON.parse(response.body);
       expect(body.data).toHaveLength(1);
       expect(body.data[0].jobNumber).toBe('JB-2026-0001');
+      // Story 3.7 — completedAt rides on the wire (null for an uncompleted job).
+      expect(body.data[0].completedAt).toBeNull();
       expect(body.nextCursor).toBeNull();
       expect(body.hasMore).toBe(false);
     });
@@ -463,7 +470,7 @@ describe('Jobs (e2e)', () => {
       mockList({ data: [jobRow], error: null });
       const cursor = Buffer.from(
         JSON.stringify({
-          id: CUSTOMER_ID,
+          id: JOB_CURSOR_ID,
           createdAt: '2026-06-21T00:00:00.000Z',
           scope: 'jobs-list',
         }),
@@ -533,6 +540,203 @@ describe('Jobs (e2e)', () => {
 
       expect(response.statusCode).toBe(422);
       expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('default (no scope) anchors on today’s IST window, sorted by created_at desc', async () => {
+      const { builder } = mockList({ data: [], error: null });
+      const range = getIstDayRange();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(builder.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      expect(builder.order).toHaveBeenCalledWith('created_at', {
+        ascending: false,
+      });
+    });
+
+    it('scope=upcoming starts at start of tomorrow IST, scheduled only, ascending', async () => {
+      const { builder } = mockList({ data: [], error: null });
+      const range = getIstDayRange();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs?scope=upcoming',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Start of tomorrow IST is exactly today's range.end.
+      expect(builder.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      expect(builder.lt).not.toHaveBeenCalled();
+      expect(builder.eq).toHaveBeenCalledWith('status', 'scheduled');
+      expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: true,
+      });
+    });
+
+    it('scope=overdue is before today’s IST window, action statuses only, ascending', async () => {
+      const { builder } = mockList({ data: [], error: null });
+      const range = getIstDayRange();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs?scope=overdue',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(builder.gte).not.toHaveBeenCalled();
+      expect(builder.in).toHaveBeenCalledWith('status', [
+        'scheduled',
+        'in_progress',
+      ]);
+      expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: true,
+      });
+    });
+
+    it('scope=history returns completed+cancelled, descending by scheduled_start', async () => {
+      const { builder } = mockList({
+        data: [
+          {
+            ...jobRow,
+            status: 'completed',
+            completed_at: '2026-06-20T10:00:00Z',
+          },
+        ],
+        error: null,
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs?scope=history',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.in).toHaveBeenCalledWith('status', [
+        'completed',
+        'cancelled',
+      ]);
+      expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: false,
+      });
+      // Story 3.7 — a completed job carries its completion timestamp on the wire.
+      const body = JSON.parse(response.body);
+      expect(body.data[0].status).toBe('completed');
+      expect(body.data[0].completedAt).toBe('2026-06-20T10:00:00Z');
+    });
+
+    it.each(['upcoming', 'overdue', 'history'])(
+      'returns 422 when scope=%s is combined with date',
+      async (scope) => {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/v1/jobs?scope=${scope}&date=2026-06-20`,
+          headers: { authorization: `Bearer ${ownerJwt()}` },
+        });
+
+        expect(response.statusCode).toBe(422);
+        expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      },
+    );
+
+    it('returns 422 for an unknown scope value', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs?scope=tomorrow',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('scope=upcoming accepts a cursor minted for jobs-upcoming (ASC keyset)', async () => {
+      const { builder } = mockList({ data: [], error: null });
+      const cursor = Buffer.from(
+        JSON.stringify({
+          id: JOB_CURSOR_ID,
+          createdAt: '2026-06-22T09:30:00.000Z',
+          scope: 'jobs-upcoming',
+        }),
+      ).toString('base64url');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/jobs?scope=upcoming&cursor=${cursor}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.or).toHaveBeenCalledWith(
+        'scheduled_start.gt.2026-06-22T09:30:00.000Z,' +
+          'and(scheduled_start.eq.2026-06-22T09:30:00.000Z,' +
+          `id.gt.${JOB_CURSOR_ID})`,
+      );
+    });
+
+    it('returns 400 for a cursor minted for another scope (jobs-list + scope=upcoming)', async () => {
+      mockList({ data: [], error: null });
+      const cursor = Buffer.from(
+        JSON.stringify({
+          id: JOB_CURSOR_ID,
+          createdAt: '2026-06-21T00:00:00.000Z',
+          scope: 'jobs-list',
+        }),
+      ).toString('base64url');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/jobs?scope=upcoming&cursor=${cursor}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('scope=overdue accepts a cursor minted for jobs-overdue (ASC keyset)', async () => {
+      const { builder } = mockList({ data: [], error: null });
+      const cursor = Buffer.from(
+        JSON.stringify({
+          id: JOB_CURSOR_ID,
+          createdAt: '2026-06-18T14:00:00.000Z',
+          scope: 'jobs-overdue',
+        }),
+      ).toString('base64url');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/jobs?scope=overdue&cursor=${cursor}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.or).toHaveBeenCalledWith(
+        'scheduled_start.gt.2026-06-18T14:00:00.000Z,' +
+          'and(scheduled_start.eq.2026-06-18T14:00:00.000Z,' +
+          `id.gt.${JOB_CURSOR_ID})`,
+      );
     });
 
     it('AC10 — returns 401 with no Authorization header', async () => {

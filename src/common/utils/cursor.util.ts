@@ -12,10 +12,16 @@ export type CursorScope =
   | 'customers-list'
   | 'customer-history'
   | 'jobs-list'
+  | 'jobs-upcoming'
+  | 'jobs-overdue'
+  | 'jobs-history'
   | 'profile-jobs';
 
 interface CursorPayload {
   id: string;
+  // Generic keyed timestamp — the scope tag carries the column semantics
+  // (created_at for jobs-list/profile-jobs, scheduled_start for the
+  // scheduled_start-keyed scopes: customer-history, jobs-upcoming/overdue/history).
   createdAt: string;
   scope: CursorScope;
 }

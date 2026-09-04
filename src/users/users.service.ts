@@ -14,6 +14,7 @@ import {
   decodeCursor,
   CursorScope,
 } from '../common/utils/cursor.util';
+import { getIstDayRange } from '../common/utils/ist-day-range.util';
 import {
   CustomersService,
   CustomerListItem,
@@ -27,7 +28,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 // (rather than imported) so this service's `as JobRow[]` cast has the matching
 // column-literal type, same reasoning as listJobs in jobs.service.ts.
 const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
 const JOBS_PAGE_SIZE = 50;
 // Cursor scope — a cursor minted for another paginated endpoint (e.g. the jobs
 // list, which also keys on created_at) is rejected (400) here.
@@ -43,9 +44,16 @@ export interface TenantSummary {
   upiVpa: string | null;
 }
 
-export interface JobStatusCounts {
-  scheduled: number;
-  inProgress: number;
+// Story 3.7 — dashboard counts on the job timeline. The three day-buckets
+// (today/upcoming/overdue) are mutually exclusive (upcoming starts at the start
+// of tomorrow IST), so their sum + completed + cancelled = all jobs. They are
+// ACTION counts: finished jobs are excluded from today/overdue (completed/
+// cancelled are the all-time totals). Known accepted gap: a FUTURE-dated job
+// advanced early to in_progress matches none of the three day-buckets.
+export interface JobCounts {
+  today: number;
+  upcoming: number;
+  overdue: number;
   completed: number;
   cancelled: number;
 }
@@ -76,7 +84,7 @@ export interface OwnerProfileResponse extends UserProfileBase {
   technicianCount: number;
   customers: PaginatedResponse<CustomerListItem>;
   jobs: PaginatedResponse<JobResponse>;
-  jobStatusCounts: JobStatusCounts;
+  jobCounts: JobCounts;
 }
 
 export interface TechnicianProfileResponse extends UserProfileBase {
@@ -84,12 +92,11 @@ export interface TechnicianProfileResponse extends UserProfileBase {
   skills: string[];
   skillIds: string[];
   jobs: PaginatedResponse<JobResponse>;
-  jobStatusCounts: JobStatusCounts;
+  jobCounts: JobCounts;
 }
 
 export type UserProfileResponse =
-  | OwnerProfileResponse
-  | TechnicianProfileResponse;
+  OwnerProfileResponse | TechnicianProfileResponse;
 
 interface OwnUserRow {
   id: string;
@@ -132,9 +139,10 @@ interface TechnicianListRow {
   user_skills: UserSkillsEmbedRow[] | null;
 }
 
-const EMPTY_JOB_STATUS_COUNTS: JobStatusCounts = {
-  scheduled: 0,
-  inProgress: 0,
+const EMPTY_JOB_COUNTS: JobCounts = {
+  today: 0,
+  upcoming: 0,
+  overdue: 0,
   completed: 0,
   cancelled: 0,
 };
@@ -192,7 +200,7 @@ export class UsersService {
           skills: [],
           skillIds: [],
           jobs: new PaginatedResponse<JobResponse>([], null),
-          jobStatusCounts: EMPTY_JOB_STATUS_COUNTS,
+          jobCounts: EMPTY_JOB_COUNTS,
         };
       }
       return {
@@ -202,7 +210,7 @@ export class UsersService {
         technicianCount: 0,
         customers: new PaginatedResponse<CustomerListItem>([], null),
         jobs: new PaginatedResponse<JobResponse>([], null),
-        jobStatusCounts: EMPTY_JOB_STATUS_COUNTS,
+        jobCounts: EMPTY_JOB_COUNTS,
       };
     }
 
@@ -238,7 +246,7 @@ export class UsersService {
     };
 
     if (ownRow.role === Role.TECHNICIAN) {
-      const [skills, jobs, jobStatusCounts] = await Promise.all([
+      const [skills, jobs, jobCounts] = await Promise.all([
         this.getOwnSkills(admin, user.userId, tenantId),
         this.listProfileJobs(
           tenantId,
@@ -246,7 +254,7 @@ export class UsersService {
           query.jobsCursor,
           query.jobsLimit,
         ),
-        this.getJobStatusCounts(tenantId, user.userId),
+        this.getJobCounts(tenantId, user.userId),
       ]);
 
       return {
@@ -256,11 +264,11 @@ export class UsersService {
         skills: skills.map((s) => s.name),
         skillIds: skills.map((s) => s.id),
         jobs,
-        jobStatusCounts,
+        jobCounts,
       };
     }
 
-    const [technicians, customers, jobs, jobStatusCounts] = await Promise.all([
+    const [technicians, customers, jobs, jobCounts] = await Promise.all([
       this.listTechnicians(admin, tenantId),
       // Pass the DB-fresh tenantId (not the possibly-stale JWT claim on `user`)
       // so this call can never disagree with the tenant/technicians/jobs above —
@@ -271,7 +279,7 @@ export class UsersService {
         { cursor: query.customersCursor, limit: query.customersLimit },
       ),
       this.listProfileJobs(tenantId, null, query.jobsCursor, query.jobsLimit),
-      this.getJobStatusCounts(tenantId, null),
+      this.getJobCounts(tenantId, null),
     ]);
 
     return {
@@ -282,7 +290,7 @@ export class UsersService {
       technicianCount: technicians.length,
       customers,
       jobs,
-      jobStatusCounts,
+      jobCounts,
     };
   }
 
@@ -432,25 +440,75 @@ export class UsersService {
     );
   }
 
-  private async getJobStatusCounts(
+  private async getJobCounts(
     tenantId: string,
     technicianId: string | null,
-  ): Promise<JobStatusCounts> {
+  ): Promise<JobCounts> {
     const admin = this.supabaseClientFactory.createAdmin();
-    const statuses = [
-      JobStatus.SCHEDULED,
-      JobStatus.IN_PROGRESS,
-      JobStatus.COMPLETED,
-      JobStatus.CANCELLED,
+
+    // Same boundaries the jobs-list scopes use (Story 3.7): today's IST window
+    // is [start, end); upcoming starts at range.end (start of tomorrow IST) and
+    // overdue at range.start — the three day-buckets can never overlap.
+    const range = getIstDayRange();
+    const todayWindowStatuses = [JobStatus.SCHEDULED, JobStatus.IN_PROGRESS];
+
+    // Five independent head:true, count:'exact' queries. Owner counts are
+    // tenant-wide; a technician's are scoped to their own jobs.
+    const queries = [
+      {
+        key: 'today' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .gte('scheduled_start', range.start.toISOString())
+            .lt('scheduled_start', range.end.toISOString())
+            .in('status', todayWindowStatuses),
+      },
+      {
+        key: 'upcoming' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .gte('scheduled_start', range.end.toISOString())
+            .eq('status', JobStatus.SCHEDULED),
+      },
+      {
+        key: 'overdue' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .lt('scheduled_start', range.start.toISOString())
+            .in('status', todayWindowStatuses),
+      },
+      {
+        key: 'completed' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .eq('status', JobStatus.COMPLETED),
+      },
+      {
+        key: 'cancelled' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .eq('status', JobStatus.CANCELLED),
+      },
     ];
 
     const results = await Promise.all(
-      statuses.map((status) => {
-        let qb = admin
-          .from('jobs')
-          .select('*', { count: 'exact', head: true })
-          .eq('tenant_id', tenantId)
-          .eq('status', status);
+      queries.map((q) => {
+        let qb = q.build();
         if (technicianId) {
           qb = qb.eq('technician_id', technicianId);
         }
@@ -460,7 +518,7 @@ export class UsersService {
 
     for (const r of results) {
       if (r.error) {
-        this.logger.error('Failed to count jobs by status for profile:', {
+        this.logger.error('Failed to count jobs for profile:', {
           error: r.error,
         });
         throw new InternalServerErrorException({
@@ -471,10 +529,11 @@ export class UsersService {
     }
 
     return {
-      scheduled: results[0].count ?? 0,
-      inProgress: results[1].count ?? 0,
-      completed: results[2].count ?? 0,
-      cancelled: results[3].count ?? 0,
+      today: results[0].count ?? 0,
+      upcoming: results[1].count ?? 0,
+      overdue: results[2].count ?? 0,
+      completed: results[3].count ?? 0,
+      cancelled: results[4].count ?? 0,
     };
   }
 }

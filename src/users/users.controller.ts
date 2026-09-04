@@ -34,8 +34,8 @@ export class UsersController {
     summary:
       "Get the current user's profile — branches by role. Owner gets " +
       'company/tenant info, technician roster + skills, all customers, and ' +
-      'all jobs + status counts. Technician gets own skills, own jobs, and ' +
-      'own status counts.',
+      'all jobs + jobCounts (today/upcoming/overdue/completed/cancelled). ' +
+      'Technician gets own skills, own jobs, and own jobCounts.',
   })
   @ApiResponse({ status: 200, description: 'Role-specific profile payload' })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })

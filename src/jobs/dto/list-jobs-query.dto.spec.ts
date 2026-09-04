@@ -7,6 +7,7 @@ import {
 } from '@nestjs/platform-fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { JobStatus } from '../enums/job-status.enum';
+import { JobListScope } from '../enums/job-list-scope.enum';
 import { ListJobsQueryDto } from './list-jobs-query.dto';
 
 /**
@@ -34,8 +35,11 @@ class EchoQueryController {
 @Controller()
 class ListJobsEchoController {
   @Get('jobs')
-  jobs(@Query() query: ListJobsQueryDto): { status: JobStatus[] | null } {
-    return { status: query.status ?? null };
+  jobs(@Query() query: ListJobsQueryDto): {
+    status: JobStatus[] | null;
+    scope: JobListScope | null;
+  } {
+    return { status: query.status ?? null, scope: query.scope ?? null };
   }
 }
 
@@ -94,13 +98,16 @@ describe('query-string dialect ListJobsQueryDto assumes', () => {
     it('normalizes a single repeat-style value into a one-element array', async () => {
       const res = await get('/jobs?status=scheduled');
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ status: ['scheduled'] });
+      expect(res.json()).toEqual({ status: ['scheduled'], scope: null });
     });
 
     it('accepts a repeat-style array of valid enum values', async () => {
       const res = await get('/jobs?status=scheduled&status=in_progress');
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ status: ['scheduled', 'in_progress'] });
+      expect(res.json()).toEqual({
+        status: ['scheduled', 'in_progress'],
+        scope: null,
+      });
     });
 
     it('rejects a mixed valid+invalid repeat-style array with 422', async () => {
@@ -126,7 +133,7 @@ describe('query-string dialect ListJobsQueryDto assumes', () => {
       // gets 200, not a 422.
       const res = await get('/jobs?foo=bar&status=scheduled');
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ status: ['scheduled'] });
+      expect(res.json()).toEqual({ status: ['scheduled'], scope: null });
     });
 
     it('lets bracket style through untouched — validation never sees it (the silent-ignore trap)', async () => {
@@ -135,7 +142,51 @@ describe('query-string dialect ListJobsQueryDto assumes', () => {
       // bracket-style client gets unfiltered results with no error.
       const res = await get('/jobs?status[]=bogus_status');
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ status: null });
+      expect(res.json()).toEqual({ status: null, scope: null });
+    });
+  });
+
+  describe('scope param through the ValidationPipe', () => {
+    it.each(Object.values(JobListScope))('accepts scope=%s', async (scope) => {
+      const res = await get(`/jobs?scope=${scope}`);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ status: null, scope });
+    });
+
+    it('rejects an unknown scope with 422', async () => {
+      const res = await get('/jobs?scope=bogus_scope');
+      expect(res.statusCode).toBe(422);
+    });
+
+    it('rejects scope + date with 422 for every non-today scope', async () => {
+      for (const scope of ['upcoming', 'overdue', 'history']) {
+        const res = await get(`/jobs?scope=${scope}&date=2026-06-20`);
+        expect(res.statusCode).toBe(422);
+      }
+    });
+
+    it('accepts scope=today + date (today is the default scope; date re-anchors it)', async () => {
+      const res = await get('/jobs?scope=today&date=2026-06-20');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        status: null,
+        scope: JobListScope.TODAY,
+      });
+    });
+
+    it('accepts a plain date without scope (no scope = no cross-field conflict)', async () => {
+      const res = await get('/jobs?date=2026-06-20');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ status: null, scope: null });
+    });
+
+    it('treats a whitespace-padded valid scope as valid (trim transformer)', async () => {
+      const res = await get('/jobs?scope=%20upcoming%20');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        status: null,
+        scope: JobListScope.UPCOMING,
+      });
     });
   });
 });

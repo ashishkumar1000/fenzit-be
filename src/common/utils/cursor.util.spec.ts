@@ -39,7 +39,11 @@ describe('cursor.util', () => {
 
   it('throws 400 when id is not a UUID (rejects injection payloads)', () => {
     const forged = Buffer.from(
-      JSON.stringify({ id: 'x),or(tenant_id.neq.0', createdAt: ISO, scope: SCOPE }),
+      JSON.stringify({
+        id: 'x),or(tenant_id.neq.0',
+        createdAt: ISO,
+        scope: SCOPE,
+      }),
     ).toString('base64url');
     expect(() => decodeCursor(forged, SCOPE)).toThrow(BadRequestException);
   });
@@ -70,5 +74,30 @@ describe('cursor.util', () => {
   it('skips the scope check when no expected scope is given', () => {
     const cursor = encodeCursor(UUID, ISO, 'jobs-list');
     expect(() => decodeCursor(cursor)).not.toThrow();
+  });
+
+  it('round-trips the Story 3.7 jobs-timeline scope tags', () => {
+    // Each jobs scope keys its keyset on (scheduled_start, id) via its own tag.
+    const timelineScopes: CursorScope[] = [
+      'jobs-upcoming',
+      'jobs-overdue',
+      'jobs-history',
+    ];
+    for (const scope of timelineScopes) {
+      const cursor = encodeCursor(UUID, ISO, scope);
+      expect(decodeCursor(cursor, scope)).toEqual({
+        id: UUID,
+        createdAt: ISO,
+        scope,
+      });
+    }
+  });
+
+  it('rejects a cursor minted for a sibling jobs scope', () => {
+    // same endpoint family, different scope tag → still a scope mismatch
+    const cursor = encodeCursor(UUID, ISO, 'jobs-list');
+    expect(() => decodeCursor(cursor, 'jobs-upcoming')).toThrow(
+      BadRequestException,
+    );
   });
 });

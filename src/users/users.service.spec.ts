@@ -11,11 +11,20 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { encodeCursor } from '../common/utils/cursor.util';
+import { getIstDayRange } from '../common/utils/ist-day-range.util';
+import { JobStatus } from '../jobs/enums/job-status.enum';
 
 type DbResult = { data: unknown; error: unknown };
 
+// getJobCounts issues FIVE head:true, count:'exact' queries in a fixed order
+// (today, upcoming, overdue, completed, cancelled — Story 3.7). The mock keys
+// resolved counts on that call order and records every builder call so tests
+// can assert the predicates (gte/lt windows, forced status sets, tech scoping).
 interface CountBuilder {
   eq: jest.Mock;
+  gte: jest.Mock;
+  lt: jest.Mock;
+  in: jest.Mock;
   technicianIdArg: string | undefined;
   then: (resolve: (v: unknown) => void) => void;
 }
@@ -106,6 +115,7 @@ describe('UsersService', () => {
       scheduled_start: createdAt,
       scheduled_end: null,
       status,
+      completed_at: null,
       current_step: null,
       priority: 'normal',
       require_completion_photo: false,
@@ -177,38 +187,50 @@ describe('UsersService', () => {
   }
 
   // jobs.select(JOB_COLUMNS)...limit() (list) vs
-  // jobs.select('*', {count:'exact',head:true}).eq(...).eq('status',...) (count,
-  // awaited directly — no .single()/.limit() terminal, so the builder itself
-  // must be thenable). Dispatched on whether select()'s 2nd arg has head:true.
+  // jobs.select('*', {count:'exact',head:true}).eq(...).gte(...).lt(...).in(...)
+  // (count, awaited directly — no .single()/.limit() terminal, so the builder
+  // itself must be thenable). Dispatched on whether select()'s 2nd arg has
+  // head:true. Counts resolve by call order against the JobCounts keys.
   function jobsTableHandler(
     listResult: DbResult,
-    countsByStatus: Record<string, number> | { error: unknown },
+    counts: Record<string, number> | { error: unknown },
     countBuilders: CountBuilder[],
     listBuilders: Array<Record<string, jest.Mock>>,
   ) {
+    const COUNT_KEYS = [
+      'today',
+      'upcoming',
+      'overdue',
+      'completed',
+      'cancelled',
+    ];
     const select = jest.fn(
       (_cols: string, opts?: { count?: string; head?: boolean }) => {
         if (opts?.head) {
-          let status: string | undefined;
-          const builder: CountBuilder = {
-            eq: jest.fn((col: string, val: string) => {
-              if (col === 'status') status = val;
-              if (col === 'technician_id') builder.technicianIdArg = val;
-              return builder;
-            }),
-            technicianIdArg: undefined,
-            then: (resolve: (v: unknown) => void) => {
-              if (countsByStatus && 'error' in countsByStatus) {
-                resolve({
-                  data: null,
-                  error: countsByStatus.error,
-                  count: null,
-                });
-              } else {
-                const count = countsByStatus[status as string] ?? 0;
-                resolve({ data: null, error: null, count });
-              }
-            },
+          const index = countBuilders.length;
+          const builder = {} as CountBuilder;
+          builder.eq = jest.fn((col: string, val: string) => {
+            if (col === 'technician_id') builder.technicianIdArg = val;
+            return builder;
+          });
+          builder.gte = jest.fn(() => builder);
+          builder.lt = jest.fn(() => builder);
+          builder.in = jest.fn(() => builder);
+          builder.technicianIdArg = undefined;
+          builder.then = (resolve: (v: unknown) => void) => {
+            if (counts && 'error' in counts) {
+              resolve({
+                data: null,
+                error: counts.error,
+                count: null,
+              });
+            } else {
+              resolve({
+                data: null,
+                error: null,
+                count: counts[COUNT_KEYS[index]] ?? 0,
+              });
+            }
           };
           countBuilders.push(builder);
           return builder;
@@ -219,6 +241,9 @@ describe('UsersService', () => {
           builder[m] = jest.fn().mockReturnValue(builder);
         }
         builder.limit = jest.fn().mockResolvedValue(listResult);
+        // Select-column list is recorded so tests can assert the profile's
+        // explicit select list still names completed_at (Story 3.7).
+        (builder as unknown as { selectCols: string }).selectCols = _cols;
         listBuilders.push(builder);
         return builder;
       },
@@ -240,8 +265,9 @@ describe('UsersService', () => {
     const ownSkills = opts.ownSkills ?? { data: [], error: null };
     const jobsList = opts.jobsList ?? { data: [], error: null };
     const jobCounts = opts.jobCounts ?? {
-      scheduled: 0,
-      in_progress: 0,
+      today: 0,
+      upcoming: 0,
+      overdue: 0,
       completed: 0,
       cancelled: 0,
     };
@@ -269,14 +295,20 @@ describe('UsersService', () => {
   }
 
   describe('getMyProfile — owner', () => {
-    it('returns the full owner profile: tenant, technicians, technicianCount, customers, jobs, jobStatusCounts', async () => {
-      mockAdmin({
+    it('returns the full owner profile: tenant, technicians, technicianCount, customers, jobs, jobCounts', async () => {
+      const { listBuilders } = mockAdmin({
         technicians: { data: technicianListRows, error: null },
         jobsList: {
           data: [jobRow('j1', 'scheduled', '2026-06-21T00:00:00Z')],
           error: null,
         },
-        jobCounts: { scheduled: 3, in_progress: 1, completed: 5, cancelled: 0 },
+        jobCounts: {
+          today: 2,
+          upcoming: 3,
+          overdue: 1,
+          completed: 5,
+          cancelled: 0,
+        },
       });
       customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
 
@@ -301,12 +333,84 @@ describe('UsersService', () => {
       );
       expect(result.customers).toBe(emptyCustomersPage);
       expect(result.jobs.data).toEqual([{ id: 'j1', status: 'scheduled' }]);
-      expect(result.jobStatusCounts).toEqual({
-        scheduled: 3,
-        inProgress: 1,
+      // Story 3.7 — the profile's explicit select list must name completed_at;
+      // omitting it silently drops the key through the `as JobRow[]` cast.
+      expect(
+        (listBuilders[0] as unknown as { selectCols: string }).selectCols,
+      ).toContain('completed_at');
+      expect(result.jobCounts).toEqual({
+        today: 2,
+        upcoming: 3,
+        overdue: 1,
         completed: 5,
         cancelled: 0,
       });
+    });
+
+    it('issues the five count queries with the Story 3.7 bucket predicates', async () => {
+      const { countBuilders } = mockAdmin({
+        jobCounts: {
+          today: 1,
+          upcoming: 2,
+          overdue: 3,
+          completed: 4,
+          cancelled: 5,
+        },
+      });
+      const range = getIstDayRange();
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      // Call order is fixed: today, upcoming, overdue, completed, cancelled.
+      expect(result.jobCounts).toEqual({
+        today: 1,
+        upcoming: 2,
+        overdue: 3,
+        completed: 4,
+        cancelled: 5,
+      });
+      expect(countBuilders).toHaveLength(5);
+
+      const [today, upcoming, overdue, completed, cancelled] = countBuilders;
+      // today: scheduled_start within [start, end), action statuses only
+      expect(today.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(today.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      expect(today.in).toHaveBeenCalledWith('status', [
+        JobStatus.SCHEDULED,
+        JobStatus.IN_PROGRESS,
+      ]);
+      // upcoming: starts at start of tomorrow IST (= today's range.end), scheduled only
+      expect(upcoming.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      expect(upcoming.lt).not.toHaveBeenCalled();
+      expect(upcoming.eq).toHaveBeenCalledWith('status', JobStatus.SCHEDULED);
+      // overdue: before today's window, action statuses only
+      expect(overdue.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(overdue.gte).not.toHaveBeenCalled();
+      expect(overdue.in).toHaveBeenCalledWith('status', [
+        JobStatus.SCHEDULED,
+        JobStatus.IN_PROGRESS,
+      ]);
+      // completed / cancelled: all-time totals, no day window
+      expect(completed.eq).toHaveBeenCalledWith('status', JobStatus.COMPLETED);
+      expect(cancelled.eq).toHaveBeenCalledWith('status', JobStatus.CANCELLED);
+      // every bucket is tenant-wide and head:true count:'exact'
+      for (const b of countBuilders) {
+        expect(b.eq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
+        expect(b.technicianIdArg).toBeUndefined();
+      }
     });
 
     it('includes not-yet-accepted (status: invited) technicians alongside active ones', async () => {
@@ -319,7 +423,9 @@ describe('UsersService', () => {
           phone_number: '9222222222',
           status: 'invited',
           created_at: '2026-07-01T00:00:00Z',
-          user_skills: [{ tenant_skills: { id: 'skill-1', name: 'AC Repair' } }],
+          user_skills: [
+            { tenant_skills: { id: 'skill-1', name: 'AC Repair' } },
+          ],
         },
       ];
       mockAdmin({ technicians: { data: mixedStatusRows, error: null } });
@@ -423,9 +529,10 @@ describe('UsersService', () => {
         nextCursor: null,
         hasMore: false,
       });
-      expect(result.jobStatusCounts).toEqual({
-        scheduled: 0,
-        inProgress: 0,
+      expect(result.jobCounts).toEqual({
+        today: 0,
+        upcoming: 0,
+        overdue: 0,
         completed: 0,
         cancelled: 0,
       });
@@ -467,7 +574,7 @@ describe('UsersService', () => {
       );
     });
 
-    it('throws 500 when a job status count query errors', async () => {
+    it('throws 500 when a job counts query errors', async () => {
       mockAdmin({ jobCounts: { error: { code: '08006' } } });
 
       await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
@@ -477,7 +584,7 @@ describe('UsersService', () => {
   });
 
   describe('getMyProfile — technician', () => {
-    it('returns the technician profile: own skills, own jobs, own jobStatusCounts', async () => {
+    it('returns the technician profile: own skills, own jobs, own jobCounts', async () => {
       mockAdmin({
         ownRow: { data: ownTechnicianRow, error: null },
         ownSkills: { data: ownSkillsRows, error: null },
@@ -485,7 +592,13 @@ describe('UsersService', () => {
           data: [jobRow('j2', 'in_progress', '2026-06-21T00:00:00Z')],
           error: null,
         },
-        jobCounts: { scheduled: 1, in_progress: 2, completed: 0, cancelled: 0 },
+        jobCounts: {
+          today: 1,
+          upcoming: 2,
+          overdue: 0,
+          completed: 0,
+          cancelled: 0,
+        },
       });
 
       const result = await service.getMyProfile(technicianUser, {});
@@ -497,15 +610,16 @@ describe('UsersService', () => {
         ['AC Repair', 'Pest Control'].sort(),
       );
       expect(result.jobs.data).toEqual([{ id: 'j2', status: 'in_progress' }]);
-      expect(result.jobStatusCounts).toEqual({
-        scheduled: 1,
-        inProgress: 2,
+      expect(result.jobCounts).toEqual({
+        today: 1,
+        upcoming: 2,
+        overdue: 0,
         completed: 0,
         cancelled: 0,
       });
     });
 
-    it('scopes both the jobs list and job status counts to the caller only', async () => {
+    it('scopes both the jobs list and job counts to the caller only', async () => {
       const { countBuilders, listBuilders } = mockAdmin({
         ownRow: { data: ownTechnicianRow, error: null },
       });
