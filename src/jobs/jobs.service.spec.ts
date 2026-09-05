@@ -69,6 +69,7 @@ describe('JobsService', () => {
     current_step: null,
     priority: 'normal',
     require_completion_photo: false,
+    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -177,6 +178,8 @@ describe('JobsService', () => {
         p_technician_id: 'tech-1',
         p_actor_id: 'owner-uuid',
         p_service_type: 'ac_service',
+        // Story 3.8 — flag omitted in the body → server-side default false.
+        p_require_completion_signature: false,
       }),
     );
   });
@@ -318,6 +321,7 @@ describe('JobsService', () => {
       description: 'Leaky AC',
       priority: JobPriority.URGENT,
       requireCompletionPhoto: true,
+      requireCompletionSignature: true,
       notesForTechnician: 'Bring ladder',
     };
 
@@ -330,6 +334,7 @@ describe('JobsService', () => {
         p_description: 'Leaky AC',
         p_priority: 'urgent',
         p_require_completion_photo: true,
+        p_require_completion_signature: true,
         p_notes_for_technician: 'Bring ladder',
       }),
     );
@@ -418,6 +423,7 @@ describe('JobsService', () => {
         currentStep: null,
         priority: 'normal',
         requireCompletionPhoto: false,
+        requireCompletionSignature: false,
         description: null,
         notesForTechnician: null,
         createdAt: '2026-06-21T00:00:00Z',
@@ -1095,6 +1101,29 @@ describe('JobsService', () => {
           p_description: 'edited',
           p_priority: 'urgent',
           p_technician_id: null,
+          // Story 3.8 — flags absent from the PATCH → null (COALESCE leaves them).
+          p_require_completion_photo: null,
+          p_require_completion_signature: null,
+        }),
+      );
+    });
+
+    it('passes a flag-only patch through (flags count as an edit, not an empty PATCH)', async () => {
+      const { rpc } = mockAdmin({});
+
+      const dto: UpdateJobDto = { requireCompletionSignature: true };
+      await service.updateJob(owner, 'job-uuid', dto);
+
+      // A flag-only body must NOT 422 as an "empty PATCH" — it reaches the RPC
+      // with just the flag set (other params null = unchanged).
+      expect(rpc).toHaveBeenCalledWith(
+        'update_job_with_log',
+        expect.objectContaining({
+          p_cancel: false,
+          p_description: null,
+          p_priority: null,
+          p_require_completion_photo: null,
+          p_require_completion_signature: true,
         }),
       );
     });

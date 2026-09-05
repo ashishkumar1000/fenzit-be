@@ -4,7 +4,7 @@ baseline_commit: 22d655b7ae1d2a9e45b809a336d88e2421c71060
 
 # Story 3.8: Optional Signature & Editable Requirement Flags
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -122,84 +122,100 @@ via `PATCH /jobs/:id` (the photo flag was deliberately absent from the update pa
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Migration: flag column** (AC: #1)
-  - [ ] New `supabase/migrations/20260905000001_add_jobs_require_completion_signature.sql`:
+- [x] **Task 1 — Migration: flag column** (AC: #1)
+  - [x] New `supabase/migrations/20260905000001_add_jobs_require_completion_signature.sql`:
         `ALTER TABLE jobs ADD COLUMN require_completion_signature BOOLEAN NOT NULL DEFAULT false;`
         (style mirror: `20260903000002_add_jobs_completed_at.sql`; trailing newline —
         CR3.7 review finding).
-  - [ ] Apply via Supabase MCP (`apply_migration`), verify via `execute_sql`
+  - [x] Apply via Supabase MCP (`apply_migration`), verify via `execute_sql`
         (column exists, all rows false, RLS policy count unchanged).
 
-- [ ] **Task 2 — Migrations: RPC re-issues** (AC: #2, #3)
-  - [ ] New migration `20260905000002_rpc_create_job_with_log_signature.sql`: `CREATE OR REPLACE
+- [x] **Task 2 — Migrations: RPC re-issues** (AC: #2, #3)
+  - [x] New migration `20260905000002_rpc_create_job_with_log_signature.sql`: `CREATE OR REPLACE
         FUNCTION create_job_with_log` re-issued with `p_require_completion_signature BOOLEAN`
         added after `p_require_completion_photo` (append-only history — never edit an applied
         migration; pattern: `20260903000003_rpc_advance_workflow_step_completed_at.sql`). INSERT
         adds the column with `COALESCE(p_require_completion_signature, false)` — copy only the
         `create_job_with_log` body from `20260621000003_rpc_create_job_with_log.sql:27-65`
         (`increment_job_counter` is a separate function in that file; do NOT re-issue it).
-  - [ ] New migration `20260905000003_rpc_update_job_with_log_flags.sql`: re-issued
+  - [x] New migration `20260905000003_rpc_update_job_with_log_flags.sql`: re-issued
         `update_job_with_log` adding `p_require_completion_photo BOOLEAN,
         p_require_completion_signature BOOLEAN` at the END of the param list (positional order
         is breaking — new params must trail so existing callers are unaffected). UPDATE clause:
         `require_completion_photo = COALESCE(p_require_completion_photo, require_completion_photo),`
         same for signature. Copy the PT409/PT422 guards + reassign log verbatim.
-  - [ ] Apply both via MCP; verify with a rolled-back transaction probe (temp-table style per
+  - [x] Apply both via MCP; verify with a rolled-back transaction probe (temp-table style per
         Story 3-7 debug log) that flag-only updates persist and null params leave values.
 
-- [ ] **Task 3 — Create path** (AC: #2)
-  - [ ] `create-job.dto.ts`: add `requireCompletionSignature?: boolean` after
+- [x] **Task 3 — Create path** (AC: #2)
+  - [x] `create-job.dto.ts`: add `requireCompletionSignature?: boolean` after
         `requireCompletionPhoto` (:76-79) with `@ApiPropertyOptional({ default: false })
         @IsOptional() @IsBoolean()`.
-  - [ ] `jobs.service.ts` `createJob` RPC params (:298-312): add
+  - [x] `jobs.service.ts` `createJob` RPC params (:298-312): add
         `p_require_completion_signature: dto.requireCompletionSignature ?? false` after :308.
-  - [ ] `JobRow` (:109-128, sibling of :123) + `JobResponse` (:36-58, sibling of :53) +
+  - [x] `JobRow` (:109-128, sibling of :123) + `JobResponse` (:36-58, sibling of :53) +
         `toResponse` (:852) + `JOB_DETAIL_COLUMNS` (:172-173) + listJobs select (:537).
-  - [ ] `users.service.ts:31` `JOB_COLUMNS` — the profile payload has its own literal; missing
+  - [x] `users.service.ts:31` `JOB_COLUMNS` — the profile payload has its own literal; missing
         it makes the key silently `undefined` (the `as JobRow[]` cast hides it; trap documented
         by `jobs.service.spec.ts:338-350`).
 
-- [ ] **Task 4 — Update path** (AC: #3)
-  - [ ] `update-job.dto.ts`: extend the `PickType` list (:16-25) with
+- [x] **Task 4 — Update path** (AC: #3)
+  - [x] `update-job.dto.ts`: extend the `PickType` list (:16-25) with
         `'requireCompletionPhoto'`, `'requireCompletionSignature'`; update the header comment
         explaining the PickType choice.
-  - [ ] `jobs.service.ts` `updateJob`: add both flags to the `hasEdit` field list (:358-366)
+  - [x] `jobs.service.ts` `updateJob`: add both flags to the `hasEdit` field list (:358-366)
         so "empty patch → 422" counts them, and to the RPC params (:438-449) as
         `?? null` (COALESCE semantics — absent = unchanged).
 
-- [ ] **Task 5 — Workflow: effective-chain validateStep** (AC: #4, #5)
-  - [ ] `workflow.service.ts`: `WorkflowJobRow` gains `require_completion_signature: boolean`
+- [x] **Task 5 — Workflow: effective-chain validateStep** (AC: #4, #5)
+  - [x] `workflow.service.ts`: `WorkflowJobRow` gains `require_completion_signature: boolean`
         (:36 sibling); fetch select gains the column (:110); `validateStep` signature gains the
         4th param; `advanceWorkflowStep` passes `row.require_completion_signature` (:181).
-  - [ ] Implement as **effective-chain successor**: filter `STEP_ORDER` to required steps
+  - [x] Implement as **effective-chain successor**: filter `STEP_ORDER` to required steps
         (`photos_uploaded` in only when photo required; `signature_captured` in only when
         signature required; `on_my_way`/`arrived`/`in_progress`/`completed` always in), keep the
         corrupt-step guard, then from `currentStep`'s full-order index walk forward to the first
         step present in the effective chain and require `requested === that`. This single rule
         reproduces all four matrix cells AND the dynamic-flag edge (AC #5) — do NOT add
         piecemeal special-case ifs per matrix row.
-  - [ ] `advance-workflow.dto.ts` swagger description (:8-12): rewrite to state the
+  - [x] `advance-workflow.dto.ts` swagger description (:8-12): rewrite to state the
         effective-chain rule + both flags.
 
-- [ ] **Task 6 — Sync + docs** (AC: #6)
-  - [ ] `sync.service.ts`: select list (:31) + mapper (:65); `sync-response.dto.ts`
+- [x] **Task 6 — Sync + docs** (AC: #6)
+  - [x] `sync.service.ts`: select list (:31) + mapper (:65); `sync-response.dto.ts`
         `SyncJobDto` (:28 sibling). Do NOT add `completed_at` here — that is Story 3-7's
         documented follow-up, not this story's scope.
-  - [ ] `docs/data-models.md` jobs table (:117): add the column row.
+  - [x] `docs/data-models.md` jobs table (:117): add the column row.
 
-- [ ] **Task 7 — Tests** (AC: #7)
-  - [ ] `workflow.service.spec.ts`: truth-table rows for all matrix cells + the AC-5 dynamic
+- [x] **Task 7 — Tests** (AC: #7)
+  - [x] `workflow.service.spec.ts`: truth-table rows for all matrix cells + the AC-5 dynamic
         edge (signature off at `signature_captured`) + corrupt-step still false; extend the
         422-no-RPC test (:225-245) with a signature-required variant.
-  - [ ] `jobs.service.spec.ts`: create passthrough (:313-336), default-create path (:160-182),
+  - [x] `jobs.service.spec.ts`: create passthrough (:313-336), default-create path (:160-182),
         full-shape `toEqual` (:406-425), trap test stays green, updateJob RPC params
         (:1088-1099) + a flag-only patch (no other fields) not counting as empty.
-  - [ ] `users.service.spec.ts` fixture (:121) updated.
-  - [ ] e2e: PATCH flag edit round-trip + signature-skip advance (`test/jobs.e2e-spec.ts`,
+  - [x] `users.service.spec.ts` fixture (:121) updated.
+  - [x] e2e: PATCH flag edit round-trip + signature-skip advance (`test/jobs.e2e-spec.ts`,
         PATCH describe :953 / workflow tests :1253-1277). Extend the `fetchRow` fixtures
         seeding the workflow select (:91) with the new column.
-  - [ ] `bun run lint` + `bun run test` green. Known pre-existing failures at baseline (do not
+  - [x] `bun run lint` + `bun run test` green. Known pre-existing failures at baseline (do not
         "fix" here): 3 `tsc --noEmit` errors, 8 e2e failures (4 customers, 4 sync).
+
+### Review Findings
+
+BMAD code review 2026-09-05 (4 layers: blind-hunter, edge-case-hunter, verification-gap, acceptance-auditor). DB verified live via Supabase MCP: column/default, both RPC overloads' positional param order, RLS unchanged, EXECUTE grants intact, and a rolled-back transaction probe (flag-only PATCH sets flag; NULLs leave flags; explicit false resets; create persists true / COALESCEs NULL→false) — all passed, zero rows left behind.
+
+- [x] [Review][Decision→Patch] Old RPC overloads still live and PostgREST-exposed — resolved 2026-09-05:
+      `20260905000004_drop_stale_rpc_overloads.sql` drops the stale pre-3.8 signatures (applied via MCP;
+      verified only the new overloads remain, post-drop probe passed, rollback clean). User approved —
+      development phase, all data is test data.
+- [x] [Review][Patch] All 3 new migration files missing trailing newline [supabase/migrations/20260905000001/2/3*.sql] — fixed 2026-09-05: trailing newline appended to all migration files (incl. 20260905000004), verified all 4 end with newline.
+- [x] [Review][Patch] Sync payload flag unpinned by tests [src/sync/sync.service.ts:29-67, test/sync.e2e-spec.ts:118-136] — fixed 2026-09-05: sync e2e `jobRow` fixture extended + flag assertions added; new `src/sync/sync.service.spec.ts` pins both flags (non-default `true` values) and tenant/technician/`gt` scoping at unit level. Full unit suite green (308/308).
+- [x] [Review][Defer] e2e negative path (signature-skip → 422) uncovered [test/jobs.e2e-spec.ts] — deferred, pre-existing pattern (photo-skip 422 is also unit-only)
+- [x] [Review][Defer] Effective-chain workflow semantics absent from docs/data-models.md [docs/data-models.md] — deferred, story scoped docs to the one column line
+- [x] [Review][Defer] `current_step='completed'` row absent from validateStep truth table [src/jobs/workflow.service.spec.ts] — deferred, unreachable behind the status guard
+- [x] [Review][Defer] JSON-null flag PATCH counts as an edit (logs `job_updated`, no change) [src/jobs/jobs.service.ts:366-373] — deferred, pre-existing semantics shared by every PATCH field
+- [x] [Review][Defer] Sync payload shape change has no client-versioning note [src/sync/dto/sync-response.dto.ts] — deferred, additive field, pre-launch
 
 ## Dev Notes
 
@@ -251,10 +267,75 @@ via `PATCH /jobs/:id` (the photo flag was deliberately absent from the update pa
 
 ### Agent Model Used
 
+Claude Code (glm-5.3-flash) — BMAD dev-story workflow, 2026-09-05.
+
 ### Debug Log References
+
+- Migrations applied via Supabase MCP `apply_migration` (project `pnlvreaijzslfymlnoti`):
+  `20260905000001_add_jobs_require_completion_signature.sql`,
+  `20260905000002_rpc_create_job_with_log_signature.sql`,
+  `20260905000003_rpc_update_job_with_log_flags.sql`.
+- MCP `execute_sql` verification: column `require_completion_signature boolean NOT NULL default false`;
+  all 5 existing rows `false`; RLS policy count on jobs unchanged (1); no new index.
+- Rolled-back transaction probe (temp-table style, per Story 3-7): `create_job_with_log` with
+  `p_require_completion_signature => true` persists `true`; with NULL persists `false`;
+  `update_job_with_log` flag-only patch persists both flags; NULL params leave existing values
+  unchanged; description untouched.
+- Unit tests: `bunx jest --watchman=false` → 18 suites / 306 tests passed.
+- E2e: `bun run test:e2e --watchman=false` → 184 passed / 8 failed / 2 skipped. Baseline
+  comparison (stash → run → pop) at `baseline_commit`: 182 passed / same 8 failed (4 customers,
+  4 sync) — story-documented pre-existing failures. Delta: +2 passing = the 2 new e2e tests.
+- Lint: baseline round-trip shows 367 pre-existing repo-wide errors (type-aware config drift);
+  delta +3 in `src/sync/sync.service.ts` (50→52) and `test/jobs.e2e-spec.ts` (95→97), all on the
+  same pre-existing idiom rules (`any` mapper lines, `JSON.parse` body accesses) as surrounding
+  code — matching existing file style, not "fixed".
+- `tsc --noEmit`: same 3 pre-existing errors as baseline (cloudflare-worker `MessageBatch`,
+  fastify instance type mismatch).
 
 ### Completion Notes List
 
+- **Task 2 param-position discrepancy:** the Task 2 text said `p_require_completion_signature`
+  goes "after `p_require_completion_photo`", but the Dev Notes param-list-ordering hazard
+  mandates appending new params at the END of the positional list. Followed Dev Notes:
+  `create_job_with_log` gains the param after `p_year` (last), `update_job_with_log` after
+  `p_priority` (last). Service call sites pass named keys; SQL signature stays backward-compatible.
+- Effective-chain `validateStep` implemented as a single successor rule (filter `STEP_ORDER` to
+  required steps, walk forward from `current_step`'s full-order index, requested must equal the
+  first in-chain step) — reproduces all four matrix cells, the AC5 dynamic-flag edge, and the
+  preserved photo-skip without per-row special cases. Corrupt-`current_step` guard untouched.
+- `hasEdit` in `updateJob` counts both completion flags as edits — a flag-only PATCH is not an
+  "empty patch" and must not 422 (covered by unit + e2e tests).
+- Sync payload gains the flag only; `completed_at` deliberately NOT added (Story 3-7 follow-up).
+- Customer job-history slim mapper (`customers.service.ts`) deliberately NOT changed (AC6 exclusion).
+- RLS isolation spec does not exist in `test/` (Dev Notes insurance item N/A) — RLS verified
+  via MCP instead: no policy change, column default false.
+- Pre-existing baseline failures left untouched as instructed: 3 `tsc --noEmit` errors, 8 e2e
+  failures, 367 lint errors.
+- Not committed: awaiting code review per workflow (Status = review). Deploy order: fenzit-be
+  first, then fenzo-app stories 1-6 / 3-5.
+
 ### File List
 
+- supabase/migrations/20260905000001_add_jobs_require_completion_signature.sql (new)
+- supabase/migrations/20260905000002_rpc_create_job_with_log_signature.sql (new)
+- supabase/migrations/20260905000003_rpc_update_job_with_log_flags.sql (new)
+- src/jobs/jobs.service.ts (JobRow/JobResponse/JOB_DETAIL_COLUMNS/listJobs select/createJob params/updateJob hasEdit + params/toResponse)
+- src/jobs/dto/create-job.dto.ts (requireCompletionSignature)
+- src/jobs/dto/update-job.dto.ts (PickType list + header comment)
+- src/jobs/dto/advance-workflow.dto.ts (swagger description)
+- src/jobs/workflow.service.ts (effective-chain validateStep + row/select)
+- src/sync/sync.service.ts (select + mapper)
+- src/sync/dto/sync-response.dto.ts (SyncJobDto)
+- src/users/users.service.ts (JOB_COLUMNS)
+- docs/data-models.md (column row)
+- src/jobs/workflow.service.spec.ts (truth table + 422 signature variant)
+- src/jobs/jobs.service.spec.ts (create passthrough/default/list shape/update params/flag-only patch)
+- src/users/users.service.spec.ts (fixture)
+- test/jobs.e2e-spec.ts (fixtures + PATCH flag-edit + signature-skip e2e)
+
 ## Change Log
+
+- 2026-09-05 — Story 3.8 implemented (Tasks 1-7): `require_completion_signature` column +
+  both RPC re-issues via Supabase MCP; create/PATCH paths; effective-chain `validateStep`;
+  sync + profile payloads; docs; unit (306 pass) + e2e (+2 new, baseline-identical pre-existing
+  failures) + lint delta documented. Status → review.

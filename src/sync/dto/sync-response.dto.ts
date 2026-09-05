@@ -26,6 +26,7 @@ export interface SyncJobDto {
   currentStep: string | null;
   priority: string;
   requireCompletionPhoto: boolean;
+  requireCompletionSignature: boolean;
   description: string | null;
   notesForTechnician: string | null;
   createdAt: string;

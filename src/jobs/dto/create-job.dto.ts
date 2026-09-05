@@ -78,6 +78,11 @@ export class CreateJobDto {
   @IsBoolean()
   requireCompletionPhoto?: boolean;
 
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  requireCompletionSignature?: boolean;
+
   @ApiPropertyOptional()
   @IsOptional()
   @Transform(trim)

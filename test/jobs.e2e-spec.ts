@@ -89,6 +89,7 @@ describe('Jobs (e2e)', () => {
     current_step: null,
     priority: 'normal',
     require_completion_photo: false,
+    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -971,6 +972,25 @@ describe('Jobs (e2e)', () => {
       expect(body.description).toBe('edited');
     });
 
+    it('AC2.8 (Story 3.8) — flag-only PATCH edits a completion flag → 200 echoes the new value', async () => {
+      mockAdmin({
+        rpc: {
+          data: [{ ...jobRow, require_completion_signature: true }],
+          error: null,
+        },
+      });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/jobs/${JOB_UUID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { requireCompletionSignature: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).requireCompletionSignature).toBe(true);
+    });
+
     it('AC2 — owner reassigns to a valid technician → 200', async () => {
       mockAdmin({});
 
@@ -1274,6 +1294,42 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe(
         'INVALID_WORKFLOW_STEP',
       );
+    });
+
+    it('AC5.8 (Story 3.8) — signature skip: both flags false, in_progress → completed → 200', async () => {
+      mockAdmin({
+        job: {
+          data: {
+            ...fetchRow,
+            status: 'in_progress',
+            current_step: 'in_progress',
+            require_completion_photo: false,
+            require_completion_signature: false,
+          },
+          error: null,
+        },
+        rpc: {
+          data: [
+            {
+              ...fetchRow,
+              status: 'completed',
+              current_step: 'completed',
+              completed_at: '2026-09-05T10:00:00Z',
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: WORKFLOW_URL,
+        headers: { authorization: `Bearer ${assignedTechJwt()}` },
+        payload: { step: 'completed' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).status).toBe('completed');
     });
 
     it('AC10 — Owner JWT → 403 FORBIDDEN', async () => {

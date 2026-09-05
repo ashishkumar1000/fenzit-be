@@ -34,6 +34,7 @@ interface WorkflowJobRow {
   status: JobStatus;
   current_step: string | null;
   require_completion_photo: boolean;
+  require_completion_signature: boolean;
   technician_id: string;
 }
 
@@ -47,21 +48,28 @@ export class WorkflowService {
   ) {}
 
   /**
-   * Pure step-ordering rule. The requested step must be the immediate successor
-   * of the current step, with one exception: photos_uploaded may be skipped
-   * (signature_captured directly after in_progress) only when a completion photo
-   * is NOT required.
+   * Pure step-ordering rule (Story 3.8, effective-chain successor).
+   *
+   * The requested step must be the NEXT REQUIRED step after the current one:
+   * photos_uploaded is in the effective chain only when a completion photo is
+   * required, signature_captured only when a signature is required. Walking
+   * forward from current_step's position, the first step present in the
+   * effective chain is the only legal target. This single rule reproduces the
+   * full flag matrix AND the dynamic-flag edge (a step sitting on a now-non-
+   * required step simply walks past it), with no per-row special cases. The
+   * photo-skip behaviour (in_progress → signature_captured when no photo is
+   * required) falls out naturally.
    */
   validateStep(
     currentStep: string | null,
     requested: WorkflowStep,
     requireCompletionPhoto: boolean,
+    requireCompletionSignature: boolean,
   ): boolean {
     const curIdx =
       currentStep === null
         ? -1
         : STEP_ORDER.indexOf(currentStep as WorkflowStep);
-    const reqIdx = STEP_ORDER.indexOf(requested);
 
     // A non-null current_step that is not a recognized step is corrupt — never
     // treat it as the fresh-job (-1) case, which would let on_my_way through and
@@ -70,21 +78,16 @@ export class WorkflowService {
       return false;
     }
 
-    // Normal advance: exactly one step forward.
-    if (reqIdx === curIdx + 1) {
-      return true;
-    }
+    const inChain = (s: WorkflowStep) =>
+      (s !== WorkflowStep.PHOTOS_UPLOADED || requireCompletionPhoto) &&
+      (s !== WorkflowStep.SIGNATURE_CAPTURED || requireCompletionSignature);
 
-    // Photo skip: in_progress → signature_captured when no photo is required.
-    if (
-      !requireCompletionPhoto &&
-      requested === WorkflowStep.SIGNATURE_CAPTURED &&
-      currentStep === WorkflowStep.IN_PROGRESS
-    ) {
-      return true;
-    }
+    // First required step at or after current_step's successor. For a fresh job
+    // (null current_step, curIdx -1) this is on_my_way, which is always in the
+    // chain — unchanged behaviour.
+    const next = STEP_ORDER.find((s, idx) => idx > curIdx && inChain(s));
 
-    return false;
+    return requested === next;
   }
 
   async advanceWorkflowStep(
@@ -107,7 +110,7 @@ export class WorkflowService {
     const { data: row, error } = await admin
       .from('jobs')
       .select(
-        'id, tenant_id, status, current_step, require_completion_photo, technician_id',
+        'id, tenant_id, status, current_step, require_completion_photo, require_completion_signature, technician_id',
       )
       .eq('id', jobId)
       .eq('tenant_id', user.tenantId)
@@ -179,6 +182,7 @@ export class WorkflowService {
         row.current_step,
         dto.step,
         row.require_completion_photo,
+        row.require_completion_signature,
       )
     ) {
       throw new HttpException(

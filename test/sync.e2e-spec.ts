@@ -33,6 +33,7 @@ describe('Sync (e2e)', () => {
     current_step: null,
     priority: 'normal',
     require_completion_photo: false,
+    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -129,6 +130,11 @@ describe('Sync (e2e)', () => {
         address: '12 MG Road, Bengaluru',
       });
       expect(body.jobs[0].attachments).toEqual([]);
+      // Story 3.8 review: pin the completion-flag contract on the sync payload —
+      // if the select or mapper drops a flag column, the field serializes as
+      // undefined and this fails.
+      expect(body.jobs[0].requireCompletionPhoto).toBe(false);
+      expect(body.jobs[0].requireCompletionSignature).toBe(false);
       // gt() should NOT have been called for initial sync
       expect(chain.gt).not.toHaveBeenCalled();
     });

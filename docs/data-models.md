@@ -115,6 +115,7 @@ service_type, service_location TEXT
 scheduled_start, scheduled_end TIMESTAMPTZ
 description, priority, notes_for_technician TEXT
 require_completion_photo BOOLEAN
+require_completion_signature BOOLEAN  -- per-job: signature required to complete (Story 3.8)
 sequence_index INT  -- per-job workflow step pointer
 created_at, updated_at TIMESTAMPTZ
 ```

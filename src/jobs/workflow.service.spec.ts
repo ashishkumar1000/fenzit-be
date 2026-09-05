@@ -36,6 +36,7 @@ describe('WorkflowService', () => {
     status: 'scheduled',
     current_step: null as string | null,
     require_completion_photo: false,
+    require_completion_signature: false,
     technician_id: 'tech-1',
   };
 
@@ -54,6 +55,7 @@ describe('WorkflowService', () => {
     current_step: 'on_my_way',
     priority: 'normal',
     require_completion_photo: false,
+    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -104,25 +106,51 @@ describe('WorkflowService', () => {
   }
 
   describe('validateStep', () => {
+    // Effective-chain successor table (Story 3.8): [current, requested,
+    // photoRequired, signatureRequired, expected]. photo=true + signature=true
+    // preserves the exact one-step chain; every other combination is a skip.
     it.each([
-      [null, WorkflowStep.ON_MY_WAY, false, true],
-      ['on_my_way', WorkflowStep.ARRIVED, false, true],
-      ['arrived', WorkflowStep.IN_PROGRESS, false, true],
-      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, false, true],
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, false, true], // skip photos
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, true, false], // photo required
-      ['photos_uploaded', WorkflowStep.SIGNATURE_CAPTURED, true, true],
-      ['signature_captured', WorkflowStep.COMPLETED, false, true],
-      ['on_my_way', WorkflowStep.COMPLETED, false, false], // out of order
-      ['in_progress', WorkflowStep.ON_MY_WAY, false, false], // backward
-      ['on_my_way', WorkflowStep.ON_MY_WAY, false, false], // same step
-      [null, WorkflowStep.ARRIVED, false, false], // can't skip on_my_way
-      ['garbage', WorkflowStep.ON_MY_WAY, false, false], // corrupt current_step ≠ fresh job
-      ['garbage', WorkflowStep.ARRIVED, false, false], // corrupt current_step is not advanceable
+      // photo=N sig=Y: today's behaviour (photos skippable, signature mandatory)
+      [null, WorkflowStep.ON_MY_WAY, false, true, true],
+      ['on_my_way', WorkflowStep.ARRIVED, false, true, true],
+      ['arrived', WorkflowStep.IN_PROGRESS, false, true, true],
+      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, false, true, true], // skip photos
+      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, false, true, false], // not required
+      ['signature_captured', WorkflowStep.COMPLETED, false, true, true],
+      // photo=Y sig=Y: full chain, exactly-one-step-forward
+      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, true, true, true],
+      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, true, true, false], // photo required first
+      ['in_progress', WorkflowStep.COMPLETED, true, true, false],
+      ['photos_uploaded', WorkflowStep.SIGNATURE_CAPTURED, true, true, true],
+      ['photos_uploaded', WorkflowStep.COMPLETED, true, true, false], // signature required first
+      ['signature_captured', WorkflowStep.COMPLETED, true, true, true],
+      // photo=Y sig=N: signature skippable
+      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, true, false, true],
+      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, true, false, false], // not required
+      ['photos_uploaded', WorkflowStep.COMPLETED, true, false, true], // skip signature
+      // photo=N sig=N: everything skippable, completed directly
+      ['in_progress', WorkflowStep.COMPLETED, false, false, true],
+      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, false, false, false],
+      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, false, false, false],
+      // AC5 dynamic edge: signature toggled OFF while current_step sits ON the
+      // (now non-required) signature_captured step → completed is legal.
+      ['signature_captured', WorkflowStep.COMPLETED, false, false, true],
+      // Out-of-order / backward / same / fresh-job skips
+      ['on_my_way', WorkflowStep.COMPLETED, false, false, false], // out of order
+      ['in_progress', WorkflowStep.ON_MY_WAY, false, false, false], // backward
+      ['on_my_way', WorkflowStep.ON_MY_WAY, false, false, false], // same step
+      [null, WorkflowStep.ARRIVED, false, false, false], // can't skip on_my_way
+      [null, WorkflowStep.ARRIVED, true, true, false], // even when everything is required
+      // Corrupt current_step ≠ fresh job, never advanceable
+      ['garbage', WorkflowStep.ON_MY_WAY, false, false, false],
+      ['garbage', WorkflowStep.ARRIVED, false, false, false],
+      ['garbage', WorkflowStep.COMPLETED, true, true, false],
     ])(
-      'current=%s requested=%s photo=%s → %s',
-      (current, requested, photo, expected) => {
-        expect(service.validateStep(current, requested, photo)).toBe(expected);
+      'current=%s requested=%s photo=%s signature=%s → %s',
+      (current, requested, photo, signature, expected) => {
+        expect(service.validateStep(current, requested, photo, signature)).toBe(
+          expected,
+        );
       },
     );
   });
@@ -230,6 +258,7 @@ describe('WorkflowService', () => {
             status: 'in_progress',
             current_step: 'in_progress',
             require_completion_photo: true,
+            require_completion_signature: true,
           },
           error: null,
         },
@@ -241,6 +270,37 @@ describe('WorkflowService', () => {
           dto(WorkflowStep.SIGNATURE_CAPTURED),
         ),
       ).rejects.toBeInstanceOf(HttpException);
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('skip signature when require_completion_signature=true → 422; rpc NOT called', async () => {
+      const { rpc } = mockAdmin({
+        job: {
+          data: {
+            ...baseJobRow,
+            status: 'in_progress',
+            current_step: 'in_progress',
+            require_completion_photo: false,
+            require_completion_signature: true,
+          },
+          error: null,
+        },
+      });
+      // Signature required → the next required step is signature_captured;
+      // jumping straight to completed must be rejected without touching the RPC.
+      await expect(
+        service.advanceWorkflowStep(
+          tech,
+          'job-uuid',
+          dto(WorkflowStep.COMPLETED),
+        ),
+      ).rejects.toMatchObject({
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        response: {
+          error_code: ErrorCode.INVALID_WORKFLOW_STEP,
+          currentStep: 'in_progress',
+        },
+      });
       expect(rpc).not.toHaveBeenCalled();
     });
 

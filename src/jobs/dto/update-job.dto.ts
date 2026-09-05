@@ -4,14 +4,17 @@ import { CreateJobDto } from './create-job.dto';
 import { JobStatus } from '../enums/job-status.enum';
 
 /**
- * Body for `PATCH /api/v1/jobs/:id` (Story 3.4).
+ * Body for `PATCH /api/v1/jobs/:id` (Story 3.4; flags added in Story 3.8).
  *
- * Only the FR-9 mutable fields are exposed — we `PickType` the mutable subset of
+ * Only the mutable fields are exposed — we `PickType` the mutable subset of
  * CreateJobDto (reusing its validators/transformers) rather than `OmitType`, which
  * would leak the immutable serviceLocation/serviceType/customerId/newCustomer.
- * `PartialType` makes them all optional. The cancellation-only `status` is added
- * on top; lifecycle transitions to in_progress/completed are the workflow
- * endpoint's job (Story 3.5), so `status` here may only be `cancelled`.
+ * The completion flags (`requireCompletionPhoto`/`requireCompletionSignature`)
+ * are mutable per Story 3.8 (owner-only, `scheduled` jobs, COALESCE semantics:
+ * absent = unchanged). `PartialType` makes them all optional. The
+ * cancellation-only `status` is added on top; lifecycle transitions to
+ * in_progress/completed are the workflow endpoint's job (Story 3.5), so `status`
+ * here may only be `cancelled`.
  */
 export class UpdateJobDto extends PartialType(
   PickType(CreateJobDto, [
@@ -21,6 +24,8 @@ export class UpdateJobDto extends PartialType(
     'notesForTechnician',
     'technicianId',
     'priority',
+    'requireCompletionPhoto',
+    'requireCompletionSignature',
   ] as const),
 ) {
   @ApiPropertyOptional({

@@ -28,7 +28,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 // (rather than imported) so this service's `as JobRow[]` cast has the matching
 // column-literal type, same reasoning as listJobs in jobs.service.ts.
 const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, description, notes_for_technician, created_at, updated_at';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at';
 const JOBS_PAGE_SIZE = 50;
 // Cursor scope — a cursor minted for another paginated endpoint (e.g. the jobs
 // list, which also keys on created_at) is rejected (400) here.
