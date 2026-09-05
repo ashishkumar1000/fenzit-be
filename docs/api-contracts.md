@@ -249,28 +249,39 @@ assigned technician.** Steps are validated for ordering (422 on out-of-order).
 
 **Phase 1 of two-phase upload.** Request a presigned R2 upload URL.
 
-**Headers:** `X-Idempotency-Key: <UUID v4>` (optional)
+**Headers:** `X-Idempotency-Key: <UUID v4>` (optional; 24h replay dedup via
+`IdempotencyInterceptor`)
 
-**Body:** `{ contentType: string, sizeBytes: number, purpose: 'before' | 'after' }`
+**Body:** `{ filename: string, mimeType: string, attachmentType: 'photo' | 'signature' }`
+— `mimeType` must be one of `image/jpeg | image/png | image/heic`.
 
 **Responses:**
-- `200` — `{ uploadId: UUID, uploadUrl: string (presigned R2 PUT), expiresAt: ISO8601 }`
-- `409` — Photo limit reached (5 max per job)
-- `422` — Validation error
+- `200` — `{ presignedPutUrl: string (presigned R2 PUT; the signature covers
+  the `Content-Type` header), uploadId: UUID, key: string (R2 object key,
+  tenant/job-scoped), expiresAt: ISO8601 (900 s — matches the URL TTL) }`
+- `409` — Photo limit reached (5 confirmed photos max per job)
+- `422` — Validation error (unknown mimeType, missing fields)
+
+The client PUTs the raw bytes to `presignedPutUrl` directly against R2 —
+`Content-Type` header only, **no `Authorization` header** — then confirms.
 
 #### `POST /api/v1/jobs/:id/attachments/:uploadId/confirm` `[Bearer JWT, Role: technician]`
 
 **Phase 2 of two-phase upload.** Confirm a completed R2 upload; the backend
 calls `rpc_confirm_attachment` (Postgres RPC) which performs server-side
-conflict resolution (see `migration 13/14`).
+conflict resolution (see `migration 13/14`). Note: this endpoint does NOT
+take the idempotency interceptor — the `X-Idempotency-Key` header, if sent,
+is ignored; re-executing a confirm is safe (the RPC returns the existing
+row) but is re-execution, not key-based replay.
 
-**Body:** `{ checksum: string, sizeBytes: number }`
+**Body:** `{ sizeBytes: number }` (integer, ≥ 1)
 
 **Responses:**
-- `200` — Attachment confirmed
+- `200` — The confirmed attachment (`{ id, type, createdAt }`)
 - `404` — Job or upload not found
-- `410` — Upload session expired
-- `422` — Validation error
+- `409` — Photo limit reached (5 max per job)
+- `410` — Upload session expired (client should restart from presign)
+- `422` — Validation error (missing/non-integer/zero `sizeBytes`)
 
 ---
 
