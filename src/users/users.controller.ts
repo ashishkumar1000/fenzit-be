@@ -35,11 +35,15 @@ export class UsersController {
       "Get the current user's profile — branches by role. Owner gets " +
       'company/tenant info, technician roster + skills, all customers, and ' +
       'all jobs + jobCounts (today/upcoming/overdue/completed/cancelled). ' +
-      'Technician gets own skills, own jobs, and own jobCounts.',
+      'Technician gets own skills, own jobs, and own jobCounts. Every job ' +
+      'row embeds technician (id, name, phone, skills) and customer (id, ' +
+      'name, phone, address, city) summaries. jobsScope=today narrows the ' +
+      'jobs page to the current IST day window, sorted soonest-first.',
   })
   @ApiResponse({ status: 200, description: 'Role-specific profile payload' })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 400, description: 'Malformed cursor' })
+  @ApiResponse({ status: 422, description: 'Invalid jobsScope value' })
   getMyProfile(
     @CurrentUser() user: RequestUser,
     @Query() query: GetProfileQueryDto,

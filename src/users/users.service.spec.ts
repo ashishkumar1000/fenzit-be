@@ -10,7 +10,7 @@ import { JobsService } from '../jobs/jobs.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
-import { encodeCursor } from '../common/utils/cursor.util';
+import { encodeCursor, decodeCursor } from '../common/utils/cursor.util';
 import { getIstDayRange } from '../common/utils/ist-day-range.util';
 import { JobStatus } from '../jobs/enums/job-status.enum';
 
@@ -159,8 +159,14 @@ describe('UsersService', () => {
 
   // users.eq('id',...).single() (own profile) vs
   // users.eq('tenant_id',...).eq('role',...).order(...) (owner's technician list)
+  // vs users.in('id', ids).eq('tenant_id',...) (Story 3.9 batched embed fetch)
   // — dispatched on whether the select() column list mentions user_skills.
-  function usersTableHandler(ownResult: DbResult, techniciansResult: DbResult) {
+  function usersTableHandler(
+    ownResult: DbResult,
+    techniciansResult: DbResult,
+    batchUsersResult: DbResult,
+  ) {
+    const batchUsersEq = jest.fn().mockResolvedValue(batchUsersResult);
     const select = jest.fn((cols: string) => {
       if (cols.includes('user_skills')) {
         const order = jest.fn().mockResolvedValue(techniciansResult);
@@ -170,9 +176,21 @@ describe('UsersService', () => {
       }
       const single = jest.fn().mockResolvedValue(ownResult);
       const eqId = jest.fn().mockReturnValue({ single });
-      return { eq: eqId };
+      const inIds = jest.fn().mockReturnValue({ eq: batchUsersEq });
+      return { eq: eqId, in: inIds };
     });
-    return { select };
+    return { select, batchUsersEq };
+  }
+
+  // customers.eq('tenant_id',...).in('id', ids) — Story 3.9 batched embed fetch.
+  function customersTableHandler(result: DbResult) {
+    const inIds = jest.fn().mockResolvedValue(result);
+    const eqTenant = jest.fn().mockReturnValue({ in: inIds });
+    return {
+      select: jest.fn().mockReturnValue({ eq: eqTenant }),
+      inIds,
+      eqTenant,
+    };
   }
 
   function tenantsTableHandler(result: DbResult) {
@@ -181,10 +199,21 @@ describe('UsersService', () => {
     return { select: jest.fn().mockReturnValue({ eq }) };
   }
 
-  function userSkillsTableHandler(result: DbResult) {
-    const eq2 = jest.fn().mockResolvedValue(result);
-    const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
-    return { select: jest.fn().mockReturnValue({ eq: eq1 }) };
+  // user_skills.eq('user_id',...).eq('tenant_skills.tenant_id',...) (own skills)
+  // vs user_skills.in('user_id', ids).eq('tenant_skills.tenant_id',...)
+  // (Story 3.9 batched embed skills) — dispatched on the select column list.
+  function userSkillsTableHandler(ownResult: DbResult, batchResult: DbResult) {
+    const batchSkillsEq = jest.fn().mockResolvedValue(batchResult);
+    const select = jest.fn((cols: string) => {
+      if (cols.includes('user_id')) {
+        const inFn = jest.fn().mockReturnValue({ eq: batchSkillsEq });
+        return { in: inFn, batchEq: batchSkillsEq };
+      }
+      const eq2 = jest.fn().mockResolvedValue(ownResult);
+      const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
+      return { eq: eq1 };
+    });
+    return { select, batchSkillsEq };
   }
 
   // jobs.select(JOB_COLUMNS)...limit() (list) vs
@@ -238,7 +267,7 @@ describe('UsersService', () => {
         }
 
         const builder: Record<string, jest.Mock> = {};
-        for (const m of ['eq', 'or', 'order']) {
+        for (const m of ['eq', 'or', 'order', 'gte', 'lt']) {
           builder[m] = jest.fn().mockReturnValue(builder);
         }
         builder.limit = jest.fn().mockResolvedValue(listResult);
@@ -259,6 +288,9 @@ describe('UsersService', () => {
     ownSkills?: DbResult;
     jobsList?: DbResult;
     jobCounts?: Record<string, number> | { error: unknown };
+    batchUsers?: DbResult;
+    batchSkills?: DbResult;
+    batchCustomers?: DbResult;
   }) {
     const ownRow = opts.ownRow ?? { data: ownOwnerRow, error: null };
     const tenant = opts.tenant ?? { data: tenantRow, error: null };
@@ -272,14 +304,24 @@ describe('UsersService', () => {
       completed: 0,
       cancelled: 0,
     };
+    // Story 3.9 batched embed fetches — only hit when the jobs page is
+    // non-empty.
+    const batchUsers = opts.batchUsers ?? { data: [], error: null };
+    const batchSkills = opts.batchSkills ?? { data: [], error: null };
+    const batchCustomers = opts.batchCustomers ?? { data: [], error: null };
 
     const countBuilders: CountBuilder[] = [];
     const listBuilders: Array<Record<string, jest.Mock>> = [];
 
+    const usersHandler = usersTableHandler(ownRow, technicians, batchUsers);
+    const skillsHandler = userSkillsTableHandler(ownSkills, batchSkills);
+    const customersHandler = customersTableHandler(batchCustomers);
+
     const from = jest.fn((table: string) => {
-      if (table === 'users') return usersTableHandler(ownRow, technicians);
+      if (table === 'users') return usersHandler;
       if (table === 'tenants') return tenantsTableHandler(tenant);
-      if (table === 'user_skills') return userSkillsTableHandler(ownSkills);
+      if (table === 'user_skills') return skillsHandler;
+      if (table === 'customers') return customersHandler;
       if (table === 'jobs') {
         return jobsTableHandler(
           jobsList,
@@ -292,7 +334,14 @@ describe('UsersService', () => {
     });
 
     supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
-    return { from, countBuilders, listBuilders };
+    return {
+      from,
+      countBuilders,
+      listBuilders,
+      usersHandler,
+      skillsHandler,
+      customersHandler,
+    };
   }
 
   describe('getMyProfile — owner', () => {
@@ -333,7 +382,29 @@ describe('UsersService', () => {
         ['Plumbing', 'Electrical', 'Wiring'].sort(),
       );
       expect(result.customers).toBe(emptyCustomersPage);
-      expect(result.jobs.data).toEqual([{ id: 'j1', status: 'scheduled' }]);
+      // Story 3.9 — every profile job row now embeds technician + customer.
+      // Mocks return no embed rows, so the fallbacks (id-only, null names) show.
+      expect(result.jobs.data).toEqual([
+        {
+          id: 'j1',
+          status: 'scheduled',
+          technician: {
+            id: 'tech-uuid',
+            name: null,
+            countryCode: '',
+            phoneNumber: '',
+            skills: [],
+          },
+          customer: {
+            id: 'cust-1',
+            name: null,
+            countryCode: '',
+            phoneNumber: '',
+            address: null,
+            city: null,
+          },
+        },
+      ]);
       // Story 3.7 — the profile's explicit select list must name completed_at;
       // omitting it silently drops the key through the `as JobRow[]` cast.
       expect(
@@ -610,7 +681,27 @@ describe('UsersService', () => {
       expect(result.skills.sort()).toEqual(
         ['AC Repair', 'Pest Control'].sort(),
       );
-      expect(result.jobs.data).toEqual([{ id: 'j2', status: 'in_progress' }]);
+      expect(result.jobs.data).toEqual([
+        {
+          id: 'j2',
+          status: 'in_progress',
+          technician: {
+            id: 'tech-uuid',
+            name: null,
+            countryCode: '',
+            phoneNumber: '',
+            skills: [],
+          },
+          customer: {
+            id: 'cust-1',
+            name: null,
+            countryCode: '',
+            phoneNumber: '',
+            address: null,
+            city: null,
+          },
+        },
+      ]);
       expect(result.jobCounts).toEqual({
         today: 1,
         upcoming: 2,
@@ -671,6 +762,432 @@ describe('UsersService', () => {
       await expect(service.getMyProfile(technicianUser, {})).rejects.toThrow(
         InternalServerErrorException,
       );
+    });
+  });
+
+  describe('getMyProfile — jobs embed + today scope (Story 3.9)', () => {
+    const range = getIstDayRange();
+
+    it('embeds technician and customer summaries on every owner job row, resolved with batched queries', async () => {
+      const { usersHandler, skillsHandler, customersHandler } = mockAdmin({
+        jobsList: {
+          data: [
+            jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z'),
+            jobRow('j2', 'in_progress', '2026-06-21T07:00:00Z'),
+          ],
+          error: null,
+        },
+        batchUsers: {
+          data: [
+            {
+              id: 'tech-uuid',
+              name: 'Ravi',
+              country_code: '+91',
+              phone_number: '9111111111',
+            },
+          ],
+          error: null,
+        },
+        batchSkills: {
+          data: [
+            { user_id: 'tech-uuid', tenant_skills: { name: 'Plumbing' } },
+            { user_id: 'tech-uuid', tenant_skills: [{ name: 'Electrical' }] },
+          ],
+          error: null,
+        },
+        batchCustomers: {
+          data: [
+            {
+              id: 'cust-1',
+              name: 'Sharma Residency',
+              country_code: '+91',
+              phone_number: '9333333333',
+              address: '12 MG Road',
+              city: 'Pune',
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.data).toHaveLength(2);
+      for (const row of result.jobs.data) {
+        expect(row.technician).toEqual({
+          id: 'tech-uuid',
+          name: 'Ravi',
+          countryCode: '+91',
+          phoneNumber: '9111111111',
+          skills: ['Plumbing', 'Electrical'],
+        });
+        expect(row.customer).toEqual({
+          id: 'cust-1',
+          name: 'Sharma Residency',
+          countryCode: '+91',
+          phoneNumber: '9333333333',
+          address: '12 MG Road',
+          city: 'Pune',
+        });
+      }
+
+      // Batched: the page's distinct ids resolved with ONE in-filtered query
+      // per table (+ one for skills), never one query per row.
+      const selectCols = (m: jest.Mock): string[] =>
+        m.mock.calls.map((c: unknown[]) => c[0] as string);
+      expect(selectCols(usersHandler.select)).toContain(
+        'id, name, country_code, phone_number',
+      );
+      expect(selectCols(skillsHandler.select)).toContain(
+        'user_id, tenant_skills!inner(name)',
+      );
+      expect(selectCols(customersHandler.select)).toContain(
+        'id, name, country_code, phone_number, address, city',
+      );
+      // Every plain-columns select returns its own in() builder; collect the
+      // ones that were actually driven by the batched embed fetch.
+      const inCalls = (handlerSelect: jest.Mock): unknown[][] =>
+        handlerSelect.mock.results
+          .map((r): jest.Mock | undefined => (r.value as { in?: jest.Mock }).in)
+          .filter((m): m is jest.Mock => Boolean(m))
+          .flatMap((m): unknown[] => m.mock.calls);
+      expect(inCalls(usersHandler.select)).toContainEqual([
+        'id',
+        ['tech-uuid'],
+      ]);
+      expect(inCalls(skillsHandler.select)).toContainEqual([
+        'user_id',
+        ['tech-uuid'],
+      ]);
+      expect(customersHandler.inIds).toHaveBeenCalledWith('id', ['cust-1']);
+      // Tenant filter on every batched fetch — createAdmin() bypasses RLS, so
+      // this app-layer eq is the only cross-tenant guard on these reads.
+      expect(usersHandler.batchUsersEq).toHaveBeenCalledWith(
+        'tenant_id',
+        'tenant-uuid',
+      );
+      expect(skillsHandler.batchSkillsEq).toHaveBeenCalledWith(
+        'tenant_skills.tenant_id',
+        'tenant-uuid',
+      );
+      expect(customersHandler.eqTenant).toHaveBeenCalledWith(
+        'tenant_id',
+        'tenant-uuid',
+      );
+    });
+
+    it('embeds the technician summary on technician-branch job rows too', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        jobsList: {
+          data: [jobRow('j2', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+        batchUsers: {
+          data: [
+            {
+              id: 'tech-uuid',
+              name: 'Ravi',
+              country_code: '+91',
+              phone_number: '9111111111',
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      if (result.role !== Role.TECHNICIAN)
+        throw new Error('expected technician shape');
+      expect(result.jobs.data[0].technician).toEqual({
+        id: 'tech-uuid',
+        name: 'Ravi',
+        countryCode: '+91',
+        phoneNumber: '9111111111',
+        skills: [],
+      });
+      expect(result.jobs.data[0].customer.id).toBe('cust-1');
+    });
+
+    it('keeps the technician embed present (id-only fallback) when the users row is missing', async () => {
+      // technician_id is NOT NULL, so a missing users row is a data anomaly —
+      // the key must still be present so clients never see an unassigned job.
+      mockAdmin({
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.data[0].technician).toEqual({
+        id: 'tech-uuid',
+        name: null,
+        countryCode: '',
+        phoneNumber: '',
+        skills: [],
+      });
+    });
+
+    it('keeps the customer embed present (id-only fallback) when the customers row is missing', async () => {
+      // customer_id is NOT NULL too, so a missing customers row is equally a
+      // data anomaly (e.g. mid-page deletion) — same id-only fallback rule.
+      mockAdmin({
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.data[0].customer).toEqual({
+        id: 'cust-1',
+        name: null,
+        countryCode: '',
+        phoneNumber: '',
+        address: null,
+        city: null,
+      });
+    });
+
+    it('throws 500 when a batched embed query errors', async () => {
+      mockAdmin({
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+        batchCustomers: { data: null, error: { code: '08006' } },
+      });
+
+      await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+
+    it('skips the batched embed queries entirely for an empty jobs page', async () => {
+      const { usersHandler, skillsHandler, customersHandler } = mockAdmin({});
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.data).toHaveLength(0);
+      // The customers table is only ever touched by the embed assembly, so
+      // zero select calls proves the empty-page guard fired.
+      expect(customersHandler.select).not.toHaveBeenCalled();
+      // And the users/skills batched branches never ran either (their select
+      // column lists are distinct from the own-profile/technician-list ones).
+      expect(usersHandler.select).not.toHaveBeenCalledWith(
+        'id, name, country_code, phone_number',
+      );
+      expect(skillsHandler.select).not.toHaveBeenCalledWith(
+        'user_id, tenant_skills!inner(name)',
+      );
+    });
+
+    it('combines jobsScope=today with the technician branch (day window + own-jobs filter + embeds)', async () => {
+      const { listBuilders } = mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+        batchUsers: {
+          data: [
+            {
+              id: 'tech-uuid',
+              name: 'Ravi',
+              country_code: '+91',
+              phone_number: '9111111111',
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(technicianUser, {
+        jobsScope: 'today',
+      });
+
+      const list = listBuilders[0];
+      expect(list.eq).toHaveBeenCalledWith('technician_id', 'tech-uuid');
+      expect(list.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(list.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      expect(list.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: true,
+      });
+      if (result.role !== Role.TECHNICIAN)
+        throw new Error('expected technician shape');
+      expect(result.jobs.data[0].technician.name).toBe('Ravi');
+      expect(result.jobs.data[0].customer.id).toBe('cust-1');
+    });
+
+    it('treats explicit jobsScope=all exactly like the omitted default (no day window, created_at DESC)', async () => {
+      const { listBuilders } = mockAdmin({});
+
+      await service.getMyProfile(ownerUser, { jobsScope: 'all' });
+
+      const list = listBuilders[0];
+      expect(list.gte).not.toHaveBeenCalled();
+      expect(list.lt).not.toHaveBeenCalled();
+      expect(list.order).toHaveBeenCalledWith('created_at', {
+        ascending: false,
+      });
+      expect(list.order).toHaveBeenCalledWith('id', { ascending: false });
+      expect(list.eq).not.toHaveBeenCalledWith('status', expect.anything());
+    });
+
+    it('returns hasMore=false with a null nextCursor when the today page is short', async () => {
+      mockAdmin({
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {
+        jobsScope: 'today',
+      });
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.hasMore).toBe(false);
+      expect(result.jobs.nextCursor).toBeNull();
+    });
+
+    it("jobsScope='today' adds the IST day window on scheduled_start and sorts ASC, with no status filter", async () => {
+      const { listBuilders } = mockAdmin({});
+
+      await service.getMyProfile(ownerUser, { jobsScope: 'today' });
+
+      const list = listBuilders[0];
+      expect(list.gte).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.start.toISOString(),
+      );
+      expect(list.lt).toHaveBeenCalledWith(
+        'scheduled_start',
+        range.end.toISOString(),
+      );
+      // No status filter — parity with GET /jobs?scope=today: the FE drops
+      // completed/cancelled rows from display, the payload stays honest.
+      expect(list.order).toHaveBeenCalledWith('scheduled_start', {
+        ascending: true,
+      });
+      expect(list.order).toHaveBeenCalledWith('id', { ascending: true });
+      expect(list.eq).not.toHaveBeenCalledWith('status', expect.anything());
+    });
+
+    it('default scope (all) keeps created_at DESC with no day window', async () => {
+      const { listBuilders } = mockAdmin({});
+
+      await service.getMyProfile(ownerUser, {});
+
+      const list = listBuilders[0];
+      expect(list.gte).not.toHaveBeenCalled();
+      expect(list.lt).not.toHaveBeenCalled();
+      expect(list.order).toHaveBeenCalledWith('created_at', {
+        ascending: false,
+      });
+      expect(list.order).toHaveBeenCalledWith('id', { ascending: false });
+    });
+
+    it("jobsScope='today' paginates with a scheduled_start-ASC keyset cursor", async () => {
+      const { listBuilders } = mockAdmin({});
+      const cursor = encodeCursor(
+        '11111111-1111-4111-8111-111111111111',
+        '2026-06-21T04:00:00.000Z',
+        'profile-jobs-today',
+      );
+
+      await service.getMyProfile(ownerUser, {
+        jobsScope: 'today',
+        jobsCursor: cursor,
+      });
+
+      expect(listBuilders[0].or).toHaveBeenCalledWith(
+        'scheduled_start.gt.2026-06-21T04:00:00.000Z,' +
+          'and(scheduled_start.eq.2026-06-21T04:00:00.000Z,' +
+          'id.gt.11111111-1111-4111-8111-111111111111)',
+      );
+    });
+
+    it('rejects a profile-jobs cursor on the today scope (and vice versa) with 400', async () => {
+      const wrongScope = encodeCursor(
+        '11111111-1111-4111-8111-111111111111',
+        '2026-06-21T00:00:00.000Z',
+        'profile-jobs',
+      );
+      mockAdmin({});
+
+      await expect(
+        service.getMyProfile(ownerUser, {
+          jobsScope: 'today',
+          jobsCursor: wrongScope,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a profile-jobs-today cursor on the default scope with 400', async () => {
+      const todayCursor = encodeCursor(
+        '11111111-1111-4111-8111-111111111111',
+        '2026-06-21T04:00:00.000Z',
+        'profile-jobs-today',
+      );
+      mockAdmin({});
+
+      await expect(
+        service.getMyProfile(ownerUser, { jobsCursor: todayCursor }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('mints next cursors with the scope-matching tag', async () => {
+      // Two pages' worth of rows: hasMore true, so a nextCursor is minted.
+      // UUID ids — decodeCursor validates the payload's id format.
+      const rows = [
+        jobRow(
+          'a1111111-1111-4111-8111-111111111111',
+          'scheduled',
+          '2026-06-21T04:00:00Z',
+        ),
+        jobRow(
+          'a2222222-2222-4222-8222-222222222222',
+          'scheduled',
+          '2026-06-21T05:00:00Z',
+        ),
+      ];
+      mockAdmin({
+        jobsList: { data: rows, error: null },
+        jobCounts: {
+          today: 0,
+          upcoming: 0,
+          overdue: 0,
+          completed: 0,
+          cancelled: 0,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {
+        jobsScope: 'today',
+        jobsLimit: 1,
+      });
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.jobs.hasMore).toBe(true);
+      const decoded = decodeCursor(result.jobs.nextCursor as string);
+      expect(decoded.scope).toBe('profile-jobs-today');
+      expect(decoded.id).toBe('a1111111-1111-4111-8111-111111111111');
+      expect(decoded.createdAt).toBe('2026-06-21T04:00:00Z');
     });
   });
 });

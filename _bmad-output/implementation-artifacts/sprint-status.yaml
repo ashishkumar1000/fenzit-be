@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19
-last_updated: 2026-09-05  # 3-8 done
+last_updated: 2026-09-05  # 3-9 reviewed → done — today scope + batched embeds on /users/me
 project: fenzit-be
 project_key: NOKEY
 tracking_system: file-system
@@ -70,6 +70,7 @@ development_status:
   3-6-job-attachment-upload-via-cloudflare-r2: done
   3-7-jobs-timeline-scopes: done
   3-8-optional-signature-requirement-flags: done
+  3-9-users-me-today-jobs-enrich: done  # reviewed 2026-09-05 (4-layer review, 12 patches applied); tests 330 green; pairs with fenzo-app 1-7 (BE first)
   epic-3-retrospective: done  # marked done 2026-09-03 — no retro held, skipped by user choice
 
   # Epic 4: Offline-First Mobile Sync

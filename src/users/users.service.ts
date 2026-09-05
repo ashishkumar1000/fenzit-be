@@ -33,6 +33,11 @@ const JOBS_PAGE_SIZE = 50;
 // Cursor scope — a cursor minted for another paginated endpoint (e.g. the jobs
 // list, which also keys on created_at) is rejected (400) here.
 const PROFILE_JOBS_CURSOR_SCOPE: CursorScope = 'profile-jobs';
+// Story 3.9 — the today scope keys on scheduled_start (different column and
+// sort direction than the default), so its cursors carry their own scope tag:
+// a cursor minted for one profile scope is rejected (400) on the other, the
+// same rule as the jobs-list timeline scopes.
+const PROFILE_JOBS_TODAY_CURSOR_SCOPE: CursorScope = 'profile-jobs-today';
 
 export interface TenantSummary {
   id: string;
@@ -83,7 +88,7 @@ export interface OwnerProfileResponse extends UserProfileBase {
   technicians: TechnicianSummary[];
   technicianCount: number;
   customers: PaginatedResponse<CustomerListItem>;
-  jobs: PaginatedResponse<JobResponse>;
+  jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
 }
 
@@ -91,9 +96,35 @@ export interface TechnicianProfileResponse extends UserProfileBase {
   role: Role.TECHNICIAN;
   skills: string[];
   skillIds: string[];
-  jobs: PaginatedResponse<JobResponse>;
+  jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
 }
+
+// Story 3.9 — every profile job row embeds the same technician/customer
+// summaries the GET /jobs/:id detail embed uses (jobs.service.toDetailResponse),
+// so the Home dispatch view needs no on-device id→name joins. JobResponse
+// itself is NOT widened — GET /jobs keeps its exact shape.
+export interface ProfileTechnicianEmbed {
+  id: string;
+  name: string | null;
+  countryCode: string;
+  phoneNumber: string;
+  skills: string[];
+}
+
+export interface ProfileCustomerEmbed {
+  id: string;
+  name: string | null;
+  countryCode: string;
+  phoneNumber: string;
+  address: string | null;
+  city: string | null;
+}
+
+export type ProfileJobResponse = JobResponse & {
+  technician: ProfileTechnicianEmbed;
+  customer: ProfileCustomerEmbed;
+};
 
 export type UserProfileResponse =
   OwnerProfileResponse | TechnicianProfileResponse;
@@ -199,7 +230,7 @@ export class UsersService {
           role: Role.TECHNICIAN,
           skills: [],
           skillIds: [],
-          jobs: new PaginatedResponse<JobResponse>([], null),
+          jobs: new PaginatedResponse<ProfileJobResponse>([], null),
           jobCounts: EMPTY_JOB_COUNTS,
         };
       }
@@ -209,7 +240,7 @@ export class UsersService {
         technicians: [],
         technicianCount: 0,
         customers: new PaginatedResponse<CustomerListItem>([], null),
-        jobs: new PaginatedResponse<JobResponse>([], null),
+        jobs: new PaginatedResponse<ProfileJobResponse>([], null),
         jobCounts: EMPTY_JOB_COUNTS,
       };
     }
@@ -251,6 +282,7 @@ export class UsersService {
         this.listProfileJobs(
           tenantId,
           user.userId,
+          query.jobsScope,
           query.jobsCursor,
           query.jobsLimit,
         ),
@@ -278,7 +310,13 @@ export class UsersService {
         { ...user, tenantId },
         { cursor: query.customersCursor, limit: query.customersLimit },
       ),
-      this.listProfileJobs(tenantId, null, query.jobsCursor, query.jobsLimit),
+      this.listProfileJobs(
+        tenantId,
+        null,
+        query.jobsScope,
+        query.jobsCursor,
+        query.jobsLimit,
+      ),
       this.getJobCounts(tenantId, null),
     ]);
 
@@ -386,18 +424,35 @@ export class UsersService {
   }
 
   /**
-   * Full (not day-scoped) cursor-paginated job list for the profile endpoint.
-   * Mirrors jobs.service.listJobs' cursor mechanics, minus the IST-day window —
-   * this is a profile/history view, not the "today's jobs" operational view.
+   * Cursor-paginated job list for the profile endpoint, with technician and
+   * customer embeds on every row (Story 3.9).
+   *
+   * Default scope ('all', or jobsScope omitted): full history, created_at DESC
+   * — byte-for-byte the pre-3.9 query mechanics.
+   * Scope 'today': the exclusive IST day window on scheduled_start with no
+   * status filter — the same WINDOW mechanics GET /jobs?scope=today uses
+   * (Story 3.7; the FE drops completed/cancelled rows from display, the
+   * payload stays honest about the window's contents). The SORT intentionally
+   * differs: GET /jobs?scope=today keys on created_at DESC, while this
+   * dispatch view sorts scheduled_start ASC so the page reads soonest-first.
+   * A cursor minted for one scope is rejected (400) on the other.
+   * A today cursor replayed after IST midnight still passes the scope check
+   * but lands outside the now-shifted window — it returns a short/empty page
+   * (never wrong rows); clients refetch page one on the next open.
    */
   private async listProfileJobs(
     tenantId: string,
     technicianId: string | null,
+    jobsScope: GetProfileQueryDto['jobsScope'],
     cursor?: string,
     limit?: number,
-  ): Promise<PaginatedResponse<JobResponse>> {
+  ): Promise<PaginatedResponse<ProfileJobResponse>> {
     const admin = this.supabaseClientFactory.createAdmin();
     const pageSize = limit ?? JOBS_PAGE_SIZE;
+    const isToday = jobsScope === 'today';
+    const cursorScope = isToday
+      ? PROFILE_JOBS_TODAY_CURSOR_SCOPE
+      : PROFILE_JOBS_CURSOR_SCOPE;
 
     let qb = admin.from('jobs').select(JOB_COLUMNS).eq('tenant_id', tenantId);
 
@@ -405,17 +460,34 @@ export class UsersService {
       qb = qb.eq('technician_id', technicianId);
     }
 
-    if (cursor) {
-      const c = decodeCursor(cursor, PROFILE_JOBS_CURSOR_SCOPE);
-      qb = qb.or(
-        `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
-      );
+    if (isToday) {
+      // Zero new IST arithmetic — copy of the jobs-list today window.
+      const range = getIstDayRange();
+      qb = qb
+        .gte('scheduled_start', range.start.toISOString())
+        .lt('scheduled_start', range.end.toISOString());
     }
 
-    const { data, error } = await qb
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: false })
-      .limit(pageSize + 1);
+    if (cursor) {
+      const c = decodeCursor(cursor, cursorScope);
+      qb = isToday
+        ? qb.or(
+            `scheduled_start.gt.${c.createdAt},and(scheduled_start.eq.${c.createdAt},id.gt.${c.id})`,
+          )
+        : qb.or(
+            `created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`,
+          );
+    }
+
+    const { data, error } = await (
+      isToday
+        ? qb
+            .order('scheduled_start', { ascending: true })
+            .order('id', { ascending: true })
+        : qb
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: false })
+    ).limit(pageSize + 1);
 
     if (error) {
       this.logger.error('Failed to list jobs for profile:', { error });
@@ -431,13 +503,137 @@ export class UsersService {
     const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last
-        ? encodeCursor(last.id, last.created_at, PROFILE_JOBS_CURSOR_SCOPE)
+        ? encodeCursor(
+            last.id,
+            isToday ? last.scheduled_start : last.created_at,
+            cursorScope,
+          )
         : null;
 
-    return new PaginatedResponse(
-      pageRows.map((row) => this.jobsService.toResponse(row)),
-      nextCursor,
+    const enriched = await this.embedProfileJobs(admin, tenantId, pageRows);
+
+    return new PaginatedResponse(enriched, nextCursor);
+  }
+
+  /**
+   * Story 3.9 — batched technician/customer embeds for a profile jobs page.
+   * Three in-filtered queries total regardless of page size (users, skills,
+   * customers); row↔name joins happen in memory. Embed shapes mirror the
+   * GET /jobs/:id detail embed (jobs.service.toDetailResponse).
+   */
+  private async embedProfileJobs(
+    admin: SupabaseClient,
+    tenantId: string,
+    rows: JobRow[],
+  ): Promise<ProfileJobResponse[]> {
+    if (rows.length === 0) return [];
+
+    const techIds = [...new Set(rows.map((r) => r.technician_id))];
+    const customerIds = [...new Set(rows.map((r) => r.customer_id))];
+
+    const [usersRes, skillsRes, customersRes] = await Promise.all([
+      admin
+        .from('users')
+        .select('id, name, country_code, phone_number')
+        .in('id', techIds)
+        .eq('tenant_id', tenantId),
+      admin
+        .from('user_skills')
+        .select('user_id, tenant_skills!inner(name)')
+        .in('user_id', techIds)
+        .eq('tenant_skills.tenant_id', tenantId),
+      admin
+        .from('customers')
+        .select('id, name, country_code, phone_number, address, city')
+        .eq('tenant_id', tenantId)
+        .in('id', customerIds),
+    ]);
+
+    if (usersRes.error || skillsRes.error || customersRes.error) {
+      this.logger.error('Failed to fetch profile job embeds:', {
+        usersError: usersRes.error,
+        skillsError: skillsRes.error,
+        customersError: customersRes.error,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to fetch profile',
+      });
+    }
+
+    type EmbedUserRow = {
+      id: string;
+      name: string | null;
+      country_code: string;
+      phone_number: string;
+    };
+    type EmbedSkillRow = { user_id: string } & UserSkillsEmbedRow;
+    type EmbedCustomerRow = {
+      id: string;
+      name: string | null;
+      country_code: string;
+      phone_number: string;
+      address: string | null;
+      city: string | null;
+    };
+
+    const usersById = new Map(
+      ((usersRes.data ?? []) as EmbedUserRow[]).map((u) => [u.id, u]),
     );
+    const skillsByUser = new Map<string, string[]>();
+    for (const row of (skillsRes.data ?? []) as EmbedSkillRow[]) {
+      for (const skill of this.flattenSkills([row])) {
+        const list = skillsByUser.get(row.user_id) ?? [];
+        list.push(skill.name);
+        skillsByUser.set(row.user_id, list);
+      }
+    }
+    const customersById = new Map(
+      ((customersRes.data ?? []) as EmbedCustomerRow[]).map((c) => [c.id, c]),
+    );
+
+    // A missing users/customers row under an FK can only be a mid-page
+    // deletion (data anomaly). It degrades to an id-only embed below — but log
+    // the specific ids so the condition is diagnosable from server logs alone
+    // (same discipline as jobs detail's missing-embed 500).
+    const missingTechIds = rows
+      .map((r) => r.technician_id)
+      .filter((id) => !usersById.has(id));
+    const missingCustomerIds = rows
+      .map((r) => r.customer_id)
+      .filter((id) => !customersById.has(id));
+    if (missingTechIds.length > 0 || missingCustomerIds.length > 0) {
+      this.logger.warn('Profile job embeds reference missing rows:', {
+        missingTechIds,
+        missingCustomerIds,
+      });
+    }
+
+    return rows.map((row) => {
+      const tech = usersById.get(row.technician_id);
+      const customer = customersById.get(row.customer_id);
+      return {
+        ...this.jobsService.toResponse(row),
+        // technician_id is NOT NULL, so a missing users row can only be a data
+        // anomaly — degrade to an id-only embed rather than dropping the key
+        // (clients must never see an "unassigned" profile job).
+        technician: {
+          id: row.technician_id,
+          name: tech?.name ?? null,
+          countryCode: tech?.country_code ?? '',
+          phoneNumber: tech?.phone_number ?? '',
+          skills: skillsByUser.get(row.technician_id) ?? [],
+        },
+        customer: {
+          id: row.customer_id,
+          name: customer?.name ?? null,
+          countryCode: customer?.country_code ?? '',
+          phoneNumber: customer?.phone_number ?? '',
+          address: customer?.address ?? null,
+          city: customer?.city ?? null,
+        },
+      };
+    });
   }
 
   private async getJobCounts(

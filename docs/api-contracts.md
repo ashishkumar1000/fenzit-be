@@ -108,6 +108,50 @@ screen.
 
 ---
 
+### Users (profile)
+
+#### `GET /api/v1/users/me` `[Bearer JWT, Role: owner | technician]`
+
+Role-branched profile payload — the app's primary boot call.
+
+- **Owner:** tenant/company info, technician roster (with skills), customers
+  page, jobs page, and jobCounts (`today/upcoming/overdue/completed/cancelled`)
+- **Technician:** own skills, own jobs page, own jobCounts
+
+Every row in the jobs page additionally embeds
+`technician: { id, name, countryCode, phoneNumber, skills: string[] }` (always
+present — jobs are never unassigned) and
+`customer: { id, name, countryCode, phoneNumber, address, city }`, matching the
+`GET /jobs/:id` detail embed shapes. Both lists are cursor-paginated.
+
+**Query:** `jobsScope? ('today' | 'all', default 'all')`, `jobsCursor?`,
+`jobsLimit? (1-50)`, `customersCursor?`, `customersLimit? (owner only, 1-50)`
+
+`jobsScope=today` narrows the jobs page to the current **IST day window** on
+`scheduled_start` (same window `GET /jobs?scope=today` uses, no status filter)
+and sorts it `scheduled_start` ASC — soonest first, dispatch order. A
+`jobsCursor` minted for one scope is rejected (400) on the other.
+
+**Responses:**
+- `200` — Role-specific profile payload
+- `400` — Malformed / wrong-scope cursor
+- `401` — Missing/invalid JWT
+- `422` — Invalid `jobsScope` (anything other than `today`/`all`)
+
+#### `PATCH /api/v1/users/me` `[Bearer JWT, Role: owner | technician]`
+
+Update the caller's own display name. Returns the same shape as
+`GET /users/me`.
+
+**Body:** `{ name }`
+
+**Responses:**
+- `200` — Updated profile payload
+- `401` — Missing/invalid JWT
+- `422` — Validation error
+
+---
+
 ### Skills (per-tenant catalog)
 
 #### `POST /api/v1/skills` `[Bearer JWT, Role: owner]`

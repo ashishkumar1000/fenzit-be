@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -22,6 +23,16 @@ export class GetProfileQueryDto {
   @IsString()
   @MaxLength(512)
   jobsCursor?: string;
+
+  @ApiPropertyOptional({
+    enum: ['today', 'all'],
+    description:
+      "'today' scopes the jobs page to the current IST day window on scheduled_start (dispatch view, sorted soonest-first); omitted or 'all' keeps the full history list",
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsEnum(['today', 'all'])
+  jobsScope?: 'today' | 'all';
 
   @ApiPropertyOptional({
     description:
