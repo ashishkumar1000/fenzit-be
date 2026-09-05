@@ -8,7 +8,11 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
-import { RATE_LIMIT_MAX } from '../src/places/places.service';
+import {
+  RATE_LIMIT_MAX,
+  RESOLVE_RATE_LIMIT_MAX,
+} from '../src/places/places.service';
+import { SIMULATE_RESOLVE_ERROR_PLACE_ID } from '../src/places/mock-places.provider';
 
 describe('Places (e2e)', () => {
   let app: NestFastifyApplication;
@@ -157,6 +161,148 @@ describe('Places (e2e)', () => {
       const tripped = await app.inject({
         method: 'GET',
         url: `/api/v1/places/autosuggest?q=andheri&sessionToken=${SESSION_TOKEN}`,
+        headers: { authorization: `Bearer ${rateLimitJwt}` },
+      });
+
+      expect(tripped.statusCode).toBe(429);
+      expect(JSON.parse(tripped.body).error_code).toBe('RATE_LIMITED');
+    });
+  });
+
+  describe('GET /api/v1/places/resolve/:placeId', () => {
+    const KNOWN_PLACE_ID = 'mock-place-andheri-west-1';
+    const NULLABLE_PLACE_ID = 'mock-place-koramangala-sublocality-1';
+
+    it('should return 200 with the resolved fixture for a valid Owner JWT (happy path, bound MockPlacesProvider)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-1')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toMatchObject({
+        placeId: KNOWN_PLACE_ID,
+        formattedAddress: expect.any(String),
+        city: expect.any(String),
+        pincode: expect.any(String),
+        latitude: expect.any(Number),
+        longitude: expect.any(Number),
+      });
+    });
+
+    it('should return 200 with city: null and pincode: null (never omitted/empty) for a place lacking them', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${NULLABLE_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-2')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.city).toBeNull();
+      expect(body.pincode).toBeNull();
+      expect(typeof body.latitude).toBe('number');
+      expect(typeof body.longitude).toBe('number');
+    });
+
+    it('should return 403 for Technician JWT', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('should return 401 with no JWT', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('should return 422 when sessionToken is missing', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('should return 422 when sessionToken is empty/whitespace-only', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${encodeURIComponent('   ')}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422b')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('should return 502 PLACES_UPSTREAM_ERROR when the provider throws (sentinel placeId)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${SIMULATE_RESOLVE_ERROR_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-502')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(JSON.parse(response.body).error_code).toBe(
+        'PLACES_UPSTREAM_ERROR',
+      );
+    });
+
+    it('should return 502 PLACES_UPSTREAM_ERROR for an unrecognized placeId (no not-found path)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/mock-place-does-not-exist?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-unknown')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(JSON.parse(response.body).error_code).toBe(
+        'PLACES_UPSTREAM_ERROR',
+      );
+    });
+
+    // Drives the real, DI-bound PlacesRateLimitStore (backed by the actual
+    // CACHE_MANAGER, not a mock) to its resolve-specific limit — independent
+    // budget from autosuggest's (own tenant, own key suffix).
+    it('should return 429 RATE_LIMITED once the real per-tenant resolve rate limiter is exceeded', async () => {
+      const rateLimitJwt = ownerJwt('tenant-uuid-places-e2e-resolve-ratelimit');
+
+      for (let i = 0; i < RESOLVE_RATE_LIMIT_MAX; i++) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
+          headers: { authorization: `Bearer ${rateLimitJwt}` },
+        });
+        expect(response.statusCode).toBe(200);
+      }
+
+      const tripped = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
         headers: { authorization: `Bearer ${rateLimitJwt}` },
       });
 
