@@ -11,3 +11,4 @@ process.env['CLOUDFLARE_R2_ACCESS_KEY'] = 'test-access-key';
 process.env['CLOUDFLARE_R2_SECRET_KEY'] = 'test-secret-key';
 process.env['CLOUDFLARE_R2_BUCKET'] = 'test-bucket';
 process.env['WORKER_WEBHOOK_SECRET'] = 'test-webhook-secret';
+process.env['GOOGLE_PLACES_API_KEY'] = 'test-google-places-api-key';

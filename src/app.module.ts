@@ -18,6 +18,7 @@ import { StorageModule } from './storage/storage.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { SyncModule } from './sync/sync.module';
+import { PlacesModule } from './places/places.module';
 
 @Module({
   imports: [
@@ -37,6 +38,10 @@ import { SyncModule } from './sync/sync.module';
         CLOUDFLARE_R2_SECRET_KEY: Joi.string().required(),
         CLOUDFLARE_R2_BUCKET: Joi.string().required(),
         WORKER_WEBHOOK_SECRET: Joi.string().required(),
+        // Unused by MockPlacesProvider today — required now so boot-time
+        // validation and the env contract are already in place for the
+        // deferred GooglePlacesProvider (see places module).
+        GOOGLE_PLACES_API_KEY: Joi.string().required(),
         // Optional max client-reported attachment size in bytes (default 50 MB
         // in AttachmentsService). Must stay <= INT max (2,147,483,647).
         MAX_ATTACHMENT_SIZE_BYTES: Joi.number()
@@ -72,6 +77,7 @@ import { SyncModule } from './sync/sync.module';
     StorageModule,
     WebhooksModule,
     SyncModule,
+    PlacesModule,
   ],
   controllers: [HealthController],
   providers: [
