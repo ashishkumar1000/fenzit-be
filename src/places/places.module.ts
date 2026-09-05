@@ -12,13 +12,13 @@ import { PlacesRateLimitStore } from './places-rate-limit.store';
 export function createPlacesProvider(
   configService: ConfigService,
 ): PlacesProvider {
-  return process.env['NODE_ENV'] === 'production'
+  return process.env['NODE_ENV'] !== 'test'
     ? new GooglePlacesProvider(configService)
     : new MockPlacesProvider(configService);
 }
 
 // Deliberately DB-less (AD-2): no SupabaseModule import, no dependency on
-// CustomersModule — unlike most other feature modules in this repo.
+// CustomersModule — unlike most others feature modules in this repo.
 @Module({
   imports: [],
   controllers: [PlacesController],
@@ -27,10 +27,10 @@ export function createPlacesProvider(
     PlacesRateLimitStore,
     {
       provide: PlacesProvider,
-      // NODE_ENV-conditional so production traffic hits the real Google
-      // integration while every other environment (including the
-      // Jest-driven e2e suite, where NODE_ENV is never 'production') keeps
-      // resolving MockPlacesProvider unchanged.
+      // NODE_ENV-conditional so only the Jest-driven test/e2e suites
+      // (NODE_ENV='test', set in test/jest.env.setup.ts and by Jest itself)
+      // resolve the deterministic MockPlacesProvider — every other
+      // environment, including local dev, hits the real Google integration.
       useFactory: createPlacesProvider,
       inject: [ConfigService],
     },

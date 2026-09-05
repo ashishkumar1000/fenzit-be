@@ -21,7 +21,15 @@ describe('createPlacesProvider (PlacesModule NODE_ENV binding)', () => {
     );
   });
 
-  it('resolves MockPlacesProvider when NODE_ENV is not production', () => {
+  it('resolves GooglePlacesProvider when NODE_ENV=development', () => {
+    process.env['NODE_ENV'] = 'development';
+
+    expect(createPlacesProvider(configService)).toBeInstanceOf(
+      GooglePlacesProvider,
+    );
+  });
+
+  it('resolves MockPlacesProvider when NODE_ENV=test', () => {
     process.env['NODE_ENV'] = 'test';
 
     expect(createPlacesProvider(configService)).toBeInstanceOf(

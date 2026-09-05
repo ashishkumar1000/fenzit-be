@@ -130,7 +130,15 @@ export class PlacesService {
     }
   }
 
-  /** Logs a proper stack trace and throws the documented 502 envelope. */
+  /**
+   * Logs a proper stack trace and throws the documented 502 envelope.
+   *
+   * Node's `fetch` (undici) wraps the real network failure — DNS, TLS,
+   * connection-refused, timeout — in `error.cause`, which `error.stack`
+   * alone never includes. Without logging it separately, every network-level
+   * failure looks identical in the logs ("TypeError: fetch failed"),
+   * hiding the one detail needed to diagnose it.
+   */
   private throwUpstreamError(
     logMessage: string,
     error: unknown,
@@ -140,6 +148,13 @@ export class PlacesService {
       logMessage,
       error instanceof Error ? error.stack : String(error),
     );
+    const cause = error instanceof Error ? error.cause : undefined;
+    if (cause) {
+      this.logger.error(
+        'Caused by:',
+        cause instanceof Error ? cause.stack : String(cause),
+      );
+    }
     throw new HttpException(
       {
         error_code: ErrorCode.PLACES_UPSTREAM_ERROR,

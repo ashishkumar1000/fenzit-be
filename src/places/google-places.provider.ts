@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   PlacesProvider,
@@ -53,15 +53,16 @@ interface GooglePlaceDetailsResponse {
 }
 
 /**
- * Live Google Places (New) integration. Bound as `PlacesProvider` only in
- * production (see places.module.ts) — every other environment (including
- * the Jest-driven e2e suite) keeps resolving `MockPlacesProvider`.
+ * Live Google Places (New) integration. Bound as `PlacesProvider` for every
+ * environment except the Jest-driven test/e2e suite (`NODE_ENV=test`, see
+ * places.module.ts), which keeps resolving `MockPlacesProvider`.
  *
  * The API key is sent only via the `X-Goog-Api-Key` header — never logged,
  * never in a query string or response body.
  */
 @Injectable()
 export class GooglePlacesProvider extends PlacesProvider {
+  private readonly logger = new Logger(GooglePlacesProvider.name);
   private readonly apiKey: string;
 
   constructor(private readonly configService: ConfigService) {
@@ -97,6 +98,9 @@ export class GooglePlacesProvider extends PlacesProvider {
     }
 
     const body = (await response.json()) as GoogleAutocompleteResponse;
+    // TODO: temporary debug logging while verifying the live Google
+    // integration end-to-end (2026-09-06) — remove once confirmed stable.
+    this.logger.log(`Autocomplete response for "${query}": ${JSON.stringify(body)}`);
 
     return (body.suggestions ?? []).flatMap((suggestion) => {
       const placeId = suggestion.placePrediction?.placeId;
@@ -140,6 +144,9 @@ export class GooglePlacesProvider extends PlacesProvider {
     }
 
     const body = (await response.json()) as GooglePlaceDetailsResponse;
+    // TODO: temporary debug logging while verifying the live Google
+    // integration end-to-end (2026-09-06) — remove once confirmed stable.
+    this.logger.log(`Details response for placeId ${placeId}: ${JSON.stringify(body)}`);
 
     const { latitude, longitude } = body.location ?? {};
     if (typeof latitude !== 'number' || typeof longitude !== 'number') {
