@@ -49,6 +49,27 @@ export class CustomerDetailResponseDto {
   @ApiPropertyOptional({ example: 'Bengaluru', nullable: true })
   city: string | null;
 
+  @ApiPropertyOptional({
+    example: '12 MG Road, Bengaluru, Karnataka 560001, India',
+    nullable: true,
+  })
+  formattedAddress: string | null;
+
+  @ApiPropertyOptional({ example: '560001', nullable: true })
+  pincode: string | null;
+
+  @ApiPropertyOptional({ example: 12.9716, nullable: true })
+  latitude: number | null;
+
+  @ApiPropertyOptional({ example: 77.5946, nullable: true })
+  longitude: number | null;
+
+  @ApiPropertyOptional({
+    example: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+    nullable: true,
+  })
+  placeId: string | null;
+
   @ApiProperty({
     example: 'manual',
     description: "'manual' or 'job_creation'",

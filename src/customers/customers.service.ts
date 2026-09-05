@@ -26,6 +26,11 @@ export interface CustomerResponse {
   phoneNumber: string;
   address: string | null;
   city: string | null;
+  formattedAddress: string | null;
+  pincode: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  placeId: string | null;
   createdVia: 'manual' | 'job_creation';
   createdAt: string;
   tenantId: string;
@@ -51,6 +56,11 @@ export interface CustomerListItem {
   phoneNumber: string;
   address: string | null;
   city: string | null;
+  formattedAddress: string | null;
+  pincode: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  placeId: string | null;
   jobCount: number;
   lastJobDate: string | null;
 }
@@ -62,6 +72,11 @@ interface CustomerListRow {
   phone_number: string;
   address: string | null;
   city: string | null;
+  formatted_address: string | null;
+  pincode: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  place_id: string | null;
   created_at: string;
 }
 
@@ -92,13 +107,18 @@ interface CustomerRow {
   phone_number: string;
   address: string | null;
   city: string | null;
+  formatted_address: string | null;
+  pincode: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  place_id: string | null;
   created_via: 'manual' | 'job_creation';
   created_at: string;
   tenant_id: string;
 }
 
 const CUSTOMER_COLUMNS =
-  'id, name, country_code, phone_number, address, city, created_via, created_at, tenant_id';
+  'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, created_via, created_at, tenant_id';
 
 const PAGE_SIZE = 50;
 const JOB_HISTORY_PAGE_SIZE = 20;
@@ -136,6 +156,11 @@ export class CustomersService {
         phone_number: dto.phoneNumber,
         address: dto.address ?? null,
         city: dto.city ?? null,
+        formatted_address: dto.formattedAddress ?? null,
+        pincode: dto.pincode ?? null,
+        latitude: dto.latitude ?? null,
+        longitude: dto.longitude ?? null,
+        place_id: dto.placeId ?? null,
       })
       .select(CUSTOMER_COLUMNS)
       .single();
@@ -278,7 +303,9 @@ export class CustomersService {
 
     let qb = admin
       .from('customers')
-      .select('id, name, country_code, phone_number, address, city, created_at')
+      .select(
+        'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, created_at',
+      )
       .eq('tenant_id', owner.tenantId);
 
     const term = query.q ? this.sanitizeSearchTerm(query.q) : '';
@@ -333,6 +360,11 @@ export class CustomersService {
         phoneNumber: row.phone_number,
         address: row.address,
         city: row.city,
+        formattedAddress: row.formatted_address,
+        pincode: row.pincode,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        placeId: row.place_id,
         jobCount: stats?.jobCount ?? 0,
         lastJobDate: stats?.lastJobDate ?? null,
       };
@@ -539,6 +571,11 @@ export class CustomersService {
     phone_number: string;
     address: string | null;
     city: string | null;
+    formatted_address: string | null;
+    pincode: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    place_id: string | null;
     created_via: 'manual' | 'job_creation';
     created_at: string;
     tenant_id: string;
@@ -550,6 +587,11 @@ export class CustomersService {
       phoneNumber: row.phone_number,
       address: row.address,
       city: row.city,
+      formattedAddress: row.formatted_address,
+      pincode: row.pincode,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      placeId: row.place_id,
       createdVia: row.created_via,
       createdAt: row.created_at,
       tenantId: row.tenant_id,

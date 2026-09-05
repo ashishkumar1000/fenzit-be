@@ -63,6 +63,11 @@ describe('Customers (e2e)', () => {
     phone_number: '9876543210',
     address: null,
     city: null,
+    formatted_address: null,
+    pincode: null,
+    latitude: null,
+    longitude: null,
+    place_id: null,
     created_via: 'manual',
     created_at: '2026-06-21T00:00:00Z',
     tenant_id: TENANT_ID,
@@ -105,6 +110,163 @@ describe('Customers (e2e)', () => {
       expect(body.phoneNumber).toBe('9876543210');
       expect(body.createdVia).toBe('manual');
       expect(body.tenantId).toBe(TENANT_ID);
+    });
+
+    it('Story 1.3 — should return 201 with all 5 structured-address fields persisted and reflected in the response', async () => {
+      let capturedInsert: Record<string, unknown> | undefined;
+      mockCreateAdmin.mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          insert: jest
+            .fn()
+            .mockImplementation((row: Record<string, unknown>) => {
+              capturedInsert = row;
+              return {
+                select: jest.fn().mockReturnValue({
+                  single: jest.fn().mockResolvedValue({
+                    data: {
+                      ...customerRow,
+                      formatted_address:
+                        '12 MG Road, Bengaluru, Karnataka 560001, India',
+                      pincode: '560001',
+                      latitude: 12.9716,
+                      longitude: 77.5946,
+                      place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+                    },
+                    error: null,
+                  }),
+                }),
+              };
+            }),
+        }),
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          formattedAddress: '12 MG Road, Bengaluru, Karnataka 560001, India',
+          pincode: '560001',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(capturedInsert).toMatchObject({
+        formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+      const body = JSON.parse(response.body);
+      expect(body.formattedAddress).toBe(
+        '12 MG Road, Bengaluru, Karnataka 560001, India',
+      );
+      expect(body.pincode).toBe('560001');
+      expect(body.latitude).toBe(12.9716);
+      expect(body.longitude).toBe(77.5946);
+      expect(body.placeId).toBe('ChIJbU60yXAWrjsR4E9-UejD3_g');
+    });
+
+    it('Story 1.3 — should return 201 with none of the 5 structured-address fields (legacy request, unchanged behavior)', async () => {
+      mockInsertResult({ data: customerRow, error: null });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: validPayload,
+      });
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse(response.body);
+      expect(body.formattedAddress).toBeNull();
+      expect(body.pincode).toBeNull();
+      expect(body.latitude).toBeNull();
+      expect(body.longitude).toBeNull();
+      expect(body.placeId).toBeNull();
+    });
+
+    it('Story 1.3 — should return 422 when latitude/longitude are non-numeric', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          latitude: 'not-a-number',
+          longitude: 'not-a-number',
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('Story 1.3 — should return 422 when latitude is out of range', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          latitude: 999,
+          longitude: 77.5946,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('Story 1.3 — should return 422 when longitude is out of range', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          latitude: 12.9716,
+          longitude: -999,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('Story 1.3 — should return 422 when pincode is not a valid 6-digit Indian PIN (non-numeric)', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          pincode: 'ABC123',
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('Story 1.3 — should return 422 when pincode is only 5 digits', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          pincode: '56001',
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
     });
 
     it('AC2 — should return 409 on duplicate phone (23505)', async () => {

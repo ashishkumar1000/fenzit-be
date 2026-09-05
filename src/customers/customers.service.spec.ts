@@ -45,6 +45,11 @@ describe('CustomersService', () => {
     phone_number: '9876543210',
     address: '12 MG Road',
     city: 'Bengaluru',
+    formatted_address: null,
+    pincode: null,
+    latitude: null,
+    longitude: null,
+    place_id: null,
     created_via: 'manual' as const,
     created_at: '2026-06-21T00:00:00Z',
     tenant_id: 'tenant-uuid',
@@ -86,6 +91,11 @@ describe('CustomersService', () => {
         phoneNumber: '9876543210',
         address: '12 MG Road',
         city: 'Bengaluru',
+        formattedAddress: null,
+        pincode: null,
+        latitude: null,
+        longitude: null,
+        placeId: null,
         createdVia: 'manual',
         createdAt: '2026-06-21T00:00:00Z',
         tenantId: 'tenant-uuid',
@@ -111,8 +121,85 @@ describe('CustomersService', () => {
           phone_number: '9876543210',
           address: null,
           city: null,
+          formatted_address: null,
+          pincode: null,
+          latitude: null,
+          longitude: null,
+          place_id: null,
         }),
       );
+    });
+
+    it('should persist and read back the 5 structured-address fields when all are present', async () => {
+      const structuredDbRow = {
+        ...dbRow,
+        formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      };
+      const { insert } = mockInsert({ data: structuredDbRow, error: null });
+
+      const result = await service.createCustomer(ownerUser, {
+        ...dto,
+        formattedAddress: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+          pincode: '560001',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        }),
+      );
+      expect(result).toMatchObject({
+        formattedAddress: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+    });
+
+    it('should persist only the provided structured-address fields, leaving the rest null', async () => {
+      const partialDbRow = {
+        ...dbRow,
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      };
+      const { insert } = mockInsert({ data: partialDbRow, error: null });
+
+      const result = await service.createCustomer(ownerUser, {
+        ...dto,
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          formatted_address: null,
+          pincode: null,
+          latitude: 12.9716,
+          longitude: 77.5946,
+          place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        }),
+      );
+      expect(result).toMatchObject({
+        formattedAddress: null,
+        pincode: null,
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
     });
 
     it('should throw 409 on duplicate phone (23505)', async () => {
@@ -165,6 +252,11 @@ describe('CustomersService', () => {
         phone_number: `98765432${id}`,
         address: '12 MG Road',
         city: 'Bengaluru',
+        formatted_address: null,
+        pincode: null,
+        latitude: null,
+        longitude: null,
+        place_id: null,
         created_at: createdAt,
       };
     }
@@ -231,6 +323,11 @@ describe('CustomersService', () => {
         phoneNumber: '987654321',
         address: '12 MG Road',
         city: 'Bengaluru',
+        formattedAddress: null,
+        pincode: null,
+        latitude: null,
+        longitude: null,
+        placeId: null,
         jobCount: 2,
         lastJobDate: '2026-06-15T09:00:00Z',
       });
@@ -255,6 +352,11 @@ describe('CustomersService', () => {
         phoneNumber: '987654322',
         address: '12 MG Road',
         city: 'Bengaluru',
+        formattedAddress: null,
+        pincode: null,
+        latitude: null,
+        longitude: null,
+        placeId: null,
         jobCount: 0,
         lastJobDate: null,
       });
