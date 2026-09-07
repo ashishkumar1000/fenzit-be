@@ -121,8 +121,13 @@ Role-branched profile payload — the app's primary boot call.
 Every row in the jobs page additionally embeds
 `technician: { id, name, countryCode, phoneNumber, skills: string[] }` (always
 present — jobs are never unassigned) and
-`customer: { id, name, countryCode, phoneNumber, address, city }`, matching the
-`GET /jobs/:id` detail embed shapes. Both lists are cursor-paginated.
+`customer: { id, name, countryCode, phoneNumber, address, city }`. Both lists
+are cursor-paginated.
+
+> Note: the `GET /jobs/:id` detail embed of the same customer carries two extra
+> fields — `latitude`/`longitude` (Story 2.1, `number | null`, null when the
+> customer was saved without coordinates). The profile-payload jobs-page embed
+> intentionally stays lean; the two shapes are no longer identical.
 
 **Query:** `jobsScope? ('today' | 'all', default 'all')`, `jobsCursor?`,
 `jobsLimit? (1-50)`, `customersCursor?`, `customersLimit? (owner only, 1-50)`
@@ -254,7 +259,11 @@ List jobs filtered by **IST day**, status, and technician. Cursor-paginated.
 
 #### `GET /api/v1/jobs/:id` `[Bearer JWT, Role: owner | technician]`
 
-Full job detail: technician & customer profiles, activity log, attachments.
+Full job detail: technician & customer profiles, activity log, attachments. The
+embedded customer profile is
+`{ id, name, countryCode, phoneNumber, address, city, latitude, longitude }`
+(`latitude`/`longitude` are `number | null` — null when the customer was saved
+without coordinates; Story 2.1).
 
 **Responses:**
 - `200` — Full job detail payload

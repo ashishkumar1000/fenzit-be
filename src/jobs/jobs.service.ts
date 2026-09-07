@@ -74,6 +74,10 @@ interface CustomerProfile {
   phoneNumber: string;
   address: string | null;
   city: string | null;
+  // Saved geocoordinates from Epic 1's structured-address persistence (null when
+  // the customer was created without them or predates Story 1.3).
+  latitude: number | null;
+  longitude: number | null;
 }
 
 /** One activity-log entry as returned by the job-detail endpoint. */
@@ -143,6 +147,8 @@ interface CustomerProfileRow {
   phone_number: string;
   address: string | null;
   city: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 interface ActivityLogRow {
@@ -704,7 +710,7 @@ export class JobsService {
         .eq('tenant_skills.tenant_id', user.tenantId),
       admin
         .from('customers')
-        .select('id, name, country_code, phone_number, address, city')
+        .select('id, name, country_code, phone_number, address, city, latitude, longitude')
         .eq('id', row.customer_id)
         .eq('tenant_id', user.tenantId)
         .single<CustomerProfileRow>(),
@@ -836,6 +842,8 @@ export class JobsService {
         phoneNumber: customer.phone_number,
         address: customer.address,
         city: customer.city,
+        latitude: customer.latitude,
+        longitude: customer.longitude,
       },
       activityLog,
       attachments,

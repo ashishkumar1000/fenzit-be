@@ -769,6 +769,8 @@ describe('JobsService', () => {
       phone_number: '9876543210',
       address: '12 MG Road',
       city: 'Pune',
+      latitude: 18.5204,
+      longitude: 73.8567,
     };
     const skillRows = [
       { tenant_skills: { name: 'AC Repair' } },
@@ -889,6 +891,8 @@ describe('JobsService', () => {
         phoneNumber: '9876543210',
         address: '12 MG Road',
         city: 'Pune',
+        latitude: 18.5204,
+        longitude: 73.8567,
       });
       expect(result.activityLog).toEqual([
         {
@@ -911,6 +915,79 @@ describe('JobsService', () => {
       // Story 3.7 — completedAt rides on the detail response too (null for an
       // uncompleted job; the select-list trap is covered separately).
       expect(result.completedAt).toBeNull();
+    });
+
+    it('selects latitude/longitude from customers and maps them onto the detail response (Story 2.1)', async () => {
+      const { from, chains } = mockDetailAdmin({});
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      // The coordinates must ride the same single customers read, not a second
+      // query — exactly one customers fetch, requesting the exact column list.
+      expect(
+        from.mock.calls.filter(([table]) => table === 'customers'),
+      ).toHaveLength(1);
+      expect(chains.customers.select).toHaveBeenCalledWith(
+        'id, name, country_code, phone_number, address, city, latitude, longitude',
+      );
+      expect(result.customer.latitude).toBe(18.5204);
+      expect(result.customer.longitude).toBe(73.8567);
+    });
+
+    it('returns null latitude/longitude for a customer saved without coordinates (Story 2.1)', async () => {
+      mockDetailAdmin({
+        customer: {
+          data: {
+            id: 'cust-1',
+            name: 'Priya',
+            country_code: '+91',
+            phone_number: '9876543210',
+            address: '12 MG Road',
+            city: 'Pune',
+            latitude: null,
+            longitude: null,
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      // Fields are independently null — never fabricated, never omitted.
+      expect(result.customer).toEqual({
+        id: 'cust-1',
+        name: 'Priya',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+        address: '12 MG Road',
+        city: 'Pune',
+        latitude: null,
+        longitude: null,
+      });
+    });
+
+    it('passes through partial coordinates without fabricating the missing one (Story 2.1)', async () => {
+      mockDetailAdmin({
+        customer: {
+          data: {
+            id: 'cust-1',
+            name: 'Priya',
+            country_code: '+91',
+            phone_number: '9876543210',
+            address: '12 MG Road',
+            city: 'Pune',
+            latitude: 18.5204,
+            longitude: null,
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      // Each field maps independently — no cross-field null-out.
+      expect(result.customer.latitude).toBe(18.5204);
+      expect(result.customer.longitude).toBeNull();
     });
 
     it('selects completed_at and maps a completed job onto the detail response', async () => {

@@ -774,6 +774,8 @@ describe('Jobs (e2e)', () => {
       phone_number: '9876543210',
       address: '12 MG Road',
       city: 'Pune',
+      latitude: 18.5204,
+      longitude: 73.8567,
     };
     const skillRows = [{ tenant_skills: { name: 'AC Repair' } }];
     const logRows = [
@@ -870,6 +872,8 @@ describe('Jobs (e2e)', () => {
         phoneNumber: '9876543210',
         address: '12 MG Road',
         city: 'Pune',
+        latitude: 18.5204,
+        longitude: 73.8567,
       });
       // AC5 — activity log oldest-first.
       expect(body.activityLog.map((l: { id: string }) => l.id)).toEqual([
@@ -878,6 +882,48 @@ describe('Jobs (e2e)', () => {
       ]);
       // AC18 — attachments populated with presigned read URLs (empty when none)
       expect(body.attachments).toEqual([]);
+    });
+
+    it('Story 2.1 — includes customer coordinates when saved; nulls when absent, rest unchanged', async () => {
+      // Populated case rides the default fixture (see AC1's toEqual above).
+      mockDetail({});
+
+      const withCoords = await app.inject({
+        method: 'GET',
+        url: `/api/v1/jobs/${JOB_UUID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+      expect(withCoords.statusCode).toBe(200);
+      const withCoordsBody = JSON.parse(withCoords.body);
+      expect(withCoordsBody.customer.latitude).toBe(18.5204);
+      expect(withCoordsBody.customer.longitude).toBe(73.8567);
+
+      // Customer saved without coordinates (legacy / structured-fields-omitted).
+      mockDetail({
+        customer: {
+          data: { ...customerRow, latitude: null, longitude: null },
+          error: null,
+        },
+      });
+      const withoutCoords = await app.inject({
+        method: 'GET',
+        url: `/api/v1/jobs/${JOB_UUID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+      expect(withoutCoords.statusCode).toBe(200);
+      const withoutCoordsBody = JSON.parse(withoutCoords.body);
+      // Additive contract — the full customer object is unchanged apart from
+      // the two null coordinate fields (never omitted, never fabricated).
+      expect(withoutCoordsBody.customer).toEqual({
+        id: CUSTOMER_ID,
+        name: 'Priya',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+        address: '12 MG Road',
+        city: 'Pune',
+        latitude: null,
+        longitude: null,
+      });
     });
 
     it('AC4 — a technician can view their own assigned job', async () => {
