@@ -1029,12 +1029,24 @@ describe('JobsService', () => {
       expect(result.technician.skills).toEqual([]);
     });
 
-    it('allows a technician to view their own assigned job', async () => {
+    it('allows a technician to view their own assigned job with the full customer profile (Story 2.1 follow-up)', async () => {
       mockDetailAdmin({});
 
       const result = await service.getJobDetail(techOwn, 'job-uuid');
 
       expect(result.id).toBe('job-uuid');
+      // Same shared mapping path as the owner's — assert it fully so a
+      // customer-mapping regression can't slip past the technician role.
+      expect(result.customer).toEqual({
+        id: 'cust-1',
+        name: 'Priya',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+        address: '12 MG Road',
+        city: 'Pune',
+        latitude: 18.5204,
+        longitude: 73.8567,
+      });
     });
 
     it('throws 403 when a technician requests a job not assigned to them', async () => {

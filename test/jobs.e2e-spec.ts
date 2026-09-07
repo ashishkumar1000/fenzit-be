@@ -926,7 +926,7 @@ describe('Jobs (e2e)', () => {
       });
     });
 
-    it('AC4 — a technician can view their own assigned job', async () => {
+    it('AC4 — a technician can view their own assigned job with the full customer profile (Story 2.1 follow-up)', async () => {
       mockDetail({ job: { data: ownJobRow, error: null } });
 
       const response = await app.inject({
@@ -936,7 +936,20 @@ describe('Jobs (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).id).toBe('job-uuid-1');
+      const body = JSON.parse(response.body);
+      expect(body.id).toBe('job-uuid-1');
+      // Same shared mapping path as the owner's — assert it fully so a
+      // customer-mapping regression can't slip past the technician role.
+      expect(body.customer).toEqual({
+        id: CUSTOMER_ID,
+        name: 'Priya',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+        address: '12 MG Road',
+        city: 'Pune',
+        latitude: 18.5204,
+        longitude: 73.8567,
+      });
     });
 
     it('AC4 — returns 403 FORBIDDEN when a technician requests a job not theirs', async () => {
