@@ -59,7 +59,10 @@ describe('PlacesService', () => {
     const suggestions: PlaceSuggestion[] = [
       { placeId: 'mock-place-andheri-west-1', text: 'Andheri West, Mumbai' },
     ];
-    rateLimitStore.increment.mockResolvedValue(1);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 1,
+      windowRemainingSeconds: 60,
+    });
     placesProvider.autosuggest.mockResolvedValue(suggestions);
 
     const result = await service.autosuggest(
@@ -81,7 +84,10 @@ describe('PlacesService', () => {
   });
 
   it('should return an empty suggestions array without error when the provider finds nothing', async () => {
-    rateLimitStore.increment.mockResolvedValue(1);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 1,
+      windowRemainingSeconds: 60,
+    });
     placesProvider.autosuggest.mockResolvedValue([]);
 
     const result = await service.autosuggest(
@@ -94,7 +100,10 @@ describe('PlacesService', () => {
   });
 
   it('should throw 429 RATE_LIMITED and never call the provider once the budget is exceeded', async () => {
-    rateLimitStore.increment.mockResolvedValue(31);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 31,
+      windowRemainingSeconds: 60,
+    });
 
     await expect(
       service.autosuggest(ownerUser, 'andheri w', sessionToken),
@@ -109,8 +118,28 @@ describe('PlacesService', () => {
     expect(placesProvider.autosuggest).not.toHaveBeenCalled();
   });
 
+  it('should report the window REMAINING time (not its full length) as retryAfterSeconds on a 429', async () => {
+    // Mid-window trip: only 7s of the 60s window are left, so a client backing
+    // off the header value retries as soon as the window actually resets.
+    rateLimitStore.increment.mockResolvedValue({
+      count: 31,
+      windowRemainingSeconds: 7,
+    });
+
+    await expect(
+      service.autosuggest(ownerUser, 'andheri w', sessionToken),
+    ).rejects.toMatchObject({
+      status: 429,
+      response: expect.objectContaining({ retryAfterSeconds: 7 }),
+    });
+    expect(placesProvider.autosuggest).not.toHaveBeenCalled();
+  });
+
   it('should throw 502 PLACES_UPSTREAM_ERROR when the provider throws', async () => {
-    rateLimitStore.increment.mockResolvedValue(1);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 1,
+      windowRemainingSeconds: 60,
+    });
     placesProvider.autosuggest.mockRejectedValue(
       new Error('Simulated Places provider failure'),
     );
@@ -126,7 +155,10 @@ describe('PlacesService', () => {
   });
 
   it('should raise a plain HttpException (not swallow it) on provider failure', async () => {
-    rateLimitStore.increment.mockResolvedValue(1);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 1,
+      windowRemainingSeconds: 60,
+    });
     placesProvider.autosuggest.mockRejectedValue(new Error('boom'));
 
     await expect(
@@ -150,7 +182,10 @@ describe('PlacesService', () => {
 
   it('should key the rate limit by userId when the owner has no tenantId yet', async () => {
     const noTenantOwner: RequestUser = { ...ownerUser, tenantId: null };
-    rateLimitStore.increment.mockResolvedValue(1);
+    rateLimitStore.increment.mockResolvedValue({
+      count: 1,
+      windowRemainingSeconds: 60,
+    });
     placesProvider.autosuggest.mockResolvedValue([]);
 
     await service.autosuggest(noTenantOwner, 'andheri w', sessionToken);
@@ -173,7 +208,10 @@ describe('PlacesService', () => {
     };
 
     it('should return the resolved place from the provider on the happy path', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue(resolvedPlace);
 
       const result = await service.resolve(ownerUser, placeId, sessionToken);
@@ -196,7 +234,10 @@ describe('PlacesService', () => {
         city: null,
         pincode: null,
       };
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue(nullableFixture);
 
       const result = await service.resolve(ownerUser, placeId, sessionToken);
@@ -206,7 +247,10 @@ describe('PlacesService', () => {
     });
 
     it('should throw 429 RATE_LIMITED and never call the provider once the resolve budget is exceeded', async () => {
-      rateLimitStore.increment.mockResolvedValue(11);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 11,
+        windowRemainingSeconds: 60,
+      });
 
       await expect(
         service.resolve(ownerUser, placeId, sessionToken),
@@ -220,7 +264,10 @@ describe('PlacesService', () => {
     });
 
     it('should throw 502 PLACES_UPSTREAM_ERROR when the provider throws (including no resolvable location)', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockRejectedValue(
         new Error('Simulated Places resolve provider failure'),
       );
@@ -253,7 +300,10 @@ describe('PlacesService', () => {
     });
 
     it('should throw 502 PLACES_UPSTREAM_ERROR when the provider returns non-finite coordinates (NaN/Infinity)', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue({
         ...resolvedPlace,
         latitude: NaN,
@@ -272,7 +322,10 @@ describe('PlacesService', () => {
     });
 
     it('should throw 502 PLACES_UPSTREAM_ERROR when the provider returns finite-but-out-of-range coordinates', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue({
         ...resolvedPlace,
         latitude: 999,
@@ -291,7 +344,10 @@ describe('PlacesService', () => {
     });
 
     it('should accept boundary coordinates (±90 lat, ±180 lng) as valid', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue({
         ...resolvedPlace,
         latitude: 90,
@@ -304,7 +360,10 @@ describe('PlacesService', () => {
     });
 
     it('should key the resolve rate limit independently from autosuggest (separate suffix)', async () => {
-      rateLimitStore.increment.mockResolvedValue(1);
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
       placesProvider.resolve.mockResolvedValue(resolvedPlace);
 
       await service.resolve(ownerUser, placeId, sessionToken);
@@ -322,9 +381,8 @@ describe('PlacesService', () => {
 
   describe('env-overridable rate-limit budgets', () => {
     it('should read the autosuggest budget from config/env when set, falling back to defaults per key', async () => {
-      const configGet = jest.fn(
-        (key: string) =>
-          key === 'PLACES_AUTOSUGGEST_RATE_LIMIT_MAX' ? 1 : undefined,
+      const configGet = jest.fn((key: string) =>
+        key === 'PLACES_AUTOSUGGEST_RATE_LIMIT_MAX' ? 1 : undefined,
       );
       const module: TestingModule = await Test.createTestingModule({
         providers: [
@@ -342,7 +400,10 @@ describe('PlacesService', () => {
       const envStore = module.get(PlacesRateLimitStore) as unknown as {
         increment: jest.Mock;
       };
-      envStore.increment.mockResolvedValue(2);
+      envStore.increment.mockResolvedValue({
+        count: 2,
+        windowRemainingSeconds: 60,
+      });
 
       // First request already over the overridden budget of 1 → 429, and the
       // window passed to the store is the (unset) default of 60.
@@ -359,9 +420,8 @@ describe('PlacesService', () => {
     });
 
     it('should read the resolve budget from config/env when set, falling back to defaults per key', async () => {
-      const configGet = jest.fn(
-        (key: string) =>
-          key === 'PLACES_RESOLVE_RATE_LIMIT_MAX' ? 1 : undefined,
+      const configGet = jest.fn((key: string) =>
+        key === 'PLACES_RESOLVE_RATE_LIMIT_MAX' ? 1 : undefined,
       );
       const module: TestingModule = await Test.createTestingModule({
         providers: [
@@ -379,12 +439,19 @@ describe('PlacesService', () => {
       const envStore = module.get(PlacesRateLimitStore) as unknown as {
         increment: jest.Mock;
       };
-      envStore.increment.mockResolvedValue(2);
+      envStore.increment.mockResolvedValue({
+        count: 2,
+        windowRemainingSeconds: 60,
+      });
 
       // First request already over the overridden budget of 1 → 429, and the
       // window passed to the store is the (unset) default of 60.
       await expect(
-        envService.resolve(ownerUser, 'mock-place-andheri-west-1', sessionToken),
+        envService.resolve(
+          ownerUser,
+          'mock-place-andheri-west-1',
+          sessionToken,
+        ),
       ).rejects.toMatchObject({ status: 429 });
       expect(envStore.increment).toHaveBeenCalledWith(
         'tenant-uuid-111:resolve',

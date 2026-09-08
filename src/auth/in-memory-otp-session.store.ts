@@ -1,7 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { OtpSession, OtpSessionStore } from './otp-session-store';
+import {
+  OtpRateLimitIncrementResult,
+  OtpSession,
+  OtpSessionStore,
+} from './otp-session-store';
 
 @Injectable()
 export class InMemoryOtpSessionStore extends OtpSessionStore {
@@ -28,7 +32,10 @@ export class InMemoryOtpSessionStore extends OtpSessionStore {
     await this.cache.del(`otp:session:${sessionId}`);
   }
 
-  async increment(key: string, ttlSeconds: number): Promise<number> {
+  async increment(
+    key: string,
+    ttlSeconds: number,
+  ): Promise<OtpRateLimitIncrementResult> {
     const cacheKey = `otp:rate:${key}`;
     type Entry = { count: number; expiresAt: number };
     const existing = await this.cache.get<Entry>(cacheKey);
@@ -39,7 +46,7 @@ export class InMemoryOtpSessionStore extends OtpSessionStore {
         expiresAt: Date.now() + ttlSeconds * 1000,
       };
       await this.cache.set(cacheKey, entry, ttlSeconds * 1000);
-      return 1;
+      return { count: 1, windowRemainingSeconds: ttlSeconds };
     }
 
     // Preserve the original window expiry rather than resetting it on each increment.
@@ -51,6 +58,9 @@ export class InMemoryOtpSessionStore extends OtpSessionStore {
       { count: next, expiresAt: existing.expiresAt },
       remainingMs,
     );
-    return next;
+    return {
+      count: next,
+      windowRemainingSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+    };
   }
 }

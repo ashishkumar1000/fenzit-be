@@ -67,7 +67,10 @@ describe('AuthService', () => {
   describe('sendOtp', () => {
     it('should send OTP for valid phone parts', async () => {
       const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
-      otpSessionStore.increment.mockResolvedValue(1);
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
       otpDeliveryProvider.send.mockResolvedValue(undefined);
       otpSessionStore.set.mockResolvedValue(undefined);
 
@@ -87,7 +90,10 @@ describe('AuthService', () => {
 
     it('should store countryCode and phoneNumber separately in the session', async () => {
       const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '9876543210' };
-      otpSessionStore.increment.mockResolvedValue(1);
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
       otpDeliveryProvider.send.mockResolvedValue(undefined);
       otpSessionStore.set.mockResolvedValue(undefined);
 
@@ -103,11 +109,19 @@ describe('AuthService', () => {
       );
     });
 
-    it('should throw rate limit error after 5 sends', async () => {
+    it('should throw rate limit error after 5 sends, reporting the window REMAINING as retryAfterSeconds', async () => {
       const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
-      otpSessionStore.increment.mockResolvedValue(6);
+      otpSessionStore.increment.mockResolvedValue({
+        count: 6,
+        windowRemainingSeconds: 333,
+      });
 
-      await expect(service.sendOtp(dto)).rejects.toThrow(HttpException);
+      // GlobalExceptionFilter lifts retryAfterSeconds into the Retry-After
+      // response header — same contract as the places 429s.
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 429,
+        response: expect.objectContaining({ retryAfterSeconds: 333 }),
+      });
     });
   });
 

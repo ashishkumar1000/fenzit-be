@@ -15,6 +15,7 @@ import {
   decodeCursor,
   CursorScope,
 } from '../common/utils/cursor.util';
+import { hasInvalidCoordinates } from '../common/utils/validate-coordinates';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
@@ -37,14 +38,11 @@ export interface CustomerResponse {
 }
 
 /**
- * Structural input for findOrCreateByPhone. Declared here (not imported from the
- * jobs module) so customers has no dependency on jobs. NewCustomerDto is
- * structurally assignable to this.
+ * The optional structured-address fields accepted on every customer-creation
+ * path. Declared once here so the service input and the insert mapping below
+ * share one TS shape (the validator layer shares its own — StructuredAddressDto).
  */
-export interface FindOrCreateCustomerInput {
-  name: string;
-  countryCode: string;
-  phoneNumber: string;
+export interface StructuredAddressFields {
   address?: string;
   city?: string;
   formattedAddress?: string;
@@ -52,6 +50,35 @@ export interface FindOrCreateCustomerInput {
   latitude?: number;
   longitude?: number;
   placeId?: string;
+}
+
+/**
+ * Structural input for findOrCreateByPhone. Declared here (not imported from the
+ * jobs module) so customers has no dependency on jobs. NewCustomerDto is
+ * structurally assignable to this.
+ */
+export interface FindOrCreateCustomerInput extends StructuredAddressFields {
+  name: string;
+  countryCode: string;
+  phoneNumber: string;
+}
+
+/**
+ * Maps the camelCase structured-address fields onto the customers table's
+ * snake_case columns, normalizing absent fields to null (the table-wide
+ * convention for optional values). Shared by both insert paths so a new
+ * structured-address column is added in exactly one place.
+ */
+function structuredAddressColumns(input: StructuredAddressFields) {
+  return {
+    address: input.address ?? null,
+    city: input.city ?? null,
+    formatted_address: input.formattedAddress ?? null,
+    pincode: input.pincode ?? null,
+    latitude: input.latitude ?? null,
+    longitude: input.longitude ?? null,
+    place_id: input.placeId ?? null,
+  };
 }
 
 export interface CustomerListItem {
@@ -138,6 +165,25 @@ export class CustomersService {
 
   constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
 
+  /**
+   * Defense-in-depth on the service interface: the DTO validators are the
+   * first line (422 at the edge), but both creation entry points are callable
+   * from any module — so a non-finite or out-of-range latitude/longitude can
+   * never reach the DB even if a future caller bypasses the ValidationPipe
+   * (mirrors the coordinate guard in PlacesService.resolve).
+   */
+  private assertValidCoordinates(
+    latitude: number | undefined,
+    longitude: number | undefined,
+  ): void {
+    if (hasInvalidCoordinates(latitude, longitude)) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: `Invalid customer coordinates (latitude=${latitude}, longitude=${longitude})`,
+      });
+    }
+  }
+
   async createCustomer(
     owner: RequestUser,
     dto: CreateCustomerDto,
@@ -149,6 +195,8 @@ export class CustomersService {
       });
     }
 
+    this.assertValidCoordinates(dto.latitude, dto.longitude);
+
     const admin = this.supabaseClientFactory.createAdmin();
 
     const { data, error } = await admin
@@ -159,13 +207,7 @@ export class CustomersService {
         name: dto.name,
         country_code: dto.countryCode,
         phone_number: dto.phoneNumber,
-        address: dto.address ?? null,
-        city: dto.city ?? null,
-        formatted_address: dto.formattedAddress ?? null,
-        pincode: dto.pincode ?? null,
-        latitude: dto.latitude ?? null,
-        longitude: dto.longitude ?? null,
-        place_id: dto.placeId ?? null,
+        ...structuredAddressColumns(dto),
       })
       .select(CUSTOMER_COLUMNS)
       .single();
@@ -214,6 +256,8 @@ export class CustomersService {
       });
     }
 
+    this.assertValidCoordinates(input.latitude, input.longitude);
+
     const admin = this.supabaseClientFactory.createAdmin();
 
     // 1. Dedup lookup. maybeSingle() returns null data (no PGRST116) when absent.
@@ -248,13 +292,7 @@ export class CustomersService {
         name: input.name,
         country_code: input.countryCode,
         phone_number: input.phoneNumber,
-        address: input.address ?? null,
-        city: input.city ?? null,
-        formatted_address: input.formattedAddress ?? null,
-        pincode: input.pincode ?? null,
-        latitude: input.latitude ?? null,
-        longitude: input.longitude ?? null,
-        place_id: input.placeId ?? null,
+        ...structuredAddressColumns(input),
         created_via: 'job_creation',
       })
       .select(CUSTOMER_COLUMNS)

@@ -102,6 +102,29 @@ describe('CustomersService', () => {
       });
     });
 
+    // Defense-in-depth coordinate guard on the manual-create path — the DTO
+    // layer (422 at the edge) is the first line, but this method is callable
+    // from any module with a plain object that bypasses the ValidationPipe,
+    // so the backstop must fire BEFORE any DB access.
+    it.each([
+      ['a latitude above 90', { latitude: 91 }],
+      ['a latitude below -90', { latitude: -90.5 }],
+      ['a NaN latitude', { latitude: Number.NaN }],
+      ['a longitude above 180', { longitude: 181 }],
+      ['a longitude below -180', { longitude: -200 }],
+      ['an Infinity longitude', { longitude: Number.POSITIVE_INFINITY }],
+    ])(
+      'should throw 400 before any DB call when the payload has %s',
+      async (_label, badField) => {
+        const { insert } = mockInsert({ data: dbRow, error: null });
+
+        await expect(
+          service.createCustomer(ownerUser, { ...dto, ...badField }),
+        ).rejects.toThrow(BadRequestException);
+        expect(insert).not.toHaveBeenCalled();
+      },
+    );
+
     it('should persist tenant_id and null-out optional fields when omitted', async () => {
       const { insert } = mockInsert({
         data: { ...dbRow, address: null, city: null },
@@ -893,6 +916,53 @@ describe('CustomersService', () => {
       supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
       return { from, insert, maybeSingle, single };
     }
+
+    // Defense-in-depth coordinate guard — the DTO layer (422 at the edge) is
+    // the first line; this pins the service-interface backstop, which must
+    // fire BEFORE any DB access.
+    it.each([
+      ['a latitude above 90', { latitude: 91 }],
+      ['a latitude below -90', { latitude: -90.5 }],
+      ['a NaN latitude', { latitude: Number.NaN }],
+      ['a longitude above 180', { longitude: 181 }],
+      ['a longitude below -180', { longitude: -200 }],
+      ['an Infinity longitude', { longitude: Number.POSITIVE_INFINITY }],
+    ])(
+      'should throw 400 before any DB call when the input has %s',
+      async (_label, badField) => {
+        const { from, insert } = mockFindOrCreate({ data: null, error: null });
+
+        await expect(
+          service.findOrCreateByPhone(ownerUser, { ...input, ...badField }),
+        ).rejects.toThrow(BadRequestException);
+        expect(from).not.toHaveBeenCalled();
+        expect(insert).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['+90 / -180', 90, -180],
+      ['-90 / +180', -90, 180],
+      ['+90 / +180', 90, 180],
+      ['-90 / -180', -90, -180],
+    ])(
+      'should accept boundary coordinates (%s) without error',
+      async (_label, latitude, longitude) => {
+        const { insert } = mockFindOrCreate(
+          { data: null, error: null },
+          { data: dbRow, error: null },
+        );
+
+        await expect(
+          service.findOrCreateByPhone(ownerUser, {
+            ...input,
+            latitude,
+            longitude,
+          }),
+        ).resolves.toBeDefined();
+        expect(insert).toHaveBeenCalled();
+      },
+    );
 
     it('should return the existing customer (link) without inserting', async () => {
       const { insert } = mockFindOrCreate({ data: dbRow, error: null });

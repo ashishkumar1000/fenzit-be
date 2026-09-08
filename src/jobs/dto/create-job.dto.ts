@@ -11,12 +11,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { trim } from '../../common/utils/trim.transformer';
 import { ServiceType } from '../enums/service-type.enum';
 import { JobPriority } from '../enums/job-priority.enum';
 import { NewCustomerDto } from './new-customer.dto';
-
-const trim = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim() : value;
 
 export class CreateJobDto {
   @ApiPropertyOptional({

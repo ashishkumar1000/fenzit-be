@@ -6,6 +6,12 @@ export interface OtpSession {
   locked: boolean;
 }
 
+export interface OtpRateLimitIncrementResult {
+  count: number;
+  /** Seconds left in the CURRENT window (ceil, minimum 1) — what a tripped 429 should report as Retry-After. Mirrors the places rate-limit store's contract. */
+  windowRemainingSeconds: number;
+}
+
 export abstract class OtpSessionStore {
   abstract set(
     sessionId: string,
@@ -17,5 +23,8 @@ export abstract class OtpSessionStore {
 
   abstract delete(sessionId: string): Promise<void>;
 
-  abstract increment(key: string, ttlSeconds: number): Promise<number>;
+  abstract increment(
+    key: string,
+    ttlSeconds: number,
+  ): Promise<OtpRateLimitIncrementResult>;
 }

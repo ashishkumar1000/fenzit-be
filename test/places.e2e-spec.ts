@@ -204,9 +204,12 @@ describe('Places (e2e)', () => {
 
       expect(tripped.statusCode).toBe(429);
       expect(JSON.parse(tripped.body).error_code).toBe('RATE_LIMITED');
-      expect(tripped.headers['retry-after']).toBe(
-        String(RATE_LIMIT_WINDOW_SECONDS),
-      );
+      // Retry-After is the time REMAINING in the window, not its full length —
+      // the window started fresh this test, so at the trip it's still ~60s,
+      // but assert the range (not equality) so a slow CI second doesn't flake.
+      const retryAfter = Number(tripped.headers['retry-after']);
+      expect(retryAfter).toBeGreaterThanOrEqual(1);
+      expect(retryAfter).toBeLessThanOrEqual(RATE_LIMIT_WINDOW_SECONDS);
     });
   });
 

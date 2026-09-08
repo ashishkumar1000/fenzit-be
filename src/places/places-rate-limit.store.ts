@@ -7,6 +7,17 @@ interface RateLimitEntry {
   expiresAt: number;
 }
 
+export interface RateLimitIncrementResult {
+  count: number;
+  /**
+   * Seconds left in the CURRENT window (ceil, minimum 1) — what a tripped 429
+   * should report as Retry-After, instead of the full window length: a client
+   * backing off the remaining time recovers as soon as the window actually
+   * resets. For a fresh window this equals the full ttl.
+   */
+  windowRemainingSeconds: number;
+}
+
 /**
  * In-memory (cache-manager backed) rate-limit counter for the autosuggest
  * endpoint. Mirrors `InMemoryOtpSessionStore.increment()` but with its own
@@ -17,7 +28,10 @@ interface RateLimitEntry {
 export class PlacesRateLimitStore {
   constructor(@Inject(CACHE_MANAGER) private readonly cache: Cache) {}
 
-  async increment(key: string, ttlSeconds: number): Promise<number> {
+  async increment(
+    key: string,
+    ttlSeconds: number,
+  ): Promise<RateLimitIncrementResult> {
     const cacheKey = `places:rate:${key}`;
     const existing = await this.cache.get<RateLimitEntry>(cacheKey);
 
@@ -27,7 +41,7 @@ export class PlacesRateLimitStore {
         expiresAt: Date.now() + ttlSeconds * 1000,
       };
       await this.cache.set(cacheKey, entry, ttlSeconds * 1000);
-      return 1;
+      return { count: 1, windowRemainingSeconds: ttlSeconds };
     }
 
     // Preserve the original window expiry rather than resetting it on each
@@ -40,6 +54,9 @@ export class PlacesRateLimitStore {
       { count: next, expiresAt: existing.expiresAt },
       remainingMs,
     );
-    return next;
+    return {
+      count: next,
+      windowRemainingSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+    };
   }
 }

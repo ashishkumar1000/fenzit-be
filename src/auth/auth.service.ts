@@ -56,16 +56,18 @@ export class AuthService {
     const { countryCode, phoneNumber } = dto;
     const e164 = `${countryCode}${phoneNumber}`;
 
-    const sendCount = await this.otpSessionStore.increment(
-      e164,
-      OTP_RATE_LIMIT_WINDOW,
-    );
+    const { count: sendCount, windowRemainingSeconds } =
+      await this.otpSessionStore.increment(e164, OTP_RATE_LIMIT_WINDOW);
 
     if (sendCount > OTP_RATE_LIMIT_MAX) {
       throw new HttpException(
         {
           error_code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: `Too many OTP requests. Maximum ${OTP_RATE_LIMIT_MAX} requests allowed per ${OTP_RATE_LIMIT_WINDOW / 60} minutes.`,
+          // GlobalExceptionFilter lifts this into a Retry-After response
+          // header (same contract as the places 429s). The value is the time
+          // REMAINING in the window, not its full length.
+          retryAfterSeconds: windowRemainingSeconds,
         },
         429,
       );

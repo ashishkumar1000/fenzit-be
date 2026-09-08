@@ -15,11 +15,9 @@ import {
   ValidatorConstraintInterface,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { trim } from '../../common/utils/trim.transformer';
 import { JobStatus } from '../enums/job-status.enum';
 import { JobListScope } from '../enums/job-list-scope.enum';
-
-const trim = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim() : value;
 
 // Fastify's default parser delivers a repeated query key as a string (one
 // occurrence) or an array (2+). Normalize to `string[] | undefined` so the

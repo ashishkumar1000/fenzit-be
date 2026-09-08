@@ -172,8 +172,11 @@ export class PlacesService {
     upstreamMessage: string,
   ): Promise<void> {
     let requestCount: number;
+    let windowRemainingSeconds: number;
     try {
-      requestCount = await this.rateLimitStore.increment(key, windowSeconds);
+      const result = await this.rateLimitStore.increment(key, windowSeconds);
+      requestCount = result.count;
+      windowRemainingSeconds = result.windowRemainingSeconds;
     } catch (error) {
       this.throwUpstreamError(
         `Places rate-limit store failed to increment (${label}):`,
@@ -189,8 +192,10 @@ export class PlacesService {
           message: `Too many ${label} requests. Maximum ${max} requests allowed per ${windowSeconds} seconds.`,
           // Not sent as a body field: the global exception filter lifts this
           // key out of the envelope into a Retry-After response header, so
-          // typeahead clients know how long to back off before retrying.
-          retryAfterSeconds: windowSeconds,
+          // typeahead clients know how long to back off before retrying. The
+          // value is the time REMAINING in the window (not its full length) —
+          // the client can retry the moment the window actually resets.
+          retryAfterSeconds: windowRemainingSeconds,
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );

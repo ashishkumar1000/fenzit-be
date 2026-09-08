@@ -9,9 +9,7 @@ import {
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-
-const trim = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim() : value;
+import { trim } from '../../common/utils/trim.transformer';
 
 export class GetProfileQueryDto {
   @ApiPropertyOptional({
