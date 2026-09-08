@@ -98,9 +98,6 @@ export class GooglePlacesProvider extends PlacesProvider {
     }
 
     const body = (await response.json()) as GoogleAutocompleteResponse;
-    // TODO: temporary debug logging while verifying the live Google
-    // integration end-to-end (2026-09-06) — remove once confirmed stable.
-    this.logger.log(`Autocomplete response for "${query}": ${JSON.stringify(body)}`);
 
     return (body.suggestions ?? []).flatMap((suggestion) => {
       const placeId = suggestion.placePrediction?.placeId;
@@ -144,9 +141,6 @@ export class GooglePlacesProvider extends PlacesProvider {
     }
 
     const body = (await response.json()) as GooglePlaceDetailsResponse;
-    // TODO: temporary debug logging while verifying the live Google
-    // integration end-to-end (2026-09-06) — remove once confirmed stable.
-    this.logger.log(`Details response for placeId ${placeId}: ${JSON.stringify(body)}`);
 
     const { latitude, longitude } = body.location ?? {};
     if (typeof latitude !== 'number' || typeof longitude !== 'number') {

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PlacesService } from './places.service';
 import {
   PlacesProvider,
@@ -40,6 +41,12 @@ describe('PlacesService', () => {
         PlacesService,
         { provide: PlacesProvider, useValue: mockPlacesProvider },
         { provide: PlacesRateLimitStore, useValue: mockRateLimitStore },
+        // get() returns undefined by default so every env-overridable budget
+        // falls back to its exported default constant.
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -95,6 +102,8 @@ describe('PlacesService', () => {
       status: 429,
       response: expect.objectContaining({
         error_code: ErrorCode.RATE_LIMITED,
+        // GlobalExceptionFilter lifts this into a Retry-After response header.
+        retryAfterSeconds: 60,
       }),
     });
     expect(placesProvider.autosuggest).not.toHaveBeenCalled();
@@ -243,6 +252,25 @@ describe('PlacesService', () => {
       expect(placesProvider.resolve).not.toHaveBeenCalled();
     });
 
+    it('should throw 502 PLACES_UPSTREAM_ERROR when the provider returns non-finite coordinates (NaN/Infinity)', async () => {
+      rateLimitStore.increment.mockResolvedValue(1);
+      placesProvider.resolve.mockResolvedValue({
+        ...resolvedPlace,
+        latitude: NaN,
+        longitude: Infinity,
+      });
+
+      await expect(
+        service.resolve(ownerUser, placeId, sessionToken),
+      ).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.PLACES_UPSTREAM_ERROR,
+          message: 'Unable to resolve the selected address right now',
+        }),
+      });
+    });
+
     it('should key the resolve rate limit independently from autosuggest (separate suffix)', async () => {
       rateLimitStore.increment.mockResolvedValue(1);
       placesProvider.resolve.mockResolvedValue(resolvedPlace);
@@ -257,6 +285,80 @@ describe('PlacesService', () => {
         expect.stringContaining(':autosuggest'),
         expect.any(Number),
       );
+    });
+  });
+
+  describe('env-overridable rate-limit budgets', () => {
+    it('should read the autosuggest budget from config/env when set, falling back to defaults per key', async () => {
+      const configGet = jest.fn(
+        (key: string) =>
+          key === 'PLACES_AUTOSUGGEST_RATE_LIMIT_MAX' ? 1 : undefined,
+      );
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PlacesService,
+          {
+            provide: PlacesProvider,
+            useValue: { autosuggest: jest.fn(), resolve: jest.fn() },
+          },
+          { provide: PlacesRateLimitStore, useValue: { increment: jest.fn() } },
+          { provide: ConfigService, useValue: { get: configGet } },
+        ],
+      }).compile();
+
+      const envService = module.get<PlacesService>(PlacesService);
+      const envStore = module.get(PlacesRateLimitStore) as unknown as {
+        increment: jest.Mock;
+      };
+      envStore.increment.mockResolvedValue(2);
+
+      // First request already over the overridden budget of 1 → 429, and the
+      // window passed to the store is the (unset) default of 60.
+      await expect(
+        envService.autosuggest(ownerUser, 'andheri w', sessionToken),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(envStore.increment).toHaveBeenCalledWith(
+        'tenant-uuid-111:autosuggest',
+        60,
+      );
+      expect(configGet).toHaveBeenCalledWith(
+        'PLACES_AUTOSUGGEST_RATE_LIMIT_MAX',
+      );
+    });
+
+    it('should read the resolve budget from config/env when set, falling back to defaults per key', async () => {
+      const configGet = jest.fn(
+        (key: string) =>
+          key === 'PLACES_RESOLVE_RATE_LIMIT_MAX' ? 1 : undefined,
+      );
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PlacesService,
+          {
+            provide: PlacesProvider,
+            useValue: { autosuggest: jest.fn(), resolve: jest.fn() },
+          },
+          { provide: PlacesRateLimitStore, useValue: { increment: jest.fn() } },
+          { provide: ConfigService, useValue: { get: configGet } },
+        ],
+      }).compile();
+
+      const envService = module.get<PlacesService>(PlacesService);
+      const envStore = module.get(PlacesRateLimitStore) as unknown as {
+        increment: jest.Mock;
+      };
+      envStore.increment.mockResolvedValue(2);
+
+      // First request already over the overridden budget of 1 → 429, and the
+      // window passed to the store is the (unset) default of 60.
+      await expect(
+        envService.resolve(ownerUser, 'mock-place-andheri-west-1', sessionToken),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(envStore.increment).toHaveBeenCalledWith(
+        'tenant-uuid-111:resolve',
+        60,
+      );
+      expect(configGet).toHaveBeenCalledWith('PLACES_RESOLVE_RATE_LIMIT_MAX');
     });
   });
 });

@@ -24,6 +24,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     // error_code/message (e.g. currentStep on an INVALID_WORKFLOW_STEP 422).
     // Forwarded verbatim into the response body; empty for ordinary errors.
     let extra: Record<string, unknown> = {};
+    // `retryAfterSeconds`, when present on a thrown exception's body (e.g. the
+    // places 429), is lifted out into a Retry-After response header instead of
+    // being forwarded as a body field.
+    let retryAfterSeconds: number | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -40,11 +44,20 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         // Nest's default exception label (e.g. 'Unprocessable Entity' from
         // ValidationPipe) — strip it so it never leaks into our envelope.
         extra = { ...r };
+        const rawRetryAfter = r['retryAfterSeconds'];
         delete extra['error_code'];
         delete extra['message'];
         delete extra['statusCode'];
         delete extra['error'];
         delete extra['stack'];
+        delete extra['retryAfterSeconds'];
+        if (
+          typeof rawRetryAfter === 'number' &&
+          Number.isFinite(rawRetryAfter) &&
+          rawRetryAfter > 0
+        ) {
+          retryAfterSeconds = Math.ceil(rawRetryAfter);
+        }
       } else {
         errorCode = this.httpStatusToErrorCode(statusCode);
         message = exception.message;
@@ -57,6 +70,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     }
 
     const isProduction = process.env.NODE_ENV === 'production';
+
+    if (retryAfterSeconds !== undefined) {
+      void reply.header('Retry-After', String(retryAfterSeconds));
+    }
 
     void reply.status(statusCode).send({
       statusCode,

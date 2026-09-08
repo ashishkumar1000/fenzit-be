@@ -16,6 +16,7 @@ import {
 import { PlacesService } from './places.service';
 import { AutosuggestQueryDto } from './dto/autosuggest-query.dto';
 import { AutosuggestResponseDto } from './dto/autosuggest-response.dto';
+import { PlaceIdParamsDto } from './dto/place-id-params.dto';
 import { ResolveQueryDto } from './dto/resolve-query.dto';
 import { ResolvedPlaceDto } from './dto/resolve-response.dto';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -41,7 +42,11 @@ export class PlacesController {
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 422, description: 'Validation error' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiResponse({
+    status: 429,
+    description:
+      'Rate limit exceeded — response carries a Retry-After header (seconds to wait before retrying)',
+  })
   @ApiResponse({ status: 502, description: 'Places provider upstream error' })
   autosuggest(
     @CurrentUser() user: RequestUser,
@@ -68,14 +73,24 @@ export class PlacesController {
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
-  @ApiResponse({ status: 422, description: 'Validation error' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiResponse({
+    status: 422,
+    description:
+      'Validation error — includes a placeId violating the format contract (10–255 url-safe characters)',
+  })
+  @ApiResponse({
+    status: 429,
+    description:
+      'Rate limit exceeded — response carries a Retry-After header (seconds to wait before retrying)',
+  })
   @ApiResponse({ status: 502, description: 'Places provider upstream error' })
   resolve(
     @CurrentUser() user: RequestUser,
-    @Param('placeId') placeId: string,
+    // Validated by the global ValidationPipe (format/length) before any
+    // provider call — see PlaceIdParamsDto for the format contract.
+    @Param() params: PlaceIdParamsDto,
     @Query() query: ResolveQueryDto,
   ) {
-    return this.placesService.resolve(user, placeId, query.sessionToken);
+    return this.placesService.resolve(user, params.placeId, query.sessionToken);
   }
 }

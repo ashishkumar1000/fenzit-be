@@ -10,7 +10,9 @@ import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import {
   RATE_LIMIT_MAX,
+  RATE_LIMIT_WINDOW_SECONDS,
   RESOLVE_RATE_LIMIT_MAX,
+  RESOLVE_RATE_LIMIT_WINDOW_SECONDS,
 } from '../src/places/places.service';
 import { SIMULATE_RESOLVE_ERROR_PLACE_ID } from '../src/places/mock-places.provider';
 
@@ -141,6 +143,42 @@ describe('Places (e2e)', () => {
       expect(response.statusCode).toBe(422);
     });
 
+    // Backend-side mirror of the frontend's 3-character debounce gate — a
+    // direct API caller must not be able to fire sub-3-char queries at the
+    // (billable) live provider.
+    it('should return 422 when q is shorter than 3 characters', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/autosuggest?q=ab&sessionToken=${SESSION_TOKEN}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('should return 200 for exactly 3 characters (boundary)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/autosuggest?q=abc&sessionToken=${SESSION_TOKEN}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        suggestions: expect.any(Array),
+      });
+    });
+
+    it('should return 422 when q is below 3 characters only after trimming', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/autosuggest?q=${encodeURIComponent('  a  ')}&sessionToken=${SESSION_TOKEN}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
     // Drives the real, DI-bound PlacesRateLimitStore (backed by the actual
     // CACHE_MANAGER, not a mock) to its limit — catches a broken/unwired
     // limiter that a fully-mocked service spec would never detect. Uses its
@@ -166,6 +204,9 @@ describe('Places (e2e)', () => {
 
       expect(tripped.statusCode).toBe(429);
       expect(JSON.parse(tripped.body).error_code).toBe('RATE_LIMITED');
+      expect(tripped.headers['retry-after']).toBe(
+        String(RATE_LIMIT_WINDOW_SECONDS),
+      );
     });
   });
 
@@ -255,6 +296,49 @@ describe('Places (e2e)', () => {
       expect(response.statusCode).toBe(422);
     });
 
+    // Format gate (PlaceIdParamsDto) — malformed placeIds must be rejected
+    // before any (billable) provider network call. A well-formed but unknown
+    // placeId still takes the 502 path (tested below).
+    it('should return 422 when placeId violates the format contract (too short)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/short-id?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422c')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('should return 422 when placeId contains a character outside the contract', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/mock-place-inv!alid?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422d')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    // Over-long placeIds are rejected even earlier than the DTO: Fastify's
+    // own maxParamLength guard (default 100) fires at the routing layer with
+    // 414, before the ValidationPipe. Still a pre-provider rejection — the
+    // 422 contract below covers the shapes that do reach the DTO.
+    it('should return 414 when placeId exceeds Fastify maxParamLength (over-long param)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/resolve/${'a'.repeat(256)}?sessionToken=${SESSION_TOKEN}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422e')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(414);
+    });
+
     it('should return 502 PLACES_UPSTREAM_ERROR when the provider throws (sentinel placeId)', async () => {
       const response = await app.inject({
         method: 'GET',
@@ -308,6 +392,9 @@ describe('Places (e2e)', () => {
 
       expect(tripped.statusCode).toBe(429);
       expect(JSON.parse(tripped.body).error_code).toBe('RATE_LIMITED');
+      expect(tripped.headers['retry-after']).toBe(
+        String(RESOLVE_RATE_LIMIT_WINDOW_SECONDS),
+      );
     });
   });
 });

@@ -49,6 +49,29 @@ import { PlacesModule } from './places/places.module';
           .positive()
           .max(2147483647)
           .optional(),
+        // Optional places rate-limit budgets (defaults live in places.service.ts,
+        // exported as RATE_LIMIT_* / RESOLVE_RATE_LIMIT_*). Tune per environment
+        // without a redeploy.
+        PLACES_AUTOSUGGEST_RATE_LIMIT_WINDOW_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
+        PLACES_AUTOSUGGEST_RATE_LIMIT_MAX: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
+        PLACES_RESOLVE_RATE_LIMIT_WINDOW_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
+        PLACES_RESOLVE_RATE_LIMIT_MAX: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
       }),
       validationOptions: {
         abortEarly: false,

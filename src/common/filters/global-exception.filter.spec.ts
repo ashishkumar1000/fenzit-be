@@ -11,6 +11,7 @@ import { ErrorCode } from '../enums/error-code.enum';
 const mockReply = {
   status: jest.fn().mockReturnThis(),
   send: jest.fn().mockReturnThis(),
+  header: jest.fn().mockReturnThis(),
 };
 
 const createMockHost = (reply = mockReply) => ({
@@ -167,5 +168,52 @@ describe('GlobalExceptionFilter', () => {
     expect(sentBody['stack']).toBeUndefined();
 
     process.env['NODE_ENV'] = originalEnv;
+  });
+
+  it('lifts retryAfterSeconds out of the body into a Retry-After header (places 429)', () => {
+    const exception = new HttpException(
+      {
+        error_code: ErrorCode.RATE_LIMITED,
+        message: 'Too many autosuggest requests.',
+        retryAfterSeconds: 60,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+
+    filter.catch(exception, createMockHost() as never);
+
+    expect(mockReply.header).toHaveBeenCalledWith('Retry-After', '60');
+    const sentBody = mockReply.send.mock.calls[0][0] as Record<string, unknown>;
+    // The raw key must not leak into the response body.
+    expect(sentBody['retryAfterSeconds']).toBeUndefined();
+    expect(sentBody).toEqual(
+      expect.objectContaining({ error_code: ErrorCode.RATE_LIMITED }),
+    );
+  });
+
+  it('sets no Retry-After header when the exception carries no retryAfterSeconds', () => {
+    const exception = new HttpException(
+      { error_code: ErrorCode.RATE_LIMITED, message: 'Too many requests.' },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+
+    filter.catch(exception, createMockHost() as never);
+
+    expect(mockReply.header).not.toHaveBeenCalled();
+  });
+
+  it('sets no Retry-After header for a non-finite retryAfterSeconds (e.g. Infinity)', () => {
+    const exception = new HttpException(
+      {
+        error_code: ErrorCode.RATE_LIMITED,
+        message: 'Too many requests.',
+        retryAfterSeconds: Infinity,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+
+    filter.catch(exception, createMockHost() as never);
+
+    expect(mockReply.header).not.toHaveBeenCalled();
   });
 });
