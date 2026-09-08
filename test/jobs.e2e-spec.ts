@@ -187,6 +187,93 @@ describe('Jobs (e2e)', () => {
       expect(body.technicianId).toBe(TECH_ID);
     });
 
+    it('AC1 — persists structured-address fields from newCustomer (whitelist keeps them)', async () => {
+      // The global pipe runs whitelist:true + forbidNonWhitelisted:false, so a
+      // field missing from NewCustomerDto is STRIPPED silently, not rejected.
+      // This happy-path e2e is the only check that the full chain — DTO
+      // declares → pipe keeps → findOrCreateByPhone writes — survives it:
+      // drop/rename a decorator in NewCustomerDto and this insert assertion
+      // fails, while every service-level test would still pass.
+      const createdCustomer = {
+        id: CUSTOMER_ID,
+        name: 'Priya Sharma',
+        country_code: '+91',
+        phone_number: '9876543210',
+        address: '12 MG Road',
+        city: 'Bengaluru',
+        formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        created_via: 'job_creation',
+        created_at: '2026-06-21T00:00:00Z',
+        tenant_id: TENANT_ID,
+      };
+
+      // findOrCreateByPhone chain: select().eq()x3.maybeSingle() lookup (miss),
+      // then insert().select().single() create — a different shape from the
+      // customerId path's singleChain, so built inline here.
+      const maybeSingle = jest.fn().mockResolvedValue({ data: null, error: null });
+      const eq3 = jest.fn().mockReturnValue({ maybeSingle });
+      const eq2 = jest.fn().mockReturnValue({ eq: eq3 });
+      const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
+      const selectLookup = jest.fn().mockReturnValue({ eq: eq1 });
+      const insert = jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          single: jest
+            .fn()
+            .mockResolvedValue({ data: createdCustomer, error: null }),
+        }),
+      });
+
+      const from = jest.fn((table: string) => {
+        if (table === 'customers') return { select: selectLookup, insert };
+        if (table === 'users') return singleChain(technicianOk, 3);
+        if (table === 'idempotency_log')
+          return idempotencyChain({ data: null, error: null });
+        throw new Error(`unexpected table ${table}`);
+      });
+      const rpc = jest.fn().mockResolvedValue({ data: [jobRow], error: null });
+      mockCreateAdmin.mockReturnValue({ from, rpc });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/jobs',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          serviceLocation: '12 MG Road',
+          serviceType: 'ac_service',
+          scheduledStart: '2026-06-22T09:30:00Z',
+          technicianId: TECH_ID,
+          newCustomer: {
+            name: 'Priya Sharma',
+            countryCode: '+91',
+            phoneNumber: '9876543210',
+            address: '12 MG Road',
+            city: 'Bengaluru',
+            formattedAddress: '12 MG Road, Bengaluru, Karnataka 560001, India',
+            pincode: '560001',
+            latitude: 12.9716,
+            longitude: 77.5946,
+            placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(JSON.parse(response.body).customerId).toBe(CUSTOMER_ID);
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+          pincode: '560001',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        }),
+      );
+    });
+
     it('AC4 — returns 404 RESOURCE_NOT_FOUND when technician is not in tenant', async () => {
       mockAdmin({ technician: notFound });
 

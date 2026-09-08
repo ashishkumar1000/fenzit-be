@@ -924,6 +924,59 @@ describe('CustomersService', () => {
       expect(result.createdVia).toBe('job_creation');
     });
 
+    it('should persist structured-address fields on the job_creation path', async () => {
+      const created = { ...dbRow, created_via: 'job_creation' as const };
+      const { insert } = mockFindOrCreate(
+        { data: null, error: null },
+        { data: created, error: null },
+      );
+
+      await service.findOrCreateByPhone(ownerUser, {
+        ...input,
+        address: '12 MG Road',
+        city: 'Bengaluru',
+        formattedAddress: '12 MG Road, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: '12 MG Road',
+          city: 'Bengaluru',
+          formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
+          pincode: '560001',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        }),
+      );
+    });
+
+    it('should write null structured-address columns for the legacy input shape', async () => {
+      // Old-shape callers (name/countryCode/phoneNumber only, as sent before
+      // this change) must keep working — every structured column lands null.
+      const created = { ...dbRow, created_via: 'job_creation' as const };
+      const { insert } = mockFindOrCreate(
+        { data: null, error: null },
+        { data: created, error: null },
+      );
+
+      await service.findOrCreateByPhone(ownerUser, input);
+
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          formatted_address: null,
+          pincode: null,
+          latitude: null,
+          longitude: null,
+          place_id: null,
+        }),
+      );
+    });
+
     it('should throw 400 (VALIDATION_ERROR) on unknown country code (23503)', async () => {
       mockFindOrCreate(
         { data: null, error: null },

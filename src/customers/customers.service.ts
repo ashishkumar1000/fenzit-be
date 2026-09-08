@@ -47,6 +47,11 @@ export interface FindOrCreateCustomerInput {
   phoneNumber: string;
   address?: string;
   city?: string;
+  formattedAddress?: string;
+  pincode?: string;
+  latitude?: number;
+  longitude?: number;
+  placeId?: string;
 }
 
 export interface CustomerListItem {
@@ -245,6 +250,11 @@ export class CustomersService {
         phone_number: input.phoneNumber,
         address: input.address ?? null,
         city: input.city ?? null,
+        formatted_address: input.formattedAddress ?? null,
+        pincode: input.pincode ?? null,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+        place_id: input.placeId ?? null,
         created_via: 'job_creation',
       })
       .select(CUSTOMER_COLUMNS)
