@@ -16,9 +16,7 @@ export class SetupCompanyDto {
     description: "The owner's display name — saved on the caller's users row",
   })
   @IsOptional()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim() : value,
-  )
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty({ message: 'name must not be empty or whitespace' })
   @MaxLength(100, { message: 'name must be at most 100 characters' })

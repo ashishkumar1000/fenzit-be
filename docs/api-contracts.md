@@ -134,7 +134,9 @@ are cursor-paginated.
 
 `jobsScope=today` narrows the jobs page to the current **IST day window** on
 `scheduled_start` (same window `GET /jobs?scope=today` uses, no status filter)
-and sorts it `scheduled_start` ASC — soonest first, dispatch order. A
+and sorts it `scheduled_start` ASC — soonest first, dispatch order. As on the
+jobs list, a **technician's** today view also includes their `in_progress`
+jobs regardless of the day window; the owner view keeps the pure window. A
 `jobsCursor` minted for one scope is rejected (400) on the other.
 
 **Responses:**
@@ -249,8 +251,25 @@ List jobs filtered by **IST day**, status, and technician. Cursor-paginated.
 
 - Owners see all jobs in their tenant
 - Technicians see only their assigned jobs
+- Default scope is `today` (IST day window on `scheduled_start`). For
+  **technicians** on the default view (no explicit `date`), the today scope
+  also always includes their `in_progress` jobs regardless of the day window —
+  an active job must not vanish when its slot crosses midnight IST. An explicit
+  `date` re-anchor keeps the pure day window (day-history view). Owners keep
+  the pure day-window view. Timeline scopes (`scope=upcoming|overdue|history`,
+  Story 3.7) are unchanged; a job that is both in-progress and past its slot
+  appears in `today` and `overdue` for the technician.
+- A caller `status` filter ANDs down to both sides of the OR branch — e.g.
+  `scope=today&status=completed` returns only today-window completed jobs (an
+  in_progress job can never pass a `completed` filter).
 
-**Query:** `date? (YYYY-MM-DD, IST day)`, `status?`, `technicianId?`, `cursor?`
+**FE note:** a technician's `today` list may contain jobs whose
+`scheduled_start` falls outside the current IST day (their active job). Do not
+assume every row is scheduled for today.
+
+**Query:** `scope? (today | upcoming | overdue | history, default today)`,
+`date? (YYYY-MM-DD, IST day — today scope only)`, `status?`, `technicianId?`,
+`cursor?`
 
 **Responses:**
 - `200` — `{ items: Job[], nextCursor: string | null }`

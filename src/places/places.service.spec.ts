@@ -397,9 +397,7 @@ describe('PlacesService', () => {
       }).compile();
 
       const envService = module.get<PlacesService>(PlacesService);
-      const envStore = module.get(PlacesRateLimitStore) as unknown as {
-        increment: jest.Mock;
-      };
+      const envStore = module.get(PlacesRateLimitStore);
       envStore.increment.mockResolvedValue({
         count: 2,
         windowRemainingSeconds: 60,
@@ -436,9 +434,7 @@ describe('PlacesService', () => {
       }).compile();
 
       const envService = module.get<PlacesService>(PlacesService);
-      const envStore = module.get(PlacesRateLimitStore) as unknown as {
-        increment: jest.Mock;
-      };
+      const envStore = module.get(PlacesRateLimitStore);
       envStore.increment.mockResolvedValue({
         count: 2,
         windowRemainingSeconds: 60,

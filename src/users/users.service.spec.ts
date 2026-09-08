@@ -990,7 +990,7 @@ describe('UsersService', () => {
       );
     });
 
-    it('combines jobsScope=today with the technician branch (day window + own-jobs filter + embeds)', async () => {
+    it('combines jobsScope=today with the technician branch (day window ORed with in_progress + own-jobs filter + embeds)', async () => {
       const { listBuilders } = mockAdmin({
         ownRow: { data: ownTechnicianRow, error: null },
         jobsList: {
@@ -1016,13 +1016,12 @@ describe('UsersService', () => {
 
       const list = listBuilders[0];
       expect(list.eq).toHaveBeenCalledWith('technician_id', 'tech-uuid');
-      expect(list.gte).toHaveBeenCalledWith(
-        'scheduled_start',
-        range.start.toISOString(),
-      );
-      expect(list.lt).toHaveBeenCalledWith(
-        'scheduled_start',
-        range.end.toISOString(),
+      // Same OR branch as GET /jobs?scope=today — an active job must not
+      // vanish from the profile's Today page when its slot crosses midnight.
+      expect(list.or).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^and\(scheduled_start\.gte\..+,scheduled_start\.lt\..+\),status\.eq\.in_progress$/,
+        ),
       );
       expect(list.order).toHaveBeenCalledWith('scheduled_start', {
         ascending: true,
@@ -1071,6 +1070,8 @@ describe('UsersService', () => {
       await service.getMyProfile(ownerUser, { jobsScope: 'today' });
 
       const list = listBuilders[0];
+      // Owners keep the pure day-window view — no in_progress OR branch.
+      expect(list.or).not.toHaveBeenCalled();
       expect(list.gte).toHaveBeenCalledWith(
         'scheduled_start',
         range.start.toISOString(),

@@ -22,7 +22,9 @@ describe('SyncService', () => {
 
   function mockFactory(chain: any) {
     const create = jest.fn().mockReturnValue({ from: () => chain });
-    const service = new SyncService({ create } as unknown as SupabaseClientFactory);
+    const service = new SyncService({
+      create,
+    } as unknown as SupabaseClientFactory);
     return { service, create };
   }
 

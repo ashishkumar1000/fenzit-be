@@ -530,10 +530,13 @@ export class JobsService {
     }
 
     // Story 3.7 — timeline scopes. `today` keeps the Story 3.2 behaviour
-    // unchanged (IST day window, created_at sort, jobs-list cursor, date
-    // re-anchor); the other scopes model the full job timeline. The IST day
-    // boundary is a DAY boundary, not a time-of-day one, so the three
-    // day-buckets are mutually exclusive by construction.
+    // (IST day window, created_at sort, jobs-list cursor, date re-anchor),
+    // except that a technician's in_progress jobs are included with the
+    // default view (an active job must not vanish when its slot crosses
+    // midnight IST); the
+    // other scopes model the full job timeline. The IST day boundary is a DAY
+    // boundary, not a time-of-day one, so the three day-buckets stay mutually
+    // exclusive by construction.
     const scope = query.scope ?? JobListScope.TODAY;
 
     // AC #1 / #3 — the IST day window. For an explicit date (today scope only —
@@ -558,9 +561,22 @@ export class JobsService {
     // a caller status filter below is intersected with them (empty results are
     // legitimate — the FE never sends such combinations).
     if (scope === JobListScope.TODAY) {
-      qb = qb
-        .gte('scheduled_start', range.start.toISOString())
-        .lt('scheduled_start', range.end.toISOString());
+      // An in-progress job is active work regardless of which IST day its slot
+      // was scheduled in — it must not vanish from the technician's list when
+      // the slot crosses midnight IST. So for technicians on the default view,
+      // today's window is ORed with their in_progress jobs (the technician_id
+      // self-scope below ANDs the OR branch down to their own jobs). An
+      // explicit `date` re-anchor is a day-history view — keep the pure window
+      // there. Owners always keep the pure day-window view.
+      if (user.role === Role.TECHNICIAN && !query.date) {
+        qb = qb.or(
+          `and(scheduled_start.gte.${range.start.toISOString()},scheduled_start.lt.${range.end.toISOString()}),status.eq.${JobStatus.IN_PROGRESS}`,
+        );
+      } else {
+        qb = qb
+          .gte('scheduled_start', range.start.toISOString())
+          .lt('scheduled_start', range.end.toISOString());
+      }
     } else if (scope === JobListScope.UPCOMING) {
       // Start of tomorrow IST is exactly today's range.end (start + 24h) —
       // zero new IST arithmetic, and today-scheduled jobs can never leak in.
@@ -710,7 +726,9 @@ export class JobsService {
         .eq('tenant_skills.tenant_id', user.tenantId),
       admin
         .from('customers')
-        .select('id, name, country_code, phone_number, address, city, latitude, longitude')
+        .select(
+          'id, name, country_code, phone_number, address, city, latitude, longitude',
+        )
         .eq('id', row.customer_id)
         .eq('tenant_id', user.tenantId)
         .single<CustomerProfileRow>(),

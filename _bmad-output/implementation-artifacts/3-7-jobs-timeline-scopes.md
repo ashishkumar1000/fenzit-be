@@ -397,3 +397,10 @@ Claude Code (GLM), BMAD dev-story workflow, 2026-09-03 → 2026-09-04
   idempotency guard, cursor-test job-id fixture, migration trailing newlines), 5 deferred to
   deferred-work.md (CR3.7-D1..D4), 6 dismissed. 288/288 unit, 93/93 jobs e2e, lint clean for
   the changes. Status → done.
+- 2026-09-09 — Bug follow-up (technician's in_progress job vanished from the today list once its
+  scheduled slot crossed midnight IST): `scope='today'` for a technician on the default view (no
+  explicit `date`) now ORs the IST day window with `status.eq.in_progress` (their own jobs via the
+  self-scope AND). Timeline scopes (upcoming/overdue/history) are untouched — no OR branch there.
+  A job that is both in-progress and past its slot appears in both `today` and `overdue` for the
+  technician. The "three day-buckets mutually exclusive" note above still holds; today is the only
+  scope whose row set for a technician now reaches outside its day window.

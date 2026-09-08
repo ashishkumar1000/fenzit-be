@@ -401,6 +401,8 @@ describe('JobsService', () => {
         'scheduled_start',
         expect.any(String),
       );
+      // Owners keep the pure day-window view — no in_progress OR branch.
+      expect(builder.or).not.toHaveBeenCalled();
       // AC#7 — sort is created_at DESC, id DESC (NOT scheduled_start).
       expect(builder.order).toHaveBeenCalledWith('created_at', {
         ascending: false,
@@ -653,6 +655,71 @@ describe('JobsService', () => {
           'cancelled',
         ]);
         expect(builder.in).toHaveBeenCalledWith('status', ['completed']);
+      });
+
+      it('today + technician: ORs the day window with their in_progress jobs', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+        const tech: RequestUser = {
+          userId: 'tech-self',
+          tenantId: 'tenant-uuid',
+          role: Role.TECHNICIAN,
+          rawJwt: 'jwt',
+        };
+
+        await service.listJobs(tech, {});
+
+        // The in_progress OR branch is not tenant-wide — the technician_id
+        // self-scope (ANDed by postgrest-js) narrows it to their own jobs.
+        expect(builder.eq).toHaveBeenCalledWith('technician_id', 'tech-self');
+        expect(builder.or).toHaveBeenCalledWith(
+          expect.stringMatching(
+            /^and\(scheduled_start\.gte\..+,scheduled_start\.lt\..+\),status\.eq\.in_progress$/,
+          ),
+        );
+      });
+
+      it('today + technician + explicit date: keeps the pure day window (no in_progress OR)', async () => {
+        const { builder } = mockListAdmin({ data: [], error: null });
+        const tech: RequestUser = {
+          userId: 'tech-self',
+          tenantId: 'tenant-uuid',
+          role: Role.TECHNICIAN,
+          rawJwt: 'jwt',
+        };
+
+        await service.listJobs(tech, { date: '2026-09-08' });
+
+        // A date re-anchor is a day-history view — in_progress jobs from other
+        // days must not leak in.
+        expect(builder.or).not.toHaveBeenCalled();
+        expect(builder.gte).toHaveBeenCalledWith(
+          'scheduled_start',
+          expect.any(String),
+        );
+        expect(builder.lt).toHaveBeenCalledWith(
+          'scheduled_start',
+          expect.any(String),
+        );
+      });
+
+      it('non-today scopes for a technician: no in_progress OR branch', async () => {
+        for (const scope of [
+          JobListScope.UPCOMING,
+          JobListScope.OVERDUE,
+          JobListScope.HISTORY,
+        ]) {
+          const { builder } = mockListAdmin({ data: [], error: null });
+          const tech: RequestUser = {
+            userId: 'tech-self',
+            tenantId: 'tenant-uuid',
+            role: Role.TECHNICIAN,
+            rawJwt: 'jwt',
+          };
+
+          await service.listJobs(tech, { scope });
+
+          expect(builder.or).not.toHaveBeenCalled();
+        }
       });
 
       it('applies the technician self-scope in non-today scopes too', async () => {

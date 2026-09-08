@@ -115,3 +115,8 @@ Claude Code (GLM) — BMAD dev-story run, 2026-09-05
 
 - 2026-09-05: Story implemented per tasks 1-5 (red-green-refactor); all ACs covered; status → review.
 - 2026-09-05: Full-mode code review (4 layers) — 12 patch findings applied (docs/api-contracts.md Users section, Swagger refresh, corrected today-scope parity comment, embed anomaly warn-logging, 7 new test assertions); 1 defer (CR3.9-D1); 9 dismissed. Tests 330/330, typecheck + eslint clean. Status → done.
+- 2026-09-09: Parity follow-up (bmad-code-review verification-gap on the jobs-list in_progress fix):
+  `jobsScope='today'` for a technician now ORs the IST day window with their `in_progress` jobs —
+  same branch `GET /jobs?scope=today` uses, so an active job no longer vanishes from the profile's
+  Today page when its slot crosses midnight IST. Owners (technicianId=null) keep the pure window.
+  Cursor mechanics unchanged (scheduled_start-ASC keyset, scope-tagged cursor). Reviewed, tests green.

@@ -432,7 +432,9 @@ export class UsersService {
    * Scope 'today': the exclusive IST day window on scheduled_start with no
    * status filter — the same WINDOW mechanics GET /jobs?scope=today uses
    * (Story 3.7; the FE drops completed/cancelled rows from display, the
-   * payload stays honest about the window's contents). The SORT intentionally
+   * payload stays honest about the window's contents). Like the jobs list,
+   * a technician's today view ORs in their in_progress jobs regardless of the
+   * window; the owner view keeps the pure window. The SORT intentionally
    * differs: GET /jobs?scope=today keys on created_at DESC, while this
    * dispatch view sorts scheduled_start ASC so the page reads soonest-first.
    * A cursor minted for one scope is rejected (400) on the other.
@@ -461,11 +463,21 @@ export class UsersService {
     }
 
     if (isToday) {
-      // Zero new IST arithmetic — copy of the jobs-list today window.
+      // Zero new IST arithmetic — copy of the jobs-list today window,
+      // including its in_progress OR branch for the technician's own view: an
+      // active job must not vanish from the profile's Today page when its slot
+      // crosses midnight IST. Owners (technicianId=null) keep the pure
+      // day-window view.
       const range = getIstDayRange();
-      qb = qb
-        .gte('scheduled_start', range.start.toISOString())
-        .lt('scheduled_start', range.end.toISOString());
+      if (technicianId) {
+        qb = qb.or(
+          `and(scheduled_start.gte.${range.start.toISOString()},scheduled_start.lt.${range.end.toISOString()}),status.eq.${JobStatus.IN_PROGRESS}`,
+        );
+      } else {
+        qb = qb
+          .gte('scheduled_start', range.start.toISOString())
+          .lt('scheduled_start', range.end.toISOString());
+      }
     }
 
     if (cursor) {
