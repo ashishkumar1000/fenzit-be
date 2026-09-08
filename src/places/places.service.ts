@@ -112,14 +112,22 @@ export class PlacesService {
     // Runtime guard on the ResolvedPlace contract ("always real numbers,
     // never null/placeholder"): `number` in the type is doc-level only — a
     // provider parsing external JSON (e.g. GooglePlacesProvider) could return
-    // NaN/Infinity, which `typeof === 'number'` checks do not catch.
+    // NaN/Infinity, which `typeof === 'number'` checks do not catch, or a
+    // finite-but-geographically-invalid value (lat outside [-90,90], lng
+    // outside [-180,180]) that would pass through to clients otherwise.
     if (
       !Number.isFinite(resolved.latitude) ||
-      !Number.isFinite(resolved.longitude)
+      !Number.isFinite(resolved.longitude) ||
+      resolved.latitude < -90 ||
+      resolved.latitude > 90 ||
+      resolved.longitude < -180 ||
+      resolved.longitude > 180
     ) {
       this.throwUpstreamError(
-        `Places provider returned non-finite coordinates for placeId ${placeId}:`,
-        new Error(`latitude=${resolved.latitude} longitude=${resolved.longitude}`),
+        `Places provider returned invalid coordinates for placeId ${placeId}:`,
+        new Error(
+          `latitude=${resolved.latitude} longitude=${resolved.longitude}`,
+        ),
         upstreamMessage,
       );
     }
@@ -151,9 +159,10 @@ export class PlacesService {
    * envelope if the request would exceed `max` within `windowSeconds`. A
    * cache-backend hiccup on increment is mapped to the same documented
    * upstream-error 502 the provider-failure branches use, rather than
-   * surfacing as an undocumented generic 500. `label` is used both in the
-   * rate-limit key's caller-facing message (e.g. "autosuggest"/"resolve") and
-   * has no effect on the store key itself (that's passed in via `key`).
+   * surfacing as an undocumented generic 500. `label` distinguishes the
+   * failing endpoint in the log line (autosuggest vs resolve) and feeds the
+   * caller-facing 429 message; it has no effect on the store key itself
+   * (that's passed in via `key`).
    */
   private async enforceRateLimit(
     key: string,
@@ -167,7 +176,7 @@ export class PlacesService {
       requestCount = await this.rateLimitStore.increment(key, windowSeconds);
     } catch (error) {
       this.throwUpstreamError(
-        'Places rate-limit store failed to increment:',
+        `Places rate-limit store failed to increment (${label}):`,
         error,
         upstreamMessage,
       );

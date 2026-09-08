@@ -116,6 +116,41 @@ describe('GooglePlacesProvider', () => {
     ).rejects.toThrow();
   });
 
+  it('should silently drop malformed suggestions[] entries and keep well-formed ones', async () => {
+    // Pinned (not "fixed") behaviour per the provider spec: a malformed entry
+    // is dropped rather than surfaced as an error — a single bad suggestion
+    // from Google must not fail the whole typeahead call.
+    fetchSpy.mockResolvedValue(
+      jsonResponse(200, {
+        suggestions: [
+          { placePrediction: null }, // no placePrediction at all
+          { unexpectedShape: true }, // no placePrediction key
+          { placePrediction: { text: { text: 'no placeId' } } }, // placeId missing
+          { placePrediction: { placeId: 'ChIJ-no-text' } }, // text missing
+          {
+            placePrediction: {
+              placeId: 'ChIJ-google-1',
+              text: { text: '123 Main St, Mumbai, Maharashtra, India' },
+            },
+          },
+        ],
+      }),
+    );
+
+    const suggestions = await provider.autosuggest(
+      '123 main',
+      'session-1',
+      'IN',
+    );
+
+    expect(suggestions).toEqual([
+      {
+        placeId: 'ChIJ-google-1',
+        text: '123 Main St, Mumbai, Maharashtra, India',
+      },
+    ]);
+  });
+
   it('should throw when the Google autocomplete request times out/aborts', async () => {
     fetchSpy.mockRejectedValue(
       new DOMException('The signal timed out', 'TimeoutError'),
@@ -247,6 +282,34 @@ describe('GooglePlacesProvider', () => {
       );
 
       expect(resolved.city).toBeNull();
+    });
+
+    it('should take the FIRST locality component when Google returns several', async () => {
+      // Pinned (not "fixed") behaviour per the provider spec: `.find()` wins
+      // with the first locality entry; no error is raised for the ambiguity.
+      fetchSpy.mockResolvedValue(
+        jsonResponse(200, {
+          id: 'ChIJ-two-localities',
+          formattedAddress: 'Somewhere, India',
+          location: { latitude: 1, longitude: 2 },
+          addressComponents: [
+            {
+              longText: 'Bengaluru',
+              shortText: 'Bengaluru',
+              types: ['locality'],
+            },
+            { longText: 'Mumbai', shortText: 'Mumbai', types: ['locality'] },
+          ],
+        }),
+      );
+
+      const resolved = await provider.resolve(
+        'ChIJ-two-localities',
+        'session-1',
+        'IN',
+      );
+
+      expect(resolved.city).toBe('Bengaluru');
     });
 
     it('should throw when Google returns a valid place with location absent (never a null-coordinate success)', async () => {

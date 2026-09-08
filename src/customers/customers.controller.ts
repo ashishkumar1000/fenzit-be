@@ -14,12 +14,16 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiExtraModels,
+  getSchemaPath,
 } from '@nestjs/swagger';
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
 import { GetCustomerDetailQueryDto } from './dto/get-customer-detail-query.dto';
 import { CustomerDetailResponseDto } from './dto/customer-detail-response.dto';
+import { CustomerListItemDto } from './dto/customer-list-item.dto';
+import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '../common/enums/role.enum';
@@ -27,6 +31,7 @@ import type { RequestUser } from '../common/interfaces/request-user.interface';
 
 @ApiTags('Customers')
 @ApiBearerAuth()
+@ApiExtraModels(PaginatedResponse, CustomerListItemDto)
 @Controller('customers')
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
@@ -54,7 +59,27 @@ export class CustomersController {
     summary:
       "List & search the owner's customers (cursor-paginated, page size 50)",
   })
-  @ApiResponse({ status: 200, description: 'Paginated customer list' })
+  // PaginatedResponse<T> is generic and there is no swagger CLI plugin, so the
+  // item type can't go in `type:` — the allOf composition below documents the
+  // envelope with `data` items typed as CustomerListItemDto (structured-address
+  // fields + jobCount/lastJobDate).
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated customer list',
+    schema: {
+      allOf: [
+        { $ref: getSchemaPath(PaginatedResponse) },
+        {
+          properties: {
+            data: {
+              type: 'array',
+              items: { $ref: getSchemaPath(CustomerListItemDto) },
+            },
+          },
+        },
+      ],
+    },
+  })
   @ApiResponse({
     status: 400,
     description: 'Company not set up or malformed cursor',

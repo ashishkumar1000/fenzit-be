@@ -104,6 +104,13 @@ describe('Jobs (e2e)', () => {
     technicianId: TECH_ID,
   };
 
+  // Valid inline-customer payload for newCustomer-path tests.
+  const validNewCustomer = {
+    name: 'Priya Sharma',
+    countryCode: '+91',
+    phoneNumber: '9876543210',
+  };
+
   const customerOk = {
     data: { id: CUSTOMER_ID, tenant_id: TENANT_ID },
     error: null,
@@ -214,7 +221,9 @@ describe('Jobs (e2e)', () => {
       // findOrCreateByPhone chain: select().eq()x3.maybeSingle() lookup (miss),
       // then insert().select().single() create — a different shape from the
       // customerId path's singleChain, so built inline here.
-      const maybeSingle = jest.fn().mockResolvedValue({ data: null, error: null });
+      const maybeSingle = jest
+        .fn()
+        .mockResolvedValue({ data: null, error: null });
       const eq3 = jest.fn().mockReturnValue({ maybeSingle });
       const eq2 = jest.fn().mockReturnValue({ eq: eq3 });
       const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
@@ -402,6 +411,41 @@ describe('Jobs (e2e)', () => {
       expect(response.statusCode).toBe(422);
       expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
     });
+
+    // Validator-rejection coverage for the newCustomer structured fields — a
+    // copy-paste divergence between NewCustomerDto and CreateCustomerDto (a
+    // dropped/decorator-weakened @Matches/@Min/@Max) would otherwise go
+    // unnoticed, since the happy-path test only proves validators that exist.
+    const invalidNewCustomerCases: [string, Record<string, unknown>][] = [
+      ['a 5-digit pincode', { pincode: '56000' }],
+      ['latitude above 90', { latitude: 91 }],
+      ['longitude below -180', { longitude: -181 }],
+      ['a whitespace-only name', { name: '   ' }],
+      ['a 2-digit phoneNumber', { phoneNumber: '98' }],
+    ];
+
+    it.each(invalidNewCustomerCases)(
+      'AC6 — returns 422 when newCustomer has %s',
+      async (_label, badField) => {
+        // customerId must stay out — customerId + newCustomer together is its
+        // own 422, which would mask the field-level rejection being tested.
+        const { customerId, ...payloadWithoutCustomer } = validPayload;
+        void customerId;
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/jobs',
+          headers: { authorization: `Bearer ${ownerJwt()}` },
+          payload: {
+            ...payloadWithoutCustomer,
+            newCustomer: { ...validNewCustomer, ...badField },
+          },
+        });
+
+        expect(response.statusCode).toBe(422);
+        expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      },
+    );
 
     it('AC7 — returns 403 FORBIDDEN for a Technician JWT', async () => {
       const response = await app.inject({

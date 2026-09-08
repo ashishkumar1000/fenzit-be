@@ -271,6 +271,38 @@ describe('PlacesService', () => {
       });
     });
 
+    it('should throw 502 PLACES_UPSTREAM_ERROR when the provider returns finite-but-out-of-range coordinates', async () => {
+      rateLimitStore.increment.mockResolvedValue(1);
+      placesProvider.resolve.mockResolvedValue({
+        ...resolvedPlace,
+        latitude: 999,
+        longitude: -200,
+      });
+
+      await expect(
+        service.resolve(ownerUser, placeId, sessionToken),
+      ).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.PLACES_UPSTREAM_ERROR,
+          message: 'Unable to resolve the selected address right now',
+        }),
+      });
+    });
+
+    it('should accept boundary coordinates (±90 lat, ±180 lng) as valid', async () => {
+      rateLimitStore.increment.mockResolvedValue(1);
+      placesProvider.resolve.mockResolvedValue({
+        ...resolvedPlace,
+        latitude: 90,
+        longitude: -180,
+      });
+
+      await expect(
+        service.resolve(ownerUser, placeId, sessionToken),
+      ).resolves.toMatchObject({ latitude: 90, longitude: -180 });
+    });
+
     it('should key the resolve rate limit independently from autosuggest (separate suffix)', async () => {
       rateLimitStore.increment.mockResolvedValue(1);
       placesProvider.resolve.mockResolvedValue(resolvedPlace);
