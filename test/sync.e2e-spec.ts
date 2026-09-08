@@ -92,17 +92,18 @@ describe('Sync (e2e)', () => {
   }
 
   function buildChain(rows: any[]) {
-    // The service conditionally calls .gt() before .order().
-    // We need the chain to support both code paths:
-    //   - no lastSyncedAt: select → eq → order
-    //   - with lastSyncedAt: select → eq → gt → order
-    // .order() must be the terminal resolver in all paths.
+    // The service conditionally calls .gt() before .order(), and always
+    // terminates with .limit(500). We need the chain to support both paths:
+    //   - no lastSyncedAt: select → eq → order → limit
+    //   - with lastSyncedAt: select → eq → gt → order → limit
+    // .limit() must be the terminal resolver in all paths.
     let chain: any;
     chain = {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       gt: jest.fn().mockReturnThis(),
-      order: jest.fn().mockResolvedValue({ data: rows, error: null }),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockResolvedValue({ data: rows, error: null }),
     };
     mockCreate.mockReturnValue({ from: jest.fn().mockReturnValue(chain) });
     return chain;

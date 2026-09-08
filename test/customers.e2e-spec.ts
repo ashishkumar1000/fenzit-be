@@ -440,16 +440,33 @@ describe('Customers (e2e)', () => {
     // return the builder; limit() resolves to { data, error }. Captures .or() args.
     function mockListResult(result: { data: unknown; error: unknown }) {
       const orArgs: string[] = [];
-      const builder: Record<string, jest.Mock> = {};
-      builder.select = jest.fn(() => builder);
-      builder.eq = jest.fn(() => builder);
-      builder.or = jest.fn((arg: string) => {
+      // List query terminal is .limit() — routed by table name (like
+      // mockDetail) since listCustomers now queries both `customers` and
+      // `jobs`, so a terminal-change regression in either query fails loudly
+      // instead of silently consuming the other's rows.
+      const customerBuilder: Record<string, jest.Mock> = {};
+      customerBuilder.select = jest.fn(() => customerBuilder);
+      customerBuilder.eq = jest.fn(() => customerBuilder);
+      customerBuilder.or = jest.fn((arg: string) => {
         orArgs.push(arg);
-        return builder;
+        return customerBuilder;
       });
-      builder.order = jest.fn(() => builder);
-      builder.limit = jest.fn().mockResolvedValue(result);
-      mockCreateAdmin.mockReturnValue({ from: jest.fn(() => builder) });
+      customerBuilder.order = jest.fn(() => customerBuilder);
+      customerBuilder.limit = jest.fn().mockResolvedValue(result);
+
+      // getJobStats' jobs query awaits at .in(). Resolves with no job rows,
+      // matching AC1's expected item shape (jobCount 0 / lastJobDate null).
+      // Tests needing job stats should extend this mock.
+      const jobsBuilder: Record<string, jest.Mock> = {};
+      jobsBuilder.select = jest.fn(() => jobsBuilder);
+      jobsBuilder.eq = jest.fn(() => jobsBuilder);
+      jobsBuilder.in = jest.fn().mockResolvedValue({ data: [], error: null });
+
+      mockCreateAdmin.mockReturnValue({
+        from: jest.fn((table: string) =>
+          table === 'jobs' ? jobsBuilder : customerBuilder,
+        ),
+      });
       return { orArgs };
     }
 

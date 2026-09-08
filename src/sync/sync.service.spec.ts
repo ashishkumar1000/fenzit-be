@@ -72,5 +72,17 @@ describe('SyncService', () => {
     expect(chain.eq).toHaveBeenCalledWith('tenant_id', 'tenant-1');
     expect(chain.eq).toHaveBeenCalledWith('technician_id', 'tech-1');
     expect(chain.gt).toHaveBeenCalledWith('updated_at', '2026-06-21T09:00:00Z');
+    // Terminal operator + page cap — the await must resolve at .limit(500).
+    expect(chain.limit).toHaveBeenCalledWith(500);
+  });
+
+  it('throws 500 InternalServerErrorException when the sync query fails', async () => {
+    const chain = buildChain([], { message: 'db down' });
+    const { service } = mockFactory(chain);
+
+    await expect(service.sync(user)).rejects.toMatchObject({
+      status: 500,
+      message: 'Sync query failed',
+    });
   });
 });
