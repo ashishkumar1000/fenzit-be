@@ -27,6 +27,8 @@ function fetchCallArgs(
 describe('GooglePlacesProvider', () => {
   let provider: GooglePlacesProvider;
   let fetchSpy: jest.SpyInstance;
+  /** Whether this run had to install the fallback stub below. */
+  let installedFetchStub = false;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -42,11 +44,25 @@ describe('GooglePlacesProvider', () => {
     }).compile();
 
     provider = module.get(GooglePlacesProvider);
+
+    // `jest.spyOn` throws when the property is falsy, and newer Node exposes
+    // `fetch` lazily enough that jest's sandboxed global can miss it — so
+    // materialise a no-op first when it is absent (removed again below).
+    if (!global.fetch) {
+      (global as { fetch?: unknown }).fetch = async () => {
+        throw new Error('fetch stub: no test configured a response');
+      };
+      installedFetchStub = true;
+    }
     fetchSpy = jest.spyOn(global, 'fetch');
   });
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    if (installedFetchStub) {
+      delete (global as { fetch?: unknown }).fetch;
+      installedFetchStub = false;
+    }
   });
 
   it('should return normalized suggestions for a successful Google autocomplete response', async () => {
