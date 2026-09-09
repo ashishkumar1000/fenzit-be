@@ -317,6 +317,15 @@ assigned technician.** Steps are validated for ordering (422 on out-of-order).
 - `409` — Job is not advanceable in current status
 - `422` — Invalid step value or out-of-order transition
 
+**Side effect (Story 3.1):** a committed advance writes exactly one
+`notifications` row for the tenant owner (`event_type` = the step, `payload` =
+`{ job_number, step, technician_name }`) and broadcasts it over Supabase
+Realtime to the private topic `user:<owner_id>:notifications` (event
+`INSERT`). No notification is written for a rejected advance or when the
+owner advances their own job. Realtime tokens require `exp` and
+`role: 'authenticated'` claims (Supabase Realtime rejects the login JWT's
+never-expire token — see Story 3.1 spike).
+
 #### `POST /api/v1/jobs/:id/attachments` `[Bearer JWT, Role: technician, Idempotent]`
 
 **Phase 1 of two-phase upload.** Request a presigned R2 upload URL.
