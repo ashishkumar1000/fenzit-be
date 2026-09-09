@@ -16,3 +16,13 @@ export const trimToUndefined = ({ value }: TransformFnParams): unknown => {
   const trimmed = value.trim();
   return trimmed === '' ? undefined : trimmed;
 };
+
+/**
+ * Trims every string element of an array value in place — for bulk-id DTOs
+ * whose per-element validators (@IsUUID({ each: true })) run after the
+ * transform, so a padded id would otherwise fail validation.
+ */
+export const trimArray = ({ value }: TransformFnParams): unknown =>
+  Array.isArray(value)
+    ? value.map((v: unknown) => (typeof v === 'string' ? v.trim() : v))
+    : value;

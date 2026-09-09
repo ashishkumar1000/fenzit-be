@@ -366,6 +366,60 @@ row) but is re-execution, not key-based replay.
 
 ---
 
+### Notifications (Story 3.2)
+
+All four endpoints are **recipient-scoped by the JWT `sub` claim** — every
+query filters by both `tenant_id` and `user_id`, so a caller can only ever see
+and mutate their own rows (a technician's set is naturally empty today; rows
+are written only by `advance_workflow_step`, see the Story 3.1 side effect
+under `### Jobs`). Deliberately **not** role-gated: recipient-scoping is the
+authorization.
+
+The list uses the shared `{ data, nextCursor, hasMore }` cursor envelope and
+the house cursor machinery (base64url JSON, scope `notifications-list`;
+malformed or foreign-scope cursor → `400`). DTO rejections are `422` per the
+global ValidationPipe.
+
+#### `GET /api/v1/notifications?limit=&cursor=` `[Bearer JWT]`
+
+Newest-first list (`created_at DESC, id DESC` keyset pagination). Default page
+20, max 50. Each item: `{ id, jobId, eventType, payload, readAt, createdAt }`
+— `payload` is the verbatim Story 3.1 JSONB (`job_number`, `step`,
+`technician_name`); no read-time join.
+
+**Responses:**
+- `200` — `{ data: [...], nextCursor: string | null, hasMore }`
+- `400` — Malformed or foreign-scope cursor
+- `401` — Missing/invalid JWT
+- `422` — Validation error (`limit` must be an integer 1–50)
+
+#### `GET /api/v1/notifications/unread-count` `[Bearer JWT]`
+
+**Responses:**
+- `200` — `{ unreadCount: number }` (rows with `read_at IS NULL` for the caller)
+
+#### `POST /api/v1/notifications/mark-read` `[Bearer JWT]`
+
+Marks own, currently-unread rows read. Idempotent; foreign/missing/already-read
+ids silently no-op.
+
+**Body:** `{ ids: string[] }` (UUIDs, 1–100 items)
+
+**Responses:**
+- `200` — `{ markedCount: number }` (rows actually marked)
+- `401` — Missing/invalid JWT
+- `422` — Validation error (empty ids, non-UUID id, > 100 ids)
+
+#### `POST /api/v1/notifications/mark-all-read` `[Bearer JWT]`
+
+Marks every unread row of the caller read. Idempotent (repeat → `markedCount: 0`).
+
+**Responses:**
+- `200` — `{ markedCount: number }`
+- `401` — Missing/invalid JWT
+
+---
+
 ### Sync (technician only)
 
 #### `POST /api/v1/sync` `[Bearer JWT, Role: technician]`

@@ -16,7 +16,8 @@ export type CursorScope =
   | 'jobs-overdue'
   | 'jobs-history'
   | 'profile-jobs'
-  | 'profile-jobs-today';
+  | 'profile-jobs-today'
+  | 'notifications-list';
 
 interface CursorPayload {
   id: string;

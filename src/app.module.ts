@@ -19,6 +19,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { SyncModule } from './sync/sync.module';
 import { PlacesModule } from './places/places.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -101,6 +102,7 @@ import { PlacesModule } from './places/places.module';
     WebhooksModule,
     SyncModule,
     PlacesModule,
+    NotificationsModule,
   ],
   controllers: [HealthController],
   providers: [
