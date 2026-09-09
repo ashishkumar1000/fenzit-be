@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
   HttpException,
 } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { AuthService, REALTIME_TOKEN_TTL_SECONDS } from './auth.service';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
 import { OtpDeliveryProvider } from './otp-delivery.provider';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -901,6 +901,69 @@ describe('AuthService', () => {
 
       await service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp });
       expect(updateFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('mintRealtimeToken', () => {
+    const user: RequestUser = {
+      userId: '550e8400-e29b-41d4-a716-446655440000',
+      tenantId: 'tenant-uuid',
+      role: Role.OWNER,
+      rawJwt: 'login-jwt',
+    };
+
+    it('mints the Realtime claim set: sub, role "authenticated", ~1h exp', async () => {
+      jwtService.signAsync.mockResolvedValueOnce('realtime-jwt');
+
+      const before = Math.floor(Date.now() / 1000);
+      const result = await service.mintRealtimeToken(user);
+      const after = Math.floor(Date.now() / 1000);
+
+      expect(result).toEqual({
+        token: 'realtime-jwt',
+        expiresAt: expect.any(String),
+      });
+
+      const claims = jwtService.signAsync.mock.calls[0][0] as {
+        sub: string;
+        role: string;
+        exp: number;
+      };
+      expect(claims.sub).toBe(user.userId);
+      // Realtime requires a claim naming an existing Postgres role (Story 3.1
+      // spike) — the login JWT's 'owner'/'technician' role is rejected.
+      expect(claims.role).toBe('authenticated');
+      // Exactly the TTL, robust to scheduler drift between before/after.
+      expect(claims.exp).toBeGreaterThanOrEqual(
+        before + REALTIME_TOKEN_TTL_SECONDS,
+      );
+      expect(claims.exp).toBeLessThanOrEqual(
+        after + REALTIME_TOKEN_TTL_SECONDS,
+      );
+      // The payload carries its own `exp`, so no options object follows it —
+      // jsonwebtoken throws when both `exp` and `expiresIn` are present.
+      expect(jwtService.signAsync.mock.calls[0][1]).toBeUndefined();
+    });
+
+    it('reports expiresAt at the exp claim, as ISO 8601', async () => {
+      jwtService.signAsync.mockResolvedValueOnce('realtime-jwt');
+
+      const result = await service.mintRealtimeToken(user);
+
+      const claims = jwtService.signAsync.mock.calls[0][0] as { exp: number };
+      expect(new Date(result.expiresAt).getTime()).toBe(claims.exp * 1000);
+    });
+
+    it('never carries the login token or tenantId claim', async () => {
+      jwtService.signAsync.mockResolvedValueOnce('realtime-jwt');
+
+      await service.mintRealtimeToken(user);
+
+      const claims = jwtService.signAsync.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(claims).sort()).toEqual(['exp', 'role', 'sub']);
     });
   });
 });

@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   HttpCode,
   HttpStatus,
@@ -146,5 +147,29 @@ export class AuthController {
     );
     reply.status(created ? HttpStatus.CREATED : HttpStatus.OK);
     return { token, tenant };
+  }
+
+  @Get('realtime-token')
+  @Roles(Role.OWNER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mint a short-lived Supabase Realtime token' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'One-hour token carrying sub + role: "authenticated" + exp — the claim set Supabase Realtime accepts (the login JWT is rejected: no exp, role is not a Postgres role)',
+    schema: {
+      example: {
+        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+        expiresAt: '2026-09-09T20:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
+  @ApiResponse({
+    status: 403,
+    description: 'Technician JWT — owner notifications only (Story 3.3)',
+  })
+  async realtimeToken(@CurrentUser() user: RequestUser) {
+    return this.authService.mintRealtimeToken(user);
   }
 }

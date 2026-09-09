@@ -2,7 +2,10 @@
 
 All endpoints are mounted under `/api/v1` except those explicitly excluded
 (see `src/main.ts`). All endpoints require a JWT **except** where marked
-`[Public]`. JWTs are issued by `POST /api/v1/auth/otp/verify` and last **7 days**.
+`[Public]`. JWTs are issued by `POST /api/v1/auth/otp/verify` and never expire
+(no `exp` claim — interim until refresh tokens land; the guard rejects any
+token whose role is not `owner`/`technician`, so the short-lived Realtime
+tokens minted by `GET /api/v1/auth/realtime-token` are socket-only).
 
 ## Conventions
 
@@ -74,6 +77,26 @@ invalid; locked sessions return 401).
 - `200` — `{ token: JWT, user: { userId, tenantId | null, role, name | null } }`
 - `401` — Invalid/expired/locked OTP session
 - `422` — Invalid OTP code format
+
+#### `GET /api/v1/auth/realtime-token` `[Bearer JWT, Role: owner]`
+
+Mint a short-lived (1 h) token for the Supabase Realtime socket (Story 3.3,
+owner notifications; technician live updates — Story 3.4 — may widen this
+later). Supabase Realtime rejects the login JWT — it never expires and its
+`role: 'owner' | 'technician'` claim is not an existing Postgres role (Story 3.1
+spike) — so the app exchanges its login token for this one. Authorization on the
+Realtime path happens in the `realtime.messages` RLS policy, keyed on `sub` only.
+
+**Body:** none
+
+**Responses:**
+- `200` — `{ token: string (JWT: sub + role: 'authenticated' + exp; iat added automatically), expiresAt: ISO8601 }`
+- `401` — Missing or invalid JWT
+- `403` — Technician JWT
+
+The client caches the token and re-fetches it slightly before `expiresAt`
+(refresh margin), so a fresh token is always in hand for a (re)connect; a
+failed fetch just means no socket (the app falls back to focus refresh).
 
 #### `POST /api/v1/auth/invite` `[Bearer JWT, Role: owner]`
 
@@ -324,7 +347,8 @@ Realtime to the private topic `user:<owner_id>:notifications` (event
 `INSERT`). No notification is written for a rejected advance or when the
 owner advances their own job. Realtime tokens require `exp` and
 `role: 'authenticated'` claims (Supabase Realtime rejects the login JWT's
-never-expire token — see Story 3.1 spike).
+never-expire token — see Story 3.1 spike); the app mints them from its login
+token via `GET /api/v1/auth/realtime-token`.
 
 #### `POST /api/v1/jobs/:id/attachments` `[Bearer JWT, Role: technician, Idempotent]`
 

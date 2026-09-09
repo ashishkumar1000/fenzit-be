@@ -21,6 +21,16 @@ interface JwtPayload {
   exp: number;
 }
 
+/**
+ * Any token signed with SUPABASE_JWT_SECRET verifies here — including
+ * short-lived Realtime tokens (role: 'authenticated') and Supabase's own
+ * service_role key. Those must never open the REST API, so the role claim is
+ * checked against the app's own roles after verification. Realtime tokens are
+ * for the Realtime socket only (where Supabase itself requires
+ * role: 'authenticated') — see AuthService.mintRealtimeToken.
+ */
+const APP_ROLES = new Set<string>([Role.OWNER, Role.TECHNICIAN]);
+
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(
@@ -49,29 +59,39 @@ export class JwtAuthGuard implements CanActivate {
       });
     }
 
+    let payload: JwtPayload;
     try {
       const secret = this.configService.getOrThrow<string>(
         'SUPABASE_JWT_SECRET',
       );
-      const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
+      payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
         secret,
         algorithms: ['HS256'],
       });
-
-      const user: RequestUser = {
-        userId: payload.sub,
-        tenantId: payload.tenantId ?? null,
-        role: payload.role,
-        rawJwt: token,
-      };
-
-      (request as FastifyRequest & { user: RequestUser }).user = user;
     } catch {
       throw new UnauthorizedException({
         error_code: ErrorCode.UNAUTHORIZED,
         message: 'Invalid or expired token',
       });
     }
+
+    // Kept outside the catch above so its message is not swallowed by the
+    // generic "Invalid or expired token" rewrite.
+    if (typeof payload.role !== 'string' || !APP_ROLES.has(payload.role)) {
+      throw new UnauthorizedException({
+        error_code: ErrorCode.UNAUTHORIZED,
+        message: 'Token is not valid for API access',
+      });
+    }
+
+    const user: RequestUser = {
+      userId: payload.sub,
+      tenantId: payload.tenantId ?? null,
+      role: payload.role,
+      rawJwt: token,
+    };
+
+    (request as FastifyRequest & { user: RequestUser }).user = user;
 
     return true;
   }

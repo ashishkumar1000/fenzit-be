@@ -39,6 +39,15 @@ const OTP_RATE_LIMIT_WINDOW = 600;
 const OTP_RATE_LIMIT_MAX = 5;
 const OTP_MAX_ATTEMPTS = 5;
 
+/**
+ * Supabase Realtime tokens are short-lived on purpose — the login JWT is
+ * never-expire by design, and Realtime needs a fresh claim set anyway (see
+ * `mintRealtimeToken`). One hour keeps the exchange cheap (the client refreshes
+ * only near expiry, roughly once an hour of foreground use) while capping how
+ * long a leaked copy is usable.
+ */
+export const REALTIME_TOKEN_TTL_SECONDS = 3600;
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -188,6 +197,33 @@ export class AuthService {
         name: user.name,
       },
     };
+  }
+
+  /**
+   * Mints a short-lived token for the Supabase Realtime socket (Story 3.3).
+   *
+   * Realtime rejects the login JWT — it carries no `exp` and its role claim
+   * ('owner'/'technician') is not an existing Postgres role (verified live in
+   * Story 3.1's spike) — so the app exchanges its login token for this one:
+   * same signing secret, claims `{ sub, role: 'authenticated', exp }`.
+   * `role: 'authenticated'` names the Postgres role Realtime requires;
+   * authorization itself happens in Realtime's RLS policies, which key on
+   * `sub` only (e.g. `realtime.messages` topic policy).
+   */
+  async mintRealtimeToken(
+    user: RequestUser,
+  ): Promise<{ token: string; expiresAt: string }> {
+    const exp = Math.floor(Date.now() / 1000) + REALTIME_TOKEN_TTL_SECONDS;
+    // The payload carries its own `exp`, so NO options object is passed to
+    // signAsync — jsonwebtoken throws when both a payload `exp` and an
+    // options `expiresIn` are present, and it also auto-adds `iat`. Keep it
+    // this way; a `signAsync(claims, { expiresIn: ... })` edit would 500.
+    const token = await this.jwtService.signAsync({
+      sub: user.userId,
+      role: 'authenticated',
+      exp,
+    });
+    return { token, expiresAt: new Date(exp * 1000).toISOString() };
   }
 
   async inviteTechnician(

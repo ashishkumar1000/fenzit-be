@@ -96,4 +96,43 @@ describe('JwtAuthGuard', () => {
     expect(user.role).toBe(Role.OWNER);
     expect(user.rawJwt).toBe('valid-token');
   });
+
+  it('rejects a Realtime token (role "authenticated") — socket-only token', async () => {
+    (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
+      sub: 'user-123',
+      tenantId: null,
+      role: 'authenticated',
+      iat: 1000,
+      exp: 9999999999,
+    });
+
+    const { ctx, request, reflector } = makeContext({
+      authorization: 'Bearer realtime-jwt',
+    });
+    const guard = new JwtAuthGuard(jwtService, reflector, configService);
+
+    const err = await guard.canActivate(ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    // Its own message, not the generic verify-failure rewrite.
+    expect(err.response?.message).toBe('Token is not valid for API access');
+    expect(request.user).toBeUndefined();
+  });
+
+  it('rejects a token whose role claim is missing', async () => {
+    (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
+      sub: 'user-123',
+      tenantId: null,
+      iat: 1000,
+      exp: 9999999999,
+    });
+
+    const { ctx, reflector } = makeContext({
+      authorization: 'Bearer roleless-jwt',
+    });
+    const guard = new JwtAuthGuard(jwtService, reflector, configService);
+
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
 });
