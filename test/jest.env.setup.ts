@@ -1,8 +1,10 @@
 process.env['NODE_ENV'] = 'test';
 process.env['PORT'] = '3001';
-process.env['SUPABASE_URL'] = 'https://test.supabase.co';
-process.env['SUPABASE_ANON_KEY'] = 'test-anon-key';
-process.env['SUPABASE_JWT_SECRET'] =
+// Supabase vars only apply the stub when unset, so exporting real
+// credentials runs the real-DB integration tests (review round 2, 2026-09-10).
+process.env['SUPABASE_URL'] ??= 'https://test.supabase.co';
+process.env['SUPABASE_ANON_KEY'] ??= 'test-anon-key';
+process.env['SUPABASE_JWT_SECRET'] ??=
   'test-jwt-secret-for-e2e-tests-minimum-32-chars';
 process.env['SUPABASE_SERVICE_ROLE_KEY'] =
   'test-service-role-key-for-e2e-tests';

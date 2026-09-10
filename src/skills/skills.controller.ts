@@ -42,13 +42,22 @@ export class SkillsController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Roles(Role.OWNER, Role.TECHNICIAN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "List all skills for the owner's tenant" })
-  @ApiResponse({ status: 200, description: 'Skills list' })
-  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
-  listSkills(@CurrentUser() user: RequestUser) {
-    return this.skillsService.listSkills(user);
+  @ApiOperation({
+    summary: 'List the global skills catalog (developer-seeded)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Global skills catalog — { skills: [{ id, name }] }',
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — role outside owner/technician',
+  })
+  async listGlobalSkills(@CurrentUser() user: RequestUser) {
+    return { skills: await this.skillsService.listGlobalSkills(user) };
   }
 
   @Delete(':id')

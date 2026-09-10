@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
@@ -18,11 +19,20 @@ export interface SkillResponse {
   createdAt: string;
 }
 
+/**
+ * TTL for the minted PostgREST access token. Short-lived by design — one
+ * catalog read per request.
+ */
+export const POSTGREST_TOKEN_TTL_SECONDS = 900;
+
 @Injectable()
 export class SkillsService {
   private readonly logger = new Logger(SkillsService.name);
 
-  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseClientFactory: SupabaseClientFactory,
+    private readonly jwtService: JwtService,
+  ) {}
 
   async createSkill(
     owner: RequestUser,
@@ -69,21 +79,32 @@ export class SkillsService {
     };
   }
 
-  async listSkills(owner: RequestUser): Promise<SkillResponse[]> {
-    if (!owner.tenantId) {
-      throw new BadRequestException({
-        error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Company setup required before managing skills',
-      });
-    }
+  /**
+   * Global skills catalog — seeded by migrations, read-only for the API.
+   * PostgREST switches to the DB role named in the JWT's `role` claim, and the
+   * app's owner/technician roles are not DB roles — so the read is made with a
+   * short-lived role:'authenticated' token carrying the caller's sub (same
+   * claim shape as AuthService.mintRealtimeToken; jsonwebtoken throws when a
+   * payload `exp` meets an `expiresIn` option, so only the payload `exp` is
+   * set). This keeps the `skills_authenticated_read` RLS policy actually
+   * exercised — never createAdmin() here.
+   */
+  async listGlobalSkills(
+    user: RequestUser,
+  ): Promise<{ id: string; name: string }[]> {
+    const exp = Math.floor(Date.now() / 1000) + POSTGREST_TOKEN_TTL_SECONDS;
+    const token = await this.jwtService.signAsync({
+      sub: user.userId,
+      role: 'authenticated',
+      exp,
+    });
+    const client = this.supabaseClientFactory.create(token);
 
-    const admin = this.supabaseClientFactory.createAdmin();
-
-    const { data, error } = await admin
-      .from('tenant_skills')
-      .select('id, name, tenant_id, created_at')
-      .eq('tenant_id', owner.tenantId)
-      .order('created_at', { ascending: true });
+    const { data, error } = await client
+      .from('skills')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
 
     if (error) {
       this.logger.error('Failed to list skills:', { error });
@@ -93,12 +114,7 @@ export class SkillsService {
       });
     }
 
-    return (data ?? []).map((row) => ({
-      id: row.id,
-      name: row.name,
-      tenantId: row.tenant_id,
-      createdAt: row.created_at,
-    }));
+    return (data ?? []).map((row) => ({ id: row.id, name: row.name }));
   }
 
   async deleteSkill(

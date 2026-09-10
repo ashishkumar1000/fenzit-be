@@ -182,7 +182,32 @@ Update the caller's own display name. Returns the same shape as
 
 ---
 
-### Skills (per-tenant catalog)
+### Skills (global catalog)
+
+The skill vocabulary is one fixed platform-wide catalog, seeded exclusively by
+developer migrations. The global catalog itself has no create/update/delete
+endpoint and must never get one — the deprecated per-tenant POST/DELETE in the
+next section write `tenant_skills` and are dropped in Story 4.2.
+`GET /skills` replaced the old per-tenant list in Story 4.1: the response
+dropped the old GET's `tenantId`/`createdAt` fields and widened access from
+owner-only to owner+technician (pre-launch, fenzo-app consumes the new shape
+from Epic 5 — fenzit-be ships first, NFR5).
+
+#### `GET /api/v1/skills` `[Bearer JWT, Role: owner or technician]`
+
+List the global skills catalog (developer-seeded; inactive rows excluded).
+Order is seed order, pinned by the `skills.sort_order` column — the FE picker
+renders it as-is.
+
+**Response 200:** `{ skills: [{ id, name }] }`
+
+**Responses:**
+- `401` — Missing/invalid JWT
+- `403` — Role outside owner/technician
+
+---
+
+### Skills (per-tenant catalog) — deprecated, dropped in Story 4.2
 
 #### `POST /api/v1/skills` `[Bearer JWT, Role: owner]`
 
@@ -196,12 +221,6 @@ Create a skill for the owner's tenant. Cascades to technicians on delete.
 - `403` — Technician JWT
 - `409` — Duplicate skill name
 - `422` — Validation error
-
-#### `GET /api/v1/skills` `[Bearer JWT, Role: owner]`
-
-List all skills for the owner's tenant.
-
-**Response 200:** `{ skills: Skill[] }`
 
 #### `DELETE /api/v1/skills/:id` `[Bearer JWT, Role: owner]`
 

@@ -10,6 +10,12 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import * as jwt from 'jsonwebtoken';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { SupabaseClientFactory } from '../../src/common/factories/supabase-client.factory';
+import { SkillsService } from '../../src/skills/skills.service';
+import type { RequestUser } from '../../src/common/interfaces/request-user.interface';
+import { Role } from '../../src/common/enums/role.enum';
 
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
 const SUPABASE_ANON_KEY = process.env['SUPABASE_ANON_KEY'] ?? '';
@@ -86,6 +92,81 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       expect(
         data?.every((row: { owner_id: string }) => row.owner_id === ownerAId),
       ).toBe(true);
+    },
+  );
+
+  const SEED_SKILLS: { id: string; name: string }[] = [
+    { id: 'd89d67f7-c0fe-42f8-9f76-c1660c98ce97', name: 'Plumbing' },
+    { id: '77d9450a-f9a4-4992-a82a-cdf27063e9e9', name: 'Electrical' },
+    { id: '65f33480-b37e-47e2-a4a0-0155b156cc7a', name: 'AC Service' },
+    { id: '95f021b0-a973-45fc-b73f-db0dc5afd4a0', name: 'AC Installation' },
+    { id: '71cc840c-3663-489e-bbf2-867d92c46619', name: 'Pest Control' },
+    { id: '72f67596-fec7-4ae8-a6f1-fceabaef0d7d', name: 'Cleaning' },
+  ];
+
+  maybeIt(
+    'Global skills table: real service chain reads seeds in order, anon sees zero, writes denied',
+    async () => {
+      // skills is a global developer-seeded catalog (Story 4.1): RLS grants
+      // SELECT to authenticated and defines no write policies.
+      //
+      // The READ below runs the REAL production chain — SkillsService
+      // .listGlobalSkills with a real JwtService minting the
+      // role:'authenticated' token and the real SupabaseClientFactory — the
+      // exact mint→PostgREST contract review round 1 found broken. Hand-built
+      // JWTs stay only for the write/anon probes (review round 2, 2026-09-10).
+      const service = new SkillsService(
+        new SupabaseClientFactory(
+          new ConfigService({
+            SUPABASE_URL,
+            SUPABASE_ANON_KEY,
+            SUPABASE_SERVICE_ROLE_KEY: 'unused-in-this-test',
+          }),
+        ),
+        new JwtService({ secret: SUPABASE_JWT_SECRET }),
+      );
+      const probeUser: RequestUser = {
+        userId: '00000000-0000-0000-0000-000000000099',
+        tenantId: null,
+        role: Role.OWNER,
+        rawJwt: 'unused',
+      };
+
+      const rows = await service.listGlobalSkills(probeUser);
+      expect(rows).toEqual(SEED_SKILLS);
+
+      // No JWT → PostgREST falls back to the anon role, which has no policy
+      // on skills → zero rows, not an error.
+      const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data: anonData, error: anonError } = await anonClient
+        .from('skills')
+        .select('id, name');
+      expect(anonError).toBeNull();
+      expect(anonData).toEqual([]);
+
+      // RLS write denial: sort_order is supplied so a not-null violation
+      // (23502) cannot mask the policy denial — the failure must be 42501.
+      const someUserJwt = jwt.sign(
+        {
+          sub: '00000000-0000-0000-0000-000000000099',
+          role: 'authenticated',
+        },
+        SUPABASE_JWT_SECRET,
+        { algorithm: 'HS256', expiresIn: '1h' },
+      );
+      const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${someUserJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error: writeError } = await client.from('skills').insert({
+        id: crypto.randomUUID(),
+        name: 'RLS write probe',
+        sort_order: 99,
+      });
+      expect(writeError).not.toBeNull();
+      expect((writeError as { code: string }).code).toBe('42501');
     },
   );
 

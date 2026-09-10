@@ -6,7 +6,7 @@ Security (RLS)** enabled.
 
 ## Migrations Inventory
 
-22 migrations, applied in chronological order. New migrations **must** be
+34 migrations, applied in chronological order. New migrations **must** be
 appended (never edit history) and **must** be applied via the Supabase MCP
 (see `project-context.md`).
 
@@ -33,6 +33,19 @@ appended (never edit history) and **must** be applied via the Supabase MCP
 | 19  | `20260621000012_pg_cron_idempotency_cleanup.sql`| `pg_cron` job — purge `idempotency_log` older than 24h |
 | 20  | `20260621000013_rpc_confirm_attachment_conflict.sql` | Server-side conflict resolution (Epic 4 Story 4.3) |
 | 21  | `20260621000014_rpc_confirm_attachment_conflict_fix.sql` | Bugfix for above |
+| 22  | `20260903000001_jobs_customer_history_index.sql` | Index for customer job-history lookup |
+| 23  | `20260903000002_add_jobs_completed_at.sql`      | Add `completed_at` to jobs |
+| 24  | `20260903000003_rpc_advance_workflow_step_completed_at.sql` | Advance RPC sets `completed_at` |
+| 25  | `20260905000001_add_jobs_require_completion_signature.sql` | Add `require_completion_signature` to jobs |
+| 26  | `20260905000002_rpc_create_job_with_log_signature.sql` | Create-job RPC accepts signature flag |
+| 27  | `20260905000003_rpc_update_job_with_log_flags.sql` | Update-job RPC accepts flags |
+| 28  | `20260905000004_drop_stale_rpc_overloads.sql`   | Drop stale RPC overloads |
+| 29  | `20260905000005_add_customer_structured_address.sql` | Structured address on customers (Epic 1) |
+| 30  | `20260909000001_enable_rls_users_country_codes.sql` | RLS on `users`, `country_codes` (Epic 3) |
+| 31  | `20260909000002_notifications_table.sql`        | `notifications` table (Epic 3) |
+| 32  | `20260909000003_rpc_notify_owner_on_advance.sql` | Advance RPC notifies owner (Epic 3) |
+| 33  | `20260909000004_notifications_cleanup.sql`      | pg_cron — purge old notifications (Epic 3) |
+| 34  | `20260910000001_create_global_skills.sql`       | Global `skills` catalog, sort_order-pinned seeds + RLS (Epic 4) |
 
 ## Tables
 
@@ -234,6 +247,42 @@ dial_code TEXT PK  -- e.g. '+91'
 name      TEXT
 ```
 
+### `skills`
+
+Global skill catalog (migration 34). Developer-seeded ONLY via migrations —
+fixed UUIDs so later migrations can reference them (see the seed UUIDs below;
+do not regenerate them). No API write path exists; RLS grants SELECT to
+`authenticated`, and writes are denied via RLS (no write policies — the
+anon/authenticated roles keep their default grants but cannot satisfy a
+policy). `sort_order` pins the documented seed order (all seeds share one
+`now()`, so `created_at` cannot order them) and is UNIQUE so a future seed
+cannot introduce ordering ties. `is_active` is a future hook — deactivation
+is migration-only until a deactivate flow exists. `updated_at` is inert:
+there is no trigger and no write path, so it always equals `created_at`
+(review round 2 note — revisit if a deactivation flow lands). The
+per-tenant `tenant_skills` table is superseded by this table (dropped in
+Story 4.2).
+
+```sql
+id         UUID PK DEFAULT gen_random_uuid()
+name       TEXT NOT NULL               -- unique case-insensitive
+sort_order INT NOT NULL                -- UNIQUE; pins seed order; GET /skills orders by it
+is_active  BOOLEAN NOT NULL DEFAULT true
+created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+updated_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- inert: always equals created_at
+```
+
+Seed rows (fixed UUIDs — Stories 4.2/4.3 reference these):
+
+| sort_order | name           | id                                     |
+|-----------:|----------------|----------------------------------------|
+| 1          | Plumbing       | d89d67f7-c0fe-42f8-9f76-c1660c98ce97   |
+| 2          | Electrical     | 77d9450a-f9a4-4992-a82a-cdf27063e9e9   |
+| 3          | AC Service     | 65f33480-b37e-47e2-a4a0-0155b156cc7a   |
+| 4          | AC Installation | 95f021b0-a973-45fc-b73f-db0dc5afd4a0   |
+| 5          | Pest Control   | 71cc840c-3663-489e-bbf2-867d92c46619   |
+| 6          | Cleaning       | 72f67596-fec7-4ae8-a6f1-fceabaef0d7d   |
+
 ## Atomic RPCs
 
 These are called via `supabase.rpc()` from the application layer. Each runs in
@@ -254,6 +303,8 @@ a single Postgres transaction — **never** split into multiple sequential
 - **Tenant-scoped tables** (`customers`, `jobs`, `tenant_skills`, `user_skills`,
   `attachments`, `attachment_uploads`, `idempotency_log`): policy reads
   `(auth.jwt() ->> 'tenantId')::uuid`
+- **Global reference tables** (`skills`): SELECT-only policy TO `authenticated`
+  (no tenant scoping); no write policies — client writes are RLS-denied
 - **`users`**: more permissive — a user can read their own row OR any same-tenant row
 - **`tenants`**: owner can read their own tenant only
 - **Writes**: most client writes are blocked; service role + RPCs do the

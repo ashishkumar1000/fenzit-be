@@ -12,19 +12,21 @@ import { SupabaseClientFactory } from '../src/common/factories/supabase-client.f
 describe('Skills (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
+  let mockCreate: jest.Mock;
   let mockCreateAdmin: jest.Mock;
 
   const TENANT_ID = 'tenant-uuid-skills-e2e';
   const OWNER_ID = 'owner-uuid-skills-e2e';
 
   beforeAll(async () => {
+    mockCreate = jest.fn();
     mockCreateAdmin = jest.fn();
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
+      .useValue({ create: mockCreate, createAdmin: mockCreateAdmin })
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -159,20 +161,30 @@ describe('Skills (e2e)', () => {
     });
   });
 
-  describe('GET /api/v1/skills', () => {
-    it('AC3 — should return 200 with array of skills', async () => {
-      mockCreateAdmin.mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              order: jest.fn().mockResolvedValue({
-                data: [skill],
-                error: null,
-              }),
-            }),
+  describe('GET /api/v1/skills (global catalog)', () => {
+    const catalogRows = [
+      { id: 'skill-uuid-1', name: 'Plumbing' },
+      { id: 'skill-uuid-2', name: 'Electrical' },
+      { id: 'skill-uuid-3', name: 'AC Service' },
+      { id: 'skill-uuid-4', name: 'AC Installation' },
+      { id: 'skill-uuid-5', name: 'Pest Control' },
+      { id: 'skill-uuid-6', name: 'Cleaning' },
+    ];
+
+    function mockJwtClient(rows: unknown[]) {
+      const fromSpy = jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            order: jest.fn().mockResolvedValue({ data: rows, error: null }),
           }),
         }),
       });
+      mockCreate.mockReturnValue({ from: fromSpy });
+      return fromSpy;
+    }
+
+    it('should return 200 with the global catalog for an Owner JWT', async () => {
+      const fromSpy = mockJwtClient(catalogRows);
 
       const response = await app.inject({
         method: 'GET',
@@ -182,20 +194,25 @@ describe('Skills (e2e)', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(Array.isArray(body)).toBe(true);
-      expect(body[0].name).toBe('AC Technician');
+      expect(body).toEqual({ skills: catalogRows });
+      expect(fromSpy).toHaveBeenCalledWith('skills');
     });
 
-    it('AC3 — should return empty array when no skills', async () => {
-      mockCreateAdmin.mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              order: jest.fn().mockResolvedValue({ data: [], error: null }),
-            }),
-          }),
-        }),
+    it('should return 200 with the global catalog for a Technician JWT', async () => {
+      mockJwtClient(catalogRows);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/skills',
+        headers: { authorization: `Bearer ${techJwt()}` },
       });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ skills: catalogRows });
+    });
+
+    it('should return 200 with an empty list when the catalog has no rows', async () => {
+      mockJwtClient([]);
 
       const response = await app.inject({
         method: 'GET',
@@ -204,29 +221,16 @@ describe('Skills (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body)).toEqual([]);
+      expect(JSON.parse(response.body)).toEqual({ skills: [] });
     });
 
-    it('AC9 — should return 400 when owner has no tenantId', async () => {
+    it('should return 401 with no JWT', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/skills',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
-    });
-
-    it('AC7 — should return 403 for Technician JWT', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/v1/skills',
-        headers: { authorization: `Bearer ${techJwt()}` },
-      });
-
-      expect(response.statusCode).toBe(403);
-      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+      expect(response.statusCode).toBe(401);
     });
   });
 
