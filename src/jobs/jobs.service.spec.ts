@@ -840,8 +840,8 @@ describe('JobsService', () => {
       longitude: 73.8567,
     };
     const skillRows = [
-      { tenant_skills: { name: 'AC Repair' } },
-      { tenant_skills: { name: 'Plumbing' } },
+      { skills: { name: 'AC Repair' } },
+      { skills: { name: 'Plumbing' } },
     ];
     const logRows = [
       {
@@ -881,11 +881,11 @@ describe('JobsService', () => {
       const activityOrder = jest
         .fn()
         .mockResolvedValue(opts.logs ?? { data: logRows, error: null });
-      // user_skills now chains TWO eq calls: .eq('user_id').eq('tenant_skills.tenant_id').
-      const skillsEq2 = jest
+      // user_skills chains ONE eq call since Story 4.2: .eq('user_id') — the
+      // global skills catalog carries no tenant to filter on.
+      const skillsEq1 = jest
         .fn()
         .mockResolvedValue(opts.skills ?? { data: skillRows, error: null });
-      const skillsEq1 = jest.fn().mockReturnValue({ eq: skillsEq2 });
       const logEq2 = jest.fn().mockReturnValue({ order: activityOrder });
       const logEq1 = jest.fn().mockReturnValue({ eq: logEq2 });
       const attachOrder = jest
@@ -931,7 +931,6 @@ describe('JobsService', () => {
         activityOrder,
         chains,
         skillsEq1,
-        skillsEq2,
         logEq1,
         logEq2,
       };
@@ -1199,12 +1198,9 @@ describe('JobsService', () => {
         'tenant_id',
         'tenant-uuid',
       );
-      // skills: scoped via the embedded tenant_skills
+      // skills: global catalog since Story 4.2 — only the technician filter,
+      // no tenant scope (the technician read above is the tenant guard)
       expect(m.skillsEq1).toHaveBeenCalledWith('user_id', 'tech-1');
-      expect(m.skillsEq2).toHaveBeenCalledWith(
-        'tenant_skills.tenant_id',
-        'tenant-uuid',
-      );
       // activity_logs: .eq('job_id', jobId).eq('tenant_id', tenantId)
       expect(m.logEq1).toHaveBeenCalledWith('job_id', 'job-uuid');
       expect(m.logEq2).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
@@ -1214,10 +1210,10 @@ describe('JobsService', () => {
       mockDetailAdmin({
         skills: {
           data: [
-            { tenant_skills: [{ name: 'AC Repair' }, { name: 'Plumbing' }] }, // array shape
-            { tenant_skills: { name: 'Wiring' } }, // object shape
-            { tenant_skills: null }, // no skill
-            { tenant_skills: { name: '' } }, // empty name → dropped
+            { skills: [{ name: 'AC Repair' }, { name: 'Plumbing' }] }, // array shape
+            { skills: { name: 'Wiring' } }, // object shape
+            { skills: null }, // no skill
+            { skills: { name: '' } }, // empty name → dropped
           ],
           error: null,
         },

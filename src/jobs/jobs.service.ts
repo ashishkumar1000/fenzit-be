@@ -162,7 +162,7 @@ interface ActivityLogRow {
 // PostgREST embeds a to-one related resource as an object, but the generated
 // types can surface it as an array — normalize both shapes when mapping skills.
 interface UserSkillRow {
-  tenant_skills: { name: string } | { name: string }[] | null;
+  skills: { name: string } | { name: string }[] | null;
 }
 
 interface AttachmentRow {
@@ -716,14 +716,10 @@ export class JobsService {
         .single<TechnicianRow>(),
       admin
         .from('user_skills')
-        // Defense-in-depth tenant scope. user_skills has no tenant_id column
-        // (PK is user_id, skill_id), so constrain via the embedded tenant_skills
-        // — `!inner` drops any row whose skill belongs to another tenant. The
-        // technician is already tenant-verified above, but createAdmin() bypasses
-        // RLS so this app-layer filter keeps the read consistent with the others.
-        .select('tenant_skills!inner(name)')
-        .eq('user_id', row.technician_id)
-        .eq('tenant_skills.tenant_id', user.tenantId),
+        // Skills come from the global catalog (Story 4.2) — no tenant scoping
+        // applies; the technician row is already tenant-verified above.
+        .select('skills!inner(name)')
+        .eq('user_id', row.technician_id),
       admin
         .from('customers')
         .select(
@@ -784,9 +780,9 @@ export class JobsService {
     const skillRows = (skillRes.data ?? []) as UserSkillRow[];
     const skills = skillRows
       .flatMap((r) => {
-        const ts = r.tenant_skills;
-        if (Array.isArray(ts)) return ts.map((t) => t.name);
-        return ts ? [ts.name] : [];
+        const s = r.skills;
+        if (Array.isArray(s)) return s.map((t) => t.name);
+        return s ? [s.name] : [];
       })
       // Guard against a null/empty name slipping through either embed shape.
       .filter((name): name is string => Boolean(name));

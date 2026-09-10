@@ -36,7 +36,7 @@ export class InviteTechnicianDto {
     required: true,
     example: ['550e8400-e29b-41d4-a716-446655440001'],
     description:
-      'Array of tenant skill UUIDs to assign to this technician (min 1, max 20)',
+      'Array of global skills-catalog UUIDs to assign to this technician (min 1, max 20)',
   })
   @IsArray()
   @ArrayMinSize(1, { message: 'At least one skill ID is required' })

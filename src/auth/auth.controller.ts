@@ -110,7 +110,7 @@ export class AuthController {
   })
   @ApiResponse({
     status: 422,
-    description: 'Validation error — invalid skillType or phone format',
+    description: 'Validation error — invalid skillIds or phone format',
   })
   async inviteTechnician(
     @CurrentUser() user: RequestUser,

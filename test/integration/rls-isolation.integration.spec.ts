@@ -42,9 +42,13 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
     async () => {
       // This test assumes at least one tenant row exists in the DB (created by Story 1.3 dev flow).
       // It mints a JWT for a different user and confirms the SELECT returns no rows.
+      //
+      // The JWT role claim names the Postgres role PostgREST switches to, so it
+      // must be 'authenticated' (app roles like 'owner' are not Postgres roles
+      // — Postgres rejects them with 22023). Same pattern as 4.1's minted reads.
 
       const ownerBId = '00000000-0000-0000-0000-000000000099'; // non-existent / different user
-      const ownerBJwt = mintJwt(ownerBId, null, 'owner');
+      const ownerBJwt = mintJwt(ownerBId, null, 'authenticated');
 
       const ownerBClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         global: { headers: { Authorization: `Bearer ${ownerBJwt}` } },
@@ -76,7 +80,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         return;
       }
 
-      const ownerAJwt = mintJwt(ownerAId, null, 'owner');
+      const ownerAJwt = mintJwt(ownerAId, null, 'authenticated');
       const ownerAClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         global: { headers: { Authorization: `Bearer ${ownerAJwt}` } },
         auth: { persistSession: false, autoRefreshToken: false },
@@ -167,6 +171,163 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       });
       expect(writeError).not.toBeNull();
       expect((writeError as { code: string }).code).toBe('42501');
+    },
+  );
+
+  maybeIt(
+    'user_skills RLS: cross-tenant reads exclude real rows, writes outside tenant denied, same-tenant writes allowed',
+    async () => {
+      // Story 4.2 — user_skills_tenant_isolation: a row is visible/writable
+      // only when its user's tenant matches the JWT tenantId (checked via an
+      // EXISTS join into users). Seeded through the service role so the probes
+      // are discriminating: a nonexistent user also fails the policy's EXISTS,
+      // which would mask a broken tenant comparison (4.2 review round 1).
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // Seed one technician under a freshly seeded tenant (users.tenant_id has
+      // an FK, and the dev DB may hold zero tenants — it does today) plus one
+      // user_skills row for them.
+      const foreignUserId = '00000000-0000-0000-0000-000000000090';
+      const seededTenantId = '00000000-0000-0000-0000-000000000097';
+      const { error: userUpsertError } = await serviceClient
+        .from('users')
+        .upsert(
+          {
+            id: foreignUserId,
+            country_code: '+99',
+            phone_number: '9999000001',
+            role: 'technician',
+            status: 'invited',
+          },
+          { onConflict: 'id' },
+        );
+      expect(userUpsertError).toBeNull();
+      const { error: tenantUpsertError } = await serviceClient
+        .from('tenants')
+        .upsert(
+          {
+            id: seededTenantId,
+            owner_id: foreignUserId,
+            company_name: 'RLS Probe Co',
+            state_code: 'KA',
+          },
+          { onConflict: 'id' },
+        );
+      expect(tenantUpsertError).toBeNull();
+      const { error: linkError } = await serviceClient
+        .from('users')
+        .update({ tenant_id: seededTenantId })
+        .eq('id', foreignUserId);
+      expect(linkError).toBeNull();
+      const { error: seedSkillError } = await serviceClient
+        .from('user_skills')
+        .upsert(
+          { user_id: foreignUserId, skill_id: SEED_SKILLS[0].id },
+          { onConflict: 'user_id,skill_id' },
+        );
+      expect(seedSkillError).toBeNull();
+
+      try {
+        // JWT scoped to a tenant that exists as a UUID but owns no users —
+        // the seeded row belongs to realTenantId, so it must be invisible.
+        const foreignTenantId = '00000000-0000-0000-0000-000000000098';
+        const crossTenantJwt = mintJwt(
+          '00000000-0000-0000-0000-000000000099',
+          foreignTenantId,
+          'authenticated',
+        );
+        const crossTenantClient = createClient(
+          SUPABASE_URL,
+          SUPABASE_ANON_KEY,
+          {
+            global: { headers: { Authorization: `Bearer ${crossTenantJwt}` } },
+            auth: { persistSession: false, autoRefreshToken: false },
+          },
+        );
+
+        // SELECT (USING side): the seeded row must NOT come back — proves the
+        // tenant comparison filters, not merely that the table is empty.
+        const { data, error } = await crossTenantClient
+          .from('user_skills')
+          .select('user_id, skill_id');
+        expect(error).toBeNull();
+        expect(
+          (data as { user_id: string }[]).some(
+            (r) => r.user_id === foreignUserId,
+          ),
+        ).toBe(false);
+
+        // INSERT (WITH CHECK side): an EXISTING user of another tenant →
+        // 42501. RLS runs before constraints, so the violation surfaces as a
+        // policy denial, not an FK error.
+        const { error: writeError } = await crossTenantClient
+          .from('user_skills')
+          .insert({ user_id: foreignUserId, skill_id: SEED_SKILLS[0].id });
+        expect(writeError).not.toBeNull();
+        expect((writeError as { code: string }).code).toBe('42501');
+
+        // Positive path: the seeded user's own tenant may write — WITH CHECK
+        // has a permissive side this suite never exercised before.
+        const ownTenantJwt = mintJwt(
+          foreignUserId,
+          seededTenantId,
+          'authenticated',
+        );
+        const ownTenantClient = createClient(
+          SUPABASE_URL,
+          SUPABASE_ANON_KEY,
+          {
+            global: { headers: { Authorization: `Bearer ${ownTenantJwt}` } },
+            auth: { persistSession: false, autoRefreshToken: false },
+          },
+        );
+        const { error: insertError } = await ownTenantClient
+          .from('user_skills')
+          .insert({
+            user_id: foreignUserId,
+            skill_id: SEED_SKILLS[1].id,
+          });
+        expect(insertError).toBeNull();
+      } finally {
+        // Cleanup: remove everything seeded (idempotent on re-run via upsert).
+        await serviceClient
+          .from('user_skills')
+          .delete()
+          .eq('user_id', foreignUserId);
+        await serviceClient
+          .from('tenants')
+          .delete()
+          .eq('id', seededTenantId);
+        await serviceClient.from('users').delete().eq('id', foreignUserId);
+      }
+    },
+  );
+
+  maybeIt(
+    'user_skills → skills embed resolves over the retargeted FK (Story 4.2)',
+    async () => {
+      // The three service embeds (job detail, own profile, technician list)
+      // read user_skills joined to skills!inner — unit tests mock the embed
+      // response, so a broken PostgREST relationship (PGRST200) would 500 in
+      // production while every mock-based suite stays green. This probe runs
+      // the real embed: zero rows is fine, a relationship error is not.
+      const embedJwt = mintJwt(
+        '00000000-0000-0000-0000-000000000099',
+        '00000000-0000-0000-0000-000000000098',
+        'authenticated',
+      );
+      const embedClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${embedJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error } = await embedClient
+        .from('user_skills')
+        .select('skills!inner(name)');
+      expect(error).toBeNull();
     },
   );
 

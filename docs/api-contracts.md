@@ -102,13 +102,16 @@ failed fetch just means no socket (the app falls back to focus refresh).
 
 Invite a technician by phone number. Creates a `users` row with `status: invited`.
 
-**Body:** `{ phone: string, countryCode: string, skillType: string }`
+**Body:** `{ phone: string, countryCode: string, skillIds: UUID[] (min 1, max 20, unique) }`
+
+`skillIds` are global skills-catalog UUIDs — exactly what `GET /skills` serves.
 
 **Responses:**
 - `201` — `{ invite_id: UUID }`
 - `403` — Technician JWT
 - `409` — Phone already an active member of this tenant
-- `422` — Invalid `skillType` or phone format
+- `400` — One or more `skillIds` are invalid (unknown / inactive in the global catalog)
+- `422` — Invalid `skillIds` (not UUIDs) or phone format
 
 #### `POST /api/v1/auth/company` `[Bearer JWT, Role: owner]`
 
@@ -116,7 +119,7 @@ Create or update the tenant company profile. **Idempotent upsert** — first cal
 returns `201`, subsequent calls return `200`. Returns a fresh JWT containing
 the now-set `tenantId` claim.
 
-**Body:** `{ name?, company_name, gstin?, address?, state_code (^[A-Z]{2}$), service_categories: string[], upi_vpa? }`
+**Body:** `{ name?, company_name, gstin?, address?, state_code (^[A-Z]{2}$), upi_vpa? }`
 
 `name` is the owner's display name — when sent, it is saved on the caller's
 users row (`users.name`) and returned by `GET /users/me`. Optional on the wire
@@ -186,8 +189,9 @@ Update the caller's own display name. Returns the same shape as
 
 The skill vocabulary is one fixed platform-wide catalog, seeded exclusively by
 developer migrations. The global catalog itself has no create/update/delete
-endpoint and must never get one — the deprecated per-tenant POST/DELETE in the
-next section write `tenant_skills` and are dropped in Story 4.2.
+endpoint and must never get one — the old per-tenant POST/DELETE routes (which
+wrote the now-dropped `tenant_skills` table) were removed in Story 4.2 and
+return 404.
 `GET /skills` replaced the old per-tenant list in Story 4.1: the response
 dropped the old GET's `tenantId`/`createdAt` fields and widened access from
 owner-only to owner+technician (pre-launch, fenzo-app consumes the new shape
@@ -204,32 +208,6 @@ renders it as-is.
 **Responses:**
 - `401` — Missing/invalid JWT
 - `403` — Role outside owner/technician
-
----
-
-### Skills (per-tenant catalog) — deprecated, dropped in Story 4.2
-
-#### `POST /api/v1/skills` `[Bearer JWT, Role: owner]`
-
-Create a skill for the owner's tenant. Cascades to technicians on delete.
-
-**Body:** `{ name: string, description?: string }`
-
-**Responses:**
-- `201` — Skill created
-- `400` — Company not set up
-- `403` — Technician JWT
-- `409` — Duplicate skill name
-- `422` — Validation error
-
-#### `DELETE /api/v1/skills/:id` `[Bearer JWT, Role: owner]`
-
-Delete a skill. Cascades to technicians assigned this skill.
-
-**Responses:**
-- `200` — Skill deleted
-- `403` — Technician JWT
-- `404` — Skill not found
 
 ---
 

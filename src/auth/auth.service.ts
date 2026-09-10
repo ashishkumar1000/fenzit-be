@@ -28,7 +28,6 @@ export interface TenantResponse {
   gstin: string | null;
   address: string | null;
   stateCode: string;
-  serviceCategories: string[];
   upiVpa: string | null;
   createdAt: string;
   updatedAt: string;
@@ -256,13 +255,16 @@ export class AuthService {
       });
     }
 
-    // Validate all skillIds belong to this tenant
+    // Validate all skillIds exist in the global skills catalog (Story 4.2:
+    // skills are developer-seeded platform-wide, no tenant scoping). Only
+    // active skills are assignable — the invite payload lists what GET /skills
+    // serves.
     const uniqueSkillIds = [...new Set(dto.skillIds)];
     const { data: validSkills, error: skillValidationError } = await admin
-      .from('tenant_skills')
+      .from('skills')
       .select('id')
       .in('id', uniqueSkillIds)
-      .eq('tenant_id', owner.tenantId);
+      .eq('is_active', true);
 
     if (skillValidationError) {
       this.logger.error('Failed to validate skill IDs:', {
@@ -274,8 +276,7 @@ export class AuthService {
     if (!validSkills || validSkills.length !== uniqueSkillIds.length) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message:
-          'One or more skill IDs are invalid or do not belong to your tenant',
+        message: 'One or more skill IDs are invalid',
       });
     }
 
@@ -343,7 +344,6 @@ export class AuthService {
       p_gstin: dto.gstin ?? null,
       p_address: dto.address ?? null,
       p_state_code: dto.stateCode,
-      p_service_categories: dto.serviceCategories ?? [],
       p_upi_vpa: dto.upiVpa ?? null,
     });
 
@@ -371,7 +371,6 @@ export class AuthService {
       gstin: (row['gstin'] as string | null) ?? null,
       address: (row['address'] as string | null) ?? null,
       stateCode: row['state_code'] as string,
-      serviceCategories: (row['service_categories'] as string[]) ?? [],
       upiVpa: (row['upi_vpa'] as string | null) ?? null,
       createdAt: row['created_at'] as string,
       updatedAt: row['updated_at'] as string,
@@ -390,30 +389,6 @@ export class AuthService {
         this.logger.warn('Failed to save owner name during company setup:', {
           error: nameError,
         });
-      }
-    }
-
-    // Auto-seed tenant_skills from serviceCategories on first company creation
-    if ((row['inserted'] as boolean) && dto.serviceCategories?.length) {
-      const admin2 = this.supabaseClientFactory.createAdmin();
-      const uniqueNames = [
-        ...new Set(dto.serviceCategories.map((name) => name.toLowerCase())),
-      ];
-      const { error: seedError } = await admin2.from('tenant_skills').insert(
-        uniqueNames.map((name) => ({
-          id: crypto.randomUUID(),
-          tenant_id: tenant.id,
-          name,
-        })),
-      );
-      if (seedError) {
-        // tenant is brand-new on this branch, so a 23505 here means a
-        // genuine race (e.g. concurrent createSkill call) rather than
-        // expected overlap — still logged so it isn't silently lost
-        this.logger.warn(
-          'Failed to seed tenant_skills from serviceCategories:',
-          { error: seedError },
-        );
       }
     }
 

@@ -1,6 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsArray,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -53,28 +52,6 @@ export class SetupCompanyDto {
   @IsOptional()
   @IsString()
   address?: string;
-
-  @ApiPropertyOptional({
-    type: [String],
-    example: ['ac_technician', 'pest_control'],
-  })
-  @IsOptional()
-  @Transform(({ value }) =>
-    Array.isArray(value)
-      ? value.map((s: unknown) => (typeof s === 'string' ? s.trim() : s))
-      : value,
-  )
-  @IsArray()
-  @IsString({ each: true })
-  @IsNotEmpty({
-    each: true,
-    message: 'each serviceCategory must not be empty or whitespace',
-  })
-  @MaxLength(100, {
-    each: true,
-    message: 'each serviceCategory must be at most 100 characters',
-  })
-  serviceCategories?: string[];
 
   @ApiPropertyOptional({ example: 'jobzo@upi' })
   @IsOptional()

@@ -16,7 +16,6 @@ const mockUser = {
   role: 'owner',
   tenant_id: null,
   status: 'active',
-  skill_type: null,
 };
 
 const mockSelectSingle = jest.fn();

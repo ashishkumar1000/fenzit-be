@@ -23,7 +23,6 @@ describe('Company Onboarding (e2e)', () => {
     gstin: null,
     address: null,
     state_code: 'KA',
-    service_categories: [],
     upi_vpa: null,
     created_at: '2026-06-20T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',

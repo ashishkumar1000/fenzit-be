@@ -1,10 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  BadRequestException,
-  ConflictException,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { InternalServerErrorException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SkillsService } from './skills.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -44,86 +39,6 @@ describe('SkillsService', () => {
 
     service = module.get<SkillsService>(SkillsService);
     supabaseClientFactory = module.get(SupabaseClientFactory);
-  });
-
-  describe('createSkill', () => {
-    it('should return skill object on success', async () => {
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          insert: jest.fn().mockReturnValue({
-            select: jest.fn().mockReturnValue({
-              single: jest.fn().mockResolvedValue({
-                data: {
-                  id: 'skill-uuid',
-                  name: 'AC Technician',
-                  tenant_id: 'tenant-uuid',
-                  created_at: '2026-06-20T00:00:00Z',
-                },
-                error: null,
-              }),
-            }),
-          }),
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      const result = await service.createSkill(ownerUser, {
-        name: 'AC Technician',
-      });
-
-      expect(result).toEqual({
-        id: 'skill-uuid',
-        name: 'AC Technician',
-        tenantId: 'tenant-uuid',
-        createdAt: '2026-06-20T00:00:00Z',
-      });
-    });
-
-    it('should throw 409 on duplicate skill name (23505)', async () => {
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          insert: jest.fn().mockReturnValue({
-            select: jest.fn().mockReturnValue({
-              single: jest.fn().mockResolvedValue({
-                data: null,
-                error: { code: '23505', message: 'unique constraint' },
-              }),
-            }),
-          }),
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      await expect(
-        service.createSkill(ownerUser, { name: 'AC Technician' }),
-      ).rejects.toThrow(ConflictException);
-    });
-
-    it('should throw 400 when owner has no tenantId', async () => {
-      await expect(
-        service.createSkill(ownerNoTenant, { name: 'AC Technician' }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('should throw 500 on generic DB error (non-23505)', async () => {
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          insert: jest.fn().mockReturnValue({
-            select: jest.fn().mockReturnValue({
-              single: jest.fn().mockResolvedValue({
-                data: null,
-                error: { code: '08006', message: 'connection failure' },
-              }),
-            }),
-          }),
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      await expect(
-        service.createSkill(ownerUser, { name: 'AC Technician' }),
-      ).rejects.toThrow(InternalServerErrorException);
-    });
   });
 
   describe('listGlobalSkills', () => {
@@ -173,8 +88,8 @@ describe('SkillsService', () => {
     });
 
     it('should read the catalog without tenant context (owner before company setup)', async () => {
-      // GET /skills is the global catalog — unlike createSkill/deleteSkill it
-      // must not require a tenantId (old AC9 400 guard was deleted).
+      // GET /skills is the global catalog — it must not require a tenantId
+      // (the old tenant CRUD's 400 guard died with that CRUD in Story 4.2).
       const mockClient = {
         from: jest.fn().mockReturnValue({
           select: jest.fn().mockReturnValue({
@@ -272,96 +187,6 @@ describe('SkillsService', () => {
       await expect(service.listGlobalSkills(ownerUser)).rejects.toThrow(
         InternalServerErrorException,
       );
-    });
-  });
-
-  describe('deleteSkill', () => {
-    it('should return { success: true } when skill exists and is deleted', async () => {
-      let fromCallCount = 0;
-      const mockAdmin = {
-        from: jest.fn().mockImplementation(() => {
-          fromCallCount++;
-          if (fromCallCount === 1) {
-            return {
-              select: jest.fn().mockReturnValue({
-                eq: jest.fn().mockReturnValue({
-                  eq: jest.fn().mockReturnValue({
-                    single: jest.fn().mockResolvedValue({
-                      data: { id: 'skill-uuid' },
-                      error: null,
-                    }),
-                  }),
-                }),
-              }),
-            };
-          }
-          return {
-            delete: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                eq: jest.fn().mockResolvedValue({ error: null }),
-              }),
-            }),
-          };
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      const result = await service.deleteSkill(ownerUser, 'skill-uuid');
-      expect(result).toEqual({ success: true });
-    });
-
-    it('should throw 404 when skill not found or wrong tenant', async () => {
-      let fromCallCount = 0;
-      const mockAdmin = {
-        from: jest.fn().mockImplementation(() => {
-          fromCallCount++;
-          return {
-            select: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                eq: jest.fn().mockReturnValue({
-                  single: jest.fn().mockResolvedValue({
-                    data: null,
-                    error: { code: 'PGRST116' },
-                  }),
-                }),
-              }),
-            }),
-          };
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      await expect(
-        service.deleteSkill(ownerUser, 'nonexistent-uuid'),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it('should throw 500 when ownership SELECT fails with DB error', async () => {
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                single: jest.fn().mockResolvedValue({
-                  data: null,
-                  error: { code: '08006', message: 'connection failure' },
-                }),
-              }),
-            }),
-          }),
-        }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      await expect(
-        service.deleteSkill(ownerUser, 'skill-uuid'),
-      ).rejects.toThrow(InternalServerErrorException);
-    });
-
-    it('should throw 400 when owner has no tenantId', async () => {
-      await expect(
-        service.deleteSkill(ownerNoTenant, 'skill-uuid'),
-      ).rejects.toThrow(BadRequestException);
     });
   });
 });

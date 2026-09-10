@@ -257,7 +257,6 @@ describe('AuthService', () => {
       companyName: 'Jobzo Services',
       stateCode: 'KA',
       gstin: '29ABCDE1234F1Z5',
-      serviceCategories: ['ac_technician'],
     };
 
     const rpcRow = {
@@ -267,7 +266,6 @@ describe('AuthService', () => {
       gstin: '29ABCDE1234F1Z5',
       address: null,
       state_code: 'KA',
-      service_categories: ['ac_technician'],
       upi_vpa: null,
       created_at: '2026-06-20T00:00:00Z',
       updated_at: '2026-06-20T00:00:00Z',
@@ -313,7 +311,6 @@ describe('AuthService', () => {
       const result = await service.setupCompany(ownerUser, {
         ...dto,
         name: 'Ravi Kumar',
-        serviceCategories: [],
       });
 
       expect(result.created).toBe(true);
@@ -357,7 +354,6 @@ describe('AuthService', () => {
       const result = await service.setupCompany(ownerUser, {
         ...dto,
         name: 'Ravi Kumar',
-        serviceCategories: [],
       });
 
       expect(result.created).toBe(true);
@@ -446,119 +442,31 @@ describe('AuthService', () => {
         expect.objectContaining({
           p_gstin: null,
           p_address: null,
-          p_service_categories: [],
           p_upi_vpa: null,
         }),
       );
-    });
-
-    it('should seed tenant_skills when created=true and serviceCategories provided', async () => {
-      const dtoWithCategories: SetupCompanyDto = {
-        companyName: 'ACME',
-        stateCode: 'MH',
-        serviceCategories: ['AC Technician', 'Plumber'],
-      };
-      const insertFn = jest.fn().mockResolvedValue({ error: null });
-      const mockAdmin = {
-        rpc: jest.fn().mockResolvedValue({
-          data: [{ ...rpcRow, inserted: true }],
-          error: null,
-        }),
-        from: jest.fn().mockReturnValue({ insert: insertFn }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-      jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
-
-      await service.setupCompany(ownerUser, dtoWithCategories);
-
-      expect(mockAdmin.from).toHaveBeenCalledWith('tenant_skills');
-      expect(insertFn).toHaveBeenCalledWith(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: 'ac technician',
-            tenant_id: 'tenant-uuid',
-          }),
-          expect.objectContaining({
-            name: 'plumber',
-            tenant_id: 'tenant-uuid',
-          }),
-        ]),
+      // Story 4.2 — the categories param (and the column it wrote) is gone.
+      expect(mockAdmin.rpc.mock.calls[0][1]).not.toHaveProperty(
+        'p_service_categories',
       );
     });
 
-    it('should de-duplicate case-insensitive serviceCategories before seeding', async () => {
-      const dtoWithDupes: SetupCompanyDto = {
-        companyName: 'ACME',
-        stateCode: 'MH',
-        serviceCategories: ['AC Technician', 'ac technician', 'Plumber'],
-      };
-      const insertFn = jest.fn().mockResolvedValue({ error: null });
+    it('should not seed tenant skills (the seeding path was removed with tenant_skills)', async () => {
       const mockAdmin = {
         rpc: jest.fn().mockResolvedValue({
           data: [{ ...rpcRow, inserted: true }],
           error: null,
         }),
-        from: jest.fn().mockReturnValue({ insert: insertFn }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-      jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
-
-      await service.setupCompany(ownerUser, dtoWithDupes);
-
-      expect(insertFn).toHaveBeenCalledWith([
-        expect.objectContaining({ name: 'ac technician' }),
-        expect.objectContaining({ name: 'plumber' }),
-      ]);
-    });
-
-    it('should log a warning when tenant_skills seed insert fails', async () => {
-      const dtoWithCategories: SetupCompanyDto = {
-        companyName: 'ACME',
-        stateCode: 'MH',
-        serviceCategories: ['AC Technician'],
-      };
-      const seedError = { code: '23505', message: 'dup' };
-      const insertFn = jest.fn().mockResolvedValue({ error: seedError });
-      const mockAdmin = {
-        rpc: jest.fn().mockResolvedValue({
-          data: [{ ...rpcRow, inserted: true }],
-          error: null,
+        from: jest.fn().mockReturnValue({
+          insert: jest.fn().mockResolvedValue({ error: null }),
         }),
-        from: jest.fn().mockReturnValue({ insert: insertFn }),
-      };
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-      jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
-      const warnSpy = jest
-        .spyOn(service['logger'], 'warn')
-        .mockImplementation(() => undefined);
-
-      await service.setupCompany(ownerUser, dtoWithCategories);
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        'Failed to seed tenant_skills from serviceCategories:',
-        { error: seedError },
-      );
-    });
-
-    it('should NOT seed tenant_skills when created=false (idempotent re-call)', async () => {
-      const dtoWithCategories: SetupCompanyDto = {
-        companyName: 'ACME',
-        stateCode: 'MH',
-        serviceCategories: ['AC Technician'],
-      };
-      const mockAdmin = {
-        rpc: jest.fn().mockResolvedValue({
-          data: [{ ...rpcRow, inserted: false }],
-          error: null,
-        }),
-        from: jest.fn(),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-jwt');
 
-      await service.setupCompany(ownerUser, dtoWithCategories);
+      await service.setupCompany(ownerUser, dto);
 
-      expect(mockAdmin.from).not.toHaveBeenCalled();
+      expect(mockAdmin.from).not.toHaveBeenCalledWith('tenant_skills');
     });
   });
 
@@ -600,8 +508,15 @@ describe('AuthService', () => {
       const validSkillsData =
         opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
 
+      // Story 4.2 — captured so tests can assert the is_active filter.
+      const skillCheckEq = jest.fn().mockResolvedValue({
+        data: opts.validSkillsError ? null : validSkillsData,
+        error: opts.validSkillsError ?? null,
+      });
+
       let fromCallCount = 0;
       return {
+        skillCheckEq,
         from: jest.fn().mockImplementation(() => {
           fromCallCount++;
           if (fromCallCount === 1) {
@@ -620,14 +535,11 @@ describe('AuthService', () => {
               }),
             };
           } else if (fromCallCount === 2) {
-            // skill ownership check
+            // global skills-catalog check (Story 4.2)
             return {
               select: jest.fn().mockReturnValue({
                 in: jest.fn().mockReturnValue({
-                  eq: jest.fn().mockResolvedValue({
-                    data: opts.validSkillsError ? null : validSkillsData,
-                    error: opts.validSkillsError ?? null,
-                  }),
+                  eq: skillCheckEq,
                 }),
               }),
             };
@@ -660,12 +572,15 @@ describe('AuthService', () => {
     }
 
     it('should create an invite and return invite_id (201 path)', async () => {
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({}) as never,
-      );
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       expect(await service.inviteTechnician(ownerUser, dto)).toEqual({
         invite_id: 'invite-uuid',
       });
+      // Story 4.2 — validation runs against the global catalog, not tenant_skills,
+      // and only active skills are assignable.
+      expect(mockAdmin.from).toHaveBeenNthCalledWith(2, 'skills');
+      expect(mockAdmin.skillCheckEq).toHaveBeenCalledWith('is_active', true);
     });
 
     it('should throw BadRequestException when owner has no tenantId (company not set up)', async () => {
@@ -676,7 +591,7 @@ describe('AuthService', () => {
       expect(supabaseClientFactory.createAdmin).not.toHaveBeenCalled();
     });
 
-    it('should throw BadRequestException when skillIds do not belong to tenant (AC5)', async () => {
+    it('should throw BadRequestException when skillIds are not in the global catalog (AC5)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
         makeMockAdmin({ validSkills: [] }) as never,
       );

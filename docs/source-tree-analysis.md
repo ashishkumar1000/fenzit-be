@@ -54,13 +54,12 @@ fenzit-be/
 │   │   ├── dto/                         # CreateJobDto, UpdateJobDto, ListJobsQueryDto,
 │   │   │                                #   AdvanceWorkflowDto, UploadAttachmentDto,
 │   │   │                                #   ConfirmAttachmentDto
-│   │   └── enums/                       # JobStatus, WorkflowStep, SkillType (used by jobs)
+│   │   └── enums/                       # JobStatus, WorkflowStep, ServiceType, JobPriority, JobListScope
 │   │
-│   ├── skills/                          # Per-tenant skill catalog (owner only)
+│   ├── skills/                          # Global skills catalog (read-only; Story 4.2)
 │   │   ├── skills.module.ts
-│   │   ├── skills.controller.ts         # POST/GET/DELETE /api/v1/skills
-│   │   ├── skills.service.ts            # create / list / delete (cascades to technicians)
-│   │   └── dto/                         # CreateSkillDto
+│   │   ├── skills.controller.ts         # GET /api/v1/skills (POST/DELETE removed in 4.2)
+│   │   └── skills.service.ts            # listGlobalSkills (minted-JWT read)
 │   │
 │   ├── storage/                         # R2 storage primitives (used by attachments)
 │   │   └── (presigned URL helpers)

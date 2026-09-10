@@ -137,8 +137,8 @@ Tenant (1) ── (N) Job ── (1) Customer
                   Job  ── (N) Attachment
                   Job  ── (N) AttachmentUpload (pre-confirm)
 
-Tenant (1) ── (N) TenantSkill
-Technician (N) ── (N) TenantSkill  (via user_skills)
+Skill (global catalog, developer-seeded)
+Technician (N) ── (N) Skill  (via user_skills)
 ```
 
 ## Workflow State Machine

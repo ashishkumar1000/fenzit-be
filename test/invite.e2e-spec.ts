@@ -62,7 +62,7 @@ describe('Technician Invitation (e2e)', () => {
 
   /** Builds a Supabase admin mock for the invite endpoint's four DB calls:
    *  1. select().eq().eq().eq().eq().maybeSingle()  — active-member check
-   *  2. select().in().eq()                          — skill ownership check
+   *  2. select().in().eq()                          — global skills-catalog check
    *  3. insert().select().single()                  — new user insert
    *  4. insert()                                    — user_skills insert
    */
@@ -104,7 +104,7 @@ describe('Technician Invitation (e2e)', () => {
             }),
           };
         } else if (fromCallCount === 2) {
-          // skill ownership check
+          // global skills-catalog check
           return {
             select: jest.fn().mockReturnValue({
               in: jest.fn().mockReturnValue({
@@ -245,7 +245,7 @@ describe('Technician Invitation (e2e)', () => {
       expect(body.error_code).toBe('VALIDATION_ERROR');
     });
 
-    it('AC5 — should return 400 when skillIds contain unknown UUIDs (not in tenant)', async () => {
+    it('AC5 — should return 400 when skillIds contain unknown UUIDs (not in the global catalog)', async () => {
       mockCreateAdmin.mockReturnValue(makeInviteMock({ validSkills: [] }));
 
       const response = await app.inject({

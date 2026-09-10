@@ -6,7 +6,7 @@ Security (RLS)** enabled.
 
 ## Migrations Inventory
 
-34 migrations, applied in chronological order. New migrations **must** be
+35 migrations, applied in chronological order. New migrations **must** be
 appended (never edit history) and **must** be applied via the Supabase MCP
 (see `project-context.md`).
 
@@ -46,6 +46,7 @@ appended (never edit history) and **must** be applied via the Supabase MCP
 | 32  | `20260909000003_rpc_notify_owner_on_advance.sql` | Advance RPC notifies owner (Epic 3) |
 | 33  | `20260909000004_notifications_cleanup.sql`      | pg_cron — purge old notifications (Epic 3) |
 | 34  | `20260910000001_create_global_skills.sql`       | Global `skills` catalog, sort_order-pinned seeds + RLS (Epic 4) |
+| 35  | `20260911000001_tenant_skills_cutover.sql`      | Cutover: `user_skills.skill_id` → `skills`, tenant-isolated RLS on `user_skills`, drop `tenant_skills` + `tenants.service_categories`, slim `setup_tenant_for_owner` (Epic 4 Story 4.2) |
 
 ## Tables
 
@@ -61,7 +62,6 @@ name        TEXT
 role        TEXT CHECK (role IN ('owner','technician'))
 tenant_id   UUID FK → tenants(id) ON DELETE SET NULL
 status      TEXT CHECK (status IN ('active','invited')) DEFAULT 'active'
-skill_type  TEXT                          -- technicians only
 created_at  TIMESTAMPTZ
 updated_at  TIMESTAMPTZ (auto via trigger)
 ```
@@ -82,7 +82,6 @@ company_name       TEXT NOT NULL
 gstin              TEXT
 address            TEXT
 state_code         TEXT NOT NULL CHECK (state_code ~ '^[A-Z]{2}$')
-service_categories TEXT[] NOT NULL DEFAULT '{}'
 upi_vpa            TEXT
 created_at, updated_at TIMESTAMPTZ
 ```
@@ -162,27 +161,24 @@ PRIMARY KEY (tenant_id, year)
 `increment_job_counter(p_tenant_id, p_year)` upserts and returns the next
 sequence value (used inside `create_job_with_log`).
 
-### `tenant_skills`
-
-Per-tenant catalog of skills (e.g. "AC Repair", "Pest Control").
-
-```sql
-id          UUID PK
-tenant_id   UUID FK → tenants(id) ON DELETE CASCADE
-name        TEXT
-description TEXT
-UNIQUE (tenant_id, name)
-```
-
 ### `user_skills`
 
-Junction: which skills a technician has (used for matching when creating jobs).
+Junction: which global-catalog skills a technician has (used for matching when
+creating jobs). Rows are written by the invite flow against the global
+`skills` catalog (migration 35 cut the FK over from the since-dropped
+`tenant_skills`). `skill_id` uses **ON DELETE RESTRICT** — skills are never
+API-deleted (only deactivated via `is_active`), so an accidental delete fails
+loudly instead of silently stripping technicians' skills.
 
 ```sql
 user_id  UUID FK → users(id) ON DELETE CASCADE
-skill_id UUID FK → tenant_skills(id) ON DELETE CASCADE
+skill_id UUID FK → skills(id) ON DELETE RESTRICT
 PRIMARY KEY (user_id, skill_id)
 ```
+
+**RLS:** `user_skills_tenant_isolation` (FOR ALL, USING + WITH CHECK) — a row
+is visible/writable only when its user's `users.tenant_id` matches the JWT
+`tenantId` (EXISTS join into `users`, not a direct column read).
 
 ### `attachments`
 
@@ -260,8 +256,8 @@ cannot introduce ordering ties. `is_active` is a future hook — deactivation
 is migration-only until a deactivate flow exists. `updated_at` is inert:
 there is no trigger and no write path, so it always equals `created_at`
 (review round 2 note — revisit if a deactivation flow lands). The
-per-tenant `tenant_skills` table is superseded by this table (dropped in
-Story 4.2).
+per-tenant `tenant_skills` table it supersedes was dropped in migration 35
+(Story 4.2).
 
 ```sql
 id         UUID PK DEFAULT gen_random_uuid()
@@ -300,9 +296,12 @@ a single Postgres transaction — **never** split into multiple sequential
 
 ## RLS Posture Summary
 
-- **Tenant-scoped tables** (`customers`, `jobs`, `tenant_skills`, `user_skills`,
+- **Tenant-scoped tables** (`customers`, `jobs`,
   `attachments`, `attachment_uploads`, `idempotency_log`): policy reads
   `(auth.jwt() ->> 'tenantId')::uuid`
+- **`user_skills`**: tenant-isolated transitively — the policy joins into
+  `users` and matches `users.tenant_id` against the JWT `tenantId` (the table
+  has no `tenant_id` column of its own)
 - **Global reference tables** (`skills`): SELECT-only policy TO `authenticated`
   (no tenant scoping); no write policies — client writes are RLS-denied
 - **`users`**: more permissive — a user can read their own row OR any same-tenant row

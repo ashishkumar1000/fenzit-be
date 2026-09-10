@@ -908,7 +908,7 @@ describe('Jobs (e2e)', () => {
       latitude: 18.5204,
       longitude: 73.8567,
     };
-    const skillRows = [{ tenant_skills: { name: 'AC Repair' } }];
+    const skillRows = [{ skills: { name: 'AC Repair' } }];
     const logRows = [
       {
         id: 'log-1',
@@ -950,10 +950,10 @@ describe('Jobs (e2e)', () => {
             2,
           );
         if (table === 'user_skills') {
-          const eq2 = jest
+          // Story 4.2 — skills embed carries no tenant filter; one eq on user_id.
+          const eq1 = jest
             .fn()
             .mockResolvedValue(opts.skills ?? { data: skillRows, error: null });
-          const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
           return { select: jest.fn().mockReturnValue({ eq: eq1 }) };
         }
         if (table === 'activity_logs') {

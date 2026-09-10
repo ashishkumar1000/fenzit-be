@@ -75,7 +75,6 @@ describe('UsersService', () => {
     gstin: null,
     address: '12 MG Road',
     state_code: 'MH',
-    service_categories: ['plumbing'],
     upi_vpa: null,
   };
 
@@ -90,15 +89,15 @@ describe('UsersService', () => {
       // one row uses the object embed shape, one uses the array embed shape —
       // exercises both normalization branches in flattenSkillNames.
       user_skills: [
-        { tenant_skills: { name: 'Plumbing' } },
-        { tenant_skills: [{ name: 'Electrical' }, { name: 'Wiring' }] },
+        { skills: { name: 'Plumbing' } },
+        { skills: [{ name: 'Electrical' }, { name: 'Wiring' }] },
       ],
     },
   ];
 
   const ownSkillsRows = [
-    { tenant_skills: { name: 'AC Repair' } },
-    { tenant_skills: [{ name: 'Pest Control' }] },
+    { skills: { name: 'AC Repair' } },
+    { skills: [{ name: 'Pest Control' }] },
   ];
 
   const emptyCustomersPage = new PaginatedResponse([], null);
@@ -199,21 +198,20 @@ describe('UsersService', () => {
     return { select: jest.fn().mockReturnValue({ eq }) };
   }
 
-  // user_skills.eq('user_id',...).eq('tenant_skills.tenant_id',...) (own skills)
-  // vs user_skills.in('user_id', ids).eq('tenant_skills.tenant_id',...)
-  // (Story 3.9 batched embed skills) — dispatched on the select column list.
+  // user_skills.eq('user_id',...) (own skills)
+  // vs user_skills.in('user_id', ids) (Story 3.9 batched embed skills,
+  // awaited at .in() — Story 4.2 removed the tenant_skills tenant filter)
+  // — dispatched on the select column list.
   function userSkillsTableHandler(ownResult: DbResult, batchResult: DbResult) {
-    const batchSkillsEq = jest.fn().mockResolvedValue(batchResult);
     const select = jest.fn((cols: string) => {
       if (cols.includes('user_id')) {
-        const inFn = jest.fn().mockReturnValue({ eq: batchSkillsEq });
-        return { in: inFn, batchEq: batchSkillsEq };
+        const inFn = jest.fn().mockResolvedValue(batchResult);
+        return { in: inFn };
       }
-      const eq2 = jest.fn().mockResolvedValue(ownResult);
-      const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
+      const eq1 = jest.fn().mockResolvedValue(ownResult);
       return { eq: eq1 };
     });
-    return { select, batchSkillsEq };
+    return { select };
   }
 
   // jobs.select(JOB_COLUMNS)...limit() (list) vs
@@ -373,7 +371,6 @@ describe('UsersService', () => {
         gstin: null,
         address: '12 MG Road',
         stateCode: 'MH',
-        serviceCategories: ['plumbing'],
         upiVpa: null,
       });
       if (result.role !== Role.OWNER) throw new Error('expected owner shape');
@@ -496,7 +493,7 @@ describe('UsersService', () => {
           status: 'invited',
           created_at: '2026-07-01T00:00:00Z',
           user_skills: [
-            { tenant_skills: { id: 'skill-1', name: 'AC Repair' } },
+            { skills: { id: 'skill-1', name: 'AC Repair' } },
           ],
         },
       ];
@@ -790,8 +787,8 @@ describe('UsersService', () => {
         },
         batchSkills: {
           data: [
-            { user_id: 'tech-uuid', tenant_skills: { name: 'Plumbing' } },
-            { user_id: 'tech-uuid', tenant_skills: [{ name: 'Electrical' }] },
+            { user_id: 'tech-uuid', skills: { name: 'Plumbing' } },
+            { user_id: 'tech-uuid', skills: [{ name: 'Electrical' }] },
           ],
           error: null,
         },
@@ -840,7 +837,7 @@ describe('UsersService', () => {
         'id, name, country_code, phone_number',
       );
       expect(selectCols(skillsHandler.select)).toContain(
-        'user_id, tenant_skills!inner(name)',
+        'user_id, skills!inner(name)',
       );
       expect(selectCols(customersHandler.select)).toContain(
         'id, name, country_code, phone_number, address, city',
@@ -863,12 +860,10 @@ describe('UsersService', () => {
       expect(customersHandler.inIds).toHaveBeenCalledWith('id', ['cust-1']);
       // Tenant filter on every batched fetch — createAdmin() bypasses RLS, so
       // this app-layer eq is the only cross-tenant guard on these reads.
+      // (The skills fetch carries none: global skills are tenant-free since
+      // Story 4.2, and the techIds are already tenant-verified via users.)
       expect(usersHandler.batchUsersEq).toHaveBeenCalledWith(
         'tenant_id',
-        'tenant-uuid',
-      );
-      expect(skillsHandler.batchSkillsEq).toHaveBeenCalledWith(
-        'tenant_skills.tenant_id',
         'tenant-uuid',
       );
       expect(customersHandler.eqTenant).toHaveBeenCalledWith(
@@ -986,7 +981,7 @@ describe('UsersService', () => {
         'id, name, country_code, phone_number',
       );
       expect(skillsHandler.select).not.toHaveBeenCalledWith(
-        'user_id, tenant_skills!inner(name)',
+        'user_id, skills!inner(name)',
       );
     });
 

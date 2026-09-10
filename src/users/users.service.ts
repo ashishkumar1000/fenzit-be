@@ -45,7 +45,6 @@ export interface TenantSummary {
   gstin: string | null;
   address: string | null;
   stateCode: string;
-  serviceCategories: string[];
   upiVpa: string | null;
 }
 
@@ -145,19 +144,18 @@ interface TenantRow {
   gstin: string | null;
   address: string | null;
   state_code: string;
-  service_categories: string[];
   upi_vpa: string | null;
 }
 
 // PostgREST embeds a to-one/to-many related resource; normalize both possible
 // shapes when flattening skills (mirrors UserSkillRow in jobs.service.ts).
-interface TenantSkillEmbed {
+interface SkillEmbed {
   id: string;
   name: string;
 }
 
 interface UserSkillsEmbedRow {
-  tenant_skills: TenantSkillEmbed | TenantSkillEmbed[] | null;
+  skills: SkillEmbed | SkillEmbed[] | null;
 }
 
 interface TechnicianListRow {
@@ -249,9 +247,7 @@ export class UsersService {
 
     const { data: tenantRow, error: tenantError } = await admin
       .from('tenants')
-      .select(
-        'id, company_name, gstin, address, state_code, service_categories, upi_vpa',
-      )
+      .select('id, company_name, gstin, address, state_code, upi_vpa')
       .eq('id', tenantId)
       .single<TenantRow>();
 
@@ -272,13 +268,12 @@ export class UsersService {
       gstin: tenantRow.gstin,
       address: tenantRow.address,
       stateCode: tenantRow.state_code,
-      serviceCategories: tenantRow.service_categories ?? [],
       upiVpa: tenantRow.upi_vpa,
     };
 
     if (ownRow.role === Role.TECHNICIAN) {
       const [skills, jobs, jobCounts] = await Promise.all([
-        this.getOwnSkills(admin, user.userId, tenantId),
+        this.getOwnSkills(admin, user.userId),
         this.listProfileJobs(
           tenantId,
           user.userId,
@@ -361,7 +356,7 @@ export class UsersService {
     const { data, error } = await admin
       .from('users')
       .select(
-        'id, name, country_code, phone_number, status, created_at, user_skills(tenant_skills(id, name))',
+        'id, name, country_code, phone_number, status, created_at, user_skills(skills(id, name))',
       )
       .eq('tenant_id', tenantId)
       .eq('role', Role.TECHNICIAN)
@@ -394,13 +389,11 @@ export class UsersService {
   private async getOwnSkills(
     admin: SupabaseClient,
     userId: string,
-    tenantId: string,
-  ): Promise<TenantSkillEmbed[]> {
+  ): Promise<SkillEmbed[]> {
     const { data, error } = await admin
       .from('user_skills')
-      .select('tenant_skills!inner(id, name)')
-      .eq('user_id', userId)
-      .eq('tenant_skills.tenant_id', tenantId);
+      .select('skills!inner(id, name)')
+      .eq('user_id', userId);
 
     if (error) {
       this.logger.error('Failed to fetch own skills for profile:', { error });
@@ -413,14 +406,14 @@ export class UsersService {
     return this.flattenSkills(data ?? []);
   }
 
-  private flattenSkills(rows: UserSkillsEmbedRow[]): TenantSkillEmbed[] {
+  private flattenSkills(rows: UserSkillsEmbedRow[]): SkillEmbed[] {
     return rows
       .flatMap((r) => {
-        const ts = r.tenant_skills;
-        if (Array.isArray(ts)) return ts;
-        return ts ? [ts] : [];
+        const s = r.skills;
+        if (Array.isArray(s)) return s;
+        return s ? [s] : [];
       })
-      .filter((s): s is TenantSkillEmbed => Boolean(s?.name));
+      .filter((skill): skill is SkillEmbed => Boolean(skill?.name));
   }
 
   /**
@@ -551,9 +544,8 @@ export class UsersService {
         .eq('tenant_id', tenantId),
       admin
         .from('user_skills')
-        .select('user_id, tenant_skills!inner(name)')
-        .in('user_id', techIds)
-        .eq('tenant_skills.tenant_id', tenantId),
+        .select('user_id, skills!inner(name)')
+        .in('user_id', techIds),
       admin
         .from('customers')
         .select('id, name, country_code, phone_number, address, city')
