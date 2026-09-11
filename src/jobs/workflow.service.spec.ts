@@ -13,8 +13,24 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
-import { WorkflowStep } from './enums/workflow-step.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import {
+  parseTemplateSteps,
+  nextStepKey,
+  photoConfirmStep,
+  setsStatusOf,
+  TemplateStep,
+} from './workflow-template.model';
+
+// The v1 seed chain (migration 20260911000002) — 6 identical steps per skill.
+const V1_STEPS: unknown = [
+  { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
+  { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+  { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+  { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
+  { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
+  { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+];
 
 describe('WorkflowService', () => {
   let service: WorkflowService;
@@ -29,15 +45,16 @@ describe('WorkflowService', () => {
   };
   const techNoTenant: RequestUser = { ...tech, tenantId: null };
 
-  // Job assigned to tech-1, scheduled, no step yet.
+  // Job assigned to tech-1, scheduled, no step yet, stamped with the v1 seed
+  // template (id fixed by the seed migration; the FK embed resolves by id).
   const baseJobRow = {
     id: 'job-uuid',
     tenant_id: 'tenant-uuid',
     status: 'scheduled',
     current_step: null as string | null,
-    require_completion_photo: false,
-    require_completion_signature: false,
+    workflow_template_version: 1,
     technician_id: 'tech-1',
+    workflow_templates: { version: 1, steps: V1_STEPS },
   };
 
   // The full RETURNS SETOF jobs row the RPC returns.
@@ -53,15 +70,13 @@ describe('WorkflowService', () => {
     status: 'in_progress',
     current_step: 'on_my_way',
     priority: 'normal',
-    require_completion_photo: false,
-    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: '2026-06-21T00:05:00Z',
   };
 
-  const dto = (step: WorkflowStep): AdvanceWorkflowDto => ({ step });
+  const dto = (step: string): AdvanceWorkflowDto => ({ step });
 
   beforeEach(async () => {
     const mockFactory = { create: jest.fn(), createAdmin: jest.fn() };
@@ -104,54 +119,85 @@ describe('WorkflowService', () => {
     return { from, rpc };
   }
 
-  describe('validateStep', () => {
-    // Effective-chain successor table (Story 3.8): [current, requested,
-    // photoRequired, signatureRequired, expected]. photo=true + signature=true
-    // preserves the exact one-step chain; every other combination is a skip.
+  const v1Steps = parseTemplateSteps(V1_STEPS) as TemplateStep[];
+
+  describe('workflow-template.model', () => {
+    it('parses the v1 seed chain', () => {
+      expect(v1Steps).toHaveLength(6);
+      expect(v1Steps.map((s) => s.key)).toEqual([
+        'on_my_way',
+        'arrived',
+        'in_progress',
+        'photos_uploaded',
+        'signature_captured',
+        'completed',
+      ]);
+    });
+
     it.each([
-      // photo=N sig=Y: today's behaviour (photos skippable, signature mandatory)
-      [null, WorkflowStep.ON_MY_WAY, false, true, true],
-      ['on_my_way', WorkflowStep.ARRIVED, false, true, true],
-      ['arrived', WorkflowStep.IN_PROGRESS, false, true, true],
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, false, true, true], // skip photos
-      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, false, true, false], // not required
-      ['signature_captured', WorkflowStep.COMPLETED, false, true, true],
-      // photo=Y sig=Y: full chain, exactly-one-step-forward
-      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, true, true, true],
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, true, true, false], // photo required first
-      ['in_progress', WorkflowStep.COMPLETED, true, true, false],
-      ['photos_uploaded', WorkflowStep.SIGNATURE_CAPTURED, true, true, true],
-      ['photos_uploaded', WorkflowStep.COMPLETED, true, true, false], // signature required first
-      ['signature_captured', WorkflowStep.COMPLETED, true, true, true],
-      // photo=Y sig=N: signature skippable
-      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, true, false, true],
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, true, false, false], // not required
-      ['photos_uploaded', WorkflowStep.COMPLETED, true, false, true], // skip signature
-      // photo=N sig=N: everything skippable, completed directly
-      ['in_progress', WorkflowStep.COMPLETED, false, false, true],
-      ['in_progress', WorkflowStep.PHOTOS_UPLOADED, false, false, false],
-      ['in_progress', WorkflowStep.SIGNATURE_CAPTURED, false, false, false],
-      // AC5 dynamic edge: signature toggled OFF while current_step sits ON the
-      // (now non-required) signature_captured step → completed is legal.
-      ['signature_captured', WorkflowStep.COMPLETED, false, false, true],
-      // Out-of-order / backward / same / fresh-job skips
-      ['on_my_way', WorkflowStep.COMPLETED, false, false, false], // out of order
-      ['in_progress', WorkflowStep.ON_MY_WAY, false, false, false], // backward
-      ['on_my_way', WorkflowStep.ON_MY_WAY, false, false, false], // same step
-      [null, WorkflowStep.ARRIVED, false, false, false], // can't skip on_my_way
-      [null, WorkflowStep.ARRIVED, true, true, false], // even when everything is required
-      // Corrupt current_step ≠ fresh job, never advanceable
-      ['garbage', WorkflowStep.ON_MY_WAY, false, false, false],
-      ['garbage', WorkflowStep.ARRIVED, false, false, false],
-      ['garbage', WorkflowStep.COMPLETED, true, true, false],
+      // [steps, current, requested, expected]
+      [V1_STEPS, null, 'on_my_way', true],
+      [V1_STEPS, 'on_my_way', 'arrived', true],
+      [V1_STEPS, 'in_progress', 'photos_uploaded', true],
+      [V1_STEPS, 'photos_uploaded', 'signature_captured', true],
+      [V1_STEPS, 'signature_captured', 'completed', true],
+      // No skipping — the template's ordered steps ARE the chain.
+      [V1_STEPS, 'in_progress', 'signature_captured', false],
+      [V1_STEPS, 'in_progress', 'completed', false],
+      [V1_STEPS, 'on_my_way', 'completed', false],
+      [V1_STEPS, 'in_progress', 'on_my_way', false],
+      [V1_STEPS, 'completed', 'completed', false],
+      // Fresh job can't skip the first step.
+      [V1_STEPS, null, 'arrived', false],
+      // Corrupt current_step rejects every advance.
+      [V1_STEPS, 'garbage', 'on_my_way', false],
+      [V1_STEPS, 'garbage', 'completed', false],
     ])(
-      'current=%s requested=%s photo=%s signature=%s → %s',
-      (current, requested, photo, signature, expected) => {
-        expect(service.validateStep(current, requested, photo, signature)).toBe(
-          expected,
-        );
+      'nextStepKey(v1, %j) === %j → %s',
+      (steps, current, requested, expected) => {
+        expect(service.validateStep(v1Steps, current, requested)).toBe(expected);
       },
     );
+
+    it('corrupt template shapes are rejected by the parser', () => {
+      expect(parseTemplateSteps([])).toBeNull();
+      expect(parseTemplateSteps('nope')).toBeNull();
+      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: 'x', requires_signature: false }])).toBeNull();
+      expect(parseTemplateSteps([{ key: 'Bad Key', label: 'A', requires_photo: false, requires_signature: false }])).toBeNull();
+      expect(parseTemplateSteps([{ key: 'a', label: '', requires_photo: false, requires_signature: false }])).toBeNull();
+      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: false, requires_signature: false, sets_status: 'scheduled' }])).toBeNull();
+      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: false, requires_signature: false, advances_on: 'magic' }])).toBeNull();
+      expect(
+        parseTemplateSteps([
+          { key: 'a', label: 'A', requires_photo: false, requires_signature: false },
+          { key: 'a', label: 'B', requires_photo: false, requires_signature: false },
+        ]),
+      ).toBeNull();
+    });
+
+    it('valid custom chains parse; sets_status and photo_confirm lookups work', () => {
+      const custom = parseTemplateSteps([
+        { key: 's1', label: 'S1', requires_photo: false, requires_signature: false, sets_status: 'in_progress' },
+        { key: 's2', label: 'S2', requires_photo: true, requires_signature: true, sets_status: null, advances_on: 'photo_confirm' },
+      ]);
+      expect(custom).toHaveLength(2);
+      expect(nextStepKey(custom as TemplateStep[], null)).toBe('s1');
+      expect(nextStepKey(custom as TemplateStep[], 's1')).toBe('s2');
+      expect(nextStepKey(custom as TemplateStep[], 's2')).toBeNull(); // chain exhausted
+      expect(setsStatusOf(custom as TemplateStep[], 's1')).toBe('in_progress');
+      expect(setsStatusOf(custom as TemplateStep[], 's2')).toBeNull();
+      expect(photoConfirmStep(custom as TemplateStep[])?.key).toBe('s2');
+      // Absent/null attributes normalise to null.
+      const noAttrs = parseTemplateSteps([
+        { key: 'a', label: 'A', requires_photo: false, requires_signature: false },
+      ]);
+      expect(setsStatusOf(noAttrs as TemplateStep[], 'a')).toBeNull();
+      expect(photoConfirmStep(noAttrs as TemplateStep[])).toBeNull();
+    });
+
+    it('chain exhausted → no legal target (null)', () => {
+      expect(nextStepKey(v1Steps, 'completed')).toBeNull();
+    });
   });
 
   describe('advanceWorkflowStep', () => {
@@ -160,7 +206,7 @@ describe('WorkflowService', () => {
       const res = await service.advanceWorkflowStep(
         tech,
         'job-uuid',
-        dto(WorkflowStep.ON_MY_WAY),
+        dto('on_my_way'),
       );
 
       expect(rpc).toHaveBeenCalledWith(
@@ -178,7 +224,7 @@ describe('WorkflowService', () => {
       expect(res).toEqual({ mapped: true, row: fullJobRow });
     });
 
-    it('completed step → rpc gets p_new_status completed', async () => {
+    it('completed step → rpc gets p_new_status completed (sets_status step data)', async () => {
       const { rpc } = mockAdmin({
         job: {
           data: {
@@ -192,7 +238,7 @@ describe('WorkflowService', () => {
       await service.advanceWorkflowStep(
         tech,
         'job-uuid',
-        dto(WorkflowStep.COMPLETED),
+        dto('completed'),
       );
       expect(rpc).toHaveBeenCalledWith(
         'advance_workflow_step',
@@ -200,7 +246,7 @@ describe('WorkflowService', () => {
       );
     });
 
-    it('mid step (arrived) → rpc gets p_new_status null', async () => {
+    it('mid step (arrived) → rpc gets p_new_status null (intermediate keeps status)', async () => {
       const { rpc } = mockAdmin({
         job: {
           data: {
@@ -214,11 +260,33 @@ describe('WorkflowService', () => {
       await service.advanceWorkflowStep(
         tech,
         'job-uuid',
-        dto(WorkflowStep.ARRIVED),
+        dto('arrived'),
       );
       expect(rpc).toHaveBeenCalledWith(
         'advance_workflow_step',
         expect.objectContaining({ p_new_status: null }),
+      );
+    });
+
+    it('non-v1 template: a custom chain drives status and order', async () => {
+      const custom = [
+        { key: 's1', label: 'S1', requires_photo: false, requires_signature: false, sets_status: 'in_progress' },
+        { key: 's2', label: 'S2', requires_photo: true, requires_signature: true, sets_status: 'completed' },
+      ];
+      const { rpc } = mockAdmin({
+        job: {
+          data: {
+            ...baseJobRow,
+            current_step: 's1',
+            workflow_templates: { version: 1, steps: custom },
+          },
+          error: null,
+        },
+      });
+      await service.advanceWorkflowStep(tech, 'job-uuid', dto('s2'));
+      expect(rpc).toHaveBeenCalledWith(
+        'advance_workflow_step',
+        expect.objectContaining({ p_step: 's2', p_new_status: 'completed' }),
       );
     });
 
@@ -237,7 +305,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.COMPLETED),
+          dto('completed'),
         ),
       ).rejects.toMatchObject({
         status: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -249,49 +317,24 @@ describe('WorkflowService', () => {
       expect(rpc).not.toHaveBeenCalled();
     });
 
-    it('skip photos when require_completion_photo=true → 422; rpc NOT called', async () => {
+    it('skipping a step → 422; rpc NOT called (no flag-driven chain filtering)', async () => {
       const { rpc } = mockAdmin({
         job: {
           data: {
             ...baseJobRow,
             status: 'in_progress',
             current_step: 'in_progress',
-            require_completion_photo: true,
-            require_completion_signature: true,
           },
           error: null,
         },
       });
+      // The template's next step is photos_uploaded; jumping to signature_captured
+      // is illegal regardless of any job-level flag (flags no longer exist).
       await expect(
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.SIGNATURE_CAPTURED),
-        ),
-      ).rejects.toBeInstanceOf(HttpException);
-      expect(rpc).not.toHaveBeenCalled();
-    });
-
-    it('skip signature when require_completion_signature=true → 422; rpc NOT called', async () => {
-      const { rpc } = mockAdmin({
-        job: {
-          data: {
-            ...baseJobRow,
-            status: 'in_progress',
-            current_step: 'in_progress',
-            require_completion_photo: false,
-            require_completion_signature: true,
-          },
-          error: null,
-        },
-      });
-      // Signature required → the next required step is signature_captured;
-      // jumping straight to completed must be rejected without touching the RPC.
-      await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto(WorkflowStep.COMPLETED),
+          dto('signature_captured'),
         ),
       ).rejects.toMatchObject({
         status: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -300,6 +343,74 @@ describe('WorkflowService', () => {
           currentStep: 'in_progress',
         },
       });
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('corrupt current_step → 422 echoing it; rpc NOT called (never resets)', async () => {
+      const { rpc } = mockAdmin({
+        job: {
+          data: {
+            ...baseJobRow,
+            status: 'in_progress',
+            current_step: 'garbage',
+          },
+          error: null,
+        },
+      });
+      await expect(
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
+      ).rejects.toMatchObject({
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        response: {
+          error_code: ErrorCode.INVALID_WORKFLOW_STEP,
+          currentStep: 'garbage',
+        },
+      });
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('unreadable template stamp (malformed steps) → 500; rpc NOT called', async () => {
+      const { rpc } = mockAdmin({
+        job: {
+          data: {
+            ...baseJobRow,
+            workflow_templates: { version: 1, steps: [{ bogus: true }] },
+          },
+          error: null,
+        },
+      });
+      await expect(
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
+      ).rejects.toBeInstanceOf(InternalServerErrorException);
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('template stamp version mismatch → 500; rpc NOT called', async () => {
+      const { rpc } = mockAdmin({
+        job: {
+          data: {
+            ...baseJobRow,
+            workflow_template_version: 2,
+          },
+          error: null,
+        },
+      });
+      await expect(
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
+      ).rejects.toBeInstanceOf(InternalServerErrorException);
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('missing template embed → 500; rpc NOT called', async () => {
+      const { rpc } = mockAdmin({
+        job: {
+          data: { ...baseJobRow, workflow_templates: null },
+          error: null,
+        },
+      });
+      await expect(
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
+      ).rejects.toBeInstanceOf(InternalServerErrorException);
       expect(rpc).not.toHaveBeenCalled();
     });
 
@@ -314,7 +425,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
@@ -325,7 +436,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
@@ -336,7 +447,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
     });
@@ -346,7 +457,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           techNoTenant,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
@@ -366,7 +477,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
       expect(rpc).not.toHaveBeenCalled();
@@ -378,7 +489,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toMatchObject({
         status: HttpStatus.CONFLICT,
@@ -392,7 +503,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
@@ -403,7 +514,7 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(
           tech,
           'job-uuid',
-          dto(WorkflowStep.ON_MY_WAY),
+          dto('on_my_way'),
         ),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
     });

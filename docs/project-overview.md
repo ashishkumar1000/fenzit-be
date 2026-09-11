@@ -14,7 +14,7 @@ The codebase has **all four planned epics delivered** (per
 
 - **Epic 1 — Project Foundation & Authentication**: phone OTP, JWT, tenants, skills, RBAC guards
 - **Epic 2 — Customer Management**: customers CRUD, search, profile with job history
-- **Epic 3 — Job Lifecycle**: jobs CRUD, technician assignment, 6-step workflow, R2 attachments, activity log
+- **Epic 3 — Job Lifecycle**: jobs CRUD, technician assignment, template-driven workflow engine, R2 attachments, activity log
 - **Epic 4 — Offline-First Mobile Sync**: delta-sync endpoint, idempotent action replay, server-side conflict resolution
 
 ## Repository Structure

@@ -260,8 +260,15 @@ owner's tenant). `skillId` tags the job with a global skills-catalog skill
 
 **Body:** `{ customerId? (UUID) | newCustomer (inline), skillId: UUID (global
 catalog), serviceLocation: string, scheduledStart: ISO8601, technicianId: UUID,
-scheduledEnd?, description?, priority?, requireCompletionPhoto?,
-requireCompletionSignature?, notesForTechnician? }`
+scheduledEnd?, description?, priority?, notesForTechnician? }`
+(The Story 3.8 `requireCompletionPhoto`/`requireCompletionSignature` fields are
+GONE since Story 4.4 — photo/signature requirements are template step
+attributes. **Rollout order:** this is a breaking backend change — the app
+still sends `requireCompletion*` on create and PATCH until Story 4.5. The
+ValidationPipe whitelist silently strips the flags on this create path (201,
+flags ignored); a PATCH carrying only the flags comes back `422` "No
+updatable fields provided". Deploy this backend first; the app must stop
+sending and reading the flags in its Story 4.5 change.)
 
 **Responses:**
 - `201` — Job created (`status: scheduled`, `currentStep: null`)
@@ -331,18 +338,29 @@ Edit, reassign, or cancel a scheduled job.
 
 #### `POST /api/v1/jobs/:id/workflow` `[Bearer JWT, Role: technician, Idempotent]`
 
-Advance a job through its ordered workflow steps. **Technician must be the
-assigned technician.** Steps are validated for ordering (422 on out-of-order).
+Advance a job through its workflow. **Technician must be the assigned
+technician.** Story 4.4 — the chain is the job's **stamped template**:
+`step` must be the template's first not-yet-completed step (`key` matching
+`^[a-z0-9_]{1,64}$`; no skipping, no flags — `requires_photo` /
+`requires_signature` are frontend action gates, not chain filters). A corrupt
+`current_step` (absent from the template) rejects every advance with 422 and
+is never reset. Note: photo/signature requirements never narrow the chain —
+a job whose template has no photo/signature steps still walks every step
+server-side; enforcing the action gates (upload the photo before advancing)
+is the frontend's job (Story 4.5).
 
 **Headers:** `X-Idempotency-Key: <UUID v4>` (optional; 24h replay dedup)
 
-**Body:** `{ step: WorkflowStep, notes?: string }`
+**Body:** `{ step: string }`
 
 **Responses:**
 - `200` — Updated job
 - `403` — Owner JWT, or technician not assigned to the job
 - `409` — Job is not advanceable in current status
-- `422` — Invalid step value or out-of-order transition
+- `422` — Invalid step value or out-of-order transition (body carries
+  `currentStep` — the step the job is actually on)
+- `500` — Corrupt template stamp (unparseable steps / stamp version mismatch /
+  missing template embed) — a server fault, never silently reset
 
 **Side effect (Story 3.1):** a committed advance writes exactly one
 `notifications` row for the tenant owner (`event_type` = the step, `payload` =
@@ -377,18 +395,32 @@ The client PUTs the raw bytes to `presignedPutUrl` directly against R2 —
 #### `POST /api/v1/jobs/:id/attachments/:uploadId/confirm` `[Bearer JWT, Role: technician]`
 
 **Phase 2 of two-phase upload.** Confirm a completed R2 upload; the backend
-calls `rpc_confirm_attachment` (Postgres RPC) which performs server-side
-conflict resolution (see `migration 13/14`). Note: this endpoint does NOT
-take the idempotency interceptor — the `X-Idempotency-Key` header, if sent,
-is ignored; re-executing a confirm is safe (the RPC returns the existing
-row) but is re-execution, not key-based replay.
+calls the `confirm_attachment` RPC which performs server-side conflict
+resolution (see `migration 13/14`). Since Story 4.4 the same RPC also
+**auto-advances** the workflow when the attachment is the job's **first
+confirmed photo** and the stamped template has a step with
+`advances_on: 'photo_confirm'` whose predecessor is the job's current step —
+the advance runs inside the same transaction via `advance_workflow_step`
+(owner notification included); a raced/terminal job raises PT409, which the
+RPC swallows (logged) so the attachment still commits. The response shape is
+unchanged. Two accepted skip paths (logged, attachment still commits): a
+photo-optional job — `current_step` not at the photo step's predecessor — and
+a missing template row. **Worker-path note (accepted limitation):** when the
+confirm arrives via the Cloudflare Worker webhook the RPC runs with a NULL
+actor; the advance and activity log commit, but the owner notification is
+skipped (the notification guard filters every row for a NULL actor). The app
+path notifies as specified. Note: this endpoint does NOT take the idempotency
+interceptor —
+the `X-Idempotency-Key` header, if sent, is ignored; re-executing a confirm
+is safe (the RPC returns the existing row) but is re-execution, not
+key-based replay.
 
 **Body:** `{ sizeBytes: number }` (integer, ≥ 1)
 
 **Responses:**
 - `200` — The confirmed attachment (`{ id, type, createdAt }`)
 - `404` — Job or upload not found
-- `409` — Photo limit reached (5 max per job)
+- `409` — Photo limit reached (5 max per job — unconditional, template-independent)
 - `410` — Upload session expired (client should restart from presign)
 - `422` — Validation error (missing/non-integer/zero `sizeBytes`)
 

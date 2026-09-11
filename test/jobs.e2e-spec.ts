@@ -87,8 +87,6 @@ describe('Jobs (e2e)', () => {
     completed_at: null,
     current_step: null,
     priority: 'normal',
-    require_completion_photo: false,
-    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -1195,13 +1193,8 @@ describe('Jobs (e2e)', () => {
       expect(body.description).toBe('edited');
     });
 
-    it('AC2.8 (Story 3.8) — flag-only PATCH edits a completion flag → 200 echoes the new value', async () => {
-      mockAdmin({
-        rpc: {
-          data: [{ ...jobRow, require_completion_signature: true }],
-          error: null,
-        },
-      });
+    it('AC2.8 (Story 4.4) — completion flags are gone from the PATCH body → 422 (stripped as unknown, then an empty PATCH)', async () => {
+      mockAdmin({});
 
       const response = await app.inject({
         method: 'PATCH',
@@ -1210,8 +1203,12 @@ describe('Jobs (e2e)', () => {
         payload: { requireCompletionSignature: true },
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).requireCompletionSignature).toBe(true);
+      // whitelist: true strips the unknown key → no updatable fields left →
+      // the empty-PATCH guard fires (never reaches the RPC).
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).message).toContain(
+        'No updatable fields provided',
+      );
     });
 
     it('AC2 — owner reassigns to a valid technician → 200', async () => {
@@ -1418,13 +1415,30 @@ describe('Jobs (e2e)', () => {
     const JOB_ID = '55555555-5555-4555-8555-555555555555';
     const WORKFLOW_URL = `/api/v1/jobs/${JOB_ID}/workflow`;
 
-    // The job as fetched (assigned to TECH_ID, scheduled, no step yet).
+    // The v1 seed template chain the job is stamped with (same shape the
+    // workflow_templates FK embed returns).
+    const V1_TEMPLATE = {
+      version: 1,
+      steps: [
+        { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
+        { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+        { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+        { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
+        { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
+        { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+      ],
+    };
+
+    // The job as fetched (assigned to TECH_ID, scheduled, no step yet, stamped
+    // with the v1 seed template).
     const fetchRow = {
       ...jobRow,
       id: JOB_ID,
       status: 'scheduled',
       current_step: null,
       technician_id: TECH_ID,
+      workflow_template_version: 1,
+      workflow_templates: V1_TEMPLATE,
     };
     // The RPC's returned row after the on_my_way advance.
     const advancedRow = {
@@ -1493,14 +1507,13 @@ describe('Jobs (e2e)', () => {
       expect(body.currentStep).toBe('on_my_way');
     });
 
-    it('AC5 — skip photos when require_completion_photo=true → 422', async () => {
+    it('AC5 — template order forbids skipping (photo flags gone): in_progress → signature_captured → 422', async () => {
       mockAdmin({
         job: {
           data: {
             ...fetchRow,
             status: 'in_progress',
             current_step: 'in_progress',
-            require_completion_photo: true,
           },
           error: null,
         },
@@ -1513,21 +1526,54 @@ describe('Jobs (e2e)', () => {
         payload: { step: 'signature_captured' },
       });
 
+      // Story 4.4 — the legal advance is always the template's next step
+      // (photos_uploaded); no job-level flag can ever widen the chain.
       expect(response.statusCode).toBe(422);
       expect(JSON.parse(response.body).error_code).toBe(
         'INVALID_WORKFLOW_STEP',
       );
     });
 
-    it('AC5.8 (Story 3.8) — signature skip: both flags false, in_progress → completed → 200', async () => {
+    it('AC5.8 — photos_uploaded is the legal next step from in_progress → 200', async () => {
       mockAdmin({
         job: {
           data: {
             ...fetchRow,
             status: 'in_progress',
             current_step: 'in_progress',
-            require_completion_photo: false,
-            require_completion_signature: false,
+          },
+          error: null,
+        },
+        rpc: {
+          data: [
+            {
+              ...fetchRow,
+              status: 'in_progress',
+              current_step: 'photos_uploaded',
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: WORKFLOW_URL,
+        headers: { authorization: `Bearer ${assignedTechJwt()}` },
+        payload: { step: 'photos_uploaded' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).currentStep).toBe('photos_uploaded');
+    });
+
+    it('AC5.9 — completed step sets job status completed (template sets_status)', async () => {
+      mockAdmin({
+        job: {
+          data: {
+            ...fetchRow,
+            status: 'in_progress',
+            current_step: 'signature_captured',
           },
           error: null,
         },
@@ -1617,12 +1663,14 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('JOB_NOT_MODIFIABLE');
     });
 
-    it('AC16 — invalid step enum → 422 VALIDATION_ERROR', async () => {
+    it('AC16 — step key pattern violation (spaces/caps) → 422 VALIDATION_ERROR', async () => {
       const response = await app.inject({
         method: 'POST',
         url: WORKFLOW_URL,
         headers: { authorization: `Bearer ${assignedTechJwt()}` },
-        payload: { step: 'teleport' },
+        // Story 4.4 — steps are free-form template keys now, so the DTO guards
+        // the slug shape (^[a-z0-9_]{1,64}$), not a fixed enum.
+        payload: { step: 'Teleport Fast' },
       });
 
       expect(response.statusCode).toBe(422);

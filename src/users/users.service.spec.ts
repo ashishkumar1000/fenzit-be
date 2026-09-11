@@ -116,8 +116,6 @@ describe('UsersService', () => {
       completed_at: null,
       current_step: null,
       priority: 'normal',
-      require_completion_photo: false,
-      require_completion_signature: false,
       description: null,
       notes_for_technician: null,
       created_at: createdAt,

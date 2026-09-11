@@ -411,11 +411,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_scheduled_end: null,
           p_description: 'Story 4.3 RPC probe',
           p_priority: 'normal',
-          p_require_completion_photo: false,
           p_notes_for_technician: null,
           p_actor_id: ownerId,
           p_year: istYear,
-          p_require_completion_signature: false,
         });
         expect(error).toBeNull();
 

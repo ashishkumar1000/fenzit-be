@@ -49,12 +49,22 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
     scheduled_start: '2026-06-22T09:00:00Z',
     scheduled_end: null,
     priority: 'normal',
-    require_completion_photo: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: '2026-06-21T00:00:00Z',
   };
+
+  // The v1 seed template chain — the forward-advance path parses the stamped
+  // template, so its mock row must carry the embed.
+  const V1_TEMPLATE_STEPS = [
+    { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
+    { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
+    { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
+    { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+  ];
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
@@ -118,7 +128,6 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
       technician_id: baseJobRow.technician_id,
       status: baseJobRow.status,
       current_step: baseJobRow.current_step,
-      require_completion_photo: baseJobRow.require_completion_photo,
     };
 
     let callCount = 0;
@@ -225,7 +234,6 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
             technician_id: TECH_A,
             status: 'in_progress',
             current_step: 'arrived', // already at this step
-            require_completion_photo: false,
           },
           error: null,
         },
@@ -264,7 +272,10 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
             technician_id: TECH_A,
             status: 'in_progress',
             current_step: 'arrived',
-            require_completion_photo: false,
+            // Stamped template — required by the forward-advance path (the
+            // same-step replay above returns before the template parse).
+            workflow_template_version: 1,
+            workflow_templates: { version: 1, steps: V1_TEMPLATE_STEPS },
           },
           error: null,
         },

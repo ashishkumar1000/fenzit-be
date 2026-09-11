@@ -36,19 +36,30 @@ describe('Offline Sync Integration — Story 4.3', () => {
 
   const WORKFLOW_URL = `/api/v1/jobs/${JOB}/workflow`;
 
+  // The v1 seed template chain — forward advances parse the stamped template.
+  const V1_TEMPLATE_STEPS = [
+    { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
+    { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
+    { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
+    { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+  ];
+
   const baseJob = {
     id: JOB,
     tenant_id: TENANT,
     technician_id: TECH,
     status: 'in_progress',
     current_step: 'on_my_way',
+    workflow_template_version: 1,
+    workflow_templates: { version: 1, steps: V1_TEMPLATE_STEPS },
     job_number: 'JB-2026-0001',
     customer_id: 'cust-1',
     service_location: '12 MG Road',
     scheduled_start: '2026-06-22T09:00:00Z',
     scheduled_end: null,
     priority: 'normal',
-    require_completion_photo: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -106,7 +117,6 @@ describe('Offline Sync Integration — Story 4.3', () => {
       technician_id: baseJob.technician_id,
       status: baseJob.status,
       current_step: baseJob.current_step,
-      require_completion_photo: baseJob.require_completion_photo,
     };
     const full = opts.fullRow ?? baseJob;
 
@@ -177,7 +187,15 @@ describe('Offline Sync Integration — Story 4.3', () => {
     it('activity log has exactly one step entry after one advance + one replay', async () => {
       // First call: genuine advance from null → on_my_way
       buildChain({
-        partialRow: { ...baseJob, status: 'scheduled', current_step: null },
+        partialRow: {
+          ...baseJob,
+          status: 'scheduled',
+          current_step: null,
+          // Stamped template — the forward-advance path parses it (the
+          // same-step replay below returns before the parse).
+          workflow_template_version: 1,
+          workflow_templates: { version: 1, steps: V1_TEMPLATE_STEPS },
+        },
         fullRow: {
           ...baseJob,
           status: 'in_progress',

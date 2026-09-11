@@ -48,8 +48,6 @@ export interface JobResponse {
   completedAt: string | null;
   currentStep: string | null;
   priority: JobPriority;
-  requireCompletionPhoto: boolean;
-  requireCompletionSignature: boolean;
   description: string | null;
   notesForTechnician: string | null;
   createdAt: string;
@@ -122,8 +120,6 @@ export interface JobRow {
   completed_at: string | null;
   current_step: string | null;
   priority: JobPriority;
-  require_completion_photo: boolean;
-  require_completion_signature: boolean;
   description: string | null;
   notes_for_technician: string | null;
   created_at: string;
@@ -175,7 +171,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // CUSTOMER_COLUMNS). listJobs keeps an inline literal because its `as JobRow[]`
 // cast needs the literal column type.
 const JOB_DETAIL_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -339,8 +335,6 @@ export class JobsService {
       p_scheduled_end: dto.scheduledEnd ?? null,
       p_description: dto.description ?? null,
       p_priority: dto.priority ?? JobPriority.NORMAL,
-      p_require_completion_photo: dto.requireCompletionPhoto ?? false,
-      p_require_completion_signature: dto.requireCompletionSignature ?? false,
       p_notes_for_technician: dto.notesForTechnician ?? null,
       p_actor_id: owner.userId,
       p_year: istYear,
@@ -398,10 +392,6 @@ export class JobsService {
       dto.notesForTechnician,
       dto.technicianId,
       dto.priority,
-      // Completion flags count as edits too (Story 3.8) — a flag-only patch is
-      // not an "empty PATCH" and must not 422.
-      dto.requireCompletionPhoto,
-      dto.requireCompletionSignature,
     ].some((v) => v !== undefined);
 
     // AC#14 — cancellation and field edits are mutually exclusive (one log event
@@ -485,9 +475,6 @@ export class JobsService {
       p_notes_for_technician: dto.notesForTechnician ?? null,
       p_technician_id: dto.technicianId ?? null,
       p_priority: dto.priority ?? null,
-      // Story 3.8 — nullable COALESCE params: absent = unchanged.
-      p_require_completion_photo: dto.requireCompletionPhoto ?? null,
-      p_require_completion_signature: dto.requireCompletionSignature ?? null,
     });
 
     if (error) {
@@ -579,7 +566,7 @@ export class JobsService {
       .from('jobs')
       // prettier-ignore — single string literal so postgrest-js infers JobRow columns
       .select(
-        'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at',
+        'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at',
       )
       .eq('tenant_id', user.tenantId);
 
@@ -906,8 +893,6 @@ export class JobsService {
       completedAt: row.completed_at,
       currentStep: row.current_step,
       priority: row.priority,
-      requireCompletionPhoto: row.require_completion_photo,
-      requireCompletionSignature: row.require_completion_signature,
       description: row.description,
       notesForTechnician: row.notes_for_technician,
       createdAt: row.created_at,

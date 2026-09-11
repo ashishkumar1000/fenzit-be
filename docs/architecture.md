@@ -146,9 +146,15 @@ Job (N) ── (1) WorkflowTemplate  (template stamp resolved in create_job_with
 
 ## Workflow State Machine
 
-Jobs move through an ordered set of workflow steps (stored as
-`jobs.current_step`; the per-skill step chain lives in
-`workflow_templates.steps` — Story 4.3). Out-of-order transitions return `422`.
+Jobs move through the **stamped workflow template** (Story 4.4): the job's
+`workflow_template_id`/`workflow_template_version` identify one
+`workflow_templates.steps` row, whose ordered steps ARE the chain — the only
+legal advance is the template's first not-yet-completed step (no skipping; no
+job-level photo/signature flags — those are step attributes
+`requires_photo`/`requires_signature` the frontend reads). `jobs.current_step`
+stores the pointer (NULL until the first advance); a corrupt `current_step`
+(absent from the template) rejects every advance with `422` and is never
+reset. Out-of-order transitions return `422`.
 
 ```
 scheduled ─▶ [in_progress] ─▶ [completed]
@@ -156,8 +162,22 @@ scheduled ─▶ [in_progress] ─▶ [completed]
      └─▶ cancelled └─▶ cancelled (in_progress can also cancel)
 ```
 
-The exact step enum lives in `src/jobs/enums/`. Each `workflow_advanced`
-mutation is atomic via `advance_workflow_step` RPC.
+A step's `sets_status` attribute drives the job status (`in_progress` starts
+the job, `completed` finishes it and stamps `completed_at`). Each advance is
+atomic via the `advance_workflow_step` RPC (compare-and-set on
+`current_step`). When a technician confirms the job's first photo, the
+`confirm_attachment` RPC itself advances to the template's
+`advances_on: 'photo_confirm'` step in the same transaction — but only when
+the job's `current_step` is that step's immediate template predecessor
+(compare-and-set; a photo-optional job — current step not at the
+predecessor — is silently skipped, and a missing template row is logged and
+skipped). PT409 on a raced/terminal job is swallowed and logged — the
+attachment always commits. **Known gap (accepted):** on the Cloudflare
+Worker path the confirm runs with a NULL actor, and `advance_workflow_step`'s
+owner-notification guard (`owner_id <> actor`) filters every row when the
+actor is NULL — the advance and activity log commit correctly, but the owner
+notification is skipped for Worker-path first-photo confirms. The primary app
+path notifies as specified.
 
 ## Sync Architecture (Epic 4)
 
@@ -167,8 +187,8 @@ mutation is atomic via `advance_workflow_step` RPC.
 - **Inbound action replay:** Owner → technician actions are posted to endpoints
   guarded by `IdempotencyInterceptor` + `idempotency_log` table for 24h replay
   protection.
-- **Conflict resolution:** Attachment confirm uses `rpc_confirm_attachment`
-  (migration 13/14) — server-side, not client-driven.
+- **Conflict resolution:** Attachment confirm uses the `confirm_attachment`
+  RPC (migration 13/14) — server-side, not client-driven.
 
 ## File Upload Architecture
 
@@ -180,8 +200,9 @@ Two-phase presigned PUT to Cloudflare R2:
 
 2. Mobile app PUTs the file directly to R2 using the presigned URL.
 
-3. POST /api/v1/jobs/:id/attachments/:uploadId/confirm → backend calls
-   rpc_confirm_attachment (atomic). Returns 200 or 410 (expired).
+3. POST /api/v1/jobs/:id/attachments/:uploadId/confirm → backend calls the
+   confirm_attachment RPC (atomic; also auto-advances the workflow on the
+   template's photo_confirm step — Story 4.4). Returns 200 or 410 (expired).
 
 4. (Optional) Cloudflare Worker sends a storage event to
    POST /internal/webhooks/storage → backend reconciles.
@@ -274,7 +295,7 @@ exist for Epic 1 (`epic-1-retro-2026-06-20.md`) and Epic 2
 | FR-15 Customer detail | 2 | `customers.controller.ts` (GET /:id) |
 | FR-16 Delta sync | 4 | `sync/sync.controller.ts`, `sync.service.ts`, `idx_jobs_tenant_updated_at` |
 | FR-17 Idempotent replay | 4 | `IdempotencyInterceptor`, `idempotency_log`, `pg_cron` (migration 12) |
-| FR-18 Conflict resolution | 4 | `rpc_confirm_attachment` (migration 13), `rpc_confirm_attachment_conflict_fix` (migration 14) |
+| FR-18 Conflict resolution | 4 | `confirm_attachment` (migration 13), conflict-fix re-issue (migration 14) |
 
 ## Known Gaps / Drift (pre-launch blockers)
 

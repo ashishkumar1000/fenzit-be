@@ -13,29 +13,25 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { JobsService, JobResponse, JobRow } from './jobs.service';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
-import { WorkflowStep } from './enums/workflow-step.enum';
 import { JobStatus } from './enums/job-status.enum';
+import {
+  parseTemplateSteps,
+  nextStepKey,
+  setsStatusOf,
+  TemplateStep,
+} from './workflow-template.model';
 
-/** The 6 workflow steps in canonical order. A fresh job has current_step = null,
- *  so the first valid advance is on_my_way (index 0). */
-const STEP_ORDER: WorkflowStep[] = [
-  WorkflowStep.ON_MY_WAY,
-  WorkflowStep.ARRIVED,
-  WorkflowStep.IN_PROGRESS,
-  WorkflowStep.PHOTOS_UPLOADED,
-  WorkflowStep.SIGNATURE_CAPTURED,
-  WorkflowStep.COMPLETED,
-];
-
-/** Columns needed to gate + advance the workflow. */
+/** Columns needed to gate + advance the workflow, plus the stamped template's
+ *  steps (embedded via the workflow_template_id FK — the stamp's id uniquely
+ *  identifies the template row). */
 interface WorkflowJobRow {
   id: string;
   tenant_id: string;
   status: JobStatus;
   current_step: string | null;
-  require_completion_photo: boolean;
-  require_completion_signature: boolean;
+  workflow_template_version: number;
   technician_id: string;
+  workflow_templates: { version: number; steps: unknown } | null;
 }
 
 @Injectable()
@@ -48,46 +44,18 @@ export class WorkflowService {
   ) {}
 
   /**
-   * Pure step-ordering rule (Story 3.8, effective-chain successor).
+   * Pure step-ordering rule (Story 4.4, template-driven).
    *
-   * The requested step must be the NEXT REQUIRED step after the current one:
-   * photos_uploaded is in the effective chain only when a completion photo is
-   * required, signature_captured only when a signature is required. Walking
-   * forward from current_step's position, the first step present in the
-   * effective chain is the only legal target. This single rule reproduces the
-   * full flag matrix AND the dynamic-flag edge (a step sitting on a now-non-
-   * required step simply walks past it), with no per-row special cases. The
-   * photo-skip behaviour (in_progress → signature_captured when no photo is
-   * required) falls out naturally.
+   * The requested step must be the FIRST not-yet-completed step in the job's
+   * stamped template order — no skipping, no flag-driven chain filtering; the
+   * template's ordered steps ARE the chain (requires_photo / requires_signature
+   * are frontend action gates, not chain filters). A fresh job (current_step
+   * null) advances to the template's first step; a corrupt current_step (non-
+   * null but absent from the template) yields no legal target, so every
+   * advance is rejected and the workflow is never silently reset.
    */
-  validateStep(
-    currentStep: string | null,
-    requested: WorkflowStep,
-    requireCompletionPhoto: boolean,
-    requireCompletionSignature: boolean,
-  ): boolean {
-    const curIdx =
-      currentStep === null
-        ? -1
-        : STEP_ORDER.indexOf(currentStep as WorkflowStep);
-
-    // A non-null current_step that is not a recognized step is corrupt — never
-    // treat it as the fresh-job (-1) case, which would let on_my_way through and
-    // silently reset the workflow.
-    if (currentStep !== null && curIdx === -1) {
-      return false;
-    }
-
-    const inChain = (s: WorkflowStep) =>
-      (s !== WorkflowStep.PHOTOS_UPLOADED || requireCompletionPhoto) &&
-      (s !== WorkflowStep.SIGNATURE_CAPTURED || requireCompletionSignature);
-
-    // First required step at or after current_step's successor. For a fresh job
-    // (null current_step, curIdx -1) this is on_my_way, which is always in the
-    // chain — unchanged behaviour.
-    const next = STEP_ORDER.find((s, idx) => idx > curIdx && inChain(s));
-
-    return requested === next;
+  validateStep(steps: TemplateStep[], currentStep: string | null, requested: string): boolean {
+    return requested === nextStepKey(steps, currentStep);
   }
 
   async advanceWorkflowStep(
@@ -110,7 +78,7 @@ export class WorkflowService {
     const { data: row, error } = await admin
       .from('jobs')
       .select(
-        'id, tenant_id, status, current_step, require_completion_photo, require_completion_signature, technician_id',
+        'id, tenant_id, status, current_step, workflow_template_version, technician_id, workflow_templates(version, steps)',
       )
       .eq('id', jobId)
       .eq('tenant_id', user.tenantId)
@@ -174,17 +142,30 @@ export class WorkflowService {
       return this.jobsService.toResponse(fullRow);
     }
 
-    // 4) Step-ordering validation. An out-of-order/backward/illegal-skip step →
-    //    422 INVALID_WORKFLOW_STEP, carrying the current step in the body
-    //    (forwarded by GlobalExceptionFilter).
-    if (
-      !this.validateStep(
-        row.current_step,
-        dto.step,
-        row.require_completion_photo,
-        row.require_completion_signature,
-      )
-    ) {
+    // 4) Parse the stamped template's steps. The stamp (id, version) uniquely
+    //    identifies the template row; a version mismatch means the stamp was
+    //    written by a buggy path — treat as corrupt data, reject the advance.
+    const stamp = row.workflow_templates;
+    const steps =
+      stamp && stamp.version === row.workflow_template_version
+        ? parseTemplateSteps(stamp.steps)
+        : null;
+
+    if (!steps) {
+      this.logger.error('Job carries an unreadable workflow template stamp:', {
+        jobId,
+        workflow_template_version: row.workflow_template_version,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to advance workflow step',
+      });
+    }
+
+    // 5) Step-ordering validation. An out-of-order/backward/illegal-skip step —
+    //    or a corrupt current_step — → 422 INVALID_WORKFLOW_STEP, carrying the
+    //    current step in the body (forwarded by GlobalExceptionFilter).
+    if (!this.validateStep(steps, row.current_step, dto.step)) {
       throw new HttpException(
         {
           error_code: ErrorCode.INVALID_WORKFLOW_STEP,
@@ -195,16 +176,18 @@ export class WorkflowService {
       );
     }
 
-    // 5) Target status: on_my_way starts the job, completed finishes it; every
-    //    other step leaves status unchanged (null → COALESCE keeps it).
+    // 6) Target status is step data: the target step's sets_status ('in_progress'
+    //    starts the job, 'completed' finishes it — the RPC stamps completed_at;
+    //    null → COALESCE keeps the current status).
+    const rawSetsStatus = setsStatusOf(steps, dto.step);
     const newStatus =
-      dto.step === WorkflowStep.ON_MY_WAY
+      rawSetsStatus === 'in_progress'
         ? JobStatus.IN_PROGRESS
-        : dto.step === WorkflowStep.COMPLETED
+        : rawSetsStatus === 'completed'
           ? JobStatus.COMPLETED
           : null;
 
-    // 6) Atomic step advance + activity log (AR-10). The compare-and-set on
+    // 7) Atomic step advance + activity log (AR-10). The compare-and-set on
     //    p_expected_current_step closes the TOCTOU window inside the RPC.
     const { data, error: rpcError } = await admin.rpc('advance_workflow_step', {
       p_job_id: jobId,

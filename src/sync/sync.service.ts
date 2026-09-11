@@ -28,8 +28,7 @@ export class SyncService {
       .select(
         `id, job_number, tenant_id, customer_id, technician_id,
          service_location, scheduled_start, scheduled_end,
-         status, current_step, priority, require_completion_photo,
-         require_completion_signature,
+         status, current_step, priority,
          description, notes_for_technician, created_at, updated_at,
          customers!inner(name, address),
          attachments(id, attachment_type, size_bytes, created_at)`,
@@ -62,8 +61,6 @@ export class SyncService {
       status: row.status,
       currentStep: row.current_step ?? null,
       priority: row.priority,
-      requireCompletionPhoto: row.require_completion_photo,
-      requireCompletionSignature: row.require_completion_signature,
       description: row.description ?? null,
       notesForTechnician: row.notes_for_technician ?? null,
       createdAt: row.created_at,

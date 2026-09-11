@@ -38,6 +38,17 @@ describe('Idempotency (e2e) — Story 4.2', () => {
 
   const WORKFLOW_URL = `/api/v1/jobs/${JOB_ID}/workflow`;
 
+  // The v1 seed template chain — the forward-advance path parses the stamped
+  // template, so every job fixture must carry the embed.
+  const V1_TEMPLATE_STEPS = [
+    { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
+    { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
+    { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
+    { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
+    { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+  ];
+
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
@@ -99,13 +110,15 @@ describe('Idempotency (e2e) — Story 4.2', () => {
       technician_id: TECH_A,
       status: 'scheduled',
       current_step: null,
+      // Stamped template — the forward-advance path parses the template chain.
+      workflow_template_version: 1,
+      workflow_templates: { version: 1, steps: V1_TEMPLATE_STEPS },
       job_number: 'JB-2026-0001',
       customer_id: 'cust-1',
       service_location: '12 MG Road',
       scheduled_start: '2026-06-22T09:00:00Z',
       scheduled_end: null,
       priority: 'normal',
-      require_completion_photo: false,
       description: null,
       notes_for_technician: null,
       created_at: '2026-06-21T00:00:00Z',
@@ -232,13 +245,14 @@ describe('Idempotency (e2e) — Story 4.2', () => {
             technician_id: TECH_B,
             status: 'scheduled',
             current_step: null,
+            workflow_template_version: 1,
+            workflow_templates: { version: 1, steps: V1_TEMPLATE_STEPS },
             job_number: 'JB-2026-0002',
             customer_id: 'cust-2',
             service_location: '5 Park St',
             scheduled_start: '2026-06-22T10:00:00Z',
             scheduled_end: null,
             priority: 'normal',
-            require_completion_photo: false,
             description: null,
             notes_for_technician: null,
             created_at: '2026-06-21T00:00:00Z',

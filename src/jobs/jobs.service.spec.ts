@@ -66,8 +66,6 @@ describe('JobsService', () => {
     completed_at: null,
     current_step: null,
     priority: 'normal',
-    require_completion_photo: false,
-    require_completion_signature: false,
     description: null,
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
@@ -206,10 +204,14 @@ describe('JobsService', () => {
         p_technician_id: 'tech-1',
         p_actor_id: 'owner-uuid',
         p_skill_id: 'skill-uuid-1',
-        // Story 3.8 — flag omitted in the body → server-side default false.
-        p_require_completion_signature: false,
       }),
     );
+    // Story 4.4 — the job-level completion flags are gone: the create RPC
+    // carries no flag params (the stamped template drives photo/signature
+    // behaviour as step attributes).
+    const rpcArgs = rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(rpcArgs).not.toHaveProperty('p_require_completion_photo');
+    expect(rpcArgs).not.toHaveProperty('p_require_completion_signature');
   });
 
   it('creates a job (newCustomer path) via findOrCreateByPhone and skips customer validation', async () => {
@@ -373,8 +375,6 @@ describe('JobsService', () => {
       scheduledEnd: '2026-06-22T11:00:00Z',
       description: 'Leaky AC',
       priority: JobPriority.URGENT,
-      requireCompletionPhoto: true,
-      requireCompletionSignature: true,
       notesForTechnician: 'Bring ladder',
     };
 
@@ -386,8 +386,6 @@ describe('JobsService', () => {
         p_scheduled_end: '2026-06-22T11:00:00Z',
         p_description: 'Leaky AC',
         p_priority: 'urgent',
-        p_require_completion_photo: true,
-        p_require_completion_signature: true,
         p_notes_for_technician: 'Bring ladder',
       }),
     );
@@ -476,8 +474,6 @@ describe('JobsService', () => {
         completedAt: null,
         currentStep: null,
         priority: 'normal',
-        requireCompletionPhoto: false,
-        requireCompletionSignature: false,
         description: null,
         notesForTechnician: null,
         createdAt: '2026-06-21T00:00:00Z',
@@ -1305,31 +1301,12 @@ describe('JobsService', () => {
           p_description: 'edited',
           p_priority: 'urgent',
           p_technician_id: null,
-          // Story 3.8 — flags absent from the PATCH → null (COALESCE leaves them).
-          p_require_completion_photo: null,
-          p_require_completion_signature: null,
         }),
       );
-    });
-
-    it('passes a flag-only patch through (flags count as an edit, not an empty PATCH)', async () => {
-      const { rpc } = mockAdmin({});
-
-      const dto: UpdateJobDto = { requireCompletionSignature: true };
-      await service.updateJob(owner, 'job-uuid', dto);
-
-      // A flag-only body must NOT 422 as an "empty PATCH" — it reaches the RPC
-      // with just the flag set (other params null = unchanged).
-      expect(rpc).toHaveBeenCalledWith(
-        'update_job_with_log',
-        expect.objectContaining({
-          p_cancel: false,
-          p_description: null,
-          p_priority: null,
-          p_require_completion_photo: null,
-          p_require_completion_signature: true,
-        }),
-      );
+      // Story 4.4 — the flags are gone: the update RPC carries no flag params.
+      const rpcArgs = rpc.mock.calls[0][1] as Record<string, unknown>;
+      expect(rpcArgs).not.toHaveProperty('p_require_completion_photo');
+      expect(rpcArgs).not.toHaveProperty('p_require_completion_signature');
     });
 
     it('reassigns to a valid technician: validates the technician then calls the RPC', async () => {
