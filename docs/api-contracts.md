@@ -254,16 +254,23 @@ Customer profile + paginated job history.
 #### `POST /api/v1/jobs` `[Bearer JWT, Role: owner]`
 
 Create a job for a customer and assign to a technician (who must belong to the
-owner's tenant and have a skill matching the customer's category).
+owner's tenant). `skillId` tags the job with a global skills-catalog skill
+(exactly what `GET /skills` serves); the create RPC stamps that skill's latest
+`workflow_templates` version onto the job (Story 4.3).
 
-**Body:** `{ customer_id: UUID, technician_id: UUID, scheduled_at: ISO8601, notes? }`
+**Body:** `{ customerId? (UUID) | newCustomer (inline), skillId: UUID (global
+catalog), serviceLocation: string, scheduledStart: ISO8601, technicianId: UUID,
+scheduledEnd?, description?, priority?, requireCompletionPhoto?,
+requireCompletionSignature?, notesForTechnician? }`
 
 **Responses:**
-- `201` — Job created (`status: scheduled`)
-- `400` — Company not set up
+- `201` — Job created (`status: scheduled`, `currentStep: null`)
+- `400` — Company not set up / `skillId` unknown or inactive in the catalog
 - `404` — Customer or technician not found
-- `409` — Skill mismatch
-- `422` — Validation error
+- `422` — Validation error (non-UUID `skillId`, inverted schedule window, etc.)
+- `500` — The RPC's plain "No workflow template found for skill" raise maps to
+  `INTERNAL_SERVER_ERROR`; the v1 template seeds make it unreachable (every
+  seeded skill has a v1 template) — reaching it means a server fault.
 
 #### `GET /api/v1/jobs` `[Bearer JWT, Role: owner | technician]`
 

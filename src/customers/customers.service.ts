@@ -117,7 +117,6 @@ export interface JobHistoryItem {
   jobNumber: string;
   scheduledStart: string;
   status: string;
-  serviceType: string;
 }
 
 interface JobHistoryRow {
@@ -125,7 +124,6 @@ interface JobHistoryRow {
   job_number: string;
   scheduled_start: string;
   status: string;
-  service_type: string;
 }
 
 export interface CustomerDetailResponse extends CustomerResponse {
@@ -549,7 +547,7 @@ export class CustomersService {
   ): Promise<PaginatedResponse<JobHistoryItem>> {
     let qb = admin
       .from('jobs')
-      .select('id, job_number, scheduled_start, status, service_type')
+      .select('id, job_number, scheduled_start, status')
       .eq('tenant_id', tenantId)
       .eq('customer_id', customerId);
 
@@ -587,7 +585,6 @@ export class CustomersService {
       jobNumber: row.job_number,
       scheduledStart: row.scheduled_start,
       status: row.status,
-      serviceType: row.service_type,
     }));
 
     return new PaginatedResponse(items, nextCursor);

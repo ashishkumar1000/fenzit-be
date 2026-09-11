@@ -81,7 +81,6 @@ describe('Jobs (e2e)', () => {
     customer_id: CUSTOMER_ID,
     technician_id: TECH_ID,
     service_location: '12 MG Road',
-    service_type: 'ac_service',
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',
@@ -99,7 +98,8 @@ describe('Jobs (e2e)', () => {
   const validPayload = {
     customerId: CUSTOMER_ID,
     serviceLocation: '12 MG Road',
-    serviceType: 'ac_service',
+    // A real global-skills seed UUID (AC Service) — the mock only checks shape.
+    skillId: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
     scheduledStart: '2026-06-22T09:30:00Z',
     technicianId: TECH_ID,
   };
@@ -134,7 +134,20 @@ describe('Jobs (e2e)', () => {
     return { select: jest.fn().mockReturnValue(node) };
   }
 
-  // select().eq(key).eq(tenant_id).eq(scope).gt().maybeSingle() chain for the
+  // select().eq().eq().maybeSingle() chain for the skills-catalog validation
+  // (Story 4.3 — invite-precedent shape; a miss is the 400 case).
+  const skillOk = {
+    data: { id: '65f33480-b37e-47e2-a4a0-0155b156cc7a' },
+    error: null,
+  };
+  function skillsChain(result: { data: unknown; error: unknown }) {
+    const maybeSingle = jest.fn().mockResolvedValue(result);
+    const eq2 = jest.fn().mockReturnValue({ maybeSingle });
+    const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
+    return { select: jest.fn().mockReturnValue({ eq: eq1 }) };
+  }
+
+  // select().eq().eq().gt().maybeSingle() chain for the
   // idempotency_log lookup, plus an insert() that resolves (IdempotencyInterceptor).
   function idempotencyChain(result: { data: unknown; error: unknown }) {
     const maybeSingle = jest.fn().mockResolvedValue(result);
@@ -150,6 +163,7 @@ describe('Jobs (e2e)', () => {
   function mockAdmin(opts: {
     customer?: { data: unknown; error: unknown };
     technician?: { data: unknown; error: unknown };
+    skill?: { data: unknown; error: unknown };
     job?: { data: unknown; error: unknown };
     idempotency?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
@@ -159,6 +173,7 @@ describe('Jobs (e2e)', () => {
         return singleChain(opts.customer ?? customerOk, 2);
       if (table === 'users')
         return singleChain(opts.technician ?? technicianOk, 3);
+      if (table === 'skills') return skillsChain(opts.skill ?? skillOk);
       if (table === 'jobs')
         return singleChain(opts.job ?? { data: jobRow, error: null }, 2);
       if (table === 'idempotency_log')
@@ -239,6 +254,7 @@ describe('Jobs (e2e)', () => {
       const from = jest.fn((table: string) => {
         if (table === 'customers') return { select: selectLookup, insert };
         if (table === 'users') return singleChain(technicianOk, 3);
+        if (table === 'skills') return skillsChain(skillOk);
         if (table === 'idempotency_log')
           return idempotencyChain({ data: null, error: null });
         throw new Error(`unexpected table ${table}`);
@@ -252,7 +268,7 @@ describe('Jobs (e2e)', () => {
         headers: { authorization: `Bearer ${ownerJwt()}` },
         payload: {
           serviceLocation: '12 MG Road',
-          serviceType: 'ac_service',
+          skillId: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
           scheduledStart: '2026-06-22T09:30:00Z',
           technicianId: TECH_ID,
           newCustomer: {
@@ -311,15 +327,32 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('RESOURCE_NOT_FOUND');
     });
 
-    it('AC6 — returns 422 VALIDATION_ERROR for an invalid serviceType', async () => {
+    it('AC6 — returns 422 VALIDATION_ERROR for a non-UUID skillId (DTO shape)', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/jobs',
         headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: { ...validPayload, serviceType: 'teleportation' },
+        payload: { ...validPayload, skillId: 'teleportation' },
       });
 
       expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('AC6 — returns 400 VALIDATION_ERROR for a well-formed but unknown/inactive skillId', async () => {
+      mockAdmin({ skill: { data: null, error: null } });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/jobs',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          ...validPayload,
+          skillId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
     });
 

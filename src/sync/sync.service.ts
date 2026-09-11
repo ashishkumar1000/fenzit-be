@@ -27,7 +27,7 @@ export class SyncService {
       .from('jobs')
       .select(
         `id, job_number, tenant_id, customer_id, technician_id,
-         service_location, service_type, scheduled_start, scheduled_end,
+         service_location, scheduled_start, scheduled_end,
          status, current_step, priority, require_completion_photo,
          require_completion_signature,
          description, notes_for_technician, created_at, updated_at,
@@ -57,7 +57,6 @@ export class SyncService {
       customerId: row.customer_id,
       technicianId: row.technician_id,
       serviceLocation: row.service_location,
-      serviceType: row.service_type,
       scheduledStart: row.scheduled_start,
       scheduledEnd: row.scheduled_end ?? null,
       status: row.status,

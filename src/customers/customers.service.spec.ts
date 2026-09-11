@@ -540,7 +540,6 @@ describe('CustomersService', () => {
       job_number: `JOB-${n}`,
       scheduled_start: `2026-0${n}-01T00:00:00Z`,
       status: 'completed',
-      service_type: 'ac_service',
     });
 
     // Customer fetch terminal is .single() after two .eq() calls (id, tenant_id).
@@ -626,14 +625,12 @@ describe('CustomersService', () => {
           jobNumber: row2.job_number,
           scheduledStart: row2.scheduled_start,
           status: row2.status,
-          serviceType: row2.service_type,
         },
         {
           id: row1.id,
           jobNumber: row1.job_number,
           scheduledStart: row1.scheduled_start,
           status: row1.status,
-          serviceType: row1.service_type,
         },
       ]);
     });
@@ -663,7 +660,6 @@ describe('CustomersService', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
-        service_type: 'ac_service',
       }));
       const { jobsBuilder } = mockDetail(
         { data: dbRow, error: null },
@@ -696,7 +692,6 @@ describe('CustomersService', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(20 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
-        service_type: 'ac_service',
       }));
       const { jobsBuilder } = mockDetail(
         { data: dbRow, error: null },
@@ -718,7 +713,6 @@ describe('CustomersService', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
-        service_type: 'ac_service',
       }));
       mockDetail({ data: dbRow, error: null }, { data: rows, error: null });
 
@@ -743,7 +737,6 @@ describe('CustomersService', () => {
           jobNumber: rows[20].job_number,
           scheduledStart: rows[20].scheduled_start,
           status: rows[20].status,
-          serviceType: rows[20].service_type,
         },
       ]);
       expect(page2.jobHistory.hasMore).toBe(false);

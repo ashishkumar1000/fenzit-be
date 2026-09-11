@@ -15,7 +15,6 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
-import { ServiceType } from './enums/service-type.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobPriority } from './enums/job-priority.enum';
@@ -37,7 +36,7 @@ describe('JobsService', () => {
   const dtoExisting: CreateJobDto = {
     customerId: 'cust-1',
     serviceLocation: 'Loc',
-    serviceType: ServiceType.AC_SERVICE,
+    skillId: 'skill-uuid-1',
     scheduledStart: '2026-06-22T09:30:00Z',
     technicianId: 'tech-1',
   };
@@ -49,7 +48,7 @@ describe('JobsService', () => {
       phoneNumber: '9876543210',
     },
     serviceLocation: 'Loc',
-    serviceType: ServiceType.PLUMBING,
+    skillId: 'skill-uuid-2',
     scheduledStart: '2026-06-22T09:30:00Z',
     technicianId: 'tech-1',
   };
@@ -61,7 +60,6 @@ describe('JobsService', () => {
     customer_id: 'cust-1',
     technician_id: 'tech-1',
     service_location: 'Loc',
-    service_type: 'ac_service',
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',
@@ -131,24 +129,54 @@ describe('JobsService', () => {
     return { select, eqs };
   }
 
-  // admin.from('customers') → 2 eq (id, tenant); from('users') → 3 eq (id, tenant, role).
+  // Story 4.3 — skills-catalog validation chain: select().eq(id).eq(is_active)
+  // .maybeSingle(). A miss (data: null) is the 400 "unknown or inactive" case.
+  // `eqs` exposes both eq mocks so tests can assert the is_active filter is
+  // actually applied (mirror of singleChain above / auth.service.spec).
+  const skillOk = { data: { id: 'skill-uuid-1' }, error: null };
+  function skillsChain(result: { data: unknown; error: unknown }) {
+    const maybeSingle = jest.fn().mockResolvedValue(result);
+    const eqs: jest.Mock[] = [];
+    let node: Record<string, unknown> = { maybeSingle };
+    for (let i = 0; i < 2; i++) {
+      const inner = node;
+      const eq = jest.fn().mockReturnValue(inner);
+      eqs.unshift(eq);
+      node = { eq };
+    }
+    const select = jest.fn().mockReturnValue(node);
+    return { select, eqs };
+  }
+
+  // admin.from('customers') → 2 eq (id, tenant); from('users') → 3 eq (id, tenant, role);
+  // from('skills') → 2 eq (id, is_active).
   function mockAdmin(opts: {
     customer?: { data: unknown; error: unknown };
     technician?: { data: unknown; error: unknown };
+    skill?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
   }) {
+    const chains: Record<string, { select: jest.Mock; eqs: jest.Mock[] }> = {};
     const from = jest.fn((table: string) => {
-      if (table === 'customers')
-        return singleChain(opts.customer ?? customerOk, 2);
-      if (table === 'users')
-        return singleChain(opts.technician ?? technicianOk, 3);
+      if (table === 'customers') {
+        chains.customers = singleChain(opts.customer ?? customerOk, 2);
+        return chains.customers;
+      }
+      if (table === 'users') {
+        chains.users = singleChain(opts.technician ?? technicianOk, 3);
+        return chains.users;
+      }
+      if (table === 'skills') {
+        chains.skills = skillsChain(opts.skill ?? skillOk);
+        return chains.skills;
+      }
       throw new Error(`unexpected table ${table}`);
     });
     const rpc = jest
       .fn()
       .mockResolvedValue(opts.rpc ?? { data: [jobRow], error: null });
     supabaseClientFactory.createAdmin.mockReturnValue({ from, rpc } as never);
-    return { from, rpc };
+    return { from, rpc, chains };
   }
 
   async function expectStatus(promise: Promise<unknown>, status: number) {
@@ -177,7 +205,7 @@ describe('JobsService', () => {
         p_customer_id: 'cust-1',
         p_technician_id: 'tech-1',
         p_actor_id: 'owner-uuid',
-        p_service_type: 'ac_service',
+        p_skill_id: 'skill-uuid-1',
         // Story 3.8 — flag omitted in the body → server-side default false.
         p_require_completion_signature: false,
       }),
@@ -249,6 +277,31 @@ describe('JobsService', () => {
 
     await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
       NotFoundException,
+    );
+  });
+
+  it('throws 400 when skillId is unknown or inactive (rejected before the RPC, Story 4.3)', async () => {
+    const { rpc, from, chains } = mockAdmin({
+      skill: { data: null, error: null },
+    });
+
+    await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(from).toHaveBeenCalledWith('skills');
+    // The chain must filter on the exact id AND is_active — a chain that
+    // resolves without .eq('is_active', true) would treat inactive skills as
+    // valid (mirror of auth.service.spec's skillCheckEq assertion).
+    expect(chains.skills?.eqs[0]).toHaveBeenCalledWith('id', 'skill-uuid-1');
+    expect(chains.skills?.eqs[1]).toHaveBeenCalledWith('is_active', true);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('throws 500 when the skills-catalog lookup errors', async () => {
+    mockAdmin({ skill: { data: null, error: { code: 'XX000' } } });
+
+    await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
+      InternalServerErrorException,
     );
   });
 
@@ -417,7 +470,6 @@ describe('JobsService', () => {
         customerId: 'cust-1',
         technicianId: 'tech-1',
         serviceLocation: 'Loc',
-        serviceType: 'ac_service',
         scheduledStart: '2026-06-22T09:30:00Z',
         scheduledEnd: null,
         status: 'scheduled',

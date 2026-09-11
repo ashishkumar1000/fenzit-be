@@ -198,7 +198,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         .upsert(
           {
             id: foreignUserId,
-            country_code: '+99',
+            country_code: '+91',
             phone_number: '9999000001',
             role: 'technician',
             status: 'invited',
@@ -277,14 +277,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           seededTenantId,
           'authenticated',
         );
-        const ownTenantClient = createClient(
-          SUPABASE_URL,
-          SUPABASE_ANON_KEY,
-          {
-            global: { headers: { Authorization: `Bearer ${ownTenantJwt}` } },
-            auth: { persistSession: false, autoRefreshToken: false },
-          },
-        );
+        const ownTenantClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          global: { headers: { Authorization: `Bearer ${ownTenantJwt}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
         const { error: insertError } = await ownTenantClient
           .from('user_skills')
           .insert({
@@ -298,10 +294,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .from('user_skills')
           .delete()
           .eq('user_id', foreignUserId);
-        await serviceClient
-          .from('tenants')
-          .delete()
-          .eq('id', seededTenantId);
+        await serviceClient.from('tenants').delete().eq('id', seededTenantId);
         await serviceClient.from('users').delete().eq('id', foreignUserId);
       }
     },
@@ -328,6 +321,127 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         .from('user_skills')
         .select('skills!inner(name)');
       expect(error).toBeNull();
+    },
+  );
+
+  maybeIt(
+    'create_job_with_log RPC stamps the skill template (Story 4.3)',
+    async () => {
+      // No mock-based suite executes the new RPC body — a param-name drift or a
+      // broken template lookup would pass everywhere else. This probe runs the
+      // real RPC via service role and asserts the stamp equals the fixed seed
+      // values (docs/data-models.md): AC Service skill → its v1 template,
+      // version 1.
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      const tenantId = '00000000-0000-0000-0000-000000000096';
+      const ownerId = '00000000-0000-0000-0000-000000000094';
+      const techId = '00000000-0000-0000-0000-000000000095';
+      const customerId = '00000000-0000-0000-0000-000000000093';
+      const acServiceSkillId = SEED_SKILLS[2].id; // 65f33480-… (AC Service)
+      const acServiceTemplateId = '8a3c4d5e-6f7a-4b8c-9d9e-3f4a5b6c7d8e';
+      // Job-number year is the IST creation year (same offset the service uses).
+      const istYear = new Date(
+        Date.now() + 5.5 * 60 * 60 * 1000,
+      ).getUTCFullYear();
+
+      // Seed owner user → tenant (owner_id FK) → tenant-linked technician +
+      // customer. Upserts keep re-runs idempotent, mirroring the user_skills
+      // probe above.
+      const { error: ownerError } = await serviceClient.from('users').upsert(
+        {
+          id: ownerId,
+          country_code: '+91',
+          phone_number: '9999000002',
+          role: 'owner',
+          status: 'active',
+        },
+        { onConflict: 'id' },
+      );
+      expect(ownerError).toBeNull();
+      const { error: tenantError } = await serviceClient.from('tenants').upsert(
+        {
+          id: tenantId,
+          owner_id: ownerId,
+          company_name: 'RPC Probe Co',
+          state_code: 'KA',
+        },
+        { onConflict: 'id' },
+      );
+      expect(tenantError).toBeNull();
+      const { error: techError } = await serviceClient.from('users').upsert(
+        {
+          id: techId,
+          tenant_id: tenantId,
+          country_code: '+91',
+          phone_number: '9999000003',
+          role: 'technician',
+          status: 'active',
+        },
+        { onConflict: 'id' },
+      );
+      expect(techError).toBeNull();
+      const { error: customerError } = await serviceClient
+        .from('customers')
+        .upsert(
+          {
+            id: customerId,
+            tenant_id: tenantId,
+            name: 'RPC Probe Customer',
+            country_code: '+91',
+            phone_number: '9999000004',
+          },
+          { onConflict: 'id' },
+        );
+      expect(customerError).toBeNull();
+
+      let createdJobId: string | null = null;
+      try {
+        const { data, error } = await serviceClient.rpc('create_job_with_log', {
+          p_tenant_id: tenantId,
+          p_customer_id: customerId,
+          p_technician_id: techId,
+          p_service_location: 'RPC probe location',
+          p_skill_id: acServiceSkillId,
+          p_scheduled_start: new Date().toISOString(),
+          p_scheduled_end: null,
+          p_description: 'Story 4.3 RPC probe',
+          p_priority: 'normal',
+          p_require_completion_photo: false,
+          p_notes_for_technician: null,
+          p_actor_id: ownerId,
+          p_year: istYear,
+          p_require_completion_signature: false,
+        });
+        expect(error).toBeNull();
+
+        // RETURNS SETOF jobs ⇒ an array of one stamped row.
+        const rows = data as {
+          id: string;
+          skill_id: string;
+          workflow_template_id: string;
+          workflow_template_version: number;
+        }[];
+        // Capture the id BEFORE asserting, so a failed assertion still cleans up.
+        if (rows && rows.length > 0) createdJobId = rows[0].id;
+        expect(rows).toHaveLength(1);
+        expect(rows[0].skill_id).toBe(acServiceSkillId);
+        expect(rows[0].workflow_template_id).toBe(acServiceTemplateId);
+        expect(rows[0].workflow_template_version).toBe(1);
+      } finally {
+        // Cleanup: no rows left behind (job first — activity_logs cascade;
+        // tenant last — job_sequences/customers cascade).
+        if (createdJobId) {
+          await serviceClient.from('jobs').delete().eq('id', createdJobId);
+        }
+        await serviceClient.from('customers').delete().eq('id', customerId);
+        await serviceClient.from('users').delete().in('id', [ownerId, techId]);
+        await serviceClient.from('tenants').delete().eq('id', tenantId);
+      }
     },
   );
 

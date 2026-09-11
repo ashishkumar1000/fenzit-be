@@ -48,7 +48,6 @@ describe('WorkflowService', () => {
     customer_id: 'cust-1',
     technician_id: 'tech-1',
     service_location: 'Loc',
-    service_type: 'ac_service',
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'in_progress',

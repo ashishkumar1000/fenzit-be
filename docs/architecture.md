@@ -138,13 +138,17 @@ Tenant (1) ── (N) Job ── (1) Customer
                   Job  ── (N) AttachmentUpload (pre-confirm)
 
 Skill (global catalog, developer-seeded)
+WorkflowTemplate (global, developer-seeded; per skill + version)
 Technician (N) ── (N) Skill  (via user_skills)
+Job (N) ── (1) Skill  (jobs.skill_id, Story 4.3)
+Job (N) ── (1) WorkflowTemplate  (template stamp resolved in create_job_with_log)
 ```
 
 ## Workflow State Machine
 
 Jobs move through an ordered set of workflow steps (stored as
-`jobs.sequence_index`). Out-of-order transitions return `422`.
+`jobs.current_step`; the per-skill step chain lives in
+`workflow_templates.steps` — Story 4.3). Out-of-order transitions return `422`.
 
 ```
 scheduled ─▶ [in_progress] ─▶ [completed]

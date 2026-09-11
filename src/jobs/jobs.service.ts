@@ -25,7 +25,6 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { JobListScope } from './enums/job-list-scope.enum';
-import { ServiceType } from './enums/service-type.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobPriority } from './enums/job-priority.enum';
 
@@ -40,7 +39,6 @@ export interface JobResponse {
   customerId: string;
   technicianId: string;
   serviceLocation: string;
-  serviceType: ServiceType;
   scheduledStart: string;
   scheduledEnd: string | null;
   status: JobStatus;
@@ -118,7 +116,6 @@ export interface JobRow {
   customer_id: string;
   technician_id: string;
   service_location: string;
-  service_type: ServiceType;
   scheduled_start: string;
   scheduled_end: string | null;
   status: JobStatus;
@@ -178,7 +175,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // CUSTOMER_COLUMNS). listJobs keeps an inline literal because its `as JobRow[]`
 // cast needs the literal column type.
 const JOB_DETAIL_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -300,6 +297,35 @@ export class JobsService {
       }
     }
 
+    // Story 4.3 — skillId must exist in the global skills catalog and be
+    // active. Invite-precedent pattern (auth.service.ts): the skills table is
+    // platform-wide (no tenant scoping); the create RPC stamps the skill's
+    // latest workflow template, so an inactive/unknown skill must be rejected
+    // here — 400 before the RPC (DTO @IsUUID already rejects shape violations
+    // with 422).
+    {
+      const { data, error } = await admin
+        .from('skills')
+        .select('id')
+        .eq('id', dto.skillId)
+        .eq('is_active', true)
+        .maybeSingle<{ id: string }>();
+
+      if (error) {
+        this.logger.error('Failed to validate skill ID:', { error });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to validate skill ID',
+        });
+      }
+      if (!data) {
+        throw new BadRequestException({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'Unknown or inactive skillId',
+        });
+      }
+    }
+
     // Job-number year is the IST creation year (AC #10).
     const istYear = new Date(Date.now() + IST_OFFSET_MS).getUTCFullYear();
 
@@ -308,7 +334,7 @@ export class JobsService {
       p_customer_id: customerId,
       p_technician_id: dto.technicianId,
       p_service_location: dto.serviceLocation,
-      p_service_type: dto.serviceType,
+      p_skill_id: dto.skillId,
       p_scheduled_start: dto.scheduledStart,
       p_scheduled_end: dto.scheduledEnd ?? null,
       p_description: dto.description ?? null,
@@ -553,7 +579,7 @@ export class JobsService {
       .from('jobs')
       // prettier-ignore — single string literal so postgrest-js infers JobRow columns
       .select(
-        'id, job_number, tenant_id, customer_id, technician_id, service_location, service_type, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at',
+        'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, require_completion_photo, require_completion_signature, description, notes_for_technician, created_at, updated_at',
       )
       .eq('tenant_id', user.tenantId);
 
@@ -874,7 +900,6 @@ export class JobsService {
       customerId: row.customer_id,
       technicianId: row.technician_id,
       serviceLocation: row.service_location,
-      serviceType: row.service_type,
       scheduledStart: row.scheduled_start,
       scheduledEnd: row.scheduled_end,
       status: row.status,

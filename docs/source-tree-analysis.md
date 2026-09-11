@@ -54,7 +54,7 @@ fenzit-be/
 │   │   ├── dto/                         # CreateJobDto, UpdateJobDto, ListJobsQueryDto,
 │   │   │                                #   AdvanceWorkflowDto, UploadAttachmentDto,
 │   │   │                                #   ConfirmAttachmentDto
-│   │   └── enums/                       # JobStatus, WorkflowStep, ServiceType, JobPriority, JobListScope
+│   │   └── enums/                       # JobStatus, WorkflowStep, JobPriority, JobListScope
 │   │
 │   ├── skills/                          # Global skills catalog (read-only; Story 4.2)
 │   │   ├── skills.module.ts

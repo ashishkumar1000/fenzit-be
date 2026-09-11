@@ -19,7 +19,6 @@ export interface SyncJobDto {
   customerId: string;
   technicianId: string;
   serviceLocation: string;
-  serviceType: string;
   scheduledStart: string;
   scheduledEnd: string | null;
   status: string;

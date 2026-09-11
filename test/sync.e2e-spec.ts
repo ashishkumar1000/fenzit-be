@@ -26,7 +26,6 @@ describe('Sync (e2e)', () => {
     customer_id: 'cust-uuid-1',
     technician_id: TECH_ID,
     service_location: '12 MG Road',
-    service_type: 'ac_service',
     scheduled_start: '2026-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',

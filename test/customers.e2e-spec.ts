@@ -707,7 +707,6 @@ describe('Customers (e2e)', () => {
         job_number: 'JOB-1',
         scheduled_start: '2026-06-01T00:00:00Z',
         status: 'completed',
-        service_type: 'ac_service',
       };
       mockDetail(
         { data: detailRow, error: null },
@@ -729,7 +728,6 @@ describe('Customers (e2e)', () => {
             jobNumber: 'JOB-1',
             scheduledStart: '2026-06-01T00:00:00Z',
             status: 'completed',
-            serviceType: 'ac_service',
           },
         ],
         nextCursor: null,
@@ -757,7 +755,6 @@ describe('Customers (e2e)', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
-        service_type: 'ac_service',
       }));
       mockDetail({ data: detailRow, error: null }, { data: rows, error: null });
 
@@ -793,7 +790,6 @@ describe('Customers (e2e)', () => {
           jobNumber: rows[20].job_number,
           scheduledStart: rows[20].scheduled_start,
           status: rows[20].status,
-          serviceType: rows[20].service_type,
         },
       ]);
       expect(page2.jobHistory.hasMore).toBe(false);
@@ -806,7 +802,6 @@ describe('Customers (e2e)', () => {
         job_number: 'JOB-9',
         scheduled_start: '2026-06-09T00:00:00Z',
         status: 'completed',
-        service_type: 'ac_service',
       };
       const { orArgs } = mockDetail(
         { data: detailRow, error: null },

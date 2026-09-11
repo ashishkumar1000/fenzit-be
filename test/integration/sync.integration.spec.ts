@@ -45,7 +45,6 @@ describe('Offline Sync Integration — Story 4.3', () => {
     job_number: 'JB-2026-0001',
     customer_id: 'cust-1',
     service_location: '12 MG Road',
-    service_type: 'ac_service',
     scheduled_start: '2026-06-22T09:00:00Z',
     scheduled_end: null,
     priority: 'normal',

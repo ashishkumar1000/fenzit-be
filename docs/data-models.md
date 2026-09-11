@@ -6,7 +6,7 @@ Security (RLS)** enabled.
 
 ## Migrations Inventory
 
-35 migrations, applied in chronological order. New migrations **must** be
+36 migrations, applied in chronological order. New migrations **must** be
 appended (never edit history) and **must** be applied via the Supabase MCP
 (see `project-context.md`).
 
@@ -47,6 +47,7 @@ appended (never edit history) and **must** be applied via the Supabase MCP
 | 33  | `20260909000004_notifications_cleanup.sql`      | pg_cron — purge old notifications (Epic 3) |
 | 34  | `20260910000001_create_global_skills.sql`       | Global `skills` catalog, sort_order-pinned seeds + RLS (Epic 4) |
 | 35  | `20260911000001_tenant_skills_cutover.sql`      | Cutover: `user_skills.skill_id` → `skills`, tenant-isolated RLS on `user_skills`, drop `tenant_skills` + `tenants.service_categories`, slim `setup_tenant_for_owner` (Epic 4 Story 4.2) |
+| 36  | `20260911000002_workflow_templates_skill_tagged_jobs.sql` | `workflow_templates` table + 6 v1 seeds, `jobs.skill_id`/`workflow_template_id`/`workflow_template_version`, drop `jobs.service_type` + CHECK, re-issue `create_job_with_log` with `p_skill_id` (Epic 4 Story 4.3) |
 
 ## Tables
 
@@ -121,18 +122,27 @@ id            UUID PK
 tenant_id     UUID FK → tenants(id)
 customer_id   UUID FK → customers(id)
 technician_id UUID FK → users(id)
-job_number    TEXT  -- e.g. "2026-000123"
+job_number    TEXT  -- e.g. "JB-2026-0001"
 status        TEXT  -- scheduled | in_progress | completed | cancelled
-service_type, service_location TEXT
+skill_id      UUID FK → skills(id) ON DELETE RESTRICT  -- Story 4.3: what kind of work
+workflow_template_id      UUID FK → workflow_templates(id) ON DELETE RESTRICT  -- stamp
+workflow_template_version INT  -- stamped version (resolved inside create_job_with_log)
+service_location TEXT
 scheduled_start, scheduled_end TIMESTAMPTZ
 description, priority, notes_for_technician TEXT
 require_completion_photo BOOLEAN
 require_completion_signature BOOLEAN  -- per-job: signature required to complete (Story 3.8)
-sequence_index INT  -- per-job workflow step pointer
+completed_at  TIMESTAMPTZ  -- set by advance_workflow_step on 'completed' (Story 3.2)
+current_step  TEXT  -- per-job workflow step pointer (NULL until the first advance)
 created_at, updated_at TIMESTAMPTZ
 ```
 
 **RLS:** Tenant isolation on reads; writes only via RPCs (service role).
+
+The `skill_id` + `workflow_template_id` + `workflow_template_version` stamp is
+written exactly once, inside `create_job_with_log` (latest template version for
+the skill at insert time) — no create/PATCH code path writes it again. The old
+`service_type` CHECK enum was dropped in migration 36 (Story 4.3).
 
 ### `activity_logs`
 
@@ -279,6 +289,46 @@ Seed rows (fixed UUIDs — Stories 4.2/4.3 reference these):
 | 5          | Pest Control   | 71cc840c-3663-489e-bbf2-867d92c46619   |
 | 6          | Cleaning       | 72f67596-fec7-4ae8-a6f1-fceabaef0d7d   |
 
+### `workflow_templates`
+
+Per-skill workflow definitions (migration 36, Story 4.3). Developer-seeded ONLY
+via migrations — no API write path exists, exactly like `skills`. One row per
+`(skill_id, version)`; `create_job_with_log` stamps the skill's latest version
+(`ORDER BY version DESC LIMIT 1`) onto the job at insert. RLS grants SELECT to
+`authenticated` (mirrors `skills_authenticated_read`); writes are denied via
+RLS (no write policy).
+
+```sql
+id         UUID PK DEFAULT gen_random_uuid()
+skill_id   UUID NOT NULL FK → skills(id) ON DELETE RESTRICT
+version    INT NOT NULL
+steps      JSONB NOT NULL CHECK (jsonb_typeof(steps) = 'array')
+created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+UNIQUE (skill_id, version)
+```
+
+`steps` is an ordered array of per-step objects
+`{ key, label, requires_photo, requires_signature, sets_status, advances_on }` —
+the canonical step/label data the engine later reads (Story 4.4). The v1 seed
+is one identical 6-step chain per skill mirroring today's hardcoded
+`STEP_ORDER` (`advances_on: "photo_confirm"` on `photos_uploaded` encodes
+today's confirm-attachment auto-advance). Fixed template seed UUIDs:
+
+| skill          | template id (v1)                       |
+|----------------|----------------------------------------|
+| Plumbing       | 6f1a2b3c-4d5e-4f6a-8b7c-1d2e3f4a5b6c   |
+| Electrical     | 7f2b3c4d-5e6f-4a7b-8c8d-2e3f4a5b6c7d   |
+| AC Service     | 8a3c4d5e-6f7a-4b8c-9d9e-3f4a5b6c7d8e   |
+| AC Installation | 9b4d5e6f-7a8b-4c9d-8e8f-4a5b6c7d8e9f  |
+| Pest Control   | ac5e6f7a-8b9c-4dae-8f9a-5b6c7d8e9f0a   |
+| Cleaning       | bd6f7a8b-9cad-4ebf-8aab-6c7d8e9f0a1b   |
+
+Operational rule: **every new skill seed must ship its template row in the same
+migration.** A skill without any template row makes `create_job_with_log` raise
+"No workflow template found for skill" — a plain server fault by design (500),
+not a handled client error.
+
 ## Atomic RPCs
 
 These are called via `supabase.rpc()` from the application layer. Each runs in
@@ -288,9 +338,9 @@ a single Postgres transaction — **never** split into multiple sequential
 | RPC                              | Purpose |
 |----------------------------------|---------|
 | `setup_tenant_for_owner(...)`    | Idempotent upsert of tenant + sets `users.tenant_id` atomically |
-| `create_job_with_log(...)`       | Increments `job_sequences` + inserts `jobs` + inserts `activity_logs` row — one txn |
+| `create_job_with_log(...)`       | Increments `job_sequences` + inserts `jobs` (stamping the skill's latest `workflow_templates` version) + inserts `activity_logs` row — one txn |
 | `update_job_with_log(...)`       | Updates `jobs` + inserts `activity_logs` row — one txn |
-| `advance_workflow_step(...)`     | Validates step ordering, advances `sequence_index`, appends log — one txn |
+| `advance_workflow_step(...)`     | Validates step ordering, advances `current_step`, appends log — one txn |
 | `confirm_attachment(...)`        | Inserts `attachments` row from `attachment_uploads`, server-side conflict resolution |
 | `increment_job_counter(...)`     | Sub-RPC: race-safe per-tenant/per-year counter |
 

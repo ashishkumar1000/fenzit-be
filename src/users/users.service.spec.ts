@@ -110,7 +110,6 @@ describe('UsersService', () => {
       customer_id: 'cust-1',
       technician_id: 'tech-uuid',
       service_location: 'Loc',
-      service_type: 'plumbing',
       scheduled_start: createdAt,
       scheduled_end: null,
       status,

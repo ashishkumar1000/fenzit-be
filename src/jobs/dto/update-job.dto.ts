@@ -8,7 +8,7 @@ import { JobStatus } from '../enums/job-status.enum';
  *
  * Only the mutable fields are exposed — we `PickType` the mutable subset of
  * CreateJobDto (reusing its validators/transformers) rather than `OmitType`, which
- * would leak the immutable serviceLocation/serviceType/customerId/newCustomer.
+ * would leak the immutable serviceLocation/skillId/customerId/newCustomer.
  * The completion flags (`requireCompletionPhoto`/`requireCompletionSignature`)
  * are mutable per Story 3.8 (owner-only, `scheduled` jobs, COALESCE semantics:
  * absent = unchanged). `PartialType` makes them all optional. The

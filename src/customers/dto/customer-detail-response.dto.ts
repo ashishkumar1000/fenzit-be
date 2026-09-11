@@ -21,9 +21,6 @@ export class JobHistoryItemDto {
 
   @ApiProperty({ example: 'completed' })
   status: string;
-
-  @ApiProperty({ example: 'plumbing' })
-  serviceType: string;
 }
 
 /**

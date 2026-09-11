@@ -12,7 +12,6 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { trim } from '../../common/utils/trim.transformer';
-import { ServiceType } from '../enums/service-type.enum';
 import { JobPriority } from '../enums/job-priority.enum';
 import { NewCustomerDto } from './new-customer.dto';
 
@@ -42,9 +41,14 @@ export class CreateJobDto {
   @MaxLength(500)
   serviceLocation: string;
 
-  @ApiProperty({ enum: ServiceType })
-  @IsEnum(ServiceType)
-  serviceType: ServiceType;
+  @ApiProperty({
+    format: 'uuid',
+    description:
+      'Global skills-catalog UUID — exactly what GET /skills serves. ' +
+      'Validated against the active catalog before the create RPC runs.',
+  })
+  @IsUUID() // default version 'all' — never '4' (Story 1 IsUUID('4') trap)
+  skillId: string;
 
   @ApiProperty({ example: '2026-06-22T09:30:00Z' })
   @IsISO8601()
