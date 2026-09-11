@@ -1,5 +1,9 @@
 # Deferred Work
 
+> ⚠️ RETIRED 2026-09-11 — DO NOT UPDATE. The single deferred-work log is
+> fenzo-meta/artifacts/implementation-artifacts/deferred-work.md (all entries
+> from this file were migrated there verbatim). This file is historical only.
+
 ## Deferred from: code review of 1-3-tenant-company-onboarding (2026-06-20)
 
 - `users.tenant_id` not re-linked on idempotent re-call if it becomes NULL post-creation — RPC's `IF v_inserted THEN` skips FK update on the ON CONFLICT path. Admin data repair scenario; out of scope for Phase 1.
