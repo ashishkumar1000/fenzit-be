@@ -8,6 +8,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
@@ -27,10 +28,28 @@ import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobPriority } from './enums/job-priority.enum';
+import {
+  parseTemplateSteps,
+  stepToResponse,
+  currentStepIndexForRead,
+  normalizeSkillEmbed,
+  WorkflowStepResponse,
+  WorkflowTemplateResponse,
+} from './workflow-template.model';
 
 // TTL for presigned R2 read URLs surfaced in job detail. Regenerated fresh on
 // every getJobDetail call, never stored (AC#18).
 const ATTACHMENT_READ_URL_TTL_SECONDS = 3600; // 1 hour
+
+/** The job's stamped skill, as exposed on every job response (Story 4.5). */
+export interface JobSkillResponse {
+  id: string;
+  name: string;
+}
+
+// WorkflowTemplateResponse lives in workflow-template.model.ts (shared with the
+// sync DTO); re-exported here for existing consumers of the jobs module.
+export type { WorkflowTemplateResponse };
 
 export interface JobResponse {
   id: string;
@@ -52,6 +71,17 @@ export interface JobResponse {
   notesForTechnician: string | null;
   createdAt: string;
   updatedAt: string;
+  // Story 4.5 — the job's skill (id + display name) and stamped template ride
+  // every job response via FK embeds. Both are null-safe on the READ path: a
+  // missing/unreadable embed (unreachable under the FK + no-delete posture)
+  // maps to null rather than failing the read — only the advance path guards
+  // corrupt template data strictly (422/500). Inactive skills still render:
+  // the label is historical, so job embeds never filter is_active.
+  skill: JobSkillResponse | null;
+  workflowTemplate: WorkflowTemplateResponse | null;
+  // 0-based index of current_step in the stamped template's steps. Null while
+  // the job is fresh (no advance yet) and when the template data is unreadable.
+  currentStepIndex: number | null;
 }
 
 /** A technician/customer profile embedded in the job-detail response. */
@@ -124,6 +154,14 @@ export interface JobRow {
   notes_for_technician: string | null;
   created_at: string;
   updated_at: string;
+  // NOT NULL under the FK (the create RPC stamps it) — typed nullable to keep
+  // the read mapping soft. Consumed via the `skills` embed, not directly.
+  skill_id: string | null;
+  // Story 4.5 — FK embeds selected alongside every job read. PostgREST embeds
+  // a to-one related resource as an object but can surface it as an array, so
+  // both shapes are normalized when mapping (mirrors UserSkillRow below).
+  skills: { id: string; name: string } | { id: string; name: string }[] | null;
+  workflow_templates: { version: number; steps: unknown } | null;
 }
 
 interface TechnicianRow {
@@ -166,12 +204,14 @@ interface AttachmentRow {
 }
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
-// Job-detail SELECT as a const + `.single<JobRow>()` — the explicit generic
-// types `data`, so the destructure is lint-clean (mirrors getCustomerDetail's
-// CUSTOMER_COLUMNS). listJobs keeps an inline literal because its `as JobRow[]`
-// cast needs the literal column type.
-const JOB_DETAIL_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at';
+// The canonical job SELECT — every producer of JobRow/JobResponse (detail,
+// list, create/update re-fetch, workflow replay, profile jobs) shares it, so
+// the skill/template embeds can never drift out of one response shape (Story
+// 4.5). Plain left embeds, NOT !inner: a hypothetical missing skill row must
+// degrade to null response fields, never silently drop the job row.
+// Exported so sibling services reuse the same literal.
+export const JOB_COLUMNS =
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at, skill_id, skills(id, name), workflow_templates(version, steps)';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -368,7 +408,11 @@ export class JobsService {
       });
     }
 
-    return this.toResponse(rows[0]);
+    return this.toResponse(
+      // The RPC returns bare job rows; re-fetch with the skill/template embeds
+      // so the create response carries the full read shape (Story 4.5).
+      await this.refetchWithEmbeds(admin, rows[0].id, owner.tenantId, rows[0]),
+    );
   }
 
   async updateJob(
@@ -527,7 +571,10 @@ export class JobsService {
       });
     }
 
-    return this.toResponse(rows[0]);
+    return this.toResponse(
+      // Same re-fetch as createJob — the RPC returns bare rows (Story 4.5).
+      await this.refetchWithEmbeds(admin, jobId, owner.tenantId, rows[0]),
+    );
   }
 
   async listJobs(
@@ -564,10 +611,7 @@ export class JobsService {
 
     let qb = admin
       .from('jobs')
-      // prettier-ignore — single string literal so postgrest-js infers JobRow columns
-      .select(
-        'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at',
-      )
+      .select(JOB_COLUMNS)
       .eq('tenant_id', user.tenantId);
 
     // Scope predicate. upcoming/overdue/history force their own status sets;
@@ -655,7 +699,9 @@ export class JobsService {
       });
     }
 
-    const rows = (data ?? []) as JobRow[];
+    // postgrest-js types to-one embeds as arrays even when they arrive as
+    // objects — go through `unknown` for the cast (same as users.service).
+    const rows = (data ?? []) as unknown as JobRow[];
     const hasMore = rows.length > pageSize;
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];
@@ -689,7 +735,7 @@ export class JobsService {
     //    empty / cross-tenant → 404 (AC#2, AC#3) — never 403.
     const { data: row, error } = await admin
       .from('jobs')
-      .select(JOB_DETAIL_COLUMNS)
+      .select(JOB_COLUMNS)
       .eq('id', jobId)
       .eq('tenant_id', user.tenantId)
       .single<JobRow>();
@@ -880,6 +926,12 @@ export class JobsService {
   // Public so WorkflowService (same module) can reuse the snake→camel mapping
   // without re-deriving it (Story 3.5).
   toResponse(row: JobRow): JobResponse {
+    // Story 4.5 — the stamped skill + template ride every response. A missing
+    // or unreadable template embed is unreachable under the FK + immutable-
+    // stamp + no-delete posture, but reads stay soft: null fields, never a
+    // 500 (the advance path keeps its strict guard; reads are lenient).
+    const templateRaw = row.workflow_templates;
+    const steps = templateRaw ? parseTemplateSteps(templateRaw.steps) : null;
     return {
       id: row.id,
       jobNumber: row.job_number,
@@ -897,6 +949,48 @@ export class JobsService {
       notesForTechnician: row.notes_for_technician,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      skill: normalizeSkillEmbed<JobSkillResponse>(row.skills),
+      workflowTemplate:
+        steps && templateRaw
+          ? {
+              version: templateRaw.version,
+              steps: steps.map(stepToResponse),
+            }
+          : null,
+      currentStepIndex: steps
+        ? currentStepIndexForRead(steps, row.current_step)
+        : null,
     };
+  }
+
+  /**
+   * Story 4.5 — re-fetch a just-written job with the skill/template embeds so
+   * create/update/advance responses carry the same shape reads do (the write
+   * RPCs return bare job rows, without embeds). A failed re-fetch degrades to
+   * the fallback row — the operation itself already succeeded, so the response
+   * keeps its fields with null embeds rather than turning a successful write
+   * into a 500.
+   */
+  async refetchWithEmbeds(
+    admin: SupabaseClient,
+    jobId: string,
+    tenantId: string,
+    fallback: JobRow,
+  ): Promise<JobRow> {
+    const { data, error } = await admin
+      .from('jobs')
+      .select(JOB_COLUMNS)
+      .eq('id', jobId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle<JobRow>();
+
+    if (error || !data) {
+      this.logger.error('Failed to re-fetch job with embeds:', {
+        error,
+        jobId,
+      });
+      return fallback;
+    }
+    return data;
   }
 }

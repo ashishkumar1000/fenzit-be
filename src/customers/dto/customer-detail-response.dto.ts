@@ -21,6 +21,14 @@ export class JobHistoryItemDto {
 
   @ApiProperty({ example: 'completed' })
   status: string;
+
+  @ApiProperty({
+    example: 'Plumbing',
+    description:
+      'The job skill display name (historical — rendered even if the skill is later deactivated)',
+    nullable: true,
+  })
+  skillName: string | null;
 }
 
 /**

@@ -24,12 +24,54 @@ import {
 
 // The v1 seed chain (migration 20260911000002) — 6 identical steps per skill.
 const V1_STEPS: unknown = [
-  { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
-  { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-  { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-  { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
-  { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
-  { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
+  {
+    key: 'on_my_way',
+    label: 'On My Way',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: 'in_progress',
+    advances_on: null,
+  },
+  {
+    key: 'arrived',
+    label: 'Arrived',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'in_progress',
+    label: 'In Progress',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'photos_uploaded',
+    label: 'Photos Uploaded',
+    requires_photo: true,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: 'photo_confirm',
+  },
+  {
+    key: 'signature_captured',
+    label: 'Signature Captured',
+    requires_photo: false,
+    requires_signature: true,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'completed',
+    label: 'Completed',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: 'completed',
+    advances_on: null,
+  },
 ];
 
 describe('WorkflowService', () => {
@@ -80,7 +122,21 @@ describe('WorkflowService', () => {
 
   beforeEach(async () => {
     const mockFactory = { create: jest.fn(), createAdmin: jest.fn() };
-    jobsService = { toResponse: jest.fn((row) => ({ mapped: true, row })) };
+    // Story 4.5 — the advance response row comes from jobsService's post-RPC
+    // embed re-fetch. The re-fetch itself is unit-tested in jobs.service.spec;
+    // here it passes the fallback (RPC row) through so these tests keep
+    // pinning the row→toResponse delegation.
+    jobsService = {
+      toResponse: jest.fn((row) => ({ mapped: true, row })),
+      refetchWithEmbeds: jest.fn(
+        (
+          _admin: unknown,
+          _jobId: string,
+          _tenantId: string,
+          fallback: unknown,
+        ) => fallback,
+      ),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -155,30 +211,102 @@ describe('WorkflowService', () => {
     ])(
       'nextStepKey(v1, %j) === %j → %s',
       (steps, current, requested, expected) => {
-        expect(service.validateStep(v1Steps, current, requested)).toBe(expected);
+        expect(service.validateStep(v1Steps, current, requested)).toBe(
+          expected,
+        );
       },
     );
 
     it('corrupt template shapes are rejected by the parser', () => {
       expect(parseTemplateSteps([])).toBeNull();
       expect(parseTemplateSteps('nope')).toBeNull();
-      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: 'x', requires_signature: false }])).toBeNull();
-      expect(parseTemplateSteps([{ key: 'Bad Key', label: 'A', requires_photo: false, requires_signature: false }])).toBeNull();
-      expect(parseTemplateSteps([{ key: 'a', label: '', requires_photo: false, requires_signature: false }])).toBeNull();
-      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: false, requires_signature: false, sets_status: 'scheduled' }])).toBeNull();
-      expect(parseTemplateSteps([{ key: 'a', label: 'A', requires_photo: false, requires_signature: false, advances_on: 'magic' }])).toBeNull();
       expect(
         parseTemplateSteps([
-          { key: 'a', label: 'A', requires_photo: false, requires_signature: false },
-          { key: 'a', label: 'B', requires_photo: false, requires_signature: false },
+          {
+            key: 'a',
+            label: 'A',
+            requires_photo: 'x',
+            requires_signature: false,
+          },
+        ]),
+      ).toBeNull();
+      expect(
+        parseTemplateSteps([
+          {
+            key: 'Bad Key',
+            label: 'A',
+            requires_photo: false,
+            requires_signature: false,
+          },
+        ]),
+      ).toBeNull();
+      expect(
+        parseTemplateSteps([
+          {
+            key: 'a',
+            label: '',
+            requires_photo: false,
+            requires_signature: false,
+          },
+        ]),
+      ).toBeNull();
+      expect(
+        parseTemplateSteps([
+          {
+            key: 'a',
+            label: 'A',
+            requires_photo: false,
+            requires_signature: false,
+            sets_status: 'scheduled',
+          },
+        ]),
+      ).toBeNull();
+      expect(
+        parseTemplateSteps([
+          {
+            key: 'a',
+            label: 'A',
+            requires_photo: false,
+            requires_signature: false,
+            advances_on: 'magic',
+          },
+        ]),
+      ).toBeNull();
+      expect(
+        parseTemplateSteps([
+          {
+            key: 'a',
+            label: 'A',
+            requires_photo: false,
+            requires_signature: false,
+          },
+          {
+            key: 'a',
+            label: 'B',
+            requires_photo: false,
+            requires_signature: false,
+          },
         ]),
       ).toBeNull();
     });
 
     it('valid custom chains parse; sets_status and photo_confirm lookups work', () => {
       const custom = parseTemplateSteps([
-        { key: 's1', label: 'S1', requires_photo: false, requires_signature: false, sets_status: 'in_progress' },
-        { key: 's2', label: 'S2', requires_photo: true, requires_signature: true, sets_status: null, advances_on: 'photo_confirm' },
+        {
+          key: 's1',
+          label: 'S1',
+          requires_photo: false,
+          requires_signature: false,
+          sets_status: 'in_progress',
+        },
+        {
+          key: 's2',
+          label: 'S2',
+          requires_photo: true,
+          requires_signature: true,
+          sets_status: null,
+          advances_on: 'photo_confirm',
+        },
       ]);
       expect(custom).toHaveLength(2);
       expect(nextStepKey(custom as TemplateStep[], null)).toBe('s1');
@@ -189,7 +317,12 @@ describe('WorkflowService', () => {
       expect(photoConfirmStep(custom as TemplateStep[])?.key).toBe('s2');
       // Absent/null attributes normalise to null.
       const noAttrs = parseTemplateSteps([
-        { key: 'a', label: 'A', requires_photo: false, requires_signature: false },
+        {
+          key: 'a',
+          label: 'A',
+          requires_photo: false,
+          requires_signature: false,
+        },
       ]);
       expect(setsStatusOf(noAttrs as TemplateStep[], 'a')).toBeNull();
       expect(photoConfirmStep(noAttrs as TemplateStep[])).toBeNull();
@@ -235,11 +368,7 @@ describe('WorkflowService', () => {
           error: null,
         },
       });
-      await service.advanceWorkflowStep(
-        tech,
-        'job-uuid',
-        dto('completed'),
-      );
+      await service.advanceWorkflowStep(tech, 'job-uuid', dto('completed'));
       expect(rpc).toHaveBeenCalledWith(
         'advance_workflow_step',
         expect.objectContaining({ p_new_status: 'completed' }),
@@ -257,11 +386,7 @@ describe('WorkflowService', () => {
           error: null,
         },
       });
-      await service.advanceWorkflowStep(
-        tech,
-        'job-uuid',
-        dto('arrived'),
-      );
+      await service.advanceWorkflowStep(tech, 'job-uuid', dto('arrived'));
       expect(rpc).toHaveBeenCalledWith(
         'advance_workflow_step',
         expect.objectContaining({ p_new_status: null }),
@@ -270,8 +395,20 @@ describe('WorkflowService', () => {
 
     it('non-v1 template: a custom chain drives status and order', async () => {
       const custom = [
-        { key: 's1', label: 'S1', requires_photo: false, requires_signature: false, sets_status: 'in_progress' },
-        { key: 's2', label: 'S2', requires_photo: true, requires_signature: true, sets_status: 'completed' },
+        {
+          key: 's1',
+          label: 'S1',
+          requires_photo: false,
+          requires_signature: false,
+          sets_status: 'in_progress',
+        },
+        {
+          key: 's2',
+          label: 'S2',
+          requires_photo: true,
+          requires_signature: true,
+          sets_status: 'completed',
+        },
       ];
       const { rpc } = mockAdmin({
         job: {
@@ -302,11 +439,7 @@ describe('WorkflowService', () => {
         },
       });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('completed'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('completed')),
       ).rejects.toMatchObject({
         status: HttpStatus.UNPROCESSABLE_ENTITY,
         response: {
@@ -422,43 +555,27 @@ describe('WorkflowService', () => {
         },
       });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('job not found (PGRST116) → 404', async () => {
       mockAdmin({ job: { data: null, error: { code: 'PGRST116' } } });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('real DB error on fetch → 500', async () => {
       mockAdmin({ job: { data: null, error: { code: '08006' } } });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
     });
 
     it('no tenant → 400 VALIDATION_ERROR', async () => {
       await expect(
-        service.advanceWorkflowStep(
-          techNoTenant,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(techNoTenant, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -474,11 +591,7 @@ describe('WorkflowService', () => {
         },
       });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
       expect(rpc).not.toHaveBeenCalled();
     });
@@ -486,11 +599,7 @@ describe('WorkflowService', () => {
     it('RPC raises PT409 → 409 JOB_NOT_MODIFIABLE', async () => {
       mockAdmin({ rpc: { data: null, error: { code: 'PT409' } } });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toMatchObject({
         status: HttpStatus.CONFLICT,
         response: { error_code: ErrorCode.JOB_NOT_MODIFIABLE },
@@ -500,22 +609,14 @@ describe('WorkflowService', () => {
     it('RPC returns empty set → 404', async () => {
       mockAdmin({ rpc: { data: [], error: null } });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('RPC unknown error → 500', async () => {
       mockAdmin({ rpc: { data: null, error: { code: 'XX000' } } });
       await expect(
-        service.advanceWorkflowStep(
-          tech,
-          'job-uuid',
-          dto('on_my_way'),
-        ),
+        service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
     });
   });

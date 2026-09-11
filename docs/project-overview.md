@@ -5,17 +5,14 @@
 `fenzit-be` is the **Jobzo** backend — a field-service management API for Indian
 HVAC/pest-control technician dispatch. It is a single-tenant-per-company
 multi-tenant NestJS service that issues phone-based OTP authentication,
-manages customers, dispatches jobs through a fixed workflow, and coordinates
-attachments stored in Cloudflare R2. Mobile clients (technician + owner) and a
-Cloudflare Worker (storage event webhook) integrate through this API.
+manages customers, dispatches jobs through a skill-driven, template-defined
+workflow, and coordinates attachments stored in Cloudflare R2. Mobile clients
+(technician + owner) and a Cloudflare Worker (storage event webhook) integrate
+through this API.
 
-The codebase has **all four planned epics delivered** (per
-`_bmad-output/planning-artifacts/epics.md`):
-
-- **Epic 1 — Project Foundation & Authentication**: phone OTP, JWT, tenants, skills, RBAC guards
-- **Epic 2 — Customer Management**: customers CRUD, search, profile with job history
-- **Epic 3 — Job Lifecycle**: jobs CRUD, technician assignment, template-driven workflow engine, R2 attachments, activity log
-- **Epic 4 — Offline-First Mobile Sync**: delta-sync endpoint, idempotent action replay, server-side conflict resolution
+The codebase has the **original four epics delivered**, plus the skill-driven
+workflow redesign (Stories 4.1–4.5: global skills catalog, skill-tagged jobs,
+workflow templates, generic workflow engine, widened read surfaces).
 
 ## Repository Structure
 
@@ -57,7 +54,7 @@ src/
 ├── customers/    # Owner-side customer CRUD
 ├── health/       # Liveness probe (public)
 ├── jobs/         # Job lifecycle, workflow steps, attachments
-├── skills/       # Per-tenant skill catalog
+├── skills/       # Global skills catalog (read-only API; developer-seeded)
 ├── storage/      # (used by webhooks + jobs for R2 coordination)
 ├── supabase/     # SupabaseModule — per-request JWT-scoped client factory
 ├── sync/         # Technician delta-sync endpoint

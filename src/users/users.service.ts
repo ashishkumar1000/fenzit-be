@@ -19,16 +19,19 @@ import {
   CustomersService,
   CustomerListItem,
 } from '../customers/customers.service';
-import { JobsService, JobResponse, JobRow } from '../jobs/jobs.service';
+import {
+  JobsService,
+  JobResponse,
+  JobRow,
+  JOB_COLUMNS,
+} from '../jobs/jobs.service';
 import { JobStatus } from '../jobs/enums/job-status.enum';
 import { GetProfileQueryDto } from './dto/get-profile-query.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
-// Mirrors JOB_DETAIL_COLUMNS in jobs.service.ts — kept as a separate literal here
-// (rather than imported) so this service's `as JobRow[]` cast has the matching
-// column-literal type, same reasoning as listJobs in jobs.service.ts.
-const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at';
+// The shared job SELECT from jobs.service.ts (skill/template embeds included,
+// Story 4.5) — imported, not re-declared, so every JobResponse producer can
+// never drift out of one column set.
 const JOBS_PAGE_SIZE = 50;
 // Cursor scope — a cursor minted for another paginated endpoint (e.g. the jobs
 // list, which also keys on created_at) is rejected (400) here.
@@ -101,8 +104,10 @@ export interface TechnicianProfileResponse extends UserProfileBase {
 
 // Story 3.9 — every profile job row embeds the same technician/customer
 // summaries the GET /jobs/:id detail embed uses (jobs.service.toDetailResponse),
-// so the Home dispatch view needs no on-device id→name joins. JobResponse
-// itself is NOT widened — GET /jobs keeps its exact shape.
+// so the Home dispatch view needs no on-device id→name joins. Story 4.5
+// widened JobResponse itself (skill + workflowTemplate + currentStepIndex);
+// ProfileJobResponse inherits those fields, so every JobResponse producer
+// (detail, list, sync, profile rows, advance result) shares one canonical shape.
 export interface ProfileTechnicianEmbed {
   id: string;
   name: string | null;
@@ -502,7 +507,9 @@ export class UsersService {
       });
     }
 
-    const rows = (data ?? []) as JobRow[];
+    // postgrest-js types to-one embeds as arrays even when they arrive as
+    // objects — go through `unknown` for the cast (same as jobs.service).
+    const rows = (data ?? []) as unknown as JobRow[];
     const hasMore = rows.length > pageSize;
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
     const last = pageRows[pageRows.length - 1];

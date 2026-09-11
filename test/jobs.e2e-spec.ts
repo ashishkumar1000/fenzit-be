@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import { StorageService } from '../src/storage/storage.service';
 import { getIstDayRange } from '../src/common/utils/ist-day-range.util';
+import { V1_TEMPLATE as SHARED_V1_TEMPLATE } from './fixtures/v1-template';
 
 describe('Jobs (e2e)', () => {
   let app: NestFastifyApplication;
@@ -91,6 +92,72 @@ describe('Jobs (e2e)', () => {
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: '2026-06-21T00:00:00Z',
+    // Story 4.5 — the FK embeds every job read now selects (the same real
+    // seed skill UUID validPayload uses).
+    skill_id: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
+    skills: { id: '65f33480-b37e-47e2-a4a0-0155b156cc7a', name: 'AC Service' },
+    workflow_templates: SHARED_V1_TEMPLATE,
+  };
+
+  // Story 4.5 — the skill/template shape every job read surface must carry,
+  // hand-written from the v1 seed chain (an independent expectation, NOT
+  // derived with stepToResponse — that would make the assertion tautological).
+  const EXPECTED_SKILL = {
+    id: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
+    name: 'AC Service',
+  };
+  const V1_TEMPLATE_RESPONSE = {
+    version: 1,
+    steps: [
+      {
+        key: 'on_my_way',
+        label: 'On My Way',
+        requiresPhoto: false,
+        requiresSignature: false,
+        setsStatus: 'in_progress',
+        advancesOn: null,
+      },
+      {
+        key: 'arrived',
+        label: 'Arrived',
+        requiresPhoto: false,
+        requiresSignature: false,
+        setsStatus: null,
+        advancesOn: null,
+      },
+      {
+        key: 'in_progress',
+        label: 'In Progress',
+        requiresPhoto: false,
+        requiresSignature: false,
+        setsStatus: null,
+        advancesOn: null,
+      },
+      {
+        key: 'photos_uploaded',
+        label: 'Photos Uploaded',
+        requiresPhoto: true,
+        requiresSignature: false,
+        setsStatus: null,
+        advancesOn: 'photo_confirm',
+      },
+      {
+        key: 'signature_captured',
+        label: 'Signature Captured',
+        requiresPhoto: false,
+        requiresSignature: true,
+        setsStatus: null,
+        advancesOn: null,
+      },
+      {
+        key: 'completed',
+        label: 'Completed',
+        requiresPhoto: false,
+        requiresSignature: false,
+        setsStatus: 'completed',
+        advancesOn: null,
+      },
+    ],
   };
 
   const validPayload = {
@@ -132,6 +199,33 @@ describe('Jobs (e2e)', () => {
     return { select: jest.fn().mockReturnValue(node) };
   }
 
+  // Like singleChain but the terminal resolves through either .single() or
+  // .maybeSingle() — the job read is consumed by BOTH terminators now (detail
+  // fetch → single; the Story 4.5 post-RPC embed re-fetch → maybeSingle).
+  // `refetch`, when given, is returned from the SECOND read onward (the
+  // advance path's gate fetch sees the pre-advance row, the post-RPC
+  // re-fetch sees the advanced row).
+  function dualChain(
+    result: { data: unknown; error: unknown },
+    refetch?: { data: unknown; error: unknown },
+  ) {
+    const terminal = jest.fn();
+    if (refetch) {
+      terminal.mockResolvedValueOnce(result).mockResolvedValue(refetch);
+    } else {
+      terminal.mockResolvedValue(result);
+    }
+    let node: Record<string, unknown> = {
+      single: terminal,
+      maybeSingle: terminal,
+    };
+    for (let i = 0; i < 2; i++) {
+      const inner = node;
+      node = { eq: jest.fn().mockReturnValue(inner) };
+    }
+    return { select: jest.fn().mockReturnValue(node), terminal };
+  }
+
   // select().eq().eq().maybeSingle() chain for the skills-catalog validation
   // (Story 4.3 — invite-precedent shape; a miss is the 400 case).
   const skillOk = {
@@ -163,17 +257,24 @@ describe('Jobs (e2e)', () => {
     technician?: { data: unknown; error: unknown };
     skill?: { data: unknown; error: unknown };
     job?: { data: unknown; error: unknown };
+    jobRefetch?: { data: unknown; error: unknown };
     idempotency?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
   }) {
+    // Build the jobs chain ONCE — a fresh chain per from('jobs') call would
+    // restart the jobRefetch queue and the re-fetch read would see the
+    // pre-advance row again.
+    const jobsChain = dualChain(
+      opts.job ?? { data: jobRow, error: null },
+      opts.jobRefetch,
+    );
     const from = jest.fn((table: string) => {
       if (table === 'customers')
         return singleChain(opts.customer ?? customerOk, 2);
       if (table === 'users')
         return singleChain(opts.technician ?? technicianOk, 3);
       if (table === 'skills') return skillsChain(opts.skill ?? skillOk);
-      if (table === 'jobs')
-        return singleChain(opts.job ?? { data: jobRow, error: null }, 2);
+      if (table === 'jobs') return jobsChain;
       if (table === 'idempotency_log')
         return idempotencyChain(
           opts.idempotency ?? { data: null, error: null },
@@ -253,6 +354,9 @@ describe('Jobs (e2e)', () => {
         if (table === 'customers') return { select: selectLookup, insert };
         if (table === 'users') return singleChain(technicianOk, 3);
         if (table === 'skills') return skillsChain(skillOk);
+        // The post-RPC embed re-fetch (Story 4.5) reads jobs via
+        // maybeSingle — route it through the dual-chain.
+        if (table === 'jobs') return dualChain({ data: jobRow, error: null });
         if (table === 'idempotency_log')
           return idempotencyChain({ data: null, error: null });
         throw new Error(`unexpected table ${table}`);
@@ -550,6 +654,11 @@ describe('Jobs (e2e)', () => {
       expect(body.data[0].jobNumber).toBe('JB-2026-0001');
       // Story 3.7 — completedAt rides on the wire (null for an uncompleted job).
       expect(body.data[0].completedAt).toBeNull();
+      // Story 4.5 — embeds + derived index ride every list row.
+      expect(body.data[0].skill).toEqual(EXPECTED_SKILL);
+      expect(body.data[0].workflowTemplate).toEqual(V1_TEMPLATE_RESPONSE);
+      // current_step is null on the fixture row → null index.
+      expect(body.data[0].currentStepIndex).toBeNull();
       expect(body.nextCursor).toBeNull();
       expect(body.hasMore).toBe(false);
     });
@@ -1044,6 +1153,10 @@ describe('Jobs (e2e)', () => {
       ]);
       // AC18 — attachments populated with presigned read URLs (empty when none)
       expect(body.attachments).toEqual([]);
+      // Story 4.5 — embeds + derived index ride the detail body.
+      expect(body.skill).toEqual(EXPECTED_SKILL);
+      expect(body.workflowTemplate).toEqual(V1_TEMPLATE_RESPONSE);
+      expect(body.currentStepIndex).toBeNull();
     });
 
     it('Story 2.1 — includes customer coordinates when saved; nulls when absent, rest unchanged', async () => {
@@ -1176,8 +1289,19 @@ describe('Jobs (e2e)', () => {
     const JOB_UUID = '44444444-4444-4444-8444-444444444444';
 
     it('AC1 — owner edits a scheduled job → 200 with the updated job', async () => {
+      // The RPC row is bare (write RPCs return plain job rows — no FK embeds),
+      // so the Story 4.5 embeds on the response can only come from the
+      // post-RPC embed re-fetch (Story 4.5), which returns the edited row.
+      const bareRpcRow: Record<string, unknown> = {
+        ...jobRow,
+        description: 'edited',
+      };
+      delete bareRpcRow.skill_id;
+      delete bareRpcRow.skills;
+      delete bareRpcRow.workflow_templates;
       mockAdmin({
-        rpc: { data: [{ ...jobRow, description: 'edited' }], error: null },
+        rpc: { data: [bareRpcRow], error: null },
+        job: { data: { ...jobRow, description: 'edited' }, error: null },
       });
 
       const response = await app.inject({
@@ -1191,6 +1315,10 @@ describe('Jobs (e2e)', () => {
       const body = JSON.parse(response.body);
       expect(body.jobNumber).toBe('JB-2026-0001');
       expect(body.description).toBe('edited');
+      // Story 4.5 — embeds + derived index rebuilt from the re-fetch row.
+      expect(body.skill).toEqual(EXPECTED_SKILL);
+      expect(body.workflowTemplate).toEqual(V1_TEMPLATE_RESPONSE);
+      expect(body.currentStepIndex).toBeNull();
     });
 
     it('AC2.8 (Story 4.4) — completion flags are gone from the PATCH body → 422 (stripped as unknown, then an empty PATCH)', async () => {
@@ -1225,8 +1353,11 @@ describe('Jobs (e2e)', () => {
     });
 
     it('AC3 — owner cancels a scheduled job → 200 with status cancelled', async () => {
+      // The response row comes from the post-RPC embed re-fetch (Story 4.5),
+      // so the jobs re-fetch must return the cancelled row.
       mockAdmin({
         rpc: { data: [{ ...jobRow, status: 'cancelled' }], error: null },
+        job: { data: { ...jobRow, status: 'cancelled' }, error: null },
       });
 
       const response = await app.inject({
@@ -1416,18 +1547,8 @@ describe('Jobs (e2e)', () => {
     const WORKFLOW_URL = `/api/v1/jobs/${JOB_ID}/workflow`;
 
     // The v1 seed template chain the job is stamped with (same shape the
-    // workflow_templates FK embed returns).
-    const V1_TEMPLATE = {
-      version: 1,
-      steps: [
-        { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
-        { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-        { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-        { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
-        { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
-        { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
-      ],
-    };
+    // workflow_templates FK embed returns) — shared fixture (Story 4.5).
+    const V1_TEMPLATE = SHARED_V1_TEMPLATE;
 
     // The job as fetched (assigned to TECH_ID, scheduled, no step yet, stamped
     // with the v1 seed template).
@@ -1448,9 +1569,17 @@ describe('Jobs (e2e)', () => {
     };
 
     it('AC1 — assigned technician advances on_my_way → 200 (status in_progress)', async () => {
+      // The RPC row is bare (write RPCs return plain job rows — no FK embeds);
+      // the gate fetch sees the pre-advance row and the post-RPC re-fetch
+      // (Story 4.5) returns the advanced row the response is built from.
+      const bareRpcRow: Record<string, unknown> = { ...advancedRow };
+      delete bareRpcRow.skill_id;
+      delete bareRpcRow.skills;
+      delete bareRpcRow.workflow_templates;
       mockAdmin({
         job: { data: fetchRow, error: null },
-        rpc: { data: [advancedRow], error: null },
+        jobRefetch: { data: advancedRow, error: null },
+        rpc: { data: [bareRpcRow], error: null },
       });
 
       const response = await app.inject({
@@ -1464,11 +1593,20 @@ describe('Jobs (e2e)', () => {
       const body = JSON.parse(response.body);
       expect(body.status).toBe('in_progress');
       expect(body.currentStep).toBe('on_my_way');
+      // Story 4.5 — embeds + derived index come from the re-fetch row (the
+      // bare RPC row cannot supply them).
+      expect(body.skill).toEqual(EXPECTED_SKILL);
+      expect(body.workflowTemplate).toEqual(V1_TEMPLATE_RESPONSE);
+      // on_my_way is the first step of the v1 chain → 0-based index 0.
+      expect(body.currentStepIndex).toBe(0);
     });
 
     it('AC9 — proceeds without an X-Idempotency-Key header', async () => {
+      // Gate fetch sees the pre-advance row; the post-RPC re-fetch (Story 4.5)
+      // returns the advanced row the response is built from.
       mockAdmin({
         job: { data: fetchRow, error: null },
+        jobRefetch: { data: advancedRow, error: null },
         rpc: { data: [advancedRow], error: null },
       });
 
@@ -1544,6 +1682,14 @@ describe('Jobs (e2e)', () => {
           },
           error: null,
         },
+        jobRefetch: {
+          data: {
+            ...fetchRow,
+            status: 'in_progress',
+            current_step: 'photos_uploaded',
+          },
+          error: null,
+        },
         rpc: {
           data: [
             {
@@ -1574,6 +1720,15 @@ describe('Jobs (e2e)', () => {
             ...fetchRow,
             status: 'in_progress',
             current_step: 'signature_captured',
+          },
+          error: null,
+        },
+        jobRefetch: {
+          data: {
+            ...fetchRow,
+            status: 'completed',
+            current_step: 'completed',
+            completed_at: '2026-09-05T10:00:00Z',
           },
           error: null,
         },

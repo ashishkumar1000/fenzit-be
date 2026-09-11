@@ -19,6 +19,7 @@ import { hasInvalidCoordinates } from '../common/utils/validate-coordinates';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
+import { normalizeSkillEmbed } from '../jobs/workflow-template.model';
 
 export interface CustomerResponse {
   id: string;
@@ -117,6 +118,11 @@ export interface JobHistoryItem {
   jobNumber: string;
   scheduledStart: string;
   status: string;
+  // Story 4.5 — the job's skill display name (label). Historical: an inactive
+  // skill still renders. Null when the embed yields no skill — e.g. job rows
+  // created before the skill_id column existed (migration 36) carry a NULL
+  // skill_id, so the plain left embed resolves to nothing (soft read posture).
+  skillName: string | null;
 }
 
 interface JobHistoryRow {
@@ -124,6 +130,7 @@ interface JobHistoryRow {
   job_number: string;
   scheduled_start: string;
   status: string;
+  skills: { name: string } | { name: string }[] | null;
 }
 
 export interface CustomerDetailResponse extends CustomerResponse {
@@ -547,7 +554,10 @@ export class CustomersService {
   ): Promise<PaginatedResponse<JobHistoryItem>> {
     let qb = admin
       .from('jobs')
-      .select('id, job_number, scheduled_start, status')
+      // Story 4.5 — the skill name replaces the dropped service_type as the
+      // history row's human label. Plain embed: a missing skill row degrades
+      // to a null skillName, never a dropped row.
+      .select('id, job_number, scheduled_start, status, skills(name)')
       .eq('tenant_id', tenantId)
       .eq('customer_id', customerId);
 
@@ -580,12 +590,15 @@ export class CustomersService {
         ? encodeCursor(last.id, last.scheduled_start, JOB_HISTORY_CURSOR_SCOPE)
         : null;
 
-    const items: JobHistoryItem[] = pageRows.map((row) => ({
-      id: row.id,
-      jobNumber: row.job_number,
-      scheduledStart: row.scheduled_start,
-      status: row.status,
-    }));
+    const items: JobHistoryItem[] = pageRows.map((row) => {
+      return {
+        id: row.id,
+        jobNumber: row.job_number,
+        scheduledStart: row.scheduled_start,
+        status: row.status,
+        skillName: normalizeSkillEmbed(row.skills)?.name ?? null,
+      };
+    });
 
     return new PaginatedResponse(items, nextCursor);
   }

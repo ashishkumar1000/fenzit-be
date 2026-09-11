@@ -11,7 +11,7 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
-import { JobsService, JobResponse, JobRow } from './jobs.service';
+import { JobsService, JobResponse, JobRow, JOB_COLUMNS } from './jobs.service';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { JobStatus } from './enums/job-status.enum';
 import {
@@ -54,7 +54,11 @@ export class WorkflowService {
    * null but absent from the template) yields no legal target, so every
    * advance is rejected and the workflow is never silently reset.
    */
-  validateStep(steps: TemplateStep[], currentStep: string | null, requested: string): boolean {
+  validateStep(
+    steps: TemplateStep[],
+    currentStep: string | null,
+    requested: string,
+  ): boolean {
     return requested === nextStepKey(steps, currentStep);
   }
 
@@ -123,11 +127,12 @@ export class WorkflowService {
 
     // 3.5) Same-step no-op: if the step is already recorded server-side, return
     //      current state without re-applying (AC1 — offline replay dedup without
-    //      idempotency key). Re-fetch full row so toResponse() has all columns.
+    //      idempotency key). Re-fetch full row (with the skill/template embeds —
+    //      Story 4.5) so toResponse() has all columns.
     if (row.current_step === dto.step) {
       const { data: fullRow, error: fullRowError } = await admin
         .from('jobs')
-        .select('*')
+        .select(JOB_COLUMNS)
         .eq('id', jobId)
         .eq('tenant_id', user.tenantId)
         .single<JobRow>();
@@ -229,6 +234,16 @@ export class WorkflowService {
       });
     }
 
-    return this.jobsService.toResponse(rows[0]);
+    return this.jobsService.toResponse(
+      // The RPC returns bare job rows; re-fetch with the skill/template embeds
+      // so the advance response carries the full read shape (Story 4.5). The
+      // response keeps the RPC's row as fallback if the re-fetch fails.
+      await this.jobsService.refetchWithEmbeds(
+        admin,
+        jobId,
+        user.tenantId,
+        rows[0],
+      ),
+    );
   }
 }

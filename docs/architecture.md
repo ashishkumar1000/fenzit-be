@@ -101,7 +101,8 @@ See [data-models.md](./data-models.md#atomic-rpcs) for the full RPC catalog.
 
 **AR-9** — `idempotency_log` Postgres table (`UNIQUE(key, tenant_id)`);
 `IdempotencyInterceptor` reads `X-Idempotency-Key`, short-circuits on hit.
-`pg_cron` cleanup runs hourly (migration 12, added in Story 4.2).
+`pg_cron` cleanup runs hourly (migration 12 — it shipped with the idempotency
+machinery in Story 3.5/3.6, predating Story 4.2).
 
 ### Error Handling (`src/common/filters/`)
 
@@ -188,7 +189,7 @@ path notifies as specified.
   guarded by `IdempotencyInterceptor` + `idempotency_log` table for 24h replay
   protection.
 - **Conflict resolution:** Attachment confirm uses the `confirm_attachment`
-  RPC (migration 13/14) — server-side, not client-driven.
+  RPC (migrations 16 and 20/21) — server-side, not client-driven.
 
 ## File Upload Architecture
 
@@ -260,8 +261,10 @@ rules:
 
 ## Epic Coverage Map
 
-Per `_bmad-output/planning-artifacts/epics.md`, all four planned epics are
-delivered:
+The original four epics (foundation, customers, job lifecycle, offline sync)
+are delivered; the skill-driven workflow redesign (Epic 4 in the current
+meta-repo plan, Stories 4.1–4.5) re-cut the skills model and the workflow
+engine on top of them:
 
 | Epic | Title                              | Module(s)            | FRs | Status |
 |-----:|------------------------------------|----------------------|-----|--------|
@@ -269,10 +272,17 @@ delivered:
 | 2 | Customer Management                 | `customers/`         | FR-13..15 | ✅ delivered |
 | 3 | Job Lifecycle                      | `jobs/`, `storage/`, `webhooks/` | FR-6..12 | ✅ delivered |
 | 4 | Offline-First Mobile Sync           | `sync/`, plus `idempotency_log` + `pg_cron` cleanup | FR-16..18 | ✅ delivered |
+| 4 (redesign) | Skill-driven workflow (Stories 4.1–4.5) | `skills/` (global catalog), `jobs/` (skill-tagged + stamped template), `workflow_templates` engine, sync payload + job-history skillName | FR-6..12 re-cut | ✅ delivered |
 
-No further epics are planned in the current planning artifacts. Retrospectives
-exist for Epic 1 (`epic-1-retro-2026-06-20.md`) and Epic 2
-(`epic-2-retro-2026-06-21.md`); no Epic 3/4 retro yet.
+Story 4.1 moved skills to a global developer-seeded catalog; Story 4.2 cut
+technician skills over to it; Story 4.3 introduced `workflow_templates` and
+skill-tagged jobs; Story 4.4 shipped the generic workflow engine (template
+steps, flags removed, attachment auto-advance); Story 4.5 widened every job
+read surface with `skill` + `workflowTemplate` + `currentStepIndex` and
+finished the docs/test cutover. Retrospectives exist for Epic 1
+(`epic-1-retro-2026-06-20.md`) and Epic 2 (`epic-2-retro-2026-06-21.md`); no
+retro yet for the original Epic 3 (job lifecycle), the original Epic 4
+(offline sync), or the Epic 4 redesign stories (4.1–4.5).
 
 ## FR Coverage (all 18 FRs)
 
@@ -295,7 +305,7 @@ exist for Epic 1 (`epic-1-retro-2026-06-20.md`) and Epic 2
 | FR-15 Customer detail | 2 | `customers.controller.ts` (GET /:id) |
 | FR-16 Delta sync | 4 | `sync/sync.controller.ts`, `sync.service.ts`, `idx_jobs_tenant_updated_at` |
 | FR-17 Idempotent replay | 4 | `IdempotencyInterceptor`, `idempotency_log`, `pg_cron` (migration 12) |
-| FR-18 Conflict resolution | 4 | `confirm_attachment` (migration 13), conflict-fix re-issue (migration 14) |
+| FR-18 Conflict resolution | 4 | `confirm_attachment` (migration 16), conflict-fix re-issue (migrations 20/21) |
 
 ## Known Gaps / Drift (pre-launch blockers)
 

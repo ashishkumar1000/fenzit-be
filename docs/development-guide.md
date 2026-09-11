@@ -132,6 +132,21 @@ bun run test:e2e -- rls-isolation
 4. Add a TS wrapper in the relevant service using `supabase.rpc('<name>', { ... })`.
 5. Add a unit test for the wrapper and an e2e test for the behavior.
 
+### Seed a new skill
+
+Every seeded skill MUST ship its own `workflow_templates` row (same migration
+or a paired one) — `create_job_with_log` resolves the skill's latest template
+version at insert time, and a skill without any template row makes job
+creation 500. The template's `steps` JSONB must satisfy the shape CHECK:
+each entry needs `key`, `label` (plus the step-attribute fields
+`requires_photo` / `requires_signature` / `sets_status` / `advances_on`); the
+engine parses this list on every advance, so a malformed step list breaks the
+job's workflow, not just its display. Reuse the v1 seed chain
+(migration `20260911000002`) as the reference shape. Also pin the new skill's
+`skills.sort_order` (UNIQUE) — `GET /skills` orders by it, so it determines
+the position the skill takes in the picker; all seed rows share one `now()`,
+so `created_at` cannot order them.
+
 ### Verify RLS
 
 ```bash

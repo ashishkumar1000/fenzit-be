@@ -35,7 +35,9 @@ fenzit-be/
 │   │   ├── auth.service.ts              # OTP issuance, JWT mint, invite, tenant upsert
 │   │   ├── dto/                         # SendOtpDto, VerifyOtpDto, SetupCompanyDto,
 │   │   │                                #   InviteTechnicianDto
-│   │   └── enums/                       # (skill type enum, etc.)
+│   │   ├── in-memory-otp-session.store.ts  # cache-manager OTP session store
+│   │   ├── otp-delivery.provider.ts     # Delivery-provider interface
+│   │   └── mock-otp-delivery.provider.ts # Phase-1 console.log OTP delivery (W1)
 │   │
 │   ├── customers/                       # Customer management (owner only)
 │   │   ├── customers.module.ts
@@ -49,14 +51,16 @@ fenzit-be/
 │   │   │                                #   POST /:id/workflow, /:id/attachments, /:id/attachments/:uploadId/confirm
 │   │   ├── jobs.service.ts              # createJob, listJobs (cursor paginated,
 │   │   │                                #   IST-day filter), getJobDetail, updateJob
-│   │   ├── workflow.service.ts          # advanceWorkflowStep (RPC: rpc_advance_workflow_step)
+│   │   ├── workflow.service.ts          # advanceWorkflowStep (RPC: advance_workflow_step)
 │   │   ├── attachments.service.ts       # Two-phase R2 upload (request → PUT → confirm)
 │   │   ├── dto/                         # CreateJobDto, UpdateJobDto, ListJobsQueryDto,
 │   │   │                                #   AdvanceWorkflowDto, UploadAttachmentDto,
 │   │   │                                #   ConfirmAttachmentDto
-│   │   └── enums/                       # JobStatus, WorkflowStep, JobPriority, JobListScope
+│   │   └── enums/                       # JobStatus, JobPriority, JobListScope
+│   │   │                                #   (the WorkflowStep enum is gone — Story 4.4
+│   │   │                                #   made steps template data, not an enum)
 │   │
-│   ├── skills/                          # Global skills catalog (read-only; Story 4.2)
+│   ├── skills/                          # Global skills catalog (read-only; Story 4.1)
 │   │   ├── skills.module.ts
 │   │   ├── skills.controller.ts         # GET /api/v1/skills (POST/DELETE removed in 4.2)
 │   │   └── skills.service.ts            # listGlobalSkills (minted-JWT read)
@@ -100,7 +104,7 @@ fenzit-be/
 │       └── health.controller.ts         # GET /health (excluded from /api/v1 prefix)
 │
 ├── supabase/                            # Co-located Postgres migrations (see data-models.md)
-│   └── migrations/                      # 22 migrations, numbered YYYYMMDDhhmmss_*.sql
+│   └── migrations/                      # 38 migrations, numbered YYYYMMDDhhmmss_*.sql
 │
 ├── test/                                # E2E + integration test suites
 │   ├── jest-e2e.json                    # Jest config for e2e
@@ -109,10 +113,13 @@ fenzit-be/
 │   ├── auth.integration.spec.ts         # OTP + JWT + invite
 │   ├── company.e2e-spec.ts              # Tenant setup
 │   ├── customers.e2e-spec.ts            # Customer CRUD
-│   ├── invite.e2e-spec-spec.ts          # Invite flow
+│   ├── invite.e2e-spec.ts               # Invite flow
 │   ├── jobs.e2e-spec.ts                 # Job CRUD + workflow + attachments
-│   ├── skills.e2e-spec.ts               # Skill CRUD
+│   ├── skills.e2e-spec.ts               # Global skills catalog reads + CRUD-404 removal
+│   │   │                                #   guards (Story 4.2 — read-only surface now)
 │   ├── sync.e2e-spec.ts                 # Delta sync endpoint
+│   ├── notifications.e2e-spec.ts        # Owner notifications (Story 3.1)
+│   ├── places.e2e-spec.ts               # Address suggest/resolve (Story 1.1)
 │   ├── idempotency.e2e-spec.ts          # Idempotency-Key replay
 │   ├── conflict-resolution.e2e-spec.ts  # Server-side conflict resolution
 │   └── integration/

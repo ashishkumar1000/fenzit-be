@@ -148,6 +148,13 @@ columns were dropped in migration 37 (Story 4.4) — photo/signature requirement
 live on the template steps (`requires_photo` / `requires_signature`), not on
 the job.
 
+**Read surface (Story 4.5):** job reads join the stamp out via FK embeds —
+`skills(id, name)` and `workflow_templates(version, steps)` — and expose
+`skill` + `workflowTemplate` (camelCase steps) + the derived 0-based
+`currentStepIndex` (`null` while fresh) on every job read surface, including
+the sync payload and the customer job-history `skillName`. The embeds are
+plain left joins (no `!inner`), so a job whose skill was archived still reads.
+
 ### `activity_logs`
 
 Append-only audit trail for job mutations. One row per state transition.
@@ -239,8 +246,9 @@ created_at    TIMESTAMPTZ
 UNIQUE (key, user_id)        -- actually (key, tenant_id) per AR-9
 ```
 
-`pg_cron` cleanup job runs hourly (migration 12, Story 4.2) and deletes rows
-older than 24h. Without this job the table grows without bound.
+`pg_cron` cleanup job runs hourly (migration 12 — shipped with the idempotency
+machinery in Story 3.5/3.6, predating Story 4.2) and deletes rows older than
+24h. Without this job the table grows without bound.
 
 > **Edge case (W3):** Idempotency dedup is **read-through** — two genuinely
 > concurrent requests with the same key can both miss the lookup and both

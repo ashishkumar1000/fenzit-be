@@ -707,6 +707,8 @@ describe('Customers (e2e)', () => {
         job_number: 'JOB-1',
         scheduled_start: '2026-06-01T00:00:00Z',
         status: 'completed',
+        // Story 4.5 — the FK embed the history select now reads.
+        skills: { name: 'AC Service' },
       };
       mockDetail(
         { data: detailRow, error: null },
@@ -728,6 +730,7 @@ describe('Customers (e2e)', () => {
             jobNumber: 'JOB-1',
             scheduledStart: '2026-06-01T00:00:00Z',
             status: 'completed',
+            skillName: 'AC Service',
           },
         ],
         nextCursor: null,
@@ -755,6 +758,8 @@ describe('Customers (e2e)', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
+        // Story 4.5 — the FK embed the history select now reads.
+        skills: { name: `Skill ${i}` },
       }));
       mockDetail({ data: detailRow, error: null }, { data: rows, error: null });
 
@@ -790,6 +795,7 @@ describe('Customers (e2e)', () => {
           jobNumber: rows[20].job_number,
           scheduledStart: rows[20].scheduled_start,
           status: rows[20].status,
+          skillName: 'Skill 20',
         },
       ]);
       expect(page2.jobHistory.hasMore).toBe(false);

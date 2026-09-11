@@ -6,6 +6,18 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { SyncJobDto, SyncResponseDto } from './dto/sync-response.dto';
+import {
+  parseTemplateSteps,
+  stepToResponse,
+  currentStepIndexForRead,
+  normalizeSkillEmbed,
+} from '../jobs/workflow-template.model';
+import { JOB_COLUMNS } from '../jobs/jobs.service';
+
+// Composed from the shared JOB_COLUMNS (Story 4.5) so a future job column can
+// never silently miss the sync payload — only the sync-specific relation
+// embeds (customer + attachments) are added on top of the canonical literal.
+const SYNC_JOB_COLUMNS = `${JOB_COLUMNS}, customers!inner(name, address), attachments(id, attachment_type, size_bytes, created_at)`;
 
 @Injectable()
 export class SyncService {
@@ -25,14 +37,7 @@ export class SyncService {
 
     let query = client
       .from('jobs')
-      .select(
-        `id, job_number, tenant_id, customer_id, technician_id,
-         service_location, scheduled_start, scheduled_end,
-         status, current_step, priority,
-         description, notes_for_technician, created_at, updated_at,
-         customers!inner(name, address),
-         attachments(id, attachment_type, size_bytes, created_at)`,
-      )
+      .select(SYNC_JOB_COLUMNS)
       .eq('tenant_id', user.tenantId)
       .eq('technician_id', user.userId);
 
@@ -49,33 +54,54 @@ export class SyncService {
       throw new InternalServerErrorException('Sync query failed');
     }
 
-    const jobs: SyncJobDto[] = (data ?? []).map((row: any) => ({
-      id: row.id,
-      jobNumber: row.job_number,
-      tenantId: row.tenant_id,
-      customerId: row.customer_id,
-      technicianId: row.technician_id,
-      serviceLocation: row.service_location,
-      scheduledStart: row.scheduled_start,
-      scheduledEnd: row.scheduled_end ?? null,
-      status: row.status,
-      currentStep: row.current_step ?? null,
-      priority: row.priority,
-      description: row.description ?? null,
-      notesForTechnician: row.notes_for_technician ?? null,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      customer: {
-        name: row.customers?.name ?? '',
-        address: row.customers?.address ?? null,
-      },
-      attachments: (row.attachments ?? []).map((a: any) => ({
-        id: a.id,
-        attachmentType: a.attachment_type,
-        sizeBytes: a.size_bytes,
-        createdAt: a.created_at,
-      })),
-    }));
+    // Story 4.5 — skill/template embeds map the same way the job responses do
+    // (null on missing/unreadable embeds; reads are soft, never a 500). The
+    // to-one skill embed can surface as an object or array per PostgREST.
+    const jobs: SyncJobDto[] = (data ?? []).map((row: any) => {
+      const skillRaw = normalizeSkillEmbed(row.skills);
+      const steps = row.workflow_templates
+        ? parseTemplateSteps(row.workflow_templates.steps)
+        : null;
+      const workflowTemplate =
+        steps && row.workflow_templates
+          ? {
+              version: row.workflow_templates.version,
+              steps: steps.map(stepToResponse),
+            }
+          : null;
+      return {
+        id: row.id,
+        jobNumber: row.job_number,
+        tenantId: row.tenant_id,
+        customerId: row.customer_id,
+        technicianId: row.technician_id,
+        serviceLocation: row.service_location,
+        scheduledStart: row.scheduled_start,
+        scheduledEnd: row.scheduled_end ?? null,
+        status: row.status,
+        currentStep: row.current_step ?? null,
+        priority: row.priority,
+        description: row.description ?? null,
+        notesForTechnician: row.notes_for_technician ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        customer: {
+          name: row.customers?.name ?? '',
+          address: row.customers?.address ?? null,
+        },
+        attachments: (row.attachments ?? []).map((a: any) => ({
+          id: a.id,
+          attachmentType: a.attachment_type,
+          sizeBytes: a.size_bytes,
+          createdAt: a.created_at,
+        })),
+        skill: skillRaw ? { id: skillRaw.id, name: skillRaw.name } : null,
+        workflowTemplate,
+        currentStepIndex: steps
+          ? currentStepIndexForRead(steps, row.current_step ?? null)
+          : null,
+      };
+    });
 
     return { jobs, serverTime };
   }

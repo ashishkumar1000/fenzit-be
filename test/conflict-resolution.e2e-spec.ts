@@ -19,6 +19,7 @@ import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import { StorageService } from '../src/storage/storage.service';
+import { V1_TEMPLATE } from './fixtures/v1-template';
 
 describe('Conflict Resolution (e2e) — Story 4.3', () => {
   let app: NestFastifyApplication;
@@ -56,15 +57,8 @@ describe('Conflict Resolution (e2e) — Story 4.3', () => {
   };
 
   // The v1 seed template chain — the forward-advance path parses the stamped
-  // template, so its mock row must carry the embed.
-  const V1_TEMPLATE_STEPS = [
-    { key: 'on_my_way', label: 'On My Way', requires_photo: false, requires_signature: false, sets_status: 'in_progress', advances_on: null },
-    { key: 'arrived', label: 'Arrived', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-    { key: 'in_progress', label: 'In Progress', requires_photo: false, requires_signature: false, sets_status: null, advances_on: null },
-    { key: 'photos_uploaded', label: 'Photos Uploaded', requires_photo: true, requires_signature: false, sets_status: null, advances_on: 'photo_confirm' },
-    { key: 'signature_captured', label: 'Signature Captured', requires_photo: false, requires_signature: true, sets_status: null, advances_on: null },
-    { key: 'completed', label: 'Completed', requires_photo: false, requires_signature: false, sets_status: 'completed', advances_on: null },
-  ];
+  // template, so its mock row must carry the embed. Shared fixture (Story 4.5).
+  const V1_TEMPLATE_STEPS = V1_TEMPLATE.steps;
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();

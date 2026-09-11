@@ -18,6 +18,70 @@ import { UpdateJobDto } from './dto/update-job.dto';
 import { JobStatus } from './enums/job-status.enum';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobPriority } from './enums/job-priority.enum';
+import {
+  parseTemplateSteps,
+  stepToResponse,
+  TemplateStep,
+} from './workflow-template.model';
+
+// The v1 seed chain (migration 20260911000002). src/ unit specs keep their own
+// inline copy — the shared copy lives at test/fixtures/v1-template.ts and is
+// out of jest's src rootDir boundary.
+const V1_STEPS: unknown = [
+  {
+    key: 'on_my_way',
+    label: 'On My Way',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: 'in_progress',
+    advances_on: null,
+  },
+  {
+    key: 'arrived',
+    label: 'Arrived',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'in_progress',
+    label: 'In Progress',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'photos_uploaded',
+    label: 'Photos Uploaded',
+    requires_photo: true,
+    requires_signature: false,
+    sets_status: null,
+    advances_on: 'photo_confirm',
+  },
+  {
+    key: 'signature_captured',
+    label: 'Signature Captured',
+    requires_photo: false,
+    requires_signature: true,
+    sets_status: null,
+    advances_on: null,
+  },
+  {
+    key: 'completed',
+    label: 'Completed',
+    requires_photo: false,
+    requires_signature: false,
+    sets_status: 'completed',
+    advances_on: null,
+  },
+];
+
+// The v1 steps as the API maps them (camelCase) — reused by exact-shape pins.
+const V1_STEPS_RESPONSE = (parseTemplateSteps(V1_STEPS) as TemplateStep[]).map(
+  stepToResponse,
+);
 
 describe('JobsService', () => {
   let service: JobsService;
@@ -70,6 +134,10 @@ describe('JobsService', () => {
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: '2026-06-21T00:00:00Z',
+    // Story 4.5 — the FK embeds every job read selects.
+    skill_id: 'skill-uuid-1',
+    skills: { id: 'skill-uuid-1', name: 'Plumbing' },
+    workflow_templates: { version: 1, steps: V1_STEPS },
   };
 
   const customerOk = {
@@ -107,16 +175,19 @@ describe('JobsService', () => {
     supabaseClientFactory = module.get(SupabaseClientFactory);
   });
 
-  // Builds a select().eq()...single() chain with `eqCount` eq() calls.
+  // Builds a select().eq()...single()/maybeSingle() chain with `eqCount` eq()
+  // calls. The terminator matches the service call under test.
   function singleChain(
     result: { data: unknown; error: unknown },
     eqCount: number,
+    terminator: 'single' | 'maybeSingle' = 'single',
   ) {
     const single = jest.fn().mockResolvedValue(result);
     // `eqs` holds the eq mocks in chain-call order (eqs[0] = first .eq called),
     // so tests can assert the tenant_id filter is actually applied.
     const eqs: jest.Mock[] = [];
-    let node: Record<string, unknown> = { single };
+    let node: Record<string, unknown> =
+      terminator === 'single' ? { single } : { maybeSingle: single };
     for (let i = 0; i < eqCount; i++) {
       const inner = node;
       const eq = jest.fn().mockReturnValue(inner);
@@ -124,7 +195,7 @@ describe('JobsService', () => {
       node = { eq };
     }
     const select = jest.fn().mockReturnValue(node);
-    return { select, eqs };
+    return { select, eqs, single };
   }
 
   // Story 4.3 — skills-catalog validation chain: select().eq(id).eq(is_active)
@@ -147,12 +218,14 @@ describe('JobsService', () => {
   }
 
   // admin.from('customers') → 2 eq (id, tenant); from('users') → 3 eq (id, tenant, role);
-  // from('skills') → 2 eq (id, is_active).
+  // from('skills') → 2 eq (id, is_active); from('jobs') → 2 eq (id, tenant) +
+  // maybeSingle — the Story 4.5 post-RPC embed re-fetch (refetchWithEmbeds).
   function mockAdmin(opts: {
     customer?: { data: unknown; error: unknown };
     technician?: { data: unknown; error: unknown };
     skill?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
+    refetch?: { data: unknown; error: unknown };
   }) {
     const chains: Record<string, { select: jest.Mock; eqs: jest.Mock[] }> = {};
     const from = jest.fn((table: string) => {
@@ -167,6 +240,14 @@ describe('JobsService', () => {
       if (table === 'skills') {
         chains.skills = skillsChain(opts.skill ?? skillOk);
         return chains.skills;
+      }
+      if (table === 'jobs') {
+        chains.jobs = singleChain(
+          opts.refetch ?? { data: jobRow, error: null },
+          2,
+          'maybeSingle',
+        );
+        return chains.jobs;
       }
       throw new Error(`unexpected table ${table}`);
     });
@@ -246,7 +327,9 @@ describe('JobsService', () => {
     expect(callArg.p_year).toBeGreaterThanOrEqual(2026);
   });
 
-  it('carries completed_at from the RPC row through toResponse (create route)', async () => {
+  it('carries completed_at from the re-fetched row through toResponse (create route)', async () => {
+    // Story 4.5 — the response row is the post-RPC embed re-fetch, not the
+    // bare RPC row; the completed_at carry-over rides that re-fetch.
     mockAdmin({
       rpc: {
         data: [
@@ -258,12 +341,67 @@ describe('JobsService', () => {
         ],
         error: null,
       },
+      refetch: {
+        data: {
+          ...jobRow,
+          status: JobStatus.COMPLETED,
+          completed_at: '2026-06-22T10:00:00Z',
+        },
+        error: null,
+      },
     });
 
     const result = await service.createJob(owner, dtoExisting);
 
     expect(result.status).toBe('completed');
     expect(result.completedAt).toBe('2026-06-22T10:00:00Z');
+  });
+
+  it('falls back to the RPC row when the embed re-fetch fails (write already succeeded — never a 500)', async () => {
+    // A write RPC returns a BARE job row (RETURNS SETOF jobs) — no embeds.
+    const bareRpcRow = {
+      ...jobRow,
+      skill_id: undefined,
+      skills: undefined,
+      workflow_templates: undefined,
+    };
+    mockAdmin({
+      rpc: {
+        data: [
+          {
+            ...bareRpcRow,
+            status: JobStatus.COMPLETED,
+            completed_at: '2026-06-22T10:00:00Z',
+          },
+        ],
+        error: null,
+      },
+      refetch: { data: null, error: { code: 'XX000' } },
+    });
+
+    const result = await service.createJob(owner, dtoExisting);
+
+    // The RPC row's own fields still carry; the embeds degrade to null.
+    expect(result.status).toBe('completed');
+    expect(result.completedAt).toBe('2026-06-22T10:00:00Z');
+    expect(result.skill).toBeNull();
+    expect(result.workflowTemplate).toBeNull();
+    expect(result.currentStepIndex).toBeNull();
+  });
+
+  it('maps the stamped skill + template + currentStepIndex onto the create response (Story 4.5)', async () => {
+    mockAdmin({ refetch: { data: { ...jobRow }, error: null } });
+
+    const result = await service.createJob(owner, dtoExisting);
+
+    expect(result.skill).toEqual({ id: 'skill-uuid-1', name: 'Plumbing' });
+    expect(result.workflowTemplate).toEqual({
+      version: 1,
+      steps: V1_STEPS_RESPONSE,
+    });
+    // Fresh job (current_step null) → null index, full steps list still present.
+    expect(result.currentStepIndex).toBeNull();
+    expect(result.workflowTemplate?.steps).toHaveLength(6);
   });
 
   it('throws 404 when the technician is not in the tenant', async () => {
@@ -405,6 +543,57 @@ describe('JobsService', () => {
     expect(response.completedAt).toBeUndefined();
   });
 
+  it('toResponse soft read: an unreadable template embed maps to null fields, never a throw (Story 4.5)', () => {
+    // Corrupt steps (unreachable under the DB validator) must not 500 a read —
+    // only the advance path guards corrupt template data strictly.
+    const corruptRow = {
+      ...jobRow,
+      workflow_templates: { version: 1, steps: 'garbage' },
+    } as unknown as Parameters<JobsService['toResponse']>[0];
+
+    const response = service.toResponse(corruptRow);
+
+    expect(response.workflowTemplate).toBeNull();
+    expect(response.currentStepIndex).toBeNull();
+    // The skill embed is independent — it still maps.
+    expect(response.skill).toEqual({ id: 'skill-uuid-1', name: 'Plumbing' });
+  });
+
+  it('toResponse soft read: a missing skill/template embed maps to null (Story 4.5)', () => {
+    const bareRow = {
+      ...jobRow,
+      skills: null,
+      workflow_templates: null,
+    } as unknown as Parameters<JobsService['toResponse']>[0];
+
+    const response = service.toResponse(bareRow);
+
+    expect(response.skill).toBeNull();
+    expect(response.workflowTemplate).toBeNull();
+    expect(response.currentStepIndex).toBeNull();
+  });
+
+  it('toResponse maps a mid-workflow current_step to its 0-based template index (Story 4.5)', () => {
+    const response = service.toResponse({
+      ...jobRow,
+      current_step: 'arrived',
+    });
+
+    expect(response.currentStepIndex).toBe(1);
+  });
+
+  it('toResponse maps the skill embed regardless of array shape (Story 4.5)', () => {
+    const arrayEmbedRow = {
+      ...jobRow,
+      skills: [{ id: 'skill-uuid-1', name: 'Plumbing' }],
+    } as unknown as Parameters<JobsService['toResponse']>[0];
+
+    expect(service.toResponse(arrayEmbedRow).skill).toEqual({
+      id: 'skill-uuid-1',
+      name: 'Plumbing',
+    });
+  });
+
   describe('listJobs', () => {
     const technician: RequestUser = {
       userId: 'tech-self',
@@ -444,6 +633,13 @@ describe('JobsService', () => {
       expect(builder.select).toHaveBeenCalledWith(
         expect.stringContaining('completed_at'),
       );
+      // Story 4.5 — the skill/template embeds ride the same select.
+      expect(builder.select).toHaveBeenCalledWith(
+        expect.stringContaining('skills(id, name)'),
+      );
+      expect(builder.select).toHaveBeenCalledWith(
+        expect.stringContaining('workflow_templates(version, steps)'),
+      );
       expect(builder.gte).toHaveBeenCalledWith(
         'scheduled_start',
         expect.any(String),
@@ -478,6 +674,10 @@ describe('JobsService', () => {
         notesForTechnician: null,
         createdAt: '2026-06-21T00:00:00Z',
         updatedAt: '2026-06-21T00:00:00Z',
+        // Story 4.5 — every list row carries the same skill/template shape.
+        skill: { id: 'skill-uuid-1', name: 'Plumbing' },
+        workflowTemplate: { version: 1, steps: V1_STEPS_RESPONSE },
+        currentStepIndex: null,
       });
       expect(result.hasMore).toBe(false);
       expect(result.nextCursor).toBeNull();
@@ -1124,6 +1324,56 @@ describe('JobsService', () => {
       expect(result.completedAt).toBe('2026-06-23T05:00:00Z');
     });
 
+    it('selects the skill/template embeds and maps them onto the detail response (Story 4.5)', async () => {
+      const { chains } = mockDetailAdmin({
+        job: { data: { ...jobRow, current_step: 'arrived' }, error: null },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      expect(chains.jobs.select).toHaveBeenCalledWith(
+        expect.stringContaining('skills(id, name)'),
+      );
+      expect(chains.jobs.select).toHaveBeenCalledWith(
+        expect.stringContaining('workflow_templates(version, steps)'),
+      );
+      expect(result.skill).toEqual({ id: 'skill-uuid-1', name: 'Plumbing' });
+      expect(result.workflowTemplate).toEqual({
+        version: 1,
+        steps: V1_STEPS_RESPONSE,
+      });
+      // Mid-workflow: current_step = steps[1] → 0-based index 1.
+      expect(result.currentStepIndex).toBe(1);
+    });
+
+    it('still returns the skill name when the skill has been archived (soft read, Story 4.5)', async () => {
+      // The read surface uses a PLAIN left embed — no `!inner` and no
+      // is_active filter — so an archived/inactive skill's name keeps
+      // flowing to job reads (the frozen I/O matrix's soft-read row):
+      // the job is never dropped from a list and a detail read never 404s
+      // over an inactive skill.
+      const { chains } = mockDetailAdmin({
+        job: {
+          data: {
+            ...jobRow,
+            current_step: null,
+            skills: { id: 'skill-uuid-1', name: 'Plumbing (archived)' },
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      expect(chains.jobs.select).toHaveBeenCalledWith(
+        expect.not.stringContaining('!inner'),
+      );
+      expect(result.skill).toEqual({
+        id: 'skill-uuid-1',
+        name: 'Plumbing (archived)',
+      });
+    });
+
     it('orders the activity log oldest-first (created_at ASC)', async () => {
       const { activityOrder } = mockDetailAdmin({});
 
@@ -1307,6 +1557,37 @@ describe('JobsService', () => {
       const rpcArgs = rpc.mock.calls[0][1] as Record<string, unknown>;
       expect(rpcArgs).not.toHaveProperty('p_require_completion_photo');
       expect(rpcArgs).not.toHaveProperty('p_require_completion_signature');
+    });
+
+    it('maps the stamped skill + template + currentStepIndex through the post-RPC embed re-fetch (Story 4.5)', async () => {
+      // The RPC row is bare (write RPCs return plain job rows — no embeds);
+      // the re-fetch supplies them. Mirrors the create-route tests.
+      const bareRpcRow = {
+        ...jobRow,
+        description: 'edited',
+        skill_id: undefined,
+        skills: undefined,
+        workflow_templates: undefined,
+      };
+      mockAdmin({
+        rpc: { data: [bareRpcRow], error: null },
+        refetch: { data: { ...jobRow, description: 'edited' }, error: null },
+      });
+
+      const result = await service.updateJob(owner, 'job-uuid', {
+        description: 'edited',
+        priority: JobPriority.URGENT,
+      });
+
+      expect(result.description).toBe('edited');
+      expect(result.skill).toEqual({ id: 'skill-uuid-1', name: 'Plumbing' });
+      expect(result.workflowTemplate).toEqual({
+        version: 1,
+        steps: V1_STEPS_RESPONSE,
+      });
+      // Fresh job (current_step null) → null index, full steps list present.
+      expect(result.currentStepIndex).toBeNull();
+      expect(result.workflowTemplate?.steps).toHaveLength(6);
     });
 
     it('reassigns to a valid technician: validates the technician then calls the RPC', async () => {

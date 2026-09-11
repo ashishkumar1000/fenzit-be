@@ -540,6 +540,8 @@ describe('CustomersService', () => {
       job_number: `JOB-${n}`,
       scheduled_start: `2026-0${n}-01T00:00:00Z`,
       status: 'completed',
+      // Story 4.5 — the skill name embed every history row selects.
+      skills: { name: `Skill ${n}` },
     });
 
     // Customer fetch terminal is .single() after two .eq() calls (id, tenant_id).
@@ -625,20 +627,58 @@ describe('CustomersService', () => {
           jobNumber: row2.job_number,
           scheduledStart: row2.scheduled_start,
           status: row2.status,
+          skillName: `Skill 2`,
         },
         {
           id: row1.id,
           jobNumber: row1.job_number,
           scheduledStart: row1.scheduled_start,
           status: row1.status,
+          skillName: `Skill 1`,
         },
       ]);
+    });
+
+    it('maps a missing skill embed to skillName null (soft read — a NULL skill_id row), never a dropped row', async () => {
+      // A job row created before the skill_id column existed (migration 36)
+      // carries a NULL skill_id — the plain left embed yields no skills value.
+      // The row must still read, with a null label.
+      mockDetail(
+        { data: dbRow, error: null },
+        { data: [{ ...jobRow(1), skills: null }], error: null },
+      );
+
+      const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(result.jobHistory.data).toEqual([
+        {
+          id: '00000000-0000-4000-8000-000000000101',
+          jobNumber: 'JOB-1',
+          scheduledStart: '2026-01-01T00:00:00Z',
+          status: 'completed',
+          skillName: null,
+        },
+      ]);
+    });
+
+    it('normalizes the array-surfaced skill embed to a plain name (PostgREST to-one array shape)', async () => {
+      mockDetail(
+        { data: dbRow, error: null },
+        {
+          data: [{ ...jobRow(1), skills: [{ name: 'Skill 1' }] }],
+          error: null,
+        },
+      );
+
+      const result = await service.getCustomerDetail(ownerUser, CUSTOMER_ID);
+
+      expect(result.jobHistory.data[0].skillName).toBe('Skill 1');
     });
 
     it('should scope the job-history query to the tenant and customer, sorted scheduled_start/id DESC', async () => {
       // createAdmin() bypasses RLS, so the .eq('tenant_id')/.eq('customer_id')
       // filters are the ONLY isolation — this pins them (and the sort).
-      const { eqArgs, orderArgs } = mockDetail(
+      const { eqArgs, orderArgs, jobsBuilder } = mockDetail(
         { data: dbRow, error: null },
         { data: [], error: null },
       );
@@ -651,6 +691,10 @@ describe('CustomersService', () => {
         ['scheduled_start', { ascending: false }],
         ['id', { ascending: false }],
       ]);
+      // Story 4.5 — the history select carries the skill-name embed.
+      expect(jobsBuilder.select).toHaveBeenCalledWith(
+        expect.stringContaining('skills(name)'),
+      );
     });
 
     it('should return a nextCursor and hasMore=true when more than 20 jobs exist', async () => {
@@ -713,6 +757,7 @@ describe('CustomersService', () => {
         job_number: `JOB-${i}`,
         scheduled_start: `2026-01-${(21 - i).toString().padStart(2, '0')}T00:00:00Z`,
         status: 'completed',
+        skills: { name: `Skill ${i}` },
       }));
       mockDetail({ data: dbRow, error: null }, { data: rows, error: null });
 
@@ -737,6 +782,7 @@ describe('CustomersService', () => {
           jobNumber: rows[20].job_number,
           scheduledStart: rows[20].scheduled_start,
           status: rows[20].status,
+          skillName: `Skill 20`,
         },
       ]);
       expect(page2.jobHistory.hasMore).toBe(false);

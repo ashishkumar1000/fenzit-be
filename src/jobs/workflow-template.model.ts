@@ -42,8 +42,14 @@ function parseStep(raw: unknown): TemplateStep | null {
   const label = raw['label'];
   if (typeof label !== 'string' || label.trim().length === 0) return null;
 
-  const { requires_photo: requiresPhoto, requires_signature: requiresSignature } = raw;
-  if (typeof requiresPhoto !== 'boolean' || typeof requiresSignature !== 'boolean') {
+  const {
+    requires_photo: requiresPhoto,
+    requires_signature: requiresSignature,
+  } = raw;
+  if (
+    typeof requiresPhoto !== 'boolean' ||
+    typeof requiresSignature !== 'boolean'
+  ) {
     return null;
   }
 
@@ -143,4 +149,63 @@ export function setsStatusOf(
  */
 export function photoConfirmStep(steps: TemplateStep[]): TemplateStep | null {
   return steps.find((s) => s.advances_on === 'photo_confirm') ?? null;
+}
+
+/**
+ * One template step as exposed in job responses — camelCase (Story 4.5),
+ * matching the rest of the job payloads. Values mirror TemplateStep 1:1.
+ */
+export interface WorkflowStepResponse {
+  key: string;
+  label: string;
+  requiresPhoto: boolean;
+  requiresSignature: boolean;
+  setsStatus: TemplateStep['sets_status'];
+  advancesOn: TemplateStep['advances_on'];
+}
+
+/** Story 4.5 — camelCase projection of a template step for API responses. */
+export function stepToResponse(step: TemplateStep): WorkflowStepResponse {
+  return {
+    key: step.key,
+    label: step.label,
+    requiresPhoto: step.requires_photo,
+    requiresSignature: step.requires_signature,
+    setsStatus: step.sets_status,
+    advancesOn: step.advances_on,
+  };
+}
+
+/** The job's stamped workflow template — version + full ordered step chain. */
+export interface WorkflowTemplateResponse {
+  version: number;
+  steps: WorkflowStepResponse[];
+}
+
+/**
+ * PostgREST embeds a to-one related resource as an object, but can surface it
+ * as an array — normalize both shapes. Shared by every skill-embed read
+ * (job responses, customer job history, sync payload) so the call sites
+ * cannot drift.
+ */
+export function normalizeSkillEmbed<T>(
+  raw: T | T[] | null | undefined,
+): T | null {
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  return raw ?? null;
+}
+
+/**
+ * Story 4.5 — currentStepIndex for READ surfaces: 0-based index of the job's
+ * current step, null while the job is fresh (no advance yet) and null when the
+ * step is corrupt (absent from the template). Deliberately softer than the
+ * write path, where a corrupt current_step blocks every advance — reads never
+ * fail on data the DB validator makes unreachable.
+ */
+export function currentStepIndexForRead(
+  steps: TemplateStep[],
+  current: string | null,
+): number | null {
+  const idx = indexOfCurrent(steps, current);
+  return idx === -1 ? null : idx;
 }

@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import { StorageService } from '../src/storage/storage.service';
+import { V1_TEMPLATE } from './fixtures/v1-template';
 
 describe('Sync (e2e)', () => {
   let app: NestFastifyApplication;
@@ -35,6 +36,10 @@ describe('Sync (e2e)', () => {
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: updatedAt,
+    // Story 4.5 — the FK embeds the sync select now reads.
+    skill_id: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
+    skills: { id: '65f33480-b37e-47e2-a4a0-0155b156cc7a', name: 'AC Service' },
+    workflow_templates: V1_TEMPLATE,
     customers: { name: 'Ravi Kumar', address: '12 MG Road, Bengaluru' },
     attachments: [],
   });
@@ -128,6 +133,21 @@ describe('Sync (e2e)', () => {
         address: '12 MG Road, Bengaluru',
       });
       expect(body.jobs[0].attachments).toEqual([]);
+      // Story 4.5: the sync payload carries the skill + workflow template
+      // (steps in camelCase) + the 0-based step pointer (null while fresh).
+      expect(body.jobs[0].skill).toEqual({
+        id: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
+        name: 'AC Service',
+      });
+      expect(body.jobs[0].workflowTemplate).toMatchObject({
+        version: 1,
+        steps: expect.arrayContaining([
+          expect.objectContaining({ key: 'on_my_way' }),
+          expect.objectContaining({ key: 'completed' }),
+        ]),
+      });
+      expect(body.jobs[0].workflowTemplate.steps).toHaveLength(6);
+      expect(body.jobs[0].currentStepIndex).toBeNull();
       // Story 4.4: the completion flags are gone — the sync payload carries
       // only the step pointer (the stamped template drives photo/signature).
       expect(body.jobs[0]).not.toHaveProperty('requireCompletionPhoto');

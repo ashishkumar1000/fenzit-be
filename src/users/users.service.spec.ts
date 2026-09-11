@@ -489,9 +489,7 @@ describe('UsersService', () => {
           phone_number: '9222222222',
           status: 'invited',
           created_at: '2026-07-01T00:00:00Z',
-          user_skills: [
-            { skills: { id: 'skill-1', name: 'AC Repair' } },
-          ],
+          user_skills: [{ skills: { id: 'skill-1', name: 'AC Repair' } }],
         },
       ];
       mockAdmin({ technicians: { data: mixedStatusRows, error: null } });
@@ -703,6 +701,55 @@ describe('UsersService', () => {
         completed: 0,
         cancelled: 0,
       });
+    });
+
+    it('profile jobs select carries the skill/template embeds (Story 4.5)', async () => {
+      const { listBuilders } = mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+      });
+
+      await service.getMyProfile(technicianUser, {});
+
+      const cols = (listBuilders[0] as unknown as { selectCols: string })
+        .selectCols;
+      expect(cols).toContain('skills(id, name)');
+      expect(cols).toContain('workflow_templates(version, steps)');
+    });
+
+    it('profile job rows carry the widened Story 4.5 fields through the toResponse passthrough', async () => {
+      // toResponse is stubbed minimally elsewhere in this spec (the real
+      // mapping is covered in jobs.service.spec); here it returns the widened
+      // JobResponse shape so the pin is on THIS endpoint's wiring — the
+      // embedProfileJobs spread must not trim skill/workflowTemplate/
+      // currentStepIndex off the profile path.
+      jobsService.toResponse.mockImplementation(
+        (row: { id: string; current_step?: string | null }) => ({
+          id: row.id,
+          skill: { id: 'skill-uuid-1', name: 'Plumbing' },
+          workflowTemplate: { version: 1, steps: [] },
+          currentStepIndex: row.current_step ? 0 : null,
+        }),
+      );
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        jobsList: {
+          data: [jobRow('j2', 'in_progress', '2026-06-21T00:00:00Z')],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      if (result.role !== Role.TECHNICIAN)
+        throw new Error('expected technician shape');
+      const job = result.jobs.data[0];
+      expect(job.skill).toEqual({ id: 'skill-uuid-1', name: 'Plumbing' });
+      expect(job.workflowTemplate).toEqual({ version: 1, steps: [] });
+      // current_step is null on the fixture row → null index.
+      expect(job.currentStepIndex).toBeNull();
+      // The Story 3.9 technician/customer embeds still ride the same row.
+      expect(job.technician.id).toBe('tech-uuid');
+      expect(job.customer.id).toBe('cust-1');
     });
 
     it('scopes both the jobs list and job counts to the caller only', async () => {

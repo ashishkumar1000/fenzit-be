@@ -203,7 +203,9 @@ List the global skills catalog (developer-seeded; inactive rows excluded).
 Order is seed order, pinned by the `skills.sort_order` column — the FE picker
 renders it as-is.
 
-**Response 200:** `{ skills: [{ id, name }] }`
+**Response 200:** `{ skills: [{ id, name }] }` — `name` is the display label
+the FE renders (the skill's human-readable name; there is no separate
+display-name field).
 
 **Responses:**
 - `401` — Missing/invalid JWT
@@ -242,7 +244,7 @@ Cursor-paginated list & search. Page size **50**.
 Customer profile + paginated job history.
 
 **Responses:**
-- `200` — `{ customer: Customer, jobs: JobSummary[], nextCursor: string | null }`
+- `200` — `{ customer: Customer, jobHistory: { data: JobHistoryItem[], nextCursor: string | null, hasMore: boolean } }` — each `JobHistoryItem` carries `id, jobNumber, scheduledStart, status, skillName`
 - `400` — Company not set up / malformed id
 - `403` — Technician JWT
 - `404` — Customer not found (or in another tenant)
@@ -250,6 +252,32 @@ Customer profile + paginated job history.
 ---
 
 ### Jobs
+
+**Job read shape (Story 4.5):** every job read surface — create response, list
+items, detail, PATCH response, workflow advance response, profile job rows, and
+the offline-sync payload — carries three Story 4.5 fields alongside the
+existing ones:
+
+- `skill: { id, name } | null` — the job's tagged skills-catalog skill. A plain
+  left embed (no `!inner`, no `is_active` filter), so an archived skill's name
+  still renders on old jobs; a job created before the skill column existed
+  reads as `null`.
+- `workflowTemplate: { version, steps } | null` — the stamped template the job
+  advances through, as the FK embed. `steps` is the template's step list with
+  camelCase fields: `{ key, label, requiresPhoto, requiresSignature,
+  setsStatus, advancesOn }` (`key` stays snake_case — it is the step
+  identifier the advance API takes). `null` on the rare degraded re-fetch
+  (write succeeded, embed re-fetch failed — the write is never turned into a
+  500).
+- `currentStepIndex: number | null` — 0-based position of the job's
+  `current_step` in `workflowTemplate.steps`; `null` while the job is fresh
+  (no step recorded yet) and `null` on the second null case — a corrupt or
+  unknown `current_step` that does not appear in the template's steps (reads
+  are deliberately softer than the write path, which blocks such a step).
+  Derived per read — never stored.
+
+The customer job-history rows (`GET /api/v1/customers/:id` → `jobHistory`)
+gain `skillName: string | null` the same way.
 
 #### `POST /api/v1/jobs` `[Bearer JWT, Role: owner]`
 
@@ -264,11 +292,11 @@ scheduledEnd?, description?, priority?, notesForTechnician? }`
 (The Story 3.8 `requireCompletionPhoto`/`requireCompletionSignature` fields are
 GONE since Story 4.4 — photo/signature requirements are template step
 attributes. **Rollout order:** this is a breaking backend change — the app
-still sends `requireCompletion*` on create and PATCH until Story 4.5. The
-ValidationPipe whitelist silently strips the flags on this create path (201,
+still sends `requireCompletion*` on create and PATCH until its Epic 5 cutover.
+The ValidationPipe whitelist silently strips the flags on this create path (201,
 flags ignored); a PATCH carrying only the flags comes back `422` "No
 updatable fields provided". Deploy this backend first; the app must stop
-sending and reading the flags in its Story 4.5 change.)
+sending and reading the flags in its Epic 5 change.)
 
 **Responses:**
 - `201` — Job created (`status: scheduled`, `currentStep: null`)
@@ -336,6 +364,11 @@ Edit, reassign, or cancel a scheduled job.
 - `409` — Job is not modifiable in its current status (e.g. in_progress / completed)
 - `422` — Validation error
 
+**Story 4.4 note:** the removed `requireCompletion*` flags are silently
+stripped by the ValidationPipe whitelist here too — a PATCH body carrying
+**only** the flags leaves no updatable fields and comes back `422` "No
+updatable fields provided".
+
 #### `POST /api/v1/jobs/:id/workflow` `[Bearer JWT, Role: technician, Idempotent]`
 
 Advance a job through its workflow. **Technician must be the assigned
@@ -396,7 +429,7 @@ The client PUTs the raw bytes to `presignedPutUrl` directly against R2 —
 
 **Phase 2 of two-phase upload.** Confirm a completed R2 upload; the backend
 calls the `confirm_attachment` RPC which performs server-side conflict
-resolution (see `migration 13/14`). Since Story 4.4 the same RPC also
+resolution (see `migrations 16 and 20/21`). Since Story 4.4 the same RPC also
 **auto-advances** the workflow when the attachment is the job's **first
 confirmed photo** and the stamped template has a step with
 `advances_on: 'photo_confirm'` whose predecessor is the job's current step —

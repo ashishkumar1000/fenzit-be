@@ -14,7 +14,10 @@ describe('AuthController — realtime-token route', () => {
   };
 
   it('delegates to AuthService.mintRealtimeToken and returns its result', async () => {
-    const minted = { token: 'realtime-jwt', expiresAt: '2026-09-09T20:00:00.000Z' };
+    const minted = {
+      token: 'realtime-jwt',
+      expiresAt: '2026-09-09T20:00:00.000Z',
+    };
     const authService = {
       mintRealtimeToken: jest.fn().mockResolvedValue(minted),
     } as unknown as AuthService;
