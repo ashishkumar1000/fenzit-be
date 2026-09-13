@@ -626,5 +626,116 @@ describe('WorkflowService', () => {
         service.advanceWorkflowStep(tech, 'job-uuid', dto('on_my_way')),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
     });
+
+    // Story 7-4: Location validation tests
+    describe('location capture (Story 7-4)', () => {
+      it('with valid coordinates, passes them to RPC', async () => {
+        const { rpc } = mockAdmin({});
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+          latitude: 37.7749,
+          longitude: -122.4194,
+          accuracy: 5,
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_latitude: 37.7749,
+            p_longitude: -122.4194,
+            p_accuracy: 5,
+            p_location_captured: true,
+          }),
+        );
+      });
+
+      it('with missing latitude, marks location not captured', async () => {
+        const { rpc } = mockAdmin({});
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+          longitude: -122.4194,
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_latitude: null,
+            p_longitude: null,
+            p_location_captured: false,
+            p_reason: 'Location not provided',
+          }),
+        );
+      });
+
+      it('with zero latitude (equator), accepts as valid', async () => {
+        const { rpc } = mockAdmin({});
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+          latitude: 0,
+          longitude: 0,
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_latitude: 0,
+            p_longitude: 0,
+            p_location_captured: true,
+          }),
+        );
+      });
+
+      it('with out-of-range latitude, marks location invalid', async () => {
+        const { rpc } = mockAdmin({});
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+          latitude: 91,
+          longitude: 0,
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_location_captured: false,
+            p_reason: 'Location coordinates out of valid range',
+          }),
+        );
+      });
+
+      it('with accuracy > 100m, flags but still captures', async () => {
+        const { rpc } = mockAdmin({});
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+          latitude: 37.7749,
+          longitude: -122.4194,
+          accuracy: 150,
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_location_captured: true,
+            p_accuracy_flagged: true,
+            p_accuracy: 150,
+          }),
+        );
+      });
+
+      it('when job capture_location_on_steps is false, skips validation', async () => {
+        const { rpc } = mockAdmin({
+          job: {
+            data: {
+              ...baseJobRow,
+              capture_location_on_steps: false,
+            },
+            error: null,
+          },
+        });
+        await service.advanceWorkflowStep(tech, 'job-uuid', {
+          step: 'on_my_way',
+        } as any);
+        expect(rpc).toHaveBeenCalledWith(
+          'advance_workflow_step',
+          expect.objectContaining({
+            p_location_captured: null,
+          }),
+        );
+      });
+    });
   });
 });

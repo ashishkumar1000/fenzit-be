@@ -677,6 +677,8 @@ describe('JobsService', () => {
         notesForTechnician: null,
         createdAt: '2026-06-21T00:00:00Z',
         updatedAt: '2026-06-21T00:00:00Z',
+        // Story 7-1 — location capture toggle (defaults true).
+        captureLocationOnSteps: true,
         // Story 4.5 — every list row carries the same skill/template shape.
         skill: { id: 'skill-uuid-1', name: 'Plumbing' },
         workflowTemplate: { version: 1, steps: V1_STEPS_RESPONSE },
