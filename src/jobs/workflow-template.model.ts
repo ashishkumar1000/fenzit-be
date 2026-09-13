@@ -11,6 +11,7 @@ export interface TemplateStep {
   label: string;
   requires_photo: boolean;
   requires_signature: boolean;
+  requires_location: boolean;
   sets_status: JobStatus.IN_PROGRESS | JobStatus.COMPLETED | null;
   advances_on: 'photo_confirm' | null;
 }
@@ -53,6 +54,14 @@ function parseStep(raw: unknown): TemplateStep | null {
     return null;
   }
 
+  let requiresLocation = true;
+  if (raw['requires_location'] !== undefined && raw['requires_location'] !== null) {
+    if (typeof raw['requires_location'] !== 'boolean') {
+      return null;
+    }
+    requiresLocation = raw['requires_location'];
+  }
+
   let setsStatus: TemplateStep['sets_status'] = null;
   if (raw['sets_status'] !== undefined && raw['sets_status'] !== null) {
     if (
@@ -80,6 +89,7 @@ function parseStep(raw: unknown): TemplateStep | null {
     label,
     requires_photo: requiresPhoto,
     requires_signature: requiresSignature,
+    requires_location: requiresLocation,
     sets_status: setsStatus,
     advances_on: advancesOn,
   };
@@ -160,6 +170,7 @@ export interface WorkflowStepResponse {
   label: string;
   requiresPhoto: boolean;
   requiresSignature: boolean;
+  requiresLocation: boolean;
   setsStatus: TemplateStep['sets_status'];
   advancesOn: TemplateStep['advances_on'];
 }
@@ -171,6 +182,7 @@ export function stepToResponse(step: TemplateStep): WorkflowStepResponse {
     label: step.label,
     requiresPhoto: step.requires_photo,
     requiresSignature: step.requires_signature,
+    requiresLocation: step.requires_location,
     setsStatus: step.sets_status,
     advancesOn: step.advances_on,
   };

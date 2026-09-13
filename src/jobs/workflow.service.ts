@@ -11,6 +11,7 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
+import { hasInvalidCoordinates } from '../common/utils/validate-coordinates';
 import { JobsService, JobResponse, JobRow, JOB_COLUMNS } from './jobs.service';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { JobStatus } from './enums/job-status.enum';
@@ -31,6 +32,7 @@ interface WorkflowJobRow {
   current_step: string | null;
   workflow_template_version: number;
   technician_id: string;
+  capture_location_on_steps: boolean;
   workflow_templates: { version: number; steps: unknown } | null;
 }
 
@@ -82,7 +84,7 @@ export class WorkflowService {
     const { data: row, error } = await admin
       .from('jobs')
       .select(
-        'id, tenant_id, status, current_step, workflow_template_version, technician_id, workflow_templates(version, steps)',
+        'id, tenant_id, status, current_step, workflow_template_version, technician_id, capture_location_on_steps, workflow_templates(version, steps)',
       )
       .eq('id', jobId)
       .eq('tenant_id', user.tenantId)
@@ -192,6 +194,32 @@ export class WorkflowService {
           ? JobStatus.COMPLETED
           : null;
 
+    // 6.5) Location validation (Story 7-4). If the job requires location and
+    //      the target step requires location, validate the provided coordinates.
+    //      Never hard-block on missing/invalid/low-accuracy location (CAP-4) —
+    //      still allow the advance and mark the omission/low-accuracy in metadata.
+    const targetStep = steps.find((s) => s.key === dto.step);
+    const jobRequiresLocation = row.capture_location_on_steps;
+    const stepRequiresLocation = targetStep?.requires_location ?? true;
+    let locationCaptured: boolean | null = null;
+    let locationReason: string | null = null;
+    let accuracyFlagged = false;
+
+    if (jobRequiresLocation && stepRequiresLocation) {
+      if (dto.latitude === undefined || dto.latitude === null || dto.longitude === undefined || dto.longitude === null) {
+        locationCaptured = false;
+        locationReason = 'Location not provided';
+      } else if (hasInvalidCoordinates(dto.latitude, dto.longitude)) {
+        locationCaptured = false;
+        locationReason = 'Location coordinates out of valid range';
+      } else if (dto.accuracy && dto.accuracy > 100) {
+        accuracyFlagged = true;
+        locationCaptured = true;
+      } else {
+        locationCaptured = true;
+      }
+    }
+
     // 7) Atomic step advance + activity log (AR-10). The compare-and-set on
     //    p_expected_current_step closes the TOCTOU window inside the RPC.
     const { data, error: rpcError } = await admin.rpc('advance_workflow_step', {
@@ -201,6 +229,12 @@ export class WorkflowService {
       p_step: dto.step,
       p_new_status: newStatus,
       p_expected_current_step: row.current_step,
+      p_latitude: locationCaptured === true ? dto.latitude : null,
+      p_longitude: locationCaptured === true ? dto.longitude : null,
+      p_accuracy: locationCaptured === true ? dto.accuracy : null,
+      p_location_captured: locationCaptured,
+      p_reason: locationReason,
+      p_accuracy_flagged: accuracyFlagged ? true : null,
     });
 
     if (rpcError) {
