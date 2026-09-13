@@ -103,6 +103,7 @@ describe('JobsService', () => {
     skillId: 'skill-uuid-1',
     scheduledStart: '2026-06-22T09:30:00Z',
     technicianId: 'tech-1',
+    captureLocationOnSteps: false,
   };
 
   const dtoNew: CreateJobDto = {
@@ -134,6 +135,7 @@ describe('JobsService', () => {
     notes_for_technician: null,
     created_at: '2026-06-21T00:00:00Z',
     updated_at: '2026-06-21T00:00:00Z',
+    capture_location_on_steps: true,
     // Story 4.5 — the FK embeds every job read selects.
     skill_id: 'skill-uuid-1',
     skills: { id: 'skill-uuid-1', name: 'Plumbing' },
@@ -285,6 +287,7 @@ describe('JobsService', () => {
         p_technician_id: 'tech-1',
         p_actor_id: 'owner-uuid',
         p_skill_id: 'skill-uuid-1',
+        p_capture_location_on_steps: false,
       }),
     );
     // Story 4.4 — the job-level completion flags are gone: the create RPC
@@ -1229,6 +1232,8 @@ describe('JobsService', () => {
       // Story 3.7 — completedAt rides on the detail response too (null for an
       // uncompleted job; the select-list trap is covered separately).
       expect(result.completedAt).toBeNull();
+      // Story 7-1 — captureLocationOnSteps defaults to true.
+      expect(result.captureLocationOnSteps).toBe(true);
     });
 
     it('selects latitude/longitude from customers and maps them onto the detail response (Story 2.1)', async () => {

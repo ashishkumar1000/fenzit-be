@@ -71,6 +71,7 @@ export interface JobResponse {
   notesForTechnician: string | null;
   createdAt: string;
   updatedAt: string;
+  captureLocationOnSteps: boolean;
   // Story 4.5 — the job's skill (id + display name) and stamped template ride
   // every job response via FK embeds. Both are null-safe on the READ path: a
   // missing/unreadable embed (unreachable under the FK + no-delete posture)
@@ -154,6 +155,7 @@ export interface JobRow {
   notes_for_technician: string | null;
   created_at: string;
   updated_at: string;
+  capture_location_on_steps: boolean;
   // NOT NULL under the FK (the create RPC stamps it) — typed nullable to keep
   // the read mapping soft. Consumed via the `skills` embed, not directly.
   skill_id: string | null;
@@ -211,7 +213,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // degrade to null response fields, never silently drop the job row.
 // Exported so sibling services reuse the same literal.
 export const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at, skill_id, skills(id, name), workflow_templates(version, steps)';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at, capture_location_on_steps, skill_id, skills(id, name), workflow_templates(version, steps)';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -378,6 +380,7 @@ export class JobsService {
       p_notes_for_technician: dto.notesForTechnician ?? null,
       p_actor_id: owner.userId,
       p_year: istYear,
+      p_capture_location_on_steps: dto.captureLocationOnSteps ?? true,
     });
 
     if (error) {
@@ -949,6 +952,7 @@ export class JobsService {
       notesForTechnician: row.notes_for_technician,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      captureLocationOnSteps: row.capture_location_on_steps,
       skill: normalizeSkillEmbed<JobSkillResponse>(row.skills),
       workflowTemplate:
         steps && templateRaw
