@@ -32,7 +32,6 @@ interface WorkflowJobRow {
   current_step: string | null;
   workflow_template_version: number;
   technician_id: string;
-  capture_location_on_steps: boolean;
   workflow_templates: { version: number; steps: unknown } | null;
 }
 
@@ -84,7 +83,7 @@ export class WorkflowService {
     const { data: row, error } = await admin
       .from('jobs')
       .select(
-        'id, tenant_id, status, current_step, workflow_template_version, technician_id, capture_location_on_steps, workflow_templates(version, steps)',
+        'id, tenant_id, status, current_step, workflow_template_version, technician_id, workflow_templates(version, steps)',
       )
       .eq('id', jobId)
       .eq('tenant_id', user.tenantId)
@@ -194,18 +193,18 @@ export class WorkflowService {
           ? JobStatus.COMPLETED
           : null;
 
-    // 6.5) Location validation (Story 7-4). If the job requires location and
-    //      the target step requires location, validate the provided coordinates.
+    // 6.5) Location validation (Story 7-4). If the target step requires location,
+    //      validate the provided coordinates. Workflow template steps (requires_location)
+    //      are the single source of truth.
     //      Never hard-block on missing/invalid/low-accuracy location (CAP-4) —
     //      still allow the advance and mark the omission/low-accuracy in metadata.
     const targetStep = steps.find((s) => s.key === dto.step);
-    const jobRequiresLocation = row.capture_location_on_steps;
     const stepRequiresLocation = targetStep?.requires_location ?? true;
     let locationCaptured: boolean | null = null;
     let locationReason: string | null = null;
     let accuracyFlagged = false;
 
-    if (jobRequiresLocation && stepRequiresLocation) {
+    if (stepRequiresLocation) {
       if (dto.latitude === undefined || dto.latitude === null || dto.longitude === undefined || dto.longitude === null) {
         locationCaptured = false;
         locationReason = 'Location not provided';

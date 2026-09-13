@@ -102,7 +102,6 @@ describe('WorkflowService', () => {
     current_step: null as string | null,
     workflow_template_version: 1,
     technician_id: 'tech-1',
-    capture_location_on_steps: true,
     workflow_templates: { version: 1, steps: V1_STEPS },
   };
 
@@ -716,26 +715,6 @@ describe('WorkflowService', () => {
         );
       });
 
-      it('when job capture_location_on_steps is false, skips validation', async () => {
-        const { rpc } = mockAdmin({
-          job: {
-            data: {
-              ...baseJobRow,
-              capture_location_on_steps: false,
-            },
-            error: null,
-          },
-        });
-        await service.advanceWorkflowStep(tech, 'job-uuid', {
-          step: 'on_my_way',
-        } as any);
-        expect(rpc).toHaveBeenCalledWith(
-          'advance_workflow_step',
-          expect.objectContaining({
-            p_location_captured: null,
-          }),
-        );
-      });
     });
   });
 });

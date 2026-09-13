@@ -81,13 +81,4 @@ export class CreateJobDto {
   @IsString()
   @MaxLength(2000)
   notesForTechnician?: string;
-
-  @ApiPropertyOptional({
-    default: true,
-    description:
-      'Whether technician must capture GPS location when completing job steps',
-  })
-  @IsOptional()
-  @IsBoolean()
-  captureLocationOnSteps?: boolean;
 }
