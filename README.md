@@ -68,7 +68,7 @@ probe at `GET /health`.
 | `bun run start` | Production-style start (no watch) |
 | `bun run start:dev` | Watch mode (recommended for dev) |
 | `bun run start:debug` | Watch + Node inspector |
-| `bun run start:prod` | Run pre-built `dist/main` |
+| `bun run start:prod` | Run pre-built `dist/src/main` |
 | `bun run build` | Compile TypeScript → `dist/` |
 | `bun run lint` | ESLint with autofix |
 | `bun run format` | Prettier write |

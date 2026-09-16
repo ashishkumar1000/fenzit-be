@@ -15,6 +15,9 @@ async function bootstrap(): Promise<void> {
     new FastifyAdapter({
       logger: false,
       routerOptions: { ignoreTrailingSlash: true },
+      // Close idle keep-alive connections on server close so the SIGTERM
+      // drain (Render deploys) can finish inside the 30s grace window.
+      forceCloseConnections: 'idle',
     }),
   );
 
@@ -26,6 +29,11 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+
+  // Graceful shutdown: Render sends SIGTERM on deploys/scale-downs.
+  // Without this, SIGTERM kills the process immediately and drops
+  // in-flight requests.
+  app.enableShutdownHooks();
 
   if (process.env['NODE_ENV'] !== 'production') {
     const config = new DocumentBuilder()

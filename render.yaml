@@ -1,0 +1,36 @@
+# Render Blueprint for fenzit-be (Docker runtime).
+#
+# Deploy via dashboard (point at this repo, Render picks up the Dockerfile)
+# or with "New +" → Blueprint. Every `sync: false` var prompts once in the
+# dashboard on first deploy, then stays stored as a secret.
+services:
+  - type: web
+    name: fenzit-be
+    runtime: docker
+    plan: starter # paid plan, no idle sleep (the free tier sleeps and would not suit an API)
+    region: singapore # co-located with the Supabase project
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CLOUDFLARE_R2_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_R2_ACCESS_KEY
+        sync: false
+      - key: CLOUDFLARE_R2_SECRET_KEY
+        sync: false
+      - key: CLOUDFLARE_R2_BUCKET
+        sync: false
+      - key: WORKER_WEBHOOK_SECRET
+        sync: false
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false

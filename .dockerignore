@@ -1,0 +1,18 @@
+# Keep the build context small — only package manifests, tsconfig, nest-cli
+# and src are actually copied into the image.
+.git
+.gitignore
+node_modules
+dist
+coverage
+test
+docs
+scripts
+supabase
+cloudflare-worker
+_bmad
+_bmad-output
+*.md
+.env*
+Dockerfile
+render.yaml
