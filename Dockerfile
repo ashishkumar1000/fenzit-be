@@ -7,7 +7,7 @@
 # `bcrypt` N-API prebuild loads and hashes correctly under bun 1.3.
 
 # ---------- build: install all deps, compile with tsc ----------
-FROM oven/bun:1.3.13 AS build
+FROM oven/bun:1.4.0 AS build
 WORKDIR /app
 
 # Copy manifests + configs first so source-only changes reuse the deps layer
@@ -23,7 +23,7 @@ COPY src ./src
 RUN bun run build
 
 # ---------- prod-deps: runtime-only node_modules ----------
-FROM oven/bun:1.3.13 AS prod-deps
+FROM oven/bun:1.4.0 AS prod-deps
 WORKDIR /app
 COPY package.json ./
 # --ignore-scripts: same rationale as the build stage. bcrypt and the rest
@@ -32,7 +32,7 @@ COPY package.json ./
 RUN bun install --production --ignore-scripts
 
 # ---------- runtime: slim bun image ----------
-FROM oven/bun:1.3.13-slim AS runtime
+FROM oven/bun:1.4.0-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
