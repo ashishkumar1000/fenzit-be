@@ -1,5 +1,7 @@
 # fenzit-be — Jobzo Backend
 
+[![Render deploy](https://github.com/ashishkumar1000/fenzit-be/actions/workflows/render-status.yml/badge.svg?label=deploy&event=push)](https://github.com/ashishkumar1000/fenzit-be/actions/workflows/render-status.yml)
+
 Field-service management backend for Indian HVAC / pest-control technician
 dispatch. A multi-tenant NestJS API that handles phone-OTP authentication,
 company onboarding, customer & job management, technician workflow, R2
