@@ -147,6 +147,19 @@ All required, validated at boot by `Joi` (see `src/app.module.ts`).
 | `WORKER_WEBHOOK_SECRET` | yes (≥32 chars) | HMAC for `/internal/webhooks/storage` |
 | `MAX_ATTACHMENT_SIZE_BYTES` | no | Cap on client-reported size (default 50 MB) |
 
+## Deploy Status on GitHub
+
+Pushes to `main` autodeploy on Render. Render does not post status back to
+GitHub, so `.github/workflows/render-status.yml` polls the Render API every
+5s until the deploy for the pushed commit is live/failed and writes a
+`render/deploy` commit status (green tick / red cross on the commit, with a
+link to the Render dashboard).
+
+Requires one repo secret: `RENDER_API_KEY` (Render Dashboard → Account
+Settings → API Keys). The service is resolved by name from `render.yaml`.
+Commits containing `[skip render]` skip the deploy; the workflow exits
+without posting a status.
+
 ## License
 
 UNLICENSED — private project.

@@ -1,0 +1,121 @@
+# Reports Render deploy status back on the pushing commit in GitHub.
+#
+# Render (autodeploy on main) does not post commit statuses itself, so this
+# workflow polls the Render API until the deploy for this commit reaches a
+# terminal state and writes a commit status (context: "render/deploy"):
+#   live          -> success (green tick on the commit)
+#   *_failed      -> failure (red cross)
+#   canceled      -> failure
+#
+# Required secret: RENDER_API_KEY (Render Dashboard -> Account Settings ->
+# API Keys, starts with rnd_). The service is looked up by name from
+# render.yaml, so no service ID secret is needed.
+#
+# Commit messages containing [skip render] produce no deploy; the workflow
+# exits neutral after a grace period instead of failing.
+
+name: render-deploy-status
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: render-deploy-status-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: 🚀 Render deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Poll Render until terminal status, then set commit status
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          SERVICE_NAME: fenzit-be
+          POLL_SECONDS: "5"
+          DEPLOY_APPEAR_TIMEOUT: "300" # wait for Render to register the commit's deploy
+          WATCH_TIMEOUT: "1200"        # max time watching a deploy in progress
+        run: |
+          set -euo pipefail
+
+          # A failed request returns empty output instead of killing the poll
+          # (set -e would otherwise abort on any transient Render API error).
+          api() { curl -sf -H "Authorization: Bearer $RENDER_API_KEY" "$@" || true; }
+
+          set_status() { # state description
+            curl -sf -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/statuses/$SHA" \
+              -d "$(jq -nc --arg s "$1" --arg d "$2" --arg u "$TARGET_URL" \
+                '{state:$s, context:"render/deploy", description:$d, target_url:$u}')" \
+              > /dev/null || echo "::warning::Could not post commit status"
+          }
+
+          # ---- resolve service id by name ----
+          SERVICE_ID=$(api "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=10" \
+            | jq -r --arg n "$SERVICE_NAME" \
+              '[.[] | select(.service.name == $n) | .service.id][0] // empty')
+          if [ -z "$SERVICE_ID" ]; then
+            echo "::error::Render service '$SERVICE_NAME' not found — check RENDER_API_KEY"
+            exit 1
+          fi
+          TARGET_URL="https://dashboard.render.com/web/$SERVICE_ID"
+          echo "Watching service $SERVICE_NAME ($SERVICE_ID) for commit $SHA"
+
+          # ---- wait for this commit's deploy to appear ----
+          DEPLOY_JSON=""
+          waited=0
+          while [ "$waited" -lt "$DEPLOY_APPEAR_TIMEOUT" ]; do
+            DEPLOY_JSON=$(api "https://api.render.com/v1/services/$SERVICE_ID/deploys?limit=5" \
+              | jq -c --arg sha "$SHA" '[.[] | select(.deploy.commit.id == $sha) | .deploy][0] // empty')
+            if [ -n "$DEPLOY_JSON" ]; then break; fi
+            sleep "$POLL_SECONDS"
+            waited=$((waited + POLL_SECONDS))
+          done
+          if [ -z "$DEPLOY_JSON" ]; then
+            echo "No Render deploy registered for this commit within ${DEPLOY_APPEAR_TIMEOUT}s — assuming [skip render]."
+            exit 0
+          fi
+
+          DEPLOY_ID=$(echo "$DEPLOY_JSON" | jq -r '.id')
+          set_status pending "⏳ Deploying on Render…"
+          echo "Deploy $DEPLOY_ID found — polling every ${POLL_SECONDS}s"
+
+          # ---- poll to terminal state ----
+          elapsed=0
+          while true; do
+            STATUS=$(api "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" | jq -r '.status // empty')
+            case "$STATUS" in
+              live)
+                set_status success "✅ Live on Render"
+                echo "Deploy is LIVE (took ${elapsed}s of watching)"
+                exit 0 ;;
+              build_failed|update_failed|pre_deploy_failed)
+                set_status failure "❌ Deploy failed on Render ($STATUS)"
+                echo "Deploy FAILED: $STATUS"; exit 1 ;;
+              canceled)
+                set_status failure "🚫 Render deploy canceled"
+                echo "Deploy CANCELED"; exit 1 ;;
+              empty|"")
+                echo "::warning::Deploy lookup returned no status — retrying" ;;
+              *)
+                echo "status: $STATUS (elapsed ${elapsed}s)" ;;
+            esac
+            if [ "$elapsed" -ge "$WATCH_TIMEOUT" ]; then
+              set_status failure "⏰ Timed out waiting for Render deploy (last: $STATUS)"
+              echo "::error::Timed out after ${WATCH_TIMEOUT}s — last status: $STATUS"
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+            elapsed=$((elapsed + POLL_SECONDS))
+          done
