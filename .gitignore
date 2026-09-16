@@ -30,3 +30,6 @@ coverage/
 # Rust (leftover from old scaffold)
 target/
 Cargo.lock
+
+# no lockfile by design — deps resolve at build time
+bun.lock

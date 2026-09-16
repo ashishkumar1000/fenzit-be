@@ -11,12 +11,13 @@ FROM oven/bun:1.3.13 AS build
 WORKDIR /app
 
 # Copy manifests + configs first so source-only changes reuse the deps layer
-COPY package.json bun.lock tsconfig.json tsconfig.build.json nest-cli.json ./
+# (no bun.lock in the repo — deps resolve fresh at build time)
+COPY package.json tsconfig.json tsconfig.build.json nest-cli.json ./
 # --ignore-scripts: root "prepare: husky" would fail here (no .git in the
 # image, and husky is dev-only). Build needs no lifecycle scripts, and
 # tsconfig.build.json excludes scripts/ so tsconfig's explicit rootDir
 # keeps the entry at dist/src/main.js.
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun install --ignore-scripts
 
 COPY src ./src
 RUN bun run build
@@ -24,11 +25,11 @@ RUN bun run build
 # ---------- prod-deps: runtime-only node_modules ----------
 FROM oven/bun:1.3.13 AS prod-deps
 WORKDIR /app
-COPY package.json bun.lock ./
+COPY package.json ./
 # --ignore-scripts: same rationale as the build stage. bcrypt and the rest
 # of the runtime deps ship their binaries/prebuilds inside the package, so
 # no lifecycle script is needed at runtime.
-RUN bun install --frozen-lockfile --production --ignore-scripts
+RUN bun install --production --ignore-scripts
 
 # ---------- runtime: slim bun image ----------
 FROM oven/bun:1.3.13-slim AS runtime
