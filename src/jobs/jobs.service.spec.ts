@@ -285,7 +285,6 @@ describe('JobsService', () => {
         p_technician_id: 'tech-1',
         p_actor_id: 'owner-uuid',
         p_skill_id: 'skill-uuid-1',
-        p_capture_location_on_steps: false,
       }),
     );
     // Story 4.4 — the job-level completion flags are gone: the create RPC
