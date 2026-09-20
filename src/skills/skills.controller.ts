@@ -25,7 +25,7 @@ export class SkillsController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Global skills catalog — { skills: [{ id, name }] }',
+    description: 'Global skills catalog — { skills: [{ id, name, description, icon }] }',
   })
   @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
   @ApiResponse({

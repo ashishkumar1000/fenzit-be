@@ -35,7 +35,7 @@ export class SkillsService {
    */
   async listGlobalSkills(
     user: RequestUser,
-  ): Promise<{ id: string; name: string }[]> {
+  ): Promise<{ id: string; name: string; description: string; icon: string }[]> {
     const exp = Math.floor(Date.now() / 1000) + POSTGREST_TOKEN_TTL_SECONDS;
     const token = await this.jwtService.signAsync({
       sub: user.userId,
@@ -46,7 +46,7 @@ export class SkillsService {
 
     const { data, error } = await client
       .from('skills')
-      .select('id, name')
+      .select('id, name, description, icon')
       .eq('is_active', true)
       .order('sort_order', { ascending: true });
 
@@ -58,6 +58,11 @@ export class SkillsService {
       });
     }
 
-    return (data ?? []).map((row) => ({ id: row.id, name: row.name }));
+    return (data ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      icon: row.icon,
+    }));
   }
 }

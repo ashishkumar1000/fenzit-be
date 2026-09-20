@@ -82,7 +82,7 @@ describe('SkillsService', () => {
 
       await service.listGlobalSkills(ownerUser);
 
-      expect(select).toHaveBeenCalledWith('id, name');
+      expect(select).toHaveBeenCalledWith('id, name, description, icon');
       expect(eq).toHaveBeenCalledWith('is_active', true);
       expect(order).toHaveBeenCalledWith('sort_order', { ascending: true });
     });
@@ -95,7 +95,14 @@ describe('SkillsService', () => {
           select: jest.fn().mockReturnValue({
             eq: jest.fn().mockReturnValue({
               order: jest.fn().mockResolvedValue({
-                data: [{ id: 'skill-1', name: 'Plumbing' }],
+                data: [
+                  {
+                    id: 'skill-1',
+                    name: 'Plumbing',
+                    description: 'Locate and fix leaking or burst pipes',
+                    icon: 'droplets',
+                  },
+                ],
                 error: null,
               }),
             }),
@@ -106,15 +113,22 @@ describe('SkillsService', () => {
 
       const result = await service.listGlobalSkills(ownerNoTenant);
 
-      expect(result).toEqual([{ id: 'skill-1', name: 'Plumbing' }]);
+      expect(result).toEqual([
+        {
+          id: 'skill-1',
+          name: 'Plumbing',
+          description: 'Locate and fix leaking or burst pipes',
+          icon: 'droplets',
+        },
+      ]);
       expect(supabaseClientFactory.create).toHaveBeenCalledWith('minted-token');
     });
 
-    it('should return id/name pairs in query (seed) order', async () => {
+    it('should return catalog rows (id/name/description/icon) in query (seed) order', async () => {
       const rows = [
-        { id: 'skill-1', name: 'Plumbing' },
-        { id: 'skill-2', name: 'Electrical' },
-        { id: 'skill-3', name: 'AC Service' },
+        { id: 'skill-1', name: 'Plumbing', description: 'Pipe work', icon: 'droplets' },
+        { id: 'skill-2', name: 'Electrical', description: 'Wiring work', icon: 'zap' },
+        { id: 'skill-3', name: 'AC Service', description: 'AC work', icon: 'wind' },
       ];
       const mockClient = {
         from: jest.fn().mockReturnValue({
@@ -130,9 +144,9 @@ describe('SkillsService', () => {
       const result = await service.listGlobalSkills(ownerUser);
 
       expect(result).toEqual([
-        { id: 'skill-1', name: 'Plumbing' },
-        { id: 'skill-2', name: 'Electrical' },
-        { id: 'skill-3', name: 'AC Service' },
+        { id: 'skill-1', name: 'Plumbing', description: 'Pipe work', icon: 'droplets' },
+        { id: 'skill-2', name: 'Electrical', description: 'Wiring work', icon: 'zap' },
+        { id: 'skill-3', name: 'AC Service', description: 'AC work', icon: 'wind' },
       ]);
     });
 
