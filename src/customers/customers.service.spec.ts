@@ -532,6 +532,50 @@ describe('CustomersService', () => {
     });
   });
 
+  describe('countCustomers', () => {
+    /** countCustomers awaits the terminal `.eq()` of a head-count query. */
+    function mockCount(result: { count: unknown; error: unknown }) {
+      const builder: Record<string, jest.Mock> = {};
+      builder.select = jest.fn(() => builder);
+      builder.eq = jest.fn().mockResolvedValue(result);
+      const from = jest.fn().mockReturnValue(builder);
+      supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
+      return { from, select: builder.select, eq: builder.eq };
+    }
+
+    it('returns the exact tenant-wide count from a head-count query', async () => {
+      const { from, select, eq } = mockCount({ count: 24, error: null });
+
+      await expect(service.countCustomers('tenant-uuid')).resolves.toBe(24);
+
+      // Right table, admin client (a user-scoped client under deny-by-default
+      // RLS would silently return 0), metadata-only request (head: true, no
+      // rows transferred), scoped to the tenant — the same filter the
+      // paginated list applies.
+      expect(from).toHaveBeenCalledWith('customers');
+      expect(supabaseClientFactory.createAdmin).toHaveBeenCalled();
+      expect(select).toHaveBeenCalledWith('id', {
+        count: 'exact',
+        head: true,
+      });
+      expect(eq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
+    });
+
+    it('returns 0 when PostgREST reports a null count', async () => {
+      mockCount({ count: null, error: null });
+
+      await expect(service.countCustomers('tenant-uuid')).resolves.toBe(0);
+    });
+
+    it('should throw 500 on a DB error', async () => {
+      mockCount({ count: null, error: { code: '08006', message: 'down' } });
+
+      await expect(service.countCustomers('tenant-uuid')).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+  });
+
   describe('getCustomerDetail', () => {
     const CUSTOMER_ID = '00000000-0000-4000-8000-000000000001';
 

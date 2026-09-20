@@ -427,6 +427,33 @@ export class CustomersService {
   }
 
   /**
+   * Total number of customers in the tenant — an exact DB count, independent
+   * of the cursor-paginated list above (whose page length caps at the page
+   * size). Consumed by the profile endpoint (`customerCount` on
+   * `OwnerProfileResponse`) so Home can show the real total without paging
+   * through the customer list.
+   */
+  async countCustomers(tenantId: string): Promise<number> {
+    const admin = this.supabaseClientFactory.createAdmin();
+
+    // head: true — metadata-only request, no rows transferred.
+    const { count, error } = await admin
+      .from('customers')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      this.logger.error('Failed to count customers:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to count customers',
+      });
+    }
+
+    return count ?? 0;
+  }
+
+  /**
    * jobCount / lastJobDate for a page of customers, computed from the jobs
    * table directly (not via JobsService — customers has no dependency on
    * jobs, per the module-boundary note on FindOrCreateCustomerInput above).

@@ -89,6 +89,8 @@ export interface OwnerProfileResponse extends UserProfileBase {
   role: Role.OWNER;
   technicians: TechnicianSummary[];
   technicianCount: number;
+  /** Exact tenant-wide customer total (the `customers` page itself is capped at its page size). */
+  customerCount: number;
   customers: PaginatedResponse<CustomerListItem>;
   jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
@@ -242,6 +244,7 @@ export class UsersService {
         role: Role.OWNER,
         technicians: [],
         technicianCount: 0,
+        customerCount: 0,
         customers: new PaginatedResponse<CustomerListItem>([], null),
         jobs: new PaginatedResponse<ProfileJobResponse>([], null),
         jobCounts: EMPTY_JOB_COUNTS,
@@ -300,25 +303,27 @@ export class UsersService {
       };
     }
 
-    const [technicians, customers, jobs, jobCounts] = await Promise.all([
-      this.listTechnicians(admin, tenantId),
-      // Pass the DB-fresh tenantId (not the possibly-stale JWT claim on `user`)
-      // so this call can never disagree with the tenant/technicians/jobs above —
-      // e.g. right after setupCompany mints a new token the client hasn't
-      // swapped in yet, `user.tenantId` could still be null.
-      this.customersService.listCustomers(
-        { ...user, tenantId },
-        { cursor: query.customersCursor, limit: query.customersLimit },
-      ),
-      this.listProfileJobs(
-        tenantId,
-        null,
-        query.jobsScope,
-        query.jobsCursor,
-        query.jobsLimit,
-      ),
-      this.getJobCounts(tenantId, null),
-    ]);
+    const [technicians, customers, jobs, jobCounts, customerCount] =
+      await Promise.all([
+        this.listTechnicians(admin, tenantId),
+        // Pass the DB-fresh tenantId (not the possibly-stale JWT claim on `user`)
+        // so this call can never disagree with the tenant/technicians/jobs above —
+        // e.g. right after setupCompany mints a new token the client hasn't
+        // swapped in yet, `user.tenantId` could still be null.
+        this.customersService.listCustomers(
+          { ...user, tenantId },
+          { cursor: query.customersCursor, limit: query.customersLimit },
+        ),
+        this.listProfileJobs(
+          tenantId,
+          null,
+          query.jobsScope,
+          query.jobsCursor,
+          query.jobsLimit,
+        ),
+        this.getJobCounts(tenantId, null),
+        this.customersService.countCustomers(tenantId),
+      ]);
 
     return {
       ...base,
@@ -326,6 +331,7 @@ export class UsersService {
       tenant,
       technicians,
       technicianCount: technicians.length,
+      customerCount,
       customers,
       jobs,
       jobCounts,

@@ -127,6 +127,7 @@ describe('UsersService', () => {
     const mockFactory = { create: jest.fn(), createAdmin: jest.fn() };
     customersService = {
       listCustomers: jest.fn().mockResolvedValue(emptyCustomersPage),
+      countCustomers: jest.fn().mockResolvedValue(0),
     };
     jobsService = {
       // Deliberately minimal — jobs.service.spec.ts already covers the real
@@ -356,6 +357,7 @@ describe('UsersService', () => {
         },
       });
       customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
+      customersService.countCustomers.mockResolvedValue(24);
 
       const result = await service.getMyProfile(ownerUser, {});
 
@@ -372,6 +374,12 @@ describe('UsersService', () => {
       });
       if (result.role !== Role.OWNER) throw new Error('expected owner shape');
       expect(result.technicianCount).toBe(1);
+      // The customer total comes from customersService.countCustomers — the
+      // embedded `customers` block is only one cursor-paginated page.
+      expect(result.customerCount).toBe(24);
+      expect(customersService.countCustomers).toHaveBeenCalledWith(
+        'tenant-uuid',
+      );
       expect(result.technicians[0].skills.sort()).toEqual(
         ['Plumbing', 'Electrical', 'Wiring'].sort(),
       );
@@ -583,6 +591,7 @@ describe('UsersService', () => {
       if (result.role !== Role.OWNER) throw new Error('expected owner shape');
       expect(result.technicians).toEqual([]);
       expect(result.technicianCount).toBe(0);
+      expect(result.customerCount).toBe(0);
       expect(result.customers).toEqual({
         data: [],
         nextCursor: null,
@@ -604,6 +613,7 @@ describe('UsersService', () => {
       expect(from).toHaveBeenCalledTimes(1);
       expect(from).toHaveBeenCalledWith('users');
       expect(customersService.listCustomers).not.toHaveBeenCalled();
+      expect(customersService.countCustomers).not.toHaveBeenCalled();
     });
 
     it('throws 500 when the own-profile fetch errors', async () => {
@@ -640,6 +650,23 @@ describe('UsersService', () => {
 
     it('throws 500 when a job counts query errors', async () => {
       mockAdmin({ jobCounts: { error: { code: '08006' } } });
+
+      await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+
+    // Sixth parallel fetch — the customer total. Pinned at the profile level
+    // (not just inside CustomersService) so a future `.catch(() => 0)` cannot
+    // silently downgrade this failure while every sibling still 500s.
+    it('throws 500 when the customer-count query errors', async () => {
+      mockAdmin({});
+      customersService.countCustomers.mockRejectedValueOnce(
+        new InternalServerErrorException({
+          error_code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to count customers',
+        }),
+      );
 
       await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
         InternalServerErrorException,
