@@ -6,7 +6,7 @@ Security (RLS)** enabled.
 
 ## Migrations Inventory
 
-38 migrations, applied in chronological order. New migrations **must** be
+52 migrations, applied in chronological order. New migrations **must** be
 appended (never edit history) and **must** be applied via the Supabase MCP
 (see `project-context.md`).
 
@@ -50,6 +50,20 @@ appended (never edit history) and **must** be applied via the Supabase MCP
 | 36  | `20260911000002_workflow_templates_skill_tagged_jobs.sql` | `workflow_templates` table + 6 v1 seeds, `jobs.skill_id`/`workflow_template_id`/`workflow_template_version`, drop `jobs.service_type` + CHECK, re-issue `create_job_with_log` with `p_skill_id` (Epic 4 Story 4.3) |
 | 37  | `20260911000003_generic_workflow_engine.sql` | Drop `jobs.require_completion_photo/signature`, re-issue create/update RPCs without flag params, re-issue `confirm_attachment` with template-driven auto-advance, `workflow_steps_valid()` + steps shape CHECK (Epic 4 Story 4.4) |
 | 38  | `20260911000004_confirm_auto_advance_no_template_log.sql` | Re-issue `confirm_attachment`: RAISE LOG on the no-template-row auto-advance skip (Story 4.4 review patch — body otherwise identical to 37) |
+| 39  | `20260913000000_add_capture_location_on_steps.sql` | Add job-level `capture_location_on_steps` toggle (Story 7-1; later dropped by 42) |
+| 40  | `20260913000001_workflow_steps_requires_location.sql` | Optional per-step `requires_location` in the steps shape + validator (Story 7-2) |
+| 41  | `20260913000002_advance_workflow_step_location_params.sql` | Advance RPC accepts optional location params merged into `activity_logs.metadata` (Story 7-3) |
+| 42  | `20260913000003_remove_capture_location_on_steps.sql` | Drop the job-level toggle — template steps are the single source of truth (Story 7-9 follow-up) |
+| 43  | `20260913000004_add_requires_location_to_all_steps.sql` | Backfill `requires_location: true` on all existing template steps |
+| 44  | `20260913000005_drop_stale_advance_workflow_step_overloads.sql` | Drop pre-location `advance_workflow_step` overloads |
+| 45  | `20260920000001_expand_skill_catalog_28.sql` | Cutover to the 28-skill catalog + `skills.description` + one v1 template per skill (wipes jobs/user_skills/templates — pre-launch) |
+| 46  | `20260920000002_add_skill_icons.sql` | `skills.icon` — lucide icon names, resolved app-side |
+| 47  | `20260920000003_add_skill_constraints.sql` | CHECKs: non-blank `description`, kebab-case `icon` |
+| 48  | `20260920000004_create_report_requests.sql` | `report_requests` table + RLS + worker indexes (Epic 12 Story 12-1) |
+| 49  | `20260920000005_rpc_claim_report_request.sql` | `claim_report_request` — queued→generating lease claim, service-role-only EXECUTE (Epic 12 Story 12-1) |
+| 50  | `20260920000006_rpc_create_report_request.sql` | `create_report_request` — atomic in-flight-cap insert RPC (superseded by 51, kept as history) |
+| 51  | `20260920000007_reports_drop_rpcs_in_flight_trigger.sql` | Drops both report RPCs (de-stored-procedure pass) + `report_requests_in_flight_guard` BEFORE INSERT trigger — advisory xact lock per tenant, caps queued+generating at 3 (PT429) (Epic 12 Story 12-2) |
+| 52  | `20260920000008_notifications_job_id_nullable.sql` | `notifications.job_id` NOT NULL → nullable — report terminal notifications point at a report, not a job (Epic 12 Story 12-3) |
 
 ## Tables
 
@@ -346,6 +360,48 @@ migration.** A skill without any template row makes `create_job_with_log` raise
 "No workflow template found for skill" — a plain server fault by design (500),
 not a handled client error.
 
+(Note: the historical 6-template UUID table was wiped by the 28-skill cutover,
+migration 45 — one v1 template per skill was reseeded there; the fixed UUIDs
+live in that migration's seed block.)
+
+### `report_requests`
+
+One row per owner report request (Epic 12). A table-backed state machine:
+`queued → generating → ready | failed`. No broker/queue exists in the stack —
+the in-process report worker (story 12-3) polls `queued` rows and claims them
+with a **guarded UPDATE** (`update ... set status='generating', ... where id=? and
+status='queued'` — atomic in Postgres, exactly one concurrent caller wins).
+No app-facing RPCs: a 2026-09-20 de-stored-procedure pass dropped the
+`claim_report_request` / `create_report_request` RPCs (migrations 50 → 51) in
+favour of plain SQL from the app.
+
+```sql
+id              UUID PK
+tenant_id       UUID FK → tenants(id) ON DELETE CASCADE
+requested_by    UUID FK → users(id) ON DELETE RESTRICT   -- notification recipient
+report_type     TEXT                                     -- registry key, e.g. 'technician_job_activity'
+params          JSONB CHECK (jsonb_typeof = 'object')    -- per-type schema validated app-side
+status          TEXT CHECK (queued|generating|ready|failed) DEFAULT 'queued'
+locked_until    TIMESTAMPTZ                              -- claim lease; expiry = crash recovery
+attempt_count   INTEGER DEFAULT 0                        -- bumped on every claim; max app-enforced
+r2_key          TEXT UNIQUE (nullable)                   -- {tenantId}/reports/{requestId}.pdf
+file_size_bytes BIGINT
+error_code      TEXT (nullable)                          -- stable code, e.g. 'report_generation_failed'
+created_at      TIMESTAMPTZ
+completed_at    TIMESTAMPTZ (nullable)
+updated_at      TIMESTAMPTZ (auto via trigger)
+```
+
+**RLS:** single tenant-isolation policy (ALL, JWT `tenantId` scoped), like
+`jobs`. Owner-only visibility is a service-layer concern; no client-facing
+UPDATE/DELETE policy — the worker mutates rows via the service-role key with
+plain guarded UPDATEs.
+
+**In-flight cap (NFR-3):** `report_requests_in_flight_guard` BEFORE INSERT
+trigger — takes a per-tenant advisory xact lock (serializes concurrent
+inserts), counts rows in `queued|generating`, and raises PT429 when the count
+is already ≥ 3. The app maps PT429 → HTTP 429 `REPORT_IN_FLIGHT_LIMIT`.
+
 ## Atomic RPCs
 
 These are called via `supabase.rpc()` from the application layer. Each runs in
@@ -361,10 +417,16 @@ a single Postgres transaction — **never** split into multiple sequential
 | `confirm_attachment(...)`        | Inserts `attachments` row from `attachment_uploads` (conflict resolution), then — if the first photo landed on the template's `advances_on: 'photo_confirm'` step with `current_step` at its predecessor — delegates to `advance_workflow_step` (PT409 swallowed + logged: the attachment always commits) — one txn |
 | `increment_job_counter(...)`     | Sub-RPC: race-safe per-tenant/per-year counter |
 
+(Epic 12's reports module deliberately adds **no** RPCs — the 2026-09-20
+de-stored-procedure pass re-implemented the atomic in-flight cap as a BEFORE
+INSERT trigger and the worker claim as a guarded UPDATE. New report-era
+concurrency guarantees should follow that pattern: triggers/guarded UPDATEs
+over `supabase.rpc()`.)
+
 ## RLS Posture Summary
 
 - **Tenant-scoped tables** (`customers`, `jobs`,
-  `attachments`, `attachment_uploads`, `idempotency_log`): policy reads
+  `attachments`, `attachment_uploads`, `idempotency_log`, `report_requests`): policy reads
   `(auth.jwt() ->> 'tenantId')::uuid`
 - **`user_skills`**: tenant-isolated transitively — the policy joins into
   `users` and matches `users.tenant_id` against the JWT `tenantId` (the table
@@ -384,6 +446,9 @@ a single Postgres transaction — **never** split into multiple sequential
 | `users(tenant_id)`                             | Tenant membership lookup |
 | `customers(tenant_id, country_code, phone_number)` UNIQUE | One customer per phone per tenant |
 | `idx_jobs_tenant_updated_at` (covering)        | Delta sync query (Story 4.1) |
+| `report_requests(tenant_id, created_at desc)`  | History list keyset pagination (Epic 12) |
+| `report_requests(created_at) WHERE status='queued'` | Worker poll (partial — stays tiny) |
+| `report_requests(locked_until) WHERE status='generating'` | Lease-expiry crash-recovery scan |
 
 ## How to Add a New Table
 

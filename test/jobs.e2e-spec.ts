@@ -102,6 +102,7 @@ describe('Jobs (e2e)', () => {
   // Story 4.5 — the skill/template shape every job read surface must carry,
   // hand-written from the v1 seed chain (an independent expectation, NOT
   // derived with stepToResponse — that would make the assertion tautological).
+  // requiresLocation is Story 7-2: the seed sets it true on every step.
   const EXPECTED_SKILL = {
     id: '65f33480-b37e-47e2-a4a0-0155b156cc7a',
     name: 'AC Service',
@@ -114,6 +115,7 @@ describe('Jobs (e2e)', () => {
         label: 'On My Way',
         requiresPhoto: false,
         requiresSignature: false,
+        requiresLocation: true,
         setsStatus: 'in_progress',
         advancesOn: null,
       },
@@ -122,6 +124,7 @@ describe('Jobs (e2e)', () => {
         label: 'Arrived',
         requiresPhoto: false,
         requiresSignature: false,
+        requiresLocation: true,
         setsStatus: null,
         advancesOn: null,
       },
@@ -130,6 +133,7 @@ describe('Jobs (e2e)', () => {
         label: 'In Progress',
         requiresPhoto: false,
         requiresSignature: false,
+        requiresLocation: true,
         setsStatus: null,
         advancesOn: null,
       },
@@ -138,6 +142,7 @@ describe('Jobs (e2e)', () => {
         label: 'Photos Uploaded',
         requiresPhoto: true,
         requiresSignature: false,
+        requiresLocation: true,
         setsStatus: null,
         advancesOn: 'photo_confirm',
       },
@@ -146,6 +151,7 @@ describe('Jobs (e2e)', () => {
         label: 'Signature Captured',
         requiresPhoto: false,
         requiresSignature: true,
+        requiresLocation: true,
         setsStatus: null,
         advancesOn: null,
       },
@@ -154,6 +160,7 @@ describe('Jobs (e2e)', () => {
         label: 'Completed',
         requiresPhoto: false,
         requiresSignature: false,
+        requiresLocation: true,
         setsStatus: 'completed',
         advancesOn: null,
       },

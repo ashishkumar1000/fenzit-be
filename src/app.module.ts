@@ -20,6 +20,7 @@ import { SupabaseModule } from './supabase/supabase.module';
 import { SyncModule } from './sync/sync.module';
 import { PlacesModule } from './places/places.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -73,6 +74,42 @@ import { NotificationsModule } from './notifications/notifications.module';
           .positive()
           .max(2147483647)
           .optional(),
+        // Report module (Epic 12). Presign TTL drives the status endpoint's
+        // download links today; the poll interval, job cap and attempt cap
+        // are consumed by the generation worker (story 12-3).
+        REPORT_PRESIGN_TTL_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(600),
+        REPORT_POLL_INTERVAL_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(5),
+        REPORT_MAX_JOBS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(5000),
+        REPORT_MAX_ATTEMPTS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(3),
+        // Worker lease (crash recovery window) + render concurrency (NFR-1
+        // caps concurrency at 1 by default — head-of-line blocking accepted
+        // at v1 scale). Consumed by report-worker.ts.
+        REPORT_LEASE_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(300),
+        REPORT_WORKER_CONCURRENCY: Joi.number()
+          .integer()
+          .positive()
+          .max(100)
+          .default(1),
       }),
       validationOptions: {
         abortEarly: false,
@@ -103,6 +140,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SyncModule,
     PlacesModule,
     NotificationsModule,
+    ReportsModule,
   ],
   controllers: [HealthController],
   providers: [

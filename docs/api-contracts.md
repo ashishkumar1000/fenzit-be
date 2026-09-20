@@ -478,7 +478,11 @@ global ValidationPipe.
 Newest-first list (`created_at DESC, id DESC` keyset pagination). Default page
 20, max 50. Each item: `{ id, jobId, eventType, payload, readAt, createdAt }`
 — `payload` is the verbatim Story 3.1 JSONB (`job_number`, `step`,
-`technician_name`); no read-time join.
+`technician_name`); no read-time join. Job notifications carry their `jobId`;
+report notifications (Epic 12: `eventType` `report_ready` / `report_failed`)
+carry `jobId: null` and a payload of `reportId`/`reportType`/`reportLabel`/
+`status`/`errorCode` — no URLs (the FE fetches a fresh presigned URL from the
+report status endpoint on tap).
 
 **Responses:**
 - `200` — `{ data: [...], nextCursor: string | null, hasMore }`
@@ -510,6 +514,98 @@ Marks every unread row of the caller read. Idempotent (repeat → `markedCount: 
 **Responses:**
 - `200` — `{ markedCount: number }`
 - `401` — Missing/invalid JWT
+
+---
+
+### Reports (Epic 12, owner only)
+
+All three endpoints are **owner-only** (`@Roles(Role.OWNER)` — a technician JWT
+gets `403`). Generation is asynchronous: `POST` queues a `report_requests` row
+(status `queued`) and returns immediately; the in-process worker (story 12-3)
+drives `queued → generating → ready | failed`. The client polls
+`GET /reports/:id` (or reads the history list) — when `ready`, that response
+carries a **fresh** short-lived presigned R2 URL, minted per request
+(`REPORT_PRESIGN_TTL_SECONDS`, default 600s) and never stored.
+
+Cross-tenant reads (a foreign or unknown request id) and missing rows all map
+to `404` — never a `403`, so ids are not enumerable. The in-flight cap (max 3
+rows per tenant in `queued|generating`) is enforced by a `BEFORE INSERT OR
+UPDATE OF status` trigger (INSERT covers create; the UPDATE leg covers the
+retry's failed→queued re-queue. Count-neutral transitions — the claim's
+queued→generating, lease recovery, terminal stamps — are skipped, so a report
+finishing never falsely trips the cap); the app maps the trigger's `PT429`
+SQLSTATE to `429 REPORT_IN_FLIGHT_LIMIT`.
+
+#### `POST /api/v1/reports` `[Bearer JWT, Role: owner]` `[IdempotencyInterceptor]`
+
+Body (camelCase; deep validation — calendar-date format, inclusive range ≤ 92
+days, end date not in the future on the IST clock, technician membership —
+lives in the service/report definition, so every failure is a `400` with a
+specific error code, not a generic `422`):
+
+```json
+{
+  "reportType": "technician_job_activity",   // optional, registry key; defaults to the first report
+  "startDate": "2026-09-01",                 // required, YYYY-MM-DD inclusive
+  "endDate": "2026-09-15",                   // required, YYYY-MM-DD inclusive, not future (IST)
+  "technicianIds": ["<uuid>"]                // optional; absent/empty = all technicians; max 25
+}
+```
+
+Sends `x-idempotency-key` (UUID v4) to make retries return the same row.
+
+**Responses:**
+- `201` — `{ id, status: 'queued', createdAt }`
+- `400` — `VALIDATION_ERROR` (bad date format / start > end / future end date / non-technician in `technicianIds`), `REPORT_RANGE_TOO_LARGE` (> 92 days), `REPORT_TOO_MANY_TECHNICIANS` (> 25)
+- `401` — Missing/invalid JWT
+- `403` — Technician JWT
+- `429` — `REPORT_IN_FLIGHT_LIMIT` (company already has 3 in-flight reports)
+- `422` — DTO shape violations (oversized fields, non-string types)
+
+#### `GET /api/v1/reports?cursor=` `[Bearer JWT, Role: owner]`
+
+History, newest first (`created_at DESC, id DESC` keyset pagination, page 20).
+Cursor machinery: scope `reports-list`; malformed or foreign-scope cursor →
+`400`. Each item: `{ id, reportType, range: { startDate, endDate },
+technicianCount, status, errorCode, createdAt, completedAt }` —
+`technicianCount` is `null` when the report covers all technicians.
+
+**Responses:**
+- `200` — `{ data: [...], nextCursor: string | null, hasMore }`
+- `400` — Malformed or foreign-scope cursor
+- `401` / `403` — as above
+
+#### `GET /api/v1/reports/:id` `[Bearer JWT, Role: owner]`
+
+Status poll. Response: `{ id, reportType, params: { startDate, endDate,
+technicianIds }, status, createdAt, completedAt }` plus:
+
+- `status: 'ready'` → adds `file: { url, sizeBytes, filename }` (fresh presigned URL each poll)
+- `status: 'failed'` → adds `error: { code }` (stable engine error code)
+
+**Responses:**
+- `200` — status response (any state)
+- `401` / `403` — as above
+- `404` — Unknown id or other company's report
+- `500` — `REPORT_PRESIGN_FAILED` (R2 presigning failed for a ready row)
+
+#### `POST /api/v1/reports/:id/retry` `[Bearer JWT, Role: owner]` `[IdempotencyInterceptor]`
+
+Re-queues a FAILED report in place — the same row flips `failed → queued` and
+regenerates (no duplicate history entry). The guarded UPDATE sets `status →
+queued` and clears `error_code` / `completed_at` / `locked_until` /
+`attempt_count` (a deliberate human retry gets a fresh run of the worker's
+attempt budget), predicated on `status = 'failed'` — so a double-tap cannot
+re-queue twice; the losing call sees the row no longer failed. Fresh
+`x-idempotency-key` per tap, same rule as create.
+
+**Responses:**
+- `201` — `{ id, status: 'queued', createdAt }`
+- `400` — `VALIDATION_ERROR` (caller has no tenant)
+- `401` / `403` — as above
+- `404` — Unknown id or other company's report
+- `409` — `REPORT_NOT_RETRYABLE` (row is not `failed`, or the guard lost a race)
+- `429` — `REPORT_IN_FLIGHT_LIMIT` (3 in-flight rows at the moment of re-queue)
 
 ---
 

@@ -44,6 +44,7 @@
     "class-validator": "^0.15.1",
     "fastify": "^5.8.5",
     "joi": "^18.2.3",
+    "pdfmake": "^0.3.11",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
@@ -56,6 +57,7 @@
     "@types/bcrypt": "^6.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
+    "@types/pdfmake": "^0.3.3",
     "@types/supertest": "^7.0.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
