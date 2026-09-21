@@ -4,9 +4,14 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../../common/factories/supabase-client.factory';
+import {
+  runWithCorrelation,
+  CorrelationContext,
+} from '../../common/correlation/correlation.context';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import { ReportRegistry } from '../registry/report-registry';
 import { ReportRequestRow } from '../report-response.model';
@@ -130,6 +135,31 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     admin: SupabaseClient,
     candidate: { id: string; attemptCount: number },
   ): Promise<void> {
+    // ALS context does not cross the job-queue boundary — each job mints its
+    // own correlation id so worker logs are traceable per job. tenant/user
+    // stay null until the claim lands and the row is known (seeded below).
+    const context: CorrelationContext = {
+      correlationId: randomUUID(),
+      sessionId: null,
+      userId: null,
+      tenantId: null,
+    };
+    // The catch stays INSIDE the run scope: a job failure logged after the
+    // scope unwound (in tick's catch) would lose the correlation id.
+    return runWithCorrelation(context, async () => {
+      try {
+        await this.claimAndProcess(admin, candidate, context);
+      } catch (err) {
+        this.logger.error('Report job failed:', err);
+      }
+    });
+  }
+
+  private async claimAndProcess(
+    admin: SupabaseClient,
+    candidate: { id: string; attemptCount: number },
+    context: CorrelationContext,
+  ): Promise<void> {
     const lockedUntil = new Date(Date.now() + this.leaseMs).toISOString();
 
     // Try a fresh queued claim first, then lease recovery. Exactly one
@@ -153,6 +183,11 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     if (!row) {
       return; // lost the race or the lease is still held — nothing to do
     }
+
+    // Seed the tenant/user ids from the claimed row — the store object is
+    // ours to mutate, so every later log line in this job carries them.
+    context.tenantId = row.tenant_id;
+    context.userId = row.requested_by;
 
     if (recovered && row.attempt_count > this.maxAttempts) {
       // The recovery claim spent an attempt past the cap — fail the row

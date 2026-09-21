@@ -9,6 +9,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { CorrelationInterceptor } from './common/correlation/correlation.interceptor';
 import { AuthModule } from './auth/auth.module';
 import { SkillsModule } from './skills/skills.module';
 import { CustomersModule } from './customers/customers.module';
@@ -155,6 +156,12 @@ import { ReportsModule } from './reports/reports.module';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    {
+      // First interceptor: validates/generates the correlation context so
+      // LoggingInterceptor (and every logger call downstream) sees it.
+      provide: APP_INTERCEPTOR,
+      useClass: CorrelationInterceptor,
     },
     {
       provide: APP_INTERCEPTOR,

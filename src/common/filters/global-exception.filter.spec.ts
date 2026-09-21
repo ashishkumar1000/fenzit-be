@@ -14,9 +14,10 @@ const mockReply = {
   header: jest.fn().mockReturnThis(),
 };
 
-const createMockHost = (reply = mockReply) => ({
+const createMockHost = (reply = mockReply, request: unknown = {}) => ({
   switchToHttp: () => ({
     getResponse: () => reply,
+    getRequest: () => request,
   }),
 });
 
@@ -168,6 +169,51 @@ describe('GlobalExceptionFilter', () => {
     expect(sentBody['stack']).toBeUndefined();
 
     process.env['NODE_ENV'] = originalEnv;
+  });
+
+  it('appends the stamped ids to the unhandled-exception log line', () => {
+    const logSpy = jest.spyOn(filter['logger'], 'error').mockImplementation();
+    const exception = new Error('Something broke');
+    const host = createMockHost(mockReply, {
+      correlationId: '11111111-2222-4333-8444-555555555555',
+      sessionId: '9abcdef0-1234-4567-8abc-def012345678',
+    });
+
+    filter.catch(exception, host as never);
+
+    const message = (logSpy.mock.calls[0] as string[])[0];
+    const [prefix, suffix] = message.split(' {');
+    expect(prefix).toBe('Unhandled exception');
+    expect(JSON.parse(`{${suffix}`)).toEqual({
+      correlation_id: '11111111-2222-4333-8444-555555555555',
+      session_id: '9abcdef0-1234-4567-8abc-def012345678',
+    });
+  });
+
+  it('logs the unhandled-exception line without ids when nothing was stamped', () => {
+    const logSpy = jest.spyOn(filter['logger'], 'error').mockImplementation();
+    const exception = new Error('Something broke');
+
+    filter.catch(exception, createMockHost(mockReply, {}) as never);
+
+    const message = (logSpy.mock.calls[0] as string[])[0];
+    expect(message.startsWith('Unhandled exception')).toBe(true);
+    expect(message).not.toContain('correlation_id');
+  });
+
+  it('appends only the correlation id when no session was stamped', () => {
+    const logSpy = jest.spyOn(filter['logger'], 'error').mockImplementation();
+    const exception = new Error('Something broke');
+    const host = createMockHost(mockReply, {
+      correlationId: '11111111-2222-4333-8444-555555555555',
+    });
+
+    filter.catch(exception, host as never);
+
+    const message = (logSpy.mock.calls[0] as string[])[0];
+    expect(message).toBe(
+      'Unhandled exception {"correlation_id":"11111111-2222-4333-8444-555555555555"}',
+    );
   });
 
   it('lifts retryAfterSeconds out of the body into a Retry-After header (places 429)', () => {

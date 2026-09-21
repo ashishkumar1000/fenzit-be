@@ -8,6 +8,7 @@ import { ReportRequestStatus } from '../enums/report-status.enum';
 import { ReportRequestRow } from '../report-response.model';
 import { ReportPipelineService } from './report-pipeline.service';
 import { ReportWorker } from './report-worker';
+import { getCorrelationContext } from '../../common/correlation/correlation.context';
 
 /**
  * The guarded-UPDATE chains of the claim/stamp helpers: awaited directly —
@@ -203,6 +204,62 @@ describe('ReportWorker (story 12-3)', () => {
   });
 
   describe('claiming', () => {
+    it('runs each job inside a per-job correlation scope seeded from the claimed row', async () => {
+      const row = reportRow({
+        status: ReportRequestStatus.GENERATING,
+        attempt_count: 1,
+      });
+      mockAdmin({
+        queued: { data: [{ id: row.id, attempt_count: 0 }], error: null },
+        updateResults: [{ data: [row], error: null }],
+        row: { data: row, error: null },
+      });
+      let seen: ReturnType<typeof getCorrelationContext> = null;
+      pipeline.run.mockImplementation(async () => {
+        seen = getCorrelationContext();
+      });
+
+      worker.onApplicationBootstrap();
+      await tickOnce();
+
+      expect(seen).not.toBeNull();
+      expect(seen?.correlationId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      // Seeded from the claimed row, not left null for the whole job.
+      expect(seen?.tenantId).toBe(row.tenant_id);
+      expect(seen?.userId).toBe(row.requested_by);
+      expect(seen?.sessionId).toBeNull();
+    });
+
+    it('keeps the correlation scope active when a job fails (failure line stays attributed)', async () => {
+      const row = reportRow({
+        status: ReportRequestStatus.GENERATING,
+        attempt_count: 1,
+      });
+      mockAdmin({
+        queued: { data: [{ id: row.id, attempt_count: 0 }], error: null },
+        updateResults: [{ data: [row], error: null }],
+        row: { data: row, error: null },
+      });
+      let seen: ReturnType<typeof getCorrelationContext> = null;
+      pipeline.run.mockImplementation(async () => {
+        seen = getCorrelationContext();
+        throw new Error('pipeline exploded');
+      });
+      const errorSpy = jest.spyOn(worker['logger'], 'error').mockImplementation();
+
+      worker.onApplicationBootstrap();
+      await tickOnce();
+
+      expect(seen).not.toBeNull();
+      // The catch logging the failure ran inside the scope; the next tick
+      // still proceeds (the failure is contained per job).
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      await tickOnce();
+      expect(pipeline.run).toHaveBeenCalledTimes(1);
+    });
+
     it('claims each queued candidate through the guarded UPDATE and runs the pipeline', async () => {
       const row = reportRow({
         status: ReportRequestStatus.GENERATING,

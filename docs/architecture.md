@@ -122,10 +122,49 @@ Validation errors return `422` (via `ValidationPipe.errorHttpStatusCode`).
 
 ### Logging & Observability
 
-**AR-15** — `LoggingInterceptor` (`APP_INTERCEPTOR`) generates a
-`request_id` per request, logs structured JSON on response with
-`tenant_id`, `route`, `http_status`, `duration_ms`. Phase 1 logs go to the
-runtime stdout (DO log viewer once deployed); **no Sentry yet**.
+**AR-15** — `LoggingInterceptor` (`APP_INTERCEPTOR`) logs structured JSON on
+response with `correlation_id`, `session_id`, `user_id`, `tenant_id`,
+`route`, `http_status`, `duration_ms`. Phase 1 logs go to the runtime stdout
+(DO log viewer once deployed); **no Sentry yet**.
+
+**Correlation context (story 13.1)** — every request carries a correlation
+id; every log line carries it.
+
+- **Headers:** the app sends `X-Correlation-ID` (UUID v4, one per request,
+  stable across retries) and `X-Session-ID` (UUID, one per app sitting) on
+  every request (fenzo-app, story 13.2). The backend accepts any UUID
+  version (8-4-4-4-12 hex) — v4 is the app's convention, not a validation
+  requirement.
+- **CorrelationInterceptor** (first `APP_INTERCEPTOR`, before
+  `LoggingInterceptor`): accepts a header only if it matches a UUID regex
+  (8-4-4-4-12 hex, ≤64 chars) — anything else is rejected and regenerated;
+  the raw header value is never logged or echoed. Missing/invalid
+  `x-correlation-id` → server mints `crypto.randomUUID()`. Missing/invalid
+  `x-session-id` → the field is simply absent (session is client-owned; the
+  backend never fabricates one). A session header that arrived but failed
+  validation logs a warning (without the raw value); a missing one stays
+  silent.
+- **Echo:** every response that passes the interceptor chain carries
+  `x-correlation-id`; `x-session-id` is echoed only when a valid one
+  arrived. Responses that never reach the interceptors — a guard rejection
+  (401/403) or a 404 route — carry no echo; accepted caveat (the app mints
+  the id, so it knows what it sent, and these are exactly the responses it
+  can identify by status).
+- **Context propagation:** `AsyncLocalStorage` (`src/common/correlation/`)
+  holds `{correlationId, sessionId, userId, tenantId}`;
+  `CorrelationLogger` (a `ConsoleLogger` subclass wired via
+  `app.useLogger()` in `main.ts`) merges it into EVERY `Logger.*` line —
+  existing `new Logger(...)` call sites unchanged; lines without context
+  (boot, workers outside a job) stay clean.
+- **Access log fields** (one-line JSON): `correlation_id`, `session_id`,
+  `user_id`, `tenant_id`, `route`, `http_status`, `duration_ms`. The legacy
+  `request_id`/`x-request-id` mechanism is retired (no consumers existed).
+- **Worker:** `ReportWorker` runs each job inside its own correlation scope
+  with a fresh per-job `correlationId`, seeded with the claimed row's
+  `tenant_id`/`requested_by` once the claim lands (ALS does not cross the
+  queue boundary; `reportRequestId` keeps identifying the job domain-wise).
+- **Out of scope:** outbound propagation to third parties (Google Places,
+  R2, Supabase REST) — those calls are not ours to correlate.
 
 ## Domain Model
 
@@ -247,7 +286,7 @@ rules:
 | AR-12 | Job number via `job_sequences` counter + `increment_job_counter` RPC | ✅ |
 | AR-13 | Global `JwtAuthGuard` + `RolesGuard` via `APP_GUARD`; `@Public()` | ✅ |
 | AR-14 | `GlobalExceptionFilter` + `ErrorCode` enum, single error shape | ⚠️ **Partial** — `message` array vs string inconsistency |
-| AR-15 | `LoggingInterceptor` via `APP_INTERCEPTOR`, request_id JSON logs | ✅ |
+| AR-15 | `LoggingInterceptor` via `APP_INTERCEPTOR`, correlation-aware JSON logs (13.1) | ✅ |
 | AR-16 | IST day range utility (`src/common/utils/ist-day-range.util.ts`) | ✅ |
 | AR-17 | `@nestjs/config` + Joi schema validation | ✅ |
 | AR-18 | Dockerfile + GitHub Actions CI + DigitalOcean App Platform | ❌ **Not in repo** — planned for pre-launch |

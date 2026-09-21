@@ -94,7 +94,7 @@ src/
 ├── webhooks/               # Cloudflare Worker storage events (HMAC-verified)
 ├── tenants/                # Tenant entities (used by auth)
 ├── supabase/               # SupabaseModule — per-request JWT client factory
-├── common/                 # Shared decorators, guards, interceptors, filters
+├── common/                 # Shared decorators, guards, interceptors, filters, correlation
 └── health/                 # Public liveness probe
 
 supabase/migrations/        # 22 SQL migrations — schema, RLS, atomic RPCs

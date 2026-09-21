@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import { ErrorCode } from '../enums/error-code.enum';
+import { CorrelatedRequest } from '../correlation/correlation.interceptor';
+import { getCorrelationContext } from '../correlation/correlation.context';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -63,8 +65,21 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = exception.message;
       }
     } else {
+      // For request exceptions the correlation ALS store is still active
+      // here (the filter runs inside CorrelationInterceptor's wrapped
+      // subscription), so CorrelationLogger.merge appends the ids to this
+      // line itself. The suffix below is only the fallback for the rare
+      // case where the store is gone but the request was already stamped.
+      const request = ctx.getRequest<CorrelatedRequest>();
+      let ids = '';
+      if (!getCorrelationContext() && request?.correlationId) {
+        ids = ` ${JSON.stringify({
+          correlation_id: request.correlationId,
+          ...(request.sessionId ? { session_id: request.sessionId } : {}),
+        })}`;
+      }
       this.logger.error(
-        'Unhandled exception',
+        `Unhandled exception${ids}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }

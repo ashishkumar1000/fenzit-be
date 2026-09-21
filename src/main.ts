@@ -6,6 +6,7 @@ import {
 } from '@nestjs/platform-fastify';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation-pipe-options';
+import { CorrelationLogger } from './common/correlation/correlation-logger';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
@@ -29,6 +30,10 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+
+  // Route every Logger.log/... call (framework + `new Logger(...)` instances)
+  // through the correlation-aware logger — see story 13.1.
+  app.useLogger(new CorrelationLogger());
 
   // Graceful shutdown: Render sends SIGTERM on deploys/scale-downs.
   // Without this, SIGTERM kills the process immediately and drops

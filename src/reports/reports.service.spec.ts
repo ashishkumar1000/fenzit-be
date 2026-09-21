@@ -17,6 +17,9 @@ import { ReportRequestStatus } from './enums/report-status.enum';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
 import { MAX_TECHNICIANS_PER_REPORT } from './reports.service';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
+// Real SDK class (not mocked in this spec) — presignOrThrow maps an SDK
+// NotFound (R2 404, missing report file) to 410 Gone.
+import { NotFound } from '@aws-sdk/client-s3';
 
 /**
  * The select chain of getOwnRowOrThrow: select('*').eq('id', ...).eq('tenant_id', ...)
@@ -961,6 +964,19 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       await expectErrorCode(
         service.getReportStatus(ownerUser, REQUEST_ID),
         500,
+        ErrorCode.REPORT_PRESIGN_FAILED,
+      );
+    });
+
+    it('maps an SDK NotFound (missing R2 file) to 410 REPORT_PRESIGN_FAILED', async () => {
+      mockStatusAdmin({ data: readyRow, error: null });
+      storage.getPresignedReadUrl.mockRejectedValue(
+        new NotFound({ $metadata: {} }),
+      );
+
+      await expectErrorCode(
+        service.getReportStatus(ownerUser, REQUEST_ID),
+        410,
         ErrorCode.REPORT_PRESIGN_FAILED,
       );
     });
