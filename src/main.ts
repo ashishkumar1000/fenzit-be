@@ -26,7 +26,14 @@ async function bootstrap(): Promise<void> {
   // round-trips and correctly handles POST/PUT bodies (a 301 would drop them).
 
   app.setGlobalPrefix('api/v1', {
-    exclude: ['health', 'internal/webhooks/storage'],
+    // Health rides the prefix (/api/v1/health) so the prod proxy worker —
+    // which forwards ONLY /api/v1/* — can reach it. 2026-09-21: it used to
+    // be excluded here, which made /health unreachable at api.fenzit.com
+    // (the worker 404'd the bare path, and /api/v1/health 404'd at the
+    // the backend). If Render's health-check path is configured (dashboard
+    // → Settings → Health Check Path), it must match /api/v1/health now —
+    // an unprefixed /health probe would 404 and fail deploys.
+    exclude: ['internal/webhooks/storage'],
   });
 
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));

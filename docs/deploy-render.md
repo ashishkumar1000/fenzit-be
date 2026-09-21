@@ -40,7 +40,7 @@ All required vars come from the joi boot-time validation in `src/app.module.ts` 
 ```sh
 docker build -t fenzit-be .
 docker run --rm -p 3000:3000 --env-file .env fenzit-be
-curl http://localhost:3000/health
+curl http://localhost:3000/api/v1/health
 ```
 
 Note: locally `.env` sets `PORT=3000`, so the container listens on 3000. On Render, `PORT=10000` (injected).

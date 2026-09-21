@@ -35,7 +35,7 @@ describe('Health (e2e)', () => {
 
     const response = await instance.inject({
       method: 'GET',
-      url: '/health',
+      url: '/api/v1/health',
     });
 
     expect(response.statusCode).toBe(200);

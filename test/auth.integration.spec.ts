@@ -246,7 +246,7 @@ describe('Auth Integration Tests (e2e)', () => {
 
       const healthResponse = await app.inject({
         method: 'GET',
-        url: '/health',
+        url: '/api/v1/health',
         headers: { authorization: `Bearer ${token}` },
       });
 
