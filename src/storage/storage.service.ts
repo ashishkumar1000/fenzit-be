@@ -5,7 +5,6 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  NotFound,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -77,10 +76,11 @@ export class StorageService {
       );
     } catch (err) {
       clearTimeout(timeoutId);
-      // Preserve NotFound for client to map to 410; rethrow other errors.
-      if (err instanceof NotFound) {
-        throw err;
-      }
+      // Rethrow as-is — the client maps the SDK's NotFound (404) to 410 and
+      // treats other errors as transient. (A previous `instanceof NotFound`
+      // branch here was dead code: both arms threw err, and the check itself
+      // crashes under jest's CJS interop where the ESM class binding is
+      // undefined.)
       throw err;
     } finally {
       clearTimeout(timeoutId);

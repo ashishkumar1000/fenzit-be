@@ -4,13 +4,19 @@ import { StorageService } from './storage.service';
 
 // Mock AWS SDK modules before importing the service
 jest.mock('@aws-sdk/client-s3', () => ({
-  S3Client: jest.fn().mockImplementation(() => ({})),
+  S3Client: jest.fn().mockImplementation(() => ({
+    // verifyObjectExists HeadObjects the key before presigning — resolve by default.
+    send: jest.fn().mockResolvedValue({}),
+  })),
   PutObjectCommand: jest
     .fn()
     .mockImplementation((input) => ({ input, type: 'put' })),
   GetObjectCommand: jest
     .fn()
     .mockImplementation((input) => ({ input, type: 'get' })),
+  HeadObjectCommand: jest
+    .fn()
+    .mockImplementation((input) => ({ input, type: 'head' })),
 }));
 
 const mockGetSignedUrl = jest
