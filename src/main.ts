@@ -9,8 +9,13 @@ import { VALIDATION_PIPE_OPTIONS } from './common/validation-pipe-options';
 import { CorrelationLogger } from './common/correlation/correlation-logger';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { addRequestMetricsHooks, initTelemetry } from './telemetry';
 
 async function bootstrap(): Promise<void> {
+  // Start metrics export before any instrumented code runs (no-op without
+  // OTEL_EXPORTER_OTLP_ENDPOINT — see src/telemetry/telemetry.ts).
+  await initTelemetry();
+
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({
@@ -42,9 +47,17 @@ async function bootstrap(): Promise<void> {
   // through the correlation-aware logger — see story 13.1.
   app.useLogger(new CorrelationLogger());
 
+  // Grafana Cloud request metrics (counter + duration histogram) per route
+  // template. Attached directly to the Fastify instance rather than via
+  // app.register — see fastify-metrics.plugin.ts for why. No-op when
+  // telemetry is off.
+  addRequestMetricsHooks(app.getHttpAdapter().getInstance());
+
   // Graceful shutdown: Render sends SIGTERM on deploys/scale-downs.
   // Without this, SIGTERM kills the process immediately and drops
-  // in-flight requests.
+  // in-flight requests. The final telemetry flush runs via the
+  // TelemetryShutdown lifecycle provider (app.module.ts), which Nest
+  // invokes after the server has closed.
   app.enableShutdownHooks();
 
   if (process.env['NODE_ENV'] !== 'production') {

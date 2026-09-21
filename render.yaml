@@ -9,11 +9,20 @@ services:
     runtime: docker
     plan: starter # paid plan, no idle sleep (the free tier sleeps and would not suit an API)
     region: singapore # co-located with the Supabase project
-    healthCheckPath: /health
+    # Must match the /api/v1 global prefix set in src/main.ts — see the
+    # setGlobalPrefix comment there (bare /health 404s since the prefix change).
+    healthCheckPath: /api/v1/health
     autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
+      # Grafana Cloud OTLP metrics (src/telemetry/) — values from the
+      # Grafana Cloud portal's OpenTelemetry tile; telemetry stays off
+      # unless the endpoint is set.
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

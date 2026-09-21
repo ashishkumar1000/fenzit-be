@@ -22,6 +22,7 @@ import { SyncModule } from './sync/sync.module';
 import { PlacesModule } from './places/places.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
+import { TelemetryShutdown } from './telemetry';
 
 @Module({
   imports: [
@@ -145,6 +146,9 @@ import { ReportsModule } from './reports/reports.module';
   ],
   controllers: [HealthController],
   providers: [
+    // Flushes the last metrics batch to Grafana after the HTTP server
+    // closes on SIGTERM (Nest onApplicationShutdown lifecycle).
+    TelemetryShutdown,
     {
       provide: APP_FILTER,
       useClass: GlobalExceptionFilter,
