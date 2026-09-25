@@ -10,8 +10,6 @@ docs
 scripts
 supabase
 cloudflare-worker
-_bmad
-_bmad-output
 *.md
 .env*
 Dockerfile

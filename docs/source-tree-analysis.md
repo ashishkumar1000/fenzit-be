@@ -128,11 +128,7 @@ fenzit-be/
 ├── scripts/                             # Dev scripts (not part of build)
 │   └── probe-r2.ts                      # Probe Cloudflare R2 credentials
 │
-├── cloudflare-worker/                   # (External; consumes webhooks API)
-│
-└── _bmad/                               # BMAD workflow state + plans
-    ├── bmm/config.yaml                  # bmm module config
-    └── custom/                          # Workflow customization
+└── cloudflare-worker/                   # (External; consumes webhooks API)
 ```
 
 ## Entry Points
