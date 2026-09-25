@@ -658,6 +658,30 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(rows[0].skill_id).toBe(acServiceSkillId);
         expect(rows[0].workflow_template_id).toBe(acServiceTemplateId);
         expect(rows[0].workflow_template_version).toBe(1);
+
+        // Service-role positive path for advance_workflow_step (Story 14-1
+        // review): 20260925000003 grants explicit service_role EXECUTE on all
+        // ten functions, but only create_job_with_log had a real-DB positive
+        // probe. Advance the seeded job from its initial NULL current_step to
+        // the first template step ('on_my_way' — sets_status 'in_progress')
+        // and assert the RPC returns the advanced row. Proves the app's
+        // second write path survives the lockdown too; cleanup below deletes
+        // the job either way.
+        const { data: advData, error: advError } = await serviceClient.rpc(
+          'advance_workflow_step',
+          {
+            p_job_id: createdJobId,
+            p_tenant_id: tenantId,
+            p_actor_id: ownerId,
+            p_step: 'on_my_way',
+            p_new_status: 'in_progress',
+            p_expected_current_step: null,
+          },
+        );
+        expect(advError).toBeNull();
+        const advRows = advData as { id: string; current_step: string }[];
+        expect(advRows).toHaveLength(1);
+        expect(advRows[0].current_step).toBe('on_my_way');
       } finally {
         // Cleanup: no rows left behind (job first — activity_logs cascade;
         // tenant last — job_sequences/customers cascade).
@@ -667,6 +691,309 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         await serviceClient.from('customers').delete().eq('id', customerId);
         await serviceClient.from('users').delete().in('id', [ownerId, techId]);
         await serviceClient.from('tenants').delete().eq('id', tenantId);
+      }
+    },
+  );
+
+  maybeIt(
+    'Public DB functions reject direct RPC calls under anon/authenticated keys (Story 14-1)',
+    async () => {
+      // Migration 20260925000001 revoked EXECUTE on every public-schema
+      // function from PUBLIC/anon/authenticated (deferred-work item 1). The
+      // anon probe below is the reviewer's original finding — it returned
+      // 200 before the migration; now Postgres denies at the privilege check
+      // (42501) before the SECURITY DEFINER body runs, so no job row is
+      // touched either way (the ids below are non-existent probes).
+      //
+      // advance_workflow_step is called with its six required params; the
+      // remaining six have DEFAULT NULL (migration 20260913000002).
+      const RPC_ARGS = {
+        p_job_id: '00000000-0000-0000-0000-000000000099',
+        p_tenant_id: '00000000-0000-0000-0000-000000000098',
+        p_actor_id: '00000000-0000-0000-0000-000000000099',
+        p_step: 'rls_probe',
+        p_new_status: null,
+        p_expected_current_step: null,
+      };
+
+      // A minted 'authenticated' JWT is exactly what a token holder of the
+      // publishable key would present to call the RPC directly, bypassing
+      // NestJS (which routes every RPC through the service-role client —
+      // proven unaffected by the create_job_with_log probe above).
+      const authedJwt = mintJwt(
+        '00000000-0000-0000-0000-000000000099',
+        null,
+        'authenticated',
+      );
+      const authedRpcClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${authedJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error: authedRpcError } = await authedRpcClient.rpc(
+        'advance_workflow_step',
+        RPC_ARGS,
+      );
+      expect(authedRpcError).not.toBeNull();
+      expect((authedRpcError as { code: string }).code).toBe('42501');
+
+      // Anon key, no JWT → anon role, also revoked.
+      const anonRpcClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error: anonRpcError } = await anonRpcClient.rpc(
+        'advance_workflow_step',
+        RPC_ARGS,
+      );
+      expect(anonRpcError).not.toBeNull();
+      expect((anonRpcError as { code: string }).code).toBe('42501');
+    },
+  );
+
+  maybeIt(
+    'users self-update is column-limited to name (Story 14-1)',
+    async () => {
+      // Migration 20260925000002 (deferred-work item 2): anon lost UPDATE on
+      // users entirely and authenticated was cut from a whole-table UPDATE
+      // grant to a column-level UPDATE (name) grant. A row-only RLS policy
+      // cannot reject a combined `SET name, role` update — the grant-level
+      // check does, and Postgres evaluates it before RLS (so it fires even
+      // for a zero-row match, as here: the probe id belongs to no real user).
+      const selfUserId = '00000000-0000-0000-0000-000000000099';
+      const selfJwt = mintJwt(selfUserId, null, 'authenticated');
+      const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${selfJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // Combined self-update touching privileged columns → 42501 (grant
+      // level), not an RLS rejection and not a silent partial update.
+      const { error: combinedError } = await client
+        .from('users')
+        .update({ name: 'RLS probe', role: 'owner', tenant_id: null })
+        .eq('id', selfUserId);
+      expect(combinedError).not.toBeNull();
+      expect((combinedError as { code: string }).code).toBe('42501');
+
+      // Name-only self-update on an absent row → allowed at grant/RLS level;
+      // zero rows matched, no error (and no row can be created — INSERT has
+      // no permissive policy). `.select()` makes PostgREST return the matched
+      // rows (plain update returns data: null), so an empty array proves
+      // nothing was mutated rather than the update silently landing.
+      const { data: nameOnlyRows, error: nameOnlyError } = await client
+        .from('users')
+        .update({ name: 'RLS probe' })
+        .eq('id', selfUserId)
+        .select('id');
+      expect(nameOnlyError).toBeNull();
+      expect(nameOnlyRows).toEqual([]);
+    },
+  );
+
+  maybeIt(
+    'users: anon UPDATE denied, authenticated privileged upsert denied, real name-only self-update succeeds (Story 14-1)',
+    async () => {
+      // Completes the 20260925000002 grant matrix with the paths the absent-row
+      // probe above cannot exercise: (1) anon lost UPDATE entirely; (2) an
+      // authenticated upsert touching non-name columns is denied (for an
+      // INSERT ... ON CONFLICT DO UPDATE SET role, Postgres checks the UPDATE
+      // column privileges up front — `role` is not in authenticated's
+      // UPDATE(name) grant; if the conflict path instead inserts, the
+      // insert-only-service-role policy denies it — either way 42501);
+      // (3) the intended self-service path works on a REAL row.
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error: anonUpdateError } = await anonClient
+        .from('users')
+        .update({ name: 'RLS probe' })
+        .eq('id', '00000000-0000-0000-0000-000000000099');
+      expect(anonUpdateError).not.toBeNull();
+      expect((anonUpdateError as { code: string }).code).toBe('42501');
+
+      // Deterministic probe ids in the suite's 00000000-…-99 block (091/092 —
+      // unused by the other probes; the upsert probe targets an absent row,
+      // so no pre-existing row can be modified).
+      const upsertProbeId = '00000000-0000-0000-0000-000000000091';
+      const authedUpsertJwt = mintJwt(upsertProbeId, null, 'authenticated');
+      const authedUpsertClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${authedUpsertJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { error: upsertError } = await authedUpsertClient
+        .from('users')
+        .upsert({ id: upsertProbeId, name: 'RLS probe', role: 'owner' });
+      expect(upsertError).not.toBeNull();
+      expect((upsertError as { code: string }).code).toBe('42501');
+
+      // Positive path on a real seeded row: authenticated name-only update
+      // succeeds and touches nothing else (role/tenant_id must come back
+      // exactly as seeded). The phone is probe-specific (…092) — users has
+      // partial UNIQUE indexes on (country_code, phone_number), so reusing a
+      // phone from another suite's seed would fail the seed before the try
+      // even opens. A pre-clean makes re-runs idempotent after a crashed run.
+      const probeUserId = '00000000-0000-0000-0000-000000000092';
+      await serviceClient.from('users').delete().eq('id', probeUserId);
+      const { error: seedError } = await serviceClient.from('users').upsert(
+        {
+          id: probeUserId,
+          country_code: '+91',
+          phone_number: '9999000092',
+          role: 'technician',
+          status: 'invited',
+        },
+        { onConflict: 'id' },
+      );
+      expect(seedError).toBeNull();
+
+      try {
+        const selfJwt = mintJwt(probeUserId, null, 'authenticated');
+        const selfClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          global: { headers: { Authorization: `Bearer ${selfJwt}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data, error } = await selfClient
+          .from('users')
+          .update({ name: 'RLS probe self-update' })
+          .eq('id', probeUserId)
+          .select('id, name, role, tenant_id');
+        expect(error).toBeNull();
+        const rows = data as {
+          id: string;
+          name: string;
+          role: string;
+          tenant_id: string | null;
+        }[];
+        expect(rows).toHaveLength(1);
+        expect(rows[0].id).toBe(probeUserId);
+        expect(rows[0].name).toBe('RLS probe self-update');
+        expect(rows[0].role).toBe('technician');
+        expect(rows[0].tenant_id).toBeNull();
+      } finally {
+        // Cleanup: the probe row must not leak into the shared live DB.
+        const { error: cleanupError } = await serviceClient
+          .from('users')
+          .delete()
+          .eq('id', probeUserId);
+        expect(cleanupError).toBeNull();
+      }
+    },
+  );
+
+  maybeIt(
+    'Catalog pin: every public RPC rejects anon-key direct calls (Story 14-1)',
+    async () => {
+      // Pins the 20260925000001 revokes against drift: pg_catalog is NOT
+      // exposed over PostgREST (verified — pg_proc returns PGRST205), so the
+      // pg_proc.proacl assertion cannot run through supabase-js. Instead every
+      // public-schema function is probed via the bare anon key with its real
+      // argument names:
+      //   - RPC functions must die at the EXECUTE privilege check (42501)
+      //     before their body runs, so the probe ids mutate nothing.
+      //   - Trigger functions are NEVER exposed as RPC endpoints by PostgREST
+      //     (returns-trigger ⇒ not in the RPC schema cache) — PGRST202 proves
+      //     they are unreachable through the Data API at all. Their EXECUTE
+      //     ACLs stay pinned by MCP verification (pg_proc.proacl).
+      // A future RPC re-granted to PUBLIC/anon will NOT be caught here — it
+      // must repeat the revoke pattern in its own migration (default
+      // privileges from 20260925000003 now deny PUBLIC for postgres-created
+      // functions).
+      const anonRpcClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const PROBE_ID = '00000000-0000-0000-0000-000000000099';
+
+      // Name-arg fixtures match each function's live signature exactly
+      // (verified against pg_proc / the app's own call sites).
+      const RPC_FUNCTIONS: Record<string, Record<string, unknown>> = {
+        advance_workflow_step: {
+          p_job_id: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+          p_step: 'rls_probe',
+          p_new_status: null,
+          p_expected_current_step: null,
+        },
+        confirm_attachment: {
+          p_upload_id: PROBE_ID,
+          p_job_id: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_size_bytes: 1,
+          p_actor_id: PROBE_ID,
+        },
+        create_job_with_log: {
+          p_tenant_id: PROBE_ID,
+          p_customer_id: PROBE_ID,
+          p_technician_id: PROBE_ID,
+          p_service_location: 'rls probe',
+          p_skill_id: PROBE_ID,
+          p_scheduled_start: new Date().toISOString(),
+          p_scheduled_end: null,
+          p_description: 'rls probe',
+          p_priority: 'normal',
+          p_notes_for_technician: null,
+          p_actor_id: PROBE_ID,
+          p_year: 2026,
+        },
+        increment_job_counter: { p_tenant_id: PROBE_ID, p_year: 2026 },
+        setup_tenant_for_owner: {
+          p_user_id: PROBE_ID,
+          p_company_name: 'RLS Probe Co',
+          p_gstin: null,
+          p_address: null,
+          p_state_code: 'KA',
+          p_upi_vpa: null,
+        },
+        update_job_with_log: {
+          p_job_id: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+          p_cancel: false,
+          p_description: null,
+          p_scheduled_start: null,
+          p_scheduled_end: null,
+          p_notes_for_technician: null,
+          p_technician_id: null,
+          p_priority: null,
+        },
+        workflow_steps_valid: { p_steps: [] },
+      };
+
+      for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
+        const { error } = await anonRpcClient.rpc(name, args);
+        expect(error).not.toBeNull();
+        expect((error as { code: string }).code).toBe('42501');
+      }
+
+      // Mirror the sweep with an authenticated JWT — anon-only coverage would
+      // miss a future migration that re-grants EXECUTE to `authenticated`
+      // alone (Story 14-1 review).
+      const authedProbeJwt = mintJwt(PROBE_ID, null, 'authenticated');
+      const authedPinClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${authedProbeJwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
+        const { error } = await authedPinClient.rpc(name, args);
+        expect(error).not.toBeNull();
+        expect((error as { code: string }).code).toBe('42501');
+      }
+
+      // Trigger functions: returns-trigger ⇒ never an RPC endpoint at all.
+      const TRIGGER_FUNCTIONS = [
+        'notifications_broadcast_changes',
+        'report_requests_in_flight_guard',
+        'update_updated_at_column',
+      ];
+      for (const name of TRIGGER_FUNCTIONS) {
+        const { error } = await anonRpcClient.rpc(name, {});
+        expect(error).not.toBeNull();
+        expect((error as { code: string }).code).toBe('PGRST202');
       }
     },
   );
