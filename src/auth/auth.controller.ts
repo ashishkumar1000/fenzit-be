@@ -150,13 +150,19 @@ export class AuthController {
   }
 
   @Get('realtime-token')
-  @Roles(Role.OWNER)
+  // Owner + technician (Story 14.2): the channel is per-user, not per-role.
+  // AD-18's security gate is satisfied by Story 14-1 (RPC grants revoked,
+  // users_update_own column-limited). Token scoping needs no change: the
+  // sub-keyed realtime.messages policy (notifications_topic_recipient_only)
+  // already denies any foreign topic server-side, so a technician token can
+  // only ever receive their own user:<sub>:notifications topic.
+  @Roles(Role.OWNER, Role.TECHNICIAN)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mint a short-lived Supabase Realtime token' })
   @ApiResponse({
     status: 200,
     description:
-      'One-hour token carrying sub + role: "authenticated" + exp — the claim set Supabase Realtime accepts (the login JWT is rejected: no exp, role is not a Postgres role)',
+      'One-hour token carrying sub + role: "authenticated" + exp — the claim set Supabase Realtime accepts (the login JWT is rejected: no exp, role is not a Postgres role). Issued to owners and technicians alike; each token can only reach its own user topic.',
     schema: {
       example: {
         token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
@@ -165,10 +171,6 @@ export class AuthController {
     },
   })
   @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
-  @ApiResponse({
-    status: 403,
-    description: 'Technician JWT — owner notifications only (Story 3.3)',
-  })
   async realtimeToken(@CurrentUser() user: RequestUser) {
     return this.authService.mintRealtimeToken(user);
   }

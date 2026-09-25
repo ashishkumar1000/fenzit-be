@@ -27,6 +27,8 @@ interface NotificationRow {
   event_type: string;
   payload: Record<string, unknown>;
   read_at: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
   created_at: string;
 }
 
@@ -56,7 +58,9 @@ export class NotificationsService {
 
     let qb = admin
       .from('notifications')
-      .select('id, job_id, event_type, payload, read_at, created_at')
+      .select(
+        'id, job_id, event_type, payload, read_at, entity_type, entity_id, created_at',
+      )
       .eq('tenant_id', user.tenantId)
       .eq('user_id', user.userId);
 
@@ -196,6 +200,8 @@ export class NotificationsService {
       eventType: row.event_type,
       payload: row.payload,
       readAt: row.read_at,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
       createdAt: row.created_at,
     };
   }

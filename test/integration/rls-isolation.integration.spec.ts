@@ -9,9 +9,18 @@
  * SUPABASE_ANON_KEY, and SUPABASE_JWT_SECRET to real values to run.
  */
 import { createClient } from '@supabase/supabase-js';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+// Story 14.2 realtime probes: Node 20 (this repo's runtime) has no native
+// WebSocket, and supabase-js's realtime client takes its WebSocket from the
+// global. Polyfill from `ws` (devDependency) when missing — BEFORE any
+// realtime client is constructed.
+import RealtimeWebSocket from 'ws';
+if (typeof (globalThis as Record<string, unknown>)['WebSocket'] === 'undefined') {
+  (globalThis as Record<string, unknown>)['WebSocket'] = RealtimeWebSocket;
+}
 import { SupabaseClientFactory } from '../../src/common/factories/supabase-client.factory';
 import { SkillsService } from '../../src/skills/skills.service';
 import type { RequestUser } from '../../src/common/interfaces/request-user.interface';
@@ -995,6 +1004,319 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(error).not.toBeNull();
         expect((error as { code: string }).code).toBe('PGRST202');
       }
+    },
+  );
+
+  maybeIt(
+    'notifications realtime: technician gets own-topic broadcasts, foreign topics stay silent, dedupe_key is unique (Story 14.2)',
+    async () => {
+      // Story 14.2's three real-DB probes in one seeded scenario (each probe
+      // alone would re-seed the same users/tenant three times):
+      //   (a) the technician's private channel receives the INSERT broadcast
+      //       for their own topic — delivery works exactly as fenzo-app's
+      //       client drives it (accessToken callback + private channel; NOT an
+      //       Authorization header — the live probe showed only this
+      //       combination delivers),
+      //   (b) the SAME technician token subscribed to the OWNER's topic
+      //       receives nothing while an owner row is inserted (the
+      //       realtime.messages deny path),
+      //   (c) dedupe_key is DB-guaranteed unique (partial index
+      //       notifications_dedupe_key_uniq) while NULL keys never collide.
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // Deterministic probe ids in the suite's 00000000-…-99 block (087/088/089
+      // — unused by the other probes). Probe-specific phones: users has partial
+      // UNIQUE indexes on (country_code, phone_number); pre-clean keeps re-runs
+      // idempotent after a crashed run.
+      const probeTenantId = '00000000-0000-0000-0000-000000000087';
+      const probeOwnerId = '00000000-0000-0000-0000-000000000088';
+      const probeTechId = '00000000-0000-0000-0000-000000000089';
+      const DEDUPE_KEY = 'rls-probe-14-2-dedupe';
+      const PROBE_EVENT = 'rls_probe_14_2';
+
+      // Pre-clean (idempotency after a crashed prior run): notifications →
+      // users → tenants is the only valid delete order (notifications.user_id
+      // has no ON DELETE cascade; matches the finally block).
+      await serviceClient
+        .from('notifications')
+        .delete()
+        .in('user_id', [probeOwnerId, probeTechId]);
+      await serviceClient.from('users').delete().in('id', [probeOwnerId, probeTechId]);
+      const { error: seedOwnerError } = await serviceClient
+        .from('users')
+        .upsert(
+          {
+            id: probeOwnerId,
+            country_code: '+91',
+            phone_number: '9999000088',
+            role: 'owner',
+            status: 'active',
+          },
+          { onConflict: 'id' },
+        );
+      expect(seedOwnerError).toBeNull();
+      const { error: tenantUpsertError } = await serviceClient
+        .from('tenants')
+        .upsert(
+          {
+            id: probeTenantId,
+            owner_id: probeOwnerId,
+            company_name: 'Realtime Probe Co',
+            state_code: 'KA',
+          },
+          { onConflict: 'id' },
+        );
+      expect(tenantUpsertError).toBeNull();
+      const { error: techError } = await serviceClient.from('users').upsert(
+        {
+          id: probeTechId,
+          tenant_id: probeTenantId,
+          country_code: '+91',
+          phone_number: '9999000089',
+          role: 'technician',
+          status: 'active',
+        },
+        { onConflict: 'id' },
+      );
+      expect(techError).toBeNull();
+
+      // The realtime token exactly as mintRealtimeToken produces it: claims
+      // { sub, role: 'authenticated', exp } signed with SUPABASE_JWT_SECRET.
+      const realtimeToken = jwt.sign(
+        {
+          sub: probeTechId,
+          role: 'authenticated',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        SUPABASE_JWT_SECRET,
+        { algorithm: 'HS256' },
+      );
+      // fenzo-app's client shape: the token rides the accessToken callback —
+      // realtime reads it per-subscribe; an Authorization header does NOT
+      // authorize private channels (verified live 2026-09-25).
+      const realtimeClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        accessToken: () => Promise.resolve(realtimeToken),
+      });
+
+      function waitFor(
+        predicate: () => boolean,
+        timeoutMs: number,
+      ): Promise<boolean> {
+        return new Promise((resolve) => {
+          const started = Date.now();
+          const tick = () => {
+            if (predicate()) return resolve(true);
+            if (Date.now() - started >= timeoutMs) return resolve(false);
+            setTimeout(tick, 100);
+          };
+          setTimeout(tick, 100);
+        });
+      }
+
+      const ownEvents: Record<string, unknown>[] = [];
+      const foreignEvents: Record<string, unknown>[] = [];
+      const foreignStatuses: string[] = [];
+      let ownChannel: RealtimeChannel | null = null;
+      let foreignChannel: RealtimeChannel | null = null;
+
+      try {
+        // --- Probe (a): own topic — subscribe, then insert a row for the tech.
+        // The channel name IS the topic: `user:<sub>:notifications` — any other
+        // name is denied by the realtime.messages LIKE pattern (that mistake
+        // would make this probe a false negative).
+        ownChannel = realtimeClient.channel(`user:${probeTechId}:notifications`, {
+          config: { private: true },
+        });
+        const subscribed = new Promise<void>((resolve, reject) => {
+          ownChannel!
+            .on('broadcast', { event: 'INSERT' }, (msg) => {
+              ownEvents.push(
+                (msg as unknown as { payload: Record<string, unknown> })
+                  .payload,
+              );
+            })
+            .subscribe((status) => {
+              if (status === 'SUBSCRIBED') resolve();
+              // Transient CHANNEL_ERROR is expected: the very first join fires
+              // before the accessToken callback resolves (realtime-js then
+              // auto-rejoins and succeeds) — verified live 2026-09-25. Only a
+              // wait-window timeout is fatal.
+            });
+          setTimeout(
+            () => reject(new Error('own-topic subscribe timeout (10s)')),
+            10000,
+          );
+        });
+        await subscribed;
+
+        const { error: ownInsertError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeTechId,
+            event_type: PROBE_EVENT,
+            entity_type: 'attendance',
+            entity_id: '00000000-0000-4000-8000-0000000000e1',
+          });
+        expect(ownInsertError).toBeNull();
+
+        const delivered = await waitFor(() => ownEvents.length > 0, 10000);
+        expect(delivered).toBe(true);
+        // Broadcast payload shape (verified live 2026-09-25): { id, table,
+        // record: { …row snake_case } } — the raw DB row, snake_case.
+        const broadcast = ownEvents[0] as {
+          id: string;
+          table: string;
+          record: Record<string, unknown>;
+        };
+        expect(broadcast.table).toBe('notifications');
+        expect(broadcast.record['user_id']).toBe(probeTechId);
+        // The additive 14.2 columns ride the raw row too.
+        expect(broadcast.record['entity_type']).toBe('attendance');
+        expect(broadcast.record['entity_id']).toBe(
+          '00000000-0000-4000-8000-0000000000e1',
+        );
+
+        // --- Probe (b): foreign topic with the SAME valid technician token —
+        // the realtime.messages policy denies it server-side. An owner row is
+        // inserted during the window: a broken policy WOULD deliver it, so
+        // zero received events is a discriminating assertion.
+        foreignChannel = realtimeClient.channel(
+          `user:${probeOwnerId}:notifications`,
+          { config: { private: true } },
+        );
+        // The status must settle on CHANNEL_ERROR or TIMED_OUT: the
+        // realtime.messages policy denies the foreign topic server-side. A
+        // SUBSCRIBED here would mean the policy is broken — silence alone
+        // could not distinguish a policy denial from an unrelated join
+        // failure, so the status settle is the primary assertion and the
+        // silence window below is belt-and-braces.
+        foreignChannel
+          .on('broadcast', { event: 'INSERT' }, (msg) => {
+            foreignEvents.push(
+              (msg as unknown as { payload: Record<string, unknown> })
+                .payload,
+            );
+          })
+          .subscribe((status) => {
+            foreignStatuses.push(status);
+          });
+        const settled = await waitFor(
+          () =>
+            foreignStatuses.length > 0 &&
+            ['CHANNEL_ERROR', 'TIMED_OUT'].includes(
+              foreignStatuses[foreignStatuses.length - 1],
+            ),
+          10000,
+        );
+        expect(settled).toBe(true);
+
+        const { error: foreignInsertError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeOwnerId,
+            event_type: PROBE_EVENT,
+          });
+        expect(foreignInsertError).toBeNull();
+
+        // Give the socket a real window to (wrongly) deliver — nothing may
+        // arrive, and the subscription must never have become authorized.
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        expect(foreignEvents).toEqual([]);
+        expect(foreignStatuses).not.toContain('SUBSCRIBED');
+
+        // --- Probe (c): dedupe_key. NULL keys never collide (existing
+        // job/report insert paths stay untouched); a repeated non-null key is
+        // rejected by the partial unique index (23505).
+        const { error: nullKeyOneError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeTechId,
+            event_type: PROBE_EVENT,
+          });
+        expect(nullKeyOneError).toBeNull();
+        const { error: nullKeyTwoError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeTechId,
+            event_type: PROBE_EVENT,
+          });
+        expect(nullKeyTwoError).toBeNull();
+
+        const { error: firstKeyedError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeTechId,
+            event_type: PROBE_EVENT,
+            dedupe_key: DEDUPE_KEY,
+          });
+        expect(firstKeyedError).toBeNull();
+        const { error: duplicateKeyError } = await serviceClient
+          .from('notifications')
+          .insert({
+            tenant_id: probeTenantId,
+            user_id: probeTechId,
+            event_type: PROBE_EVENT,
+            dedupe_key: DEDUPE_KEY,
+          });
+        expect(duplicateKeyError).not.toBeNull();
+        expect((duplicateKeyError as { code: string }).code).toBe('23505');
+      } finally {
+        // Cleanup: close the socket first so the deletes cannot race a live
+        // connection (and jest's open-handle warning goes away), then every
+        // probe row (by user ids), then the seeded tenant/users.
+        await ownChannel?.unsubscribe();
+        await foreignChannel?.unsubscribe();
+        realtimeClient.removeAllChannels();
+        realtimeClient.realtime.disconnect();
+        await serviceClient
+          .from('notifications')
+          .delete()
+          .in('user_id', [probeOwnerId, probeTechId]);
+        await serviceClient
+          .from('users')
+          .delete()
+          .in('id', [probeOwnerId, probeTechId]);
+        await serviceClient
+          .from('tenants')
+          .delete()
+          .eq('id', probeTenantId);
+      }
+    },
+    30000,
+  );
+
+  maybeIt(
+    'notifications list select pins the real table schema (Story 14.2 review)',
+    async () => {
+      // The list endpoint's column list is only mock-asserted in unit tests —
+      // nothing ran it against the real table. This probe pins BOTH drift
+      // directions: a missing/dropped migration (unknown column → error) and a
+      // select string that drifts from the table (schema mismatch). MUST stay
+      // byte-identical to the select in notifications.service.ts
+      // listNotifications; a read-only limit(1) touches no table contents.
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      const { error } = await serviceClient
+        .from('notifications')
+        .select(
+          'id, job_id, event_type, payload, read_at, entity_type, entity_id, created_at',
+        )
+        .limit(1);
+      expect(error).toBeNull();
     },
   );
 

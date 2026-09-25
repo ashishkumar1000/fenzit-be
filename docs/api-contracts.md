@@ -78,25 +78,41 @@ invalid; locked sessions return 401).
 - `401` — Invalid/expired/locked OTP session
 - `422` — Invalid OTP code format
 
-#### `GET /api/v1/auth/realtime-token` `[Bearer JWT, Role: owner]`
+#### `GET /api/v1/auth/realtime-token` `[Bearer JWT, Role: owner | technician]`
 
-Mint a short-lived (1 h) token for the Supabase Realtime socket (Story 3.3,
-owner notifications; technician live updates — Story 3.4 — may widen this
-later). Supabase Realtime rejects the login JWT — it never expires and its
-`role: 'owner' | 'technician'` claim is not an existing Postgres role (Story 3.1
-spike) — so the app exchanges its login token for this one. Authorization on the
-Realtime path happens in the `realtime.messages` RLS policy, keyed on `sub` only.
+Mint a short-lived (1 h) token for the Supabase Realtime socket. Opened to
+technicians in Story 14.2 (Story 3.3 minted it owner-only; the AD-18 security
+gate is satisfied by Story 14.1's RPC-grant revocation + column-limited
+`users_update_own`). Supabase Realtime rejects the login JWT — it never expires
+and its `role: 'owner' | 'technician'` claim is not an existing Postgres role
+(Story 3.1 spike) — so the app exchanges its login token for this one.
+Authorization on the Realtime path happens in the `realtime.messages` RLS
+policy (`notifications_topic_recipient_only`), keyed on `sub` only — each token
+can reach exactly one topic, `user:<sub>:notifications`; a foreign topic is
+denied server-side regardless of what the client subscribes to.
 
 **Body:** none
 
 **Responses:**
-- `200` — `{ token: string (JWT: sub + role: 'authenticated' + exp; iat added automatically), expiresAt: ISO8601 }`
+- `200` — `{ token: string (JWT: sub + role: 'authenticated' + exp; iat added automatically), expiresAt: ISO8601 }` (same shape for both roles)
 - `401` — Missing or invalid JWT
-- `403` — Technician JWT
 
 The client caches the token and re-fetches it slightly before `expiresAt`
 (refresh margin), so a fresh token is always in hand for a (re)connect; a
 failed fetch just means no socket (the app falls back to focus refresh).
+
+**Broadcast envelope (Realtime → client):** on the topic the client receives a
+BINARY-framed broadcast with event `'INSERT'` whose payload is
+`{ id, table, record: { ...row } }` — the raw DB row, **snake_case** (REST maps
+to camelCase in `NotificationResponse`; that split is pre-existing).
+
+**`dedupe_key` is DB-internal:** it exists only for DB-guaranteed dedupe (the
+partial unique index) and never appears in REST responses. It does appear in
+the raw broadcast `record` — acceptable, since the topic is recipient-only.
+
+**Deploy order:** migration `20260925000005` (entity/dedupe columns) must be
+applied (via Supabase MCP) **before** the backend deploy that selects the new
+columns — otherwise every `GET /notifications` 500s on the unknown column.
 
 #### `POST /api/v1/auth/invite` `[Bearer JWT, Role: owner]`
 
@@ -476,13 +492,16 @@ global ValidationPipe.
 #### `GET /api/v1/notifications?limit=&cursor=` `[Bearer JWT]`
 
 Newest-first list (`created_at DESC, id DESC` keyset pagination). Default page
-20, max 50. Each item: `{ id, jobId, eventType, payload, readAt, createdAt }`
-— `payload` is the verbatim Story 3.1 JSONB (`job_number`, `step`,
-`technician_name`); no read-time join. Job notifications carry their `jobId`;
-report notifications (Epic 12: `eventType` `report_ready` / `report_failed`)
-carry `jobId: null` and a payload of `reportId`/`reportType`/`reportLabel`/
-`status`/`errorCode` — no URLs (the FE fetches a fresh presigned URL from the
-report status endpoint on tap).
+20, max 50. Each item: `{ id, jobId, eventType, payload, readAt, entityType,
+entityId, createdAt }` — `payload` is the verbatim Story 3.1 JSONB
+(`job_number`, `step`, `technician_name`); no read-time join. Job notifications
+carry their `jobId`; report notifications (Epic 12: `eventType` `report_ready`
+/ `report_failed`) carry `jobId: null` and a payload of
+`reportId`/`reportType`/`reportLabel`/`status`/`errorCode` — no URLs (the FE
+fetches a fresh presigned URL from the report status endpoint on tap).
+`entityType`/`entityId` (Story 14.2, additive + nullable) are the polymorphic
+deep-link target for later attendance/leave events — all current job/report
+rows return them as `null`.
 
 **Responses:**
 - `200` — `{ data: [...], nextCursor: string | null, hasMore }`

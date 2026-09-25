@@ -28,12 +28,12 @@ describe('AuthController — realtime-token route', () => {
     expect(authService.mintRealtimeToken).toHaveBeenCalledWith(user);
   });
 
-  it('is owner-only — the mint route must never accept a Realtime token back (self-renewal)', () => {
+  it('is owner + technician — but the mint route must never accept a Realtime token back (self-renewal)', () => {
     const roles = Reflect.getMetadata(
       ROLES_KEY,
       AuthController.prototype.realtimeToken,
     ) as Role[] | undefined;
 
-    expect(roles).toEqual([Role.OWNER]);
+    expect(roles).toEqual([Role.OWNER, Role.TECHNICIAN]);
   });
 });

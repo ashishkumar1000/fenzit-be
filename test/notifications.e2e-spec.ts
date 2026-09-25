@@ -515,6 +515,101 @@ describe('Notifications (e2e)', () => {
     });
   });
 
+  // Story 14.2: the inbox is one backend for both roles — a technician JWT
+  // gets exactly the Owner shape (recipient-scoping is the authorization).
+  describe('GET /api/v1/notifications (technician, Story 14.2)', () => {
+    const techRow = {
+      ...unreadRow,
+      id: '00000000-0000-4000-8000-0000000000c1',
+      entity_type: null,
+      entity_id: null,
+      // job_id is nullable (20260920000008) — report rows arrive without one.
+      job_id: null,
+    };
+
+    it("should return 200 with ONLY the technician's own rows in the shared envelope, including entityType/entityId", async () => {
+      // The seed holds owner rows in the same tenant too — but the double
+      // scoping below (tenant_id + user_id = TECH_ID) is the server-side
+      // exclusion, so the builder only ever surfaces the technician's rows.
+      const { captured } = mockNotificationsBuilder({
+        data: [{ ...techRow, entity_type: 'attendance', entity_id: '00000000-0000-4000-8000-0000000000c2' }],
+        error: null,
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/notifications',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.hasMore).toBe(false);
+      expect(body.data).toHaveLength(1);
+      // Same shape Owners get — additive nullable entity fields included.
+      expect(body.data[0]).toEqual({
+        id: '00000000-0000-4000-8000-0000000000c1',
+        jobId: null,
+        eventType: 'on_my_way',
+        payload: techRow.payload,
+        readAt: null,
+        entityType: 'attendance',
+        entityId: '00000000-0000-4000-8000-0000000000c2',
+        createdAt: '2026-09-09T10:00:00Z',
+      });
+      // Recipient scoping excludes the owner's rows server-side.
+      expect(captured.eq).toContainEqual(['tenant_id', TENANT_ID]);
+      expect(captured.eq).toContainEqual(['user_id', TECH_ID]);
+    });
+
+    it('should map entityType/entityId to null for rows that leave them unset', async () => {
+      mockNotificationsBuilder({ data: [techRow], error: null });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/notifications',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = JSON.parse(response.body).data[0];
+      expect(row.entityType).toBeNull();
+      expect(row.entityId).toBeNull();
+    });
+  });
+
+  describe('GET /api/v1/auth/realtime-token (Story 14.2)', () => {
+    it('should return 200 { token, expiresAt } for a technician JWT (was 403 before Story 14.2)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/realtime-token',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(typeof body.token).toBe('string');
+      expect(typeof body.expiresAt).toBe('string');
+      // Same claim shape owners get: sub + role: 'authenticated' + exp (1 h).
+      const claims = jwtService.verify(body.token) as {
+        sub: string;
+        role: string;
+        exp: number;
+      };
+      expect(claims.sub).toBe(TECH_ID);
+      expect(claims.role).toBe('authenticated');
+      // The docs promise expiresAt and the token's exp are the same instant.
+      expect(claims.exp).toBe(
+        Math.floor(new Date(body.expiresAt).getTime() / 1000),
+      );
+      const ttlSeconds =
+        Math.floor(new Date(body.expiresAt).getTime() / 1000) -
+        Math.floor(Date.now() / 1000);
+      expect(ttlSeconds).toBeGreaterThan(3500);
+      expect(ttlSeconds).toBeLessThanOrEqual(3600);
+    });
+  });
+
   // Auth is a global APP_GUARD — one 401 pass per method shape, house style
   // (mirrors the AC6/AC9 401 cases in customers.e2e-spec.ts).
   describe('auth', () => {

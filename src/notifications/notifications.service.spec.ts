@@ -209,6 +209,47 @@ describe('NotificationsService', () => {
         InternalServerErrorException,
       );
     });
+
+    // Story 14.2 (AD-13): the additive polymorphic entity columns map to
+    // camelCase; the select must fetch them alongside the legacy fields.
+    it('should map entityType/entityId camelCase when the row carries them', async () => {
+      const row = {
+        ...dbRow,
+        entity_type: 'attendance',
+        entity_id: '00000000-0000-4000-8000-0000000000e1',
+      };
+      const { qb } = mockFrom(mockQueryBuilder({ data: [row], error: null }));
+
+      const result = await service.listNotifications(ownerUser, {});
+
+      expect(result.data[0]).toEqual({
+        id: 'n-1',
+        jobId: 'job-uuid',
+        eventType: 'on_my_way',
+        payload: dbRow.payload,
+        readAt: null,
+        entityType: 'attendance',
+        entityId: '00000000-0000-4000-8000-0000000000e1',
+        createdAt: '2026-09-09T10:00:00Z',
+      });
+      expect(qb['select']).toHaveBeenCalledWith(
+        'id, job_id, event_type, payload, read_at, entity_type, entity_id, created_at',
+      );
+    });
+
+    it('should map entityType/entityId to null when the row leaves them unset (job/report rows)', async () => {
+      const row = {
+        ...dbRow,
+        entity_type: null,
+        entity_id: null,
+      };
+      mockFrom(mockQueryBuilder({ data: [row], error: null }));
+
+      const result = await service.listNotifications(ownerUser, {});
+
+      expect(result.data[0].entityType).toBeNull();
+      expect(result.data[0].entityId).toBeNull();
+    });
   });
 
   describe('getUnreadCount', () => {
