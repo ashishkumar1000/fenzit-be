@@ -19,6 +19,8 @@ import { AutosuggestResponseDto } from './dto/autosuggest-response.dto';
 import { PlaceIdParamsDto } from './dto/place-id-params.dto';
 import { ResolveQueryDto } from './dto/resolve-query.dto';
 import { ResolvedPlaceDto } from './dto/resolve-response.dto';
+import { ReverseQueryDto } from './dto/reverse-query.dto';
+import { ReverseGeocodedAddressDto } from './dto/reverse-response.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '../common/enums/role.enum';
@@ -92,5 +94,37 @@ export class PlacesController {
     @Query() query: ResolveQueryDto,
   ) {
     return this.placesService.resolve(user, params.placeId, query.sessionToken);
+  }
+
+  @Get('reverse')
+  @Roles(Role.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reverse geocode raw coordinates into an address (map-picker pin row)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Resolved address — all fields null when the point has no address (e.g. open water)',
+    type: ReverseGeocodedAddressDto,
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({
+    status: 422,
+    description:
+      'Validation error — lat/lng outside ([-90, 90]) / ([-180, 180]) or non-numeric',
+  })
+  @ApiResponse({
+    status: 429,
+    description:
+      'Rate limit exceeded — response carries a Retry-After header (seconds to wait before retrying)',
+  })
+  @ApiResponse({ status: 502, description: 'Places provider upstream error' })
+  reverse(
+    @CurrentUser() user: RequestUser,
+    @Query() query: ReverseQueryDto,
+  ) {
+    return this.placesService.reverse(user, query.lat, query.lng);
   }
 }

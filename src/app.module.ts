@@ -77,6 +77,17 @@ import { TelemetryShutdown } from './telemetry';
           .positive()
           .max(2147483647)
           .optional(),
+        // Reverse-geocode budgets (Story 15-4's map-picker pin row).
+        PLACES_REVERSE_RATE_LIMIT_WINDOW_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
+        PLACES_REVERSE_RATE_LIMIT_MAX: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
         // Report module (Epic 12). Presign TTL drives the status endpoint's
         // download links today; the poll interval, job cap and attempt cap
         // are consumed by the generation worker (story 12-3).

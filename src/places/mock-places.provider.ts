@@ -5,6 +5,7 @@ import {
   PlaceSuggestion,
   PlacesRegion,
   ResolvedPlace,
+  ReverseGeocodedAddress,
 } from './places-provider';
 
 /**
@@ -24,6 +25,17 @@ export const SIMULATE_PROVIDER_ERROR_QUERY = '__simulate_provider_error__';
  * (Story 1.2).
  */
 export const SIMULATE_RESOLVE_ERROR_PLACE_ID = '__simulate_resolve_error__';
+
+/**
+ * Sentinel point the mock recognizes to simulate a reverseGeocode()-level
+ * provider failure — Null Island (0, 0), never a real pin in practice.
+ * Same non-production gate and same 502 error-mapping path as the
+ * sentinels above, scoped to the reverse endpoint (Story 15.4).
+ */
+export const SIMULATE_REVERSE_ERROR_POINT = {
+  latitude: 0,
+  longitude: 0,
+};
 
 /** Deterministic fixtures keyed by a lowercase substring of the query. */
 const FIXTURE_SUGGESTIONS: Record<string, PlaceSuggestion[]> = {
@@ -102,6 +114,36 @@ const FIXTURE_RESOLVED_PLACES: Record<string, ResolvedPlace> = {
   },
 };
 
+/**
+ * Deterministic reverse-geocode fixtures — the same coordinates the
+ * resolve() fixtures above carry, so a full mock pick→pin→address round
+ * trip is testable without inventing parallel coordinates. A point within
+ * COORDINATE_MATCH_TOLERANCE of a fixture resolves to that fixture's
+ * address; anything else resolves to the null-address shape ("no address
+ * here"), per the `ReverseGeocodedAddress` contract.
+ */
+const FIXTURE_REVERSE_ADDRESSES: Array<
+  ReverseGeocodedAddress & { latitude: number; longitude: number }
+> = [
+  {
+    latitude: 19.1364,
+    longitude: 72.8296,
+    formattedAddress: 'Andheri West, Mumbai, Maharashtra 400058, India',
+    city: 'Mumbai',
+    pincode: '400058',
+  },
+  {
+    latitude: 12.9352,
+    longitude: 77.6245,
+    formattedAddress: 'Koramangala, Bengaluru, Karnataka 560034, India',
+    city: 'Bengaluru',
+    pincode: '560034',
+  },
+];
+
+/** ~55 m — tight enough that only a pin genuinely near a fixture matches. */
+const COORDINATE_MATCH_TOLERANCE = 0.0005;
+
 @Injectable()
 export class MockPlacesProvider extends PlacesProvider {
   constructor(private readonly configService: ConfigService) {
@@ -171,5 +213,32 @@ export class MockPlacesProvider extends PlacesProvider {
     }
 
     return fixture;
+  }
+
+  async reverseGeocode(
+    latitude: number,
+    longitude: number,
+  ): Promise<ReverseGeocodedAddress> {
+    if (
+      process.env['NODE_ENV'] !== 'production' &&
+      latitude === SIMULATE_REVERSE_ERROR_POINT.latitude &&
+      longitude === SIMULATE_REVERSE_ERROR_POINT.longitude
+    ) {
+      throw new Error('Simulated Places reverseGeocode provider failure');
+    }
+
+    const match = FIXTURE_REVERSE_ADDRESSES.find(
+      (fixture) =>
+        Math.abs(fixture.latitude - latitude) <= COORDINATE_MATCH_TOLERANCE &&
+        Math.abs(fixture.longitude - longitude) <= COORDINATE_MATCH_TOLERANCE,
+    );
+
+    return match
+      ? {
+          formattedAddress: match.formattedAddress,
+          city: match.city,
+          pincode: match.pincode,
+        }
+      : { formattedAddress: null, city: null, pincode: null };
   }
 }

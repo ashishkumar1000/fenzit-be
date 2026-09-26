@@ -6,6 +6,7 @@ import {
   PlacesProvider,
   PlaceSuggestion,
   ResolvedPlace,
+  ReverseGeocodedAddress,
 } from './places-provider';
 import { PlacesRateLimitStore } from './places-rate-limit.store';
 import { RequestUser } from '../common/interfaces/request-user.interface';
@@ -30,6 +31,7 @@ describe('PlacesService', () => {
     const mockPlacesProvider = {
       autosuggest: jest.fn(),
       resolve: jest.fn(),
+      reverseGeocode: jest.fn(),
     };
 
     const mockRateLimitStore = {
@@ -454,6 +456,106 @@ describe('PlacesService', () => {
         60,
       );
       expect(configGet).toHaveBeenCalledWith('PLACES_RESOLVE_RATE_LIMIT_MAX');
+    });
+  });
+
+  describe('reverse', () => {
+    const reverseAddress: ReverseGeocodedAddress = {
+      formattedAddress: 'Koramangala, Bengaluru, Karnataka 560034, India',
+      city: 'Bengaluru',
+      pincode: '560034',
+    };
+
+    it('should return the reverse-geocoded address from the provider on the happy path', async () => {
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
+      placesProvider.reverseGeocode.mockResolvedValue(reverseAddress);
+
+      const result = await service.reverse(ownerUser, 12.9352, 77.6245);
+
+      expect(result).toEqual(reverseAddress);
+      expect(rateLimitStore.increment).toHaveBeenCalledWith(
+        'tenant-uuid-111:reverse',
+        60,
+      );
+      expect(placesProvider.reverseGeocode).toHaveBeenCalledWith(
+        12.9352,
+        77.6245,
+      );
+    });
+
+    it('should pass the provider null-address shape through untouched (no address here is a 200, never a throw)', async () => {
+      const nullAddress: ReverseGeocodedAddress = {
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      };
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
+      placesProvider.reverseGeocode.mockResolvedValue(nullAddress);
+
+      const result = await service.reverse(ownerUser, 0.123, 45.678);
+
+      expect(result).toEqual(nullAddress);
+    });
+
+    it('should throw 429 RATE_LIMITED and never call the provider once the reverse budget is exceeded', async () => {
+      // REVERSE_RATE_LIMIT_MAX defaults to 10, same bucket shape as resolve.
+      rateLimitStore.increment.mockResolvedValue({
+        count: 11,
+        windowRemainingSeconds: 60,
+      });
+
+      await expect(
+        service.reverse(ownerUser, 12.9352, 77.6245),
+      ).rejects.toMatchObject({
+        status: 429,
+        response: expect.objectContaining({
+          error_code: ErrorCode.RATE_LIMITED,
+          message: expect.stringContaining('reverse'),
+        }),
+      });
+      expect(placesProvider.reverseGeocode).not.toHaveBeenCalled();
+    });
+
+    it('should throw 502 PLACES_UPSTREAM_ERROR when the provider throws', async () => {
+      rateLimitStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 60,
+      });
+      placesProvider.reverseGeocode.mockRejectedValue(
+        new Error('Simulated Places reverseGeocode provider failure'),
+      );
+
+      await expect(
+        service.reverse(ownerUser, 12.9352, 77.6245),
+      ).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.PLACES_UPSTREAM_ERROR,
+          message: 'Unable to read the pinned address right now',
+        }),
+      });
+    });
+
+    it('should throw 502 PLACES_UPSTREAM_ERROR (not a bare 500) when the rate-limit store itself throws', async () => {
+      rateLimitStore.increment.mockRejectedValue(
+        new Error('cache backend down'),
+      );
+
+      await expect(
+        service.reverse(ownerUser, 12.9352, 77.6245),
+      ).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.PLACES_UPSTREAM_ERROR,
+        }),
+      });
+      expect(placesProvider.reverseGeocode).not.toHaveBeenCalled();
     });
   });
 });

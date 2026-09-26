@@ -4,6 +4,7 @@ import {
   PlacesProvider,
   PlaceSuggestion,
   ResolvedPlace,
+  ReverseGeocodedAddress,
 } from './places-provider';
 import { PlacesRateLimitStore } from './places-rate-limit.store';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -24,6 +25,12 @@ export const RATE_LIMIT_MAX = 30;
 // hardcode a duplicate magic number.
 export const RESOLVE_RATE_LIMIT_WINDOW_SECONDS = 60;
 export const RESOLVE_RATE_LIMIT_MAX = 10;
+
+// Default reverse-geocode budget — override per environment via the
+// PLACES_REVERSE_RATE_LIMIT_* env vars. Reverse fires once per settled map
+// pan (never per frame), so its budget matches resolve's.
+export const REVERSE_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const REVERSE_RATE_LIMIT_MAX = 10;
 
 export interface AutosuggestResult {
   suggestions: PlaceSuggestion[];
@@ -133,6 +140,45 @@ export class PlacesService {
     }
 
     return resolved;
+  }
+
+  /**
+   * Reverse geocodes raw coordinates into an address (Story 15.4's
+   * map-picker pin row). No session token (Geocoding API has none) — the
+   * per-endpoint rate limit bounds abuse instead. A point with no address
+   * is a 200 with the null-address shape, per the provider contract.
+   */
+  async reverse(
+    user: RequestUser,
+    latitude: number,
+    longitude: number,
+  ): Promise<ReverseGeocodedAddress> {
+    const tenantKey = user.tenantId ?? user.userId;
+    const upstreamMessage = 'Unable to read the pinned address right now';
+    const budget = this.rateLimitBudget(
+      'PLACES_REVERSE_RATE_LIMIT_WINDOW_SECONDS',
+      'PLACES_REVERSE_RATE_LIMIT_MAX',
+      REVERSE_RATE_LIMIT_WINDOW_SECONDS,
+      REVERSE_RATE_LIMIT_MAX,
+    );
+
+    await this.enforceRateLimit(
+      `${tenantKey}:reverse`,
+      budget.windowSeconds,
+      budget.max,
+      'reverse',
+      upstreamMessage,
+    );
+
+    try {
+      return await this.placesProvider.reverseGeocode(latitude, longitude);
+    } catch (error) {
+      this.throwUpstreamError(
+        'Places provider failed to reverse geocode:',
+        error,
+        upstreamMessage,
+      );
+    }
   }
 
   /**

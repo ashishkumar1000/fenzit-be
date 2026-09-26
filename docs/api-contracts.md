@@ -854,6 +854,81 @@ lazily compiled — they fail loud until 15-7 lands.
 
 ---
 
+### Places (Epic 1 + Story 15-4, owner only)
+
+Google Places/Geocoding-backed address endpoints. No DB involvement
+(AD-2). Every endpoint is rate-limited **per tenant** (429s carry a
+`Retry-After` header with the window's remaining seconds; budgets tune via
+the optional `PLACES_{AUTOSUGGEST,RESOLVE,REVERSE}_RATE_LIMIT_{MAX,WINDOW_SECONDS}`
+env vars — defaults 30 / 10 / 10 per 60s window respectively).
+
+#### `GET /api/v1/places/autosuggest?q=&sessionToken=` (owner only)
+
+Free-text address search (3-char minimum server-enforced). Session token
+groups one autosuggest→resolve session (Google billing semantics) —
+client-generated, reused across every autosuggest call and the terminating
+resolve.
+
+**Response 200:** `{ suggestions: [{ placeId, text }] }` (possibly empty)
+
+---
+
+#### `GET /api/v1/places/resolve/:placeId?sessionToken=` (owner only)
+
+Resolves an autosuggest selection into a full address + coordinates.
+
+**Response 200:**
+```json
+{
+  "placeId": "…",
+  "formattedAddress": "Andheri West, Mumbai, Maharashtra 400058, India",
+  "city": "Mumbai",
+  "pincode": "400058",
+  "latitude": 19.1364,
+  "longitude": 72.8296
+}
+```
+`city`/`pincode` are `null` when the place lacks them (never omitted or
+`''`). A place Google cannot locate surfaces as a 502, never a
+null-coordinate success.
+
+---
+
+#### `GET /api/v1/places/reverse?lat=&lng=` (owner only, Story 15-4)
+
+Reverse geocodes raw coordinates (the map-picker pin row). Google's legacy
+Geocoding API under the hood — same server-side key (its project must have
+the Geocoding API enabled), no session token (this API is billed per call;
+the per-endpoint rate limit bounds abuse).
+
+**Response 200:** all three fields `null` when the point has no address
+(e.g. open water) — a "not found" point is a success, never a 404; the
+caller falls back to showing the raw coordinates.
+```json
+{
+  "formattedAddress": "Andheri West, Mumbai, Maharashtra 400058, India",
+  "city": "Mumbai",
+  "pincode": "400058"
+}
+```
+
+Open-water point (no address anywhere near) — the payload the app must
+handle when the owner drops the pin off-shore; the row falls back to the
+raw coordinates:
+```json
+{
+  "formattedAddress": null,
+  "city": null,
+  "pincode": null
+}
+```
+
+**Errors:** 422 (lat/lng outside `[-90, 90]` / `[-180, 180]` or
+non-numeric), 429 rate-limited, 502 `PLACES_UPSTREAM_ERROR` on any
+Google/network failure or timeout.
+
+---
+
 ### Sync (technician only)
 
 #### `POST /api/v1/sync` `[Bearer JWT, Role: technician]`

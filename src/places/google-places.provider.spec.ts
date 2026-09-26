@@ -360,4 +360,129 @@ describe('GooglePlacesProvider', () => {
       ).rejects.toThrow();
     });
   });
+
+  describe('reverseGeocode', () => {
+    const okBody = {
+      status: 'OK',
+      results: [
+        {
+          formatted_address: 'Koramangala, Bengaluru, Karnataka 560034, India',
+          address_components: [
+            { long_name: 'Koramangala', types: ['sublocality'] },
+            { long_name: 'Bengaluru', types: ['locality'] },
+            { long_name: '560034', types: ['postal_code'] },
+          ],
+        },
+      ],
+    };
+
+    it('should return a ReverseGeocodedAddress for a successful lookup', async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(200, okBody));
+
+      const address = await provider.reverseGeocode(12.9352, 77.6245);
+
+      expect(address).toEqual({
+        formattedAddress: 'Koramangala, Bengaluru, Karnataka 560034, India',
+        city: 'Bengaluru',
+        pincode: '560034',
+      });
+    });
+
+    it('should call the legacy Geocoding API with latlng and the key in the QUERY string (not the X-Goog-Api-Key header)', async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(200, okBody));
+
+      await provider.reverseGeocode(12.9352, 77.6245);
+
+      const [url, init] = fetchCallArgs(fetchSpy);
+      // Places (New)'s header auth returned REQUEST_DENIED on the Geocoding
+      // API (verified live 2026-09-26) — legacy web services need `key=`.
+      expect(String(url)).toContain(
+        'https://maps.googleapis.com/maps/api/geocode/json',
+      );
+      expect(String(url)).toContain('latlng=12.9352%2C77.6245');
+      expect(String(url)).toContain('key=test-google-api-key');
+      expect(init.method).toBe('GET');
+      expect(
+        (init.headers as Record<string, string>)?.['X-Goog-Api-Key'],
+      ).toBeUndefined();
+    });
+
+    it('should resolve to the null-address shape on ZERO_RESULTS (no address here is not an error)', async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(200, { status: 'ZERO_RESULTS' }));
+
+      const address = await provider.reverseGeocode(0.0001, 0.0001);
+
+      expect(address).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
+    });
+
+    it('should treat an OK status with an empty results array as the null-address shape, never crash', async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(200, { status: 'OK', results: [] }));
+
+      const address = await provider.reverseGeocode(0.0001, 0.0001);
+
+      expect(address).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
+    });
+
+    it('should throw on a non-OK status (e.g. REQUEST_DENIED) carrying the error message', async () => {
+      fetchSpy.mockResolvedValue(
+        jsonResponse(200, {
+          status: 'REQUEST_DENIED',
+          error_message: 'You must use an API key',
+        }),
+      );
+
+      await expect(provider.reverseGeocode(12.9352, 77.6245)).rejects.toThrow(
+        /REQUEST_DENIED.*You must use an API key/,
+      );
+    });
+
+    it('should throw when the Geocoding request returns a non-2xx status', async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(404, {}));
+
+      await expect(provider.reverseGeocode(12.9352, 77.6245)).rejects.toThrow(
+        /status 404/,
+      );
+    });
+
+    it('should throw when the Geocoding request times out/aborts', async () => {
+      fetchSpy.mockRejectedValue(
+        new DOMException('The signal timed out', 'TimeoutError'),
+      );
+
+      await expect(provider.reverseGeocode(12.9352, 77.6245)).rejects.toThrow();
+    });
+
+    it('should normalize empty-string components to null, per the ReverseGeocodedAddress contract', async () => {
+      fetchSpy.mockResolvedValue(
+        jsonResponse(200, {
+          status: 'OK',
+          results: [
+            {
+              formatted_address: '',
+              address_components: [
+                { long_name: '', types: ['locality'] },
+                { long_name: '', types: ['postal_code'] },
+              ],
+            },
+          ],
+        }),
+      );
+
+      const address = await provider.reverseGeocode(12.9352, 77.6245);
+
+      expect(address).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
+    });
+  });
 });

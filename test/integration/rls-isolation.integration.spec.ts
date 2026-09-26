@@ -2025,10 +2025,11 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           (foreignTenantRpcError as { hint?: string }).hint,
         ).toBe('ATTENDANCE_TENANT_NOT_FOUND');
 
-        // --- (c4) blockers preview + archive. Pre-15-7 both fail loud
-        // (42P01, undefined relation); post-15-7 an office with no
-        // assignments archives cleanly and the second archive is a no-op.
-        // Accepted either way until 15-7 merges, then tightened.
+        // --- (c4) blockers preview + archive. Amended 2026-09-26 (15-3
+        // resolution): archive guards its blocker probe on the 15-7 tables'
+        // existence (to_regclass), so archive succeeds pre-15-7 and stays
+        // clean-archive/idempotent post-15-7; the preview stays fail loud
+        // (42P01) until 15-7, so it is accepted as either error or [].
         const { data: blockers, error: blockersError } =
           await serviceClient.rpc('attendance_office_archive_blockers', {
             p_tenant_id: probeTenantId,
@@ -2048,28 +2049,29 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
             p_office_id: officeId as string,
           },
         );
-        if (archiveError) {
-          expect((archiveError as { code: string }).code).toBe('42P01');
-        } else {
-          const { data: archivedRow } = await serviceClient
-            .from('attendance_offices')
-            .select('archived_at')
-            .eq('id', officeId as string)
-            .single();
-          expect(
-            (archivedRow as { archived_at: string | null }).archived_at,
-          ).not.toBeNull();
-          // Idempotent: archiving an archived office is a silent no-op.
-          const { error: reArchiveError } = await serviceClient.rpc(
-            'attendance_archive_office',
-            {
-              p_tenant_id: probeTenantId,
-              p_actor_id: probeOwnerId,
-              p_office_id: officeId as string,
-            },
-          );
-          expect(reArchiveError).toBeNull();
-        }
+        // Archive must succeed unconditionally now: the guard migration
+        // (20260926000008) makes the blocker probe a no-op pre-15-7, so the
+        // old "accept 42P01 too" branch would silently pass against a DB
+        // missing the migration. Tightened 2026-09-27 (15-4 review).
+        expect(archiveError).toBeNull();
+        const { data: archivedRow } = await serviceClient
+          .from('attendance_offices')
+          .select('archived_at')
+          .eq('id', officeId as string)
+          .single();
+        expect(
+          (archivedRow as { archived_at: string | null }).archived_at,
+        ).not.toBeNull();
+        // Idempotent: archiving an archived office is a silent no-op.
+        const { error: reArchiveError } = await serviceClient.rpc(
+          'attendance_archive_office',
+          {
+            p_tenant_id: probeTenantId,
+            p_actor_id: probeOwnerId,
+            p_office_id: officeId as string,
+          },
+        );
+        expect(reArchiveError).toBeNull();
       } finally {
         // Cleanup in FK order, so the probe never leaks into the shared DB.
         await serviceClient

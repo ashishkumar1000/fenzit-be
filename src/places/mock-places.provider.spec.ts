@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   MockPlacesProvider,
   SIMULATE_PROVIDER_ERROR_QUERY,
+  SIMULATE_REVERSE_ERROR_POINT,
   SIMULATE_RESOLVE_ERROR_PLACE_ID,
 } from './mock-places.provider';
 
@@ -146,6 +147,62 @@ describe('MockPlacesProvider', () => {
       );
 
       expect(resolved.placeId).toBe(firstSuggestion.placeId);
+    });
+  });
+
+  describe('reverseGeocode', () => {
+    it('should resolve a point at the fixture coordinates to that fixture address', async () => {
+      const address = await provider.reverseGeocode(19.1364, 72.8296);
+
+      expect(address).toEqual({
+        formattedAddress: 'Andheri West, Mumbai, Maharashtra 400058, India',
+        city: 'Mumbai',
+        pincode: '400058',
+      });
+    });
+
+    it('should resolve a point within the match tolerance (not exact coordinates) to the fixture address', async () => {
+      // 0.0005 tolerance — a tiny drift stays matched; a real fix won't be
+      // bit-identical to the fixture.
+      const address = await provider.reverseGeocode(19.13645, 72.82965);
+
+      expect(address.city).toBe('Mumbai');
+    });
+
+    it('should return the null-address shape for a point with no fixture (no address here is not an error)', async () => {
+      const address = await provider.reverseGeocode(28.6139, 77.209);
+
+      expect(address).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
+    });
+
+    it('should throw at the sentinel point when NODE_ENV is not production', async () => {
+      process.env['NODE_ENV'] = 'test';
+
+      await expect(
+        provider.reverseGeocode(
+          SIMULATE_REVERSE_ERROR_POINT.latitude,
+          SIMULATE_REVERSE_ERROR_POINT.longitude,
+        ),
+      ).rejects.toThrow('Simulated Places reverseGeocode provider failure');
+    });
+
+    it('should return the null-address shape at the sentinel point when NODE_ENV is production', async () => {
+      process.env['NODE_ENV'] = 'production';
+
+      const address = await provider.reverseGeocode(
+        SIMULATE_REVERSE_ERROR_POINT.latitude,
+        SIMULATE_REVERSE_ERROR_POINT.longitude,
+      );
+
+      expect(address).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
     });
   });
 });

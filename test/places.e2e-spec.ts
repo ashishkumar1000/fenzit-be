@@ -13,8 +13,13 @@ import {
   RATE_LIMIT_WINDOW_SECONDS,
   RESOLVE_RATE_LIMIT_MAX,
   RESOLVE_RATE_LIMIT_WINDOW_SECONDS,
+  REVERSE_RATE_LIMIT_MAX,
+  REVERSE_RATE_LIMIT_WINDOW_SECONDS,
 } from '../src/places/places.service';
-import { SIMULATE_RESOLVE_ERROR_PLACE_ID } from '../src/places/mock-places.provider';
+import {
+  SIMULATE_REVERSE_ERROR_POINT,
+  SIMULATE_RESOLVE_ERROR_PLACE_ID,
+} from '../src/places/mock-places.provider';
 
 describe('Places (e2e)', () => {
   let app: NestFastifyApplication;
@@ -398,6 +403,151 @@ describe('Places (e2e)', () => {
       expect(tripped.headers['retry-after']).toBe(
         String(RESOLVE_RATE_LIMIT_WINDOW_SECONDS),
       );
+    });
+  });
+
+  describe('GET /api/v1/places/reverse', () => {
+    // Fixture point (Andheri West) and an open-water point far from every
+    // fixture — both pinned by mock-places.provider's reverse fixtures.
+    const FIXTURE_QUERY = 'lat=19.1364&lng=72.8296';
+    const OPEN_WATER_QUERY = 'lat=28.6139&lng=77.2090';
+
+    it('should return 200 with the reverse-geocoded fixture for a valid Owner JWT (happy path, bound MockPlacesProvider)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-1')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        formattedAddress: 'Andheri West, Mumbai, Maharashtra 400058, India',
+        city: 'Mumbai',
+        pincode: '400058',
+      });
+    });
+
+    it('should return 200 with all fields null for a point with no address (open water is a success, never a 404)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?${OPEN_WATER_QUERY}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-2')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        formattedAddress: null,
+        city: null,
+        pincode: null,
+      });
+    });
+
+    it('should return 403 for Technician JWT', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('should return 401 with no JWT', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('should return 422 when lat is just out of range (lat=90.1)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/places/reverse?lat=90.1&lng=72.8296',
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    // `Number('') === 0` — without the DTO's empty-string guard these would
+    // silently validate as Null Island (0, 0) and hit the (billable)
+    // provider; the guard must reject them with 422 instead.
+    it('should return 422 when lat/lng are empty (?lat=&lng=) — never Null Island (0, 0)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/places/reverse?lat=&lng=',
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422b')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('should return 422 when lat is missing entirely', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/places/reverse?lng=72.8296',
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422c')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    // Works only because the e2e env binds the mock provider (NODE_ENV=test)
+    // — the sentinel point is Null Island, never a real pin.
+    it('should return 502 PLACES_UPSTREAM_ERROR when the provider throws (sentinel point)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?lat=${SIMULATE_REVERSE_ERROR_POINT.latitude}&lng=${SIMULATE_REVERSE_ERROR_POINT.longitude}`,
+        headers: {
+          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-502')}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(JSON.parse(response.body).error_code).toBe(
+        'PLACES_UPSTREAM_ERROR',
+      );
+    });
+
+    // Drives the real, DI-bound PlacesRateLimitStore to the reverse-specific
+    // limit — independent budget from autosuggest's/resolve's (own tenant,
+    // own key suffix).
+    it('should return 429 RATE_LIMITED once the real per-tenant reverse rate limiter is exceeded', async () => {
+      const rateLimitJwt = ownerJwt('tenant-uuid-places-e2e-reverse-ratelimit');
+
+      for (let i = 0; i < REVERSE_RATE_LIMIT_MAX; i++) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
+          headers: { authorization: `Bearer ${rateLimitJwt}` },
+        });
+        expect(response.statusCode).toBe(200);
+      }
+
+      const tripped = await app.inject({
+        method: 'GET',
+        url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
+        headers: { authorization: `Bearer ${rateLimitJwt}` },
+      });
+
+      expect(tripped.statusCode).toBe(429);
+      expect(JSON.parse(tripped.body).error_code).toBe('RATE_LIMITED');
+      const retryAfter = Number(tripped.headers['retry-after']);
+      expect(retryAfter).toBeGreaterThanOrEqual(1);
+      expect(retryAfter).toBeLessThanOrEqual(REVERSE_RATE_LIMIT_WINDOW_SECONDS);
     });
   });
 });
