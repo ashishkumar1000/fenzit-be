@@ -718,6 +718,142 @@ only (AD-3).
 
 ---
 
+### Attendance offices (Epic 15, Story 15-3, owner only)
+
+FR-5 office management — create, edit, archive. No idempotency interceptor
+(AD-6): create is FE-guarded (the unique-name index bounds a double-tap to a
+409, not a duplicate row), PATCH is naturally idempotent, archive is
+lock-serialised. Offices are archived (`archived_at`), never deleted (AD-25).
+
+An Office holds the location and the timing rules. Pin and radius are NOT
+effective-dated (plain columns); the timing/hours rules are — every rules
+edit takes effect from tomorrow (`attendance_update_office_rules`, AD-8
+algorithm), and all past dates keep the rule active on that date.
+
+**Office shape:** `{ id, name, latitude, longitude, radiusM, archivedAt,
+rule, nextRule }` where `rule` is the rule valid on today and `nextRule`
+(null normally) shows a pending rules edit. Rule shape: `{ id, startTime,
+endTime, lateCutoffMinutes, fullDayHours, halfDayHours, validFrom, validTo }`
+— times `HH:mm`, dates `YYYY-MM-DD` (AD-7), `validTo` null while open-ended.
+The rule valid on today is picked in the service (`pickCurrentRule` against
+`attendance_today`) — PostgREST cannot filter daterange rows by containment
+against a scalar, so all of an office's rule rows are fetched and selected
+client-of-DB; the recorded deviation in the story's Code Map.
+
+**Validation ranges (DB CHECK constraints are the final guard; DTO mirrors
+them for 422s):** radius 50–1000 m (default 100), late cut-off 0–120 min
+(default 15), full-day hours > 0 (default 8), half-day hours > 0 and < full
+(default 4), end time after start time, same day. Office names are unique
+per tenant, case-insensitive, up to 80 characters — the 80 cap is an API-edge
+guard only (`@MaxLength(80)`; the DB column has no length CHECK) — and
+trimmed: leading/trailing whitespace is stripped before the uniqueness
+check, and a whitespace-only name is rejected. Archived offices keep their
+name reserved (the unique index includes them).
+
+#### `GET /api/v1/attendance/offices` `[Bearer JWT, Role: owner]`
+
+List offices. Archived offices are hidden unless `?includeArchived=true`
+(archived offices have `archivedAt` set and typically no `rule`).
+
+**Response:** `Office[]` (empty list is fine, never 404)
+
+**Responses:**
+- `200` — offices list
+- `400` — `VALIDATION_ERROR` (caller has no tenant)
+- `401` / `403` — as above
+
+#### `GET /api/v1/attendance/offices/:id` `[Bearer JWT, Role: owner]`
+
+Full effective-dated rules history, ascending by `validFrom` (the edit
+screen's source).
+
+**Response:** `{ id, name, latitude, longitude, radiusM, archivedAt, rules: OfficeRule[] }`
+
+**Responses:**
+- `200` — office detail (archived offices are readable too; their rule
+  history stays intact)
+- `400` — `VALIDATION_ERROR` (malformed office id — not a UUID)
+- `404` — `ATTENDANCE_OFFICE_NOT_FOUND` (unknown id or another tenant's)
+
+#### `POST /api/v1/attendance/offices` `[Bearer JWT, Role: owner]`
+
+Creates the office and its initial rule (valid `[today, ∞)`) through the
+`attendance_create_office` RPC — two row-sets, one RPC (AD-3). Times are
+`HH:mm` 24-hour strings.
+
+**Body:** `{ name, latitude, longitude, radiusM?, startTime, endTime,
+lateCutoffMinutes?, fullDayHours?, halfDayHours? }` (defaults: radius 100,
+cut-off 15, hours 8/4)
+
+**Responses:**
+- `201` — office created, response carries the seeded rule
+- `401` / `403` — as above
+- `409` — `ATTENDANCE_OFFICE_NAME_TAKEN` (case-insensitive)
+- `422` — out-of-range values (ValidationPipe / DB CHECK)
+
+#### `PATCH /api/v1/attendance/offices/:id` `[Bearer JWT, Role: owner]`
+
+One route, two write mechanics (user decision 2026-09-26):
+- name/latitude/longitude/radiusM → guarded single-row UPDATE (immediate,
+  not effective-dated; an archived office returns 404);
+- startTime/endTime/lateCutoffMinutes/fullDayHours/halfDayHours →
+  `attendance_update_office_rules` RPC, effective from tomorrow — must be
+  sent as a complete set of five.
+
+**Body:** any of the fields above; at least one required.
+
+**Responses:**
+- `200` — updated, response carries the full rules history
+- `400` — `VALIDATION_ERROR` (nothing to update / partial rules set / no tenant / malformed office id)
+- `404` — `ATTENDANCE_OFFICE_NOT_FOUND` (unknown, other tenant's, or archived)
+- `409` — `ATTENDANCE_OFFICE_NAME_TAKEN`
+- `422` — out-of-range values
+
+#### `POST /api/v1/attendance/offices/:id/archive` `[Bearer JWT, Role: owner]`
+
+Archives through the `attendance_archive_office` RPC — exclusive tenant
+lock (AD-5), blocked by tracked employees with current or future
+assignments (AD-25). Idempotent: an already-archived office is a no-op
+success (204). Never a hard delete.
+
+**Responses:**
+- `204` — archived
+- `400` — `VALIDATION_ERROR` (malformed office id)
+- `401` / `403` — as above
+- `404` — `ATTENDANCE_OFFICE_NOT_FOUND`
+- `409` — `ATTENDANCE_OFFICE_ARCHIVE_BLOCKED`; the body carries
+  `blockers: [{ employeeId, employeeName }]`
+- `500` — before Story 15-7's tables exist the blocker check fails loud
+
+#### `GET /api/v1/attendance/offices/:id/archive/preview` `[Bearer JWT, Role: owner]`
+
+AD-24 preview: who blocks archiving this office — the same
+`attendance_office_archive_blockers` read the archive write's 409 body uses.
+
+**Response:** `{ officeId, blockers: [{ employeeId, employeeName }] }`
+(empty list = free to archive)
+
+**Responses:**
+- `200` — blocker list (possibly empty)
+- `400` — `VALIDATION_ERROR` (malformed office id)
+- `404` — `ATTENDANCE_OFFICE_NOT_FOUND`
+- `500` — before Story 15-7's tables exist the read fails loud
+
+**DB foundation (this story, additive):** `btree_gist` extension;
+`attendance_offices` (name unique per tenant via
+`UNIQUE (tenant_id, lower(name))`, radius 50–1000 CHECK, `archived_at`) and
+`attendance_office_rules` (`valid daterange`, `EXCLUDE USING gist
+(office_id WITH =, valid WITH &&)` non-overlap, range CHECKs); RPCs
+`attendance_create_office`, `attendance_update_office_rules`,
+`attendance_archive_office`, and the read function
+`attendance_office_archive_blockers` — every one SECURITY DEFINER,
+executable by service_role only (AD-3). Both tables: RLS enabled, no
+policies (deny-by-default, admin-client only). The two blocker-facing
+functions reference the 15-7 enrolment/assignment tables and are
+lazily compiled — they fail loud until 15-7 lands.
+
+---
+
 ### Sync (technician only)
 
 #### `POST /api/v1/sync` `[Bearer JWT, Role: technician]`

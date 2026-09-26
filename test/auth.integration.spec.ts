@@ -57,7 +57,9 @@ describe('Auth Integration Tests (e2e)', () => {
       new FastifyAdapter(),
     );
 
-    app.setGlobalPrefix('api/v1', { exclude: ['health'] });
+    // Match main.ts: health rides the prefix since a60fb30 (2026-09-21);
+    // the old ['health'] exclusion made /api/v1/health 404 here.
+    app.setGlobalPrefix('api/v1', { exclude: ['internal/webhooks/storage'] });
     app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 
     await app.init();

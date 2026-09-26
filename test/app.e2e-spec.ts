@@ -17,6 +17,11 @@ describe('Health (e2e)', () => {
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
+    // Mirror main.ts's prefix (the test app bypasses main.ts entirely) —
+    // health rides the prefix since a60fb30 (2026-09-21).
+    app.setGlobalPrefix('api/v1', {
+      exclude: ['internal/webhooks/storage'],
+    });
     await app.init();
     await (app as NestFastifyApplication)
       .getHttpAdapter()

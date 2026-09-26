@@ -987,6 +987,43 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_actor_id: PROBE_ID,
         },
+        // Story 15-3 office RPCs (migration 20260926000006) — same SECURITY
+        // DEFINER + revoke pattern, same 42501 pin. The probe ids mutate
+        // nothing: the privilege check fires before any body runs, and the
+        // two blocker-facing functions are lazy-compiled against 15-7 tables
+        // (unreachable pre-15-7 even with a grant).
+        attendance_create_office: {
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+          p_name: 'RLS Probe Office',
+          p_latitude: 19.1,
+          p_longitude: 72.8,
+          p_radius_m: 100,
+          p_start_time: '09:00',
+          p_end_time: '17:00',
+          p_late_cutoff_minutes: 15,
+          p_full_day_hours: 8,
+          p_half_day_hours: 4,
+        },
+        attendance_update_office_rules: {
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+          p_office_id: PROBE_ID,
+          p_start_time: '09:00',
+          p_end_time: '17:00',
+          p_late_cutoff_minutes: 15,
+          p_full_day_hours: 8,
+          p_half_day_hours: 4,
+        },
+        attendance_archive_office: {
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+          p_office_id: PROBE_ID,
+        },
+        attendance_office_archive_blockers: {
+          p_tenant_id: PROBE_ID,
+          p_office_id: PROBE_ID,
+        },
       };
 
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
@@ -1597,6 +1634,450 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .eq('tenant_id', probeTenantId);
         await serviceClient
           .from('attendance_settings')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient.from('users').delete().eq('id', probeOwnerId);
+        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+      }
+    },
+    30000,
+  );
+
+  maybeIt(
+    'Attendance offices: schema pins, tenant isolation, effective-dated rules lifecycle (Story 15-3)',
+    async () => {
+      // Story 15-3's real-DB probes, one seeded scenario:
+      //   (a) schema pins — the exact columns offices-response.model maps.
+      //   (b) tenant isolation — a seeded office (+ rule) is invisible to a
+      //       bare anon client and to a foreign-tenant JWT (RLS enabled with
+      //       NO policies, admin-client-only module state).
+      //   (c) office lifecycle — create seeds rule [today, ∞); duplicate
+      //       name → PT409; rules edit clips the covering range at tomorrow
+      //       and inserts [tomorrow, ∞); the GIST exclusion constraint kills
+      //       an overlapping write; CHECK constraints kill out-of-range
+      //       values; archive succeeds with no blockers (or fails loud 42P01
+      //       pre-15-7 — both accepted until 15-7 merges, then tightened).
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // 096-098: attendance-probe block, unused by any other probe (the
+      // users probe takes 092, the jobs probe 093/094 — same-uuid reuse
+      // across tables confused the id-allocation comments).
+      const probeTenantId = '00000000-0000-0000-0000-000000000096';
+      const probeOwnerId = '00000000-0000-0000-0000-000000000097';
+      const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-0000000000fe';
+
+      // Pre-clean in FK order (rules RESTRICT office deletion — offices first
+      // is impossible while rules rows exist).
+      await serviceClient
+        .from('attendance_office_rules')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('attendance_offices')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient.from('users').delete().eq('id', probeOwnerId);
+      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+
+      const { error: seedOwnerError } = await serviceClient
+        .from('users')
+        .upsert(
+          {
+            id: probeOwnerId,
+            country_code: '+91',
+            phone_number: '9999000097',
+            role: 'owner',
+            status: 'active',
+          },
+          { onConflict: 'id' },
+        );
+      expect(seedOwnerError).toBeNull();
+      const { error: tenantUpsertError } = await serviceClient
+        .from('tenants')
+        .upsert(
+          {
+            id: probeTenantId,
+            owner_id: probeOwnerId,
+            company_name: 'Office Probe Co',
+            state_code: 'KA',
+          },
+          { onConflict: 'id' },
+        );
+      expect(tenantUpsertError).toBeNull();
+
+      try {
+        // --- (a) schema pins: both directions of drift fail (a dropped
+        // migration errors on unknown columns; a drifted shape misses the
+        // list). Mirror of offices-response.model's row mappers.
+        const { error: officePinError } = await serviceClient
+          .from('attendance_offices')
+          .select(
+            'id, tenant_id, name, latitude, longitude, radius_m, archived_at, created_at, updated_at',
+          )
+          .limit(1);
+        expect(officePinError).toBeNull();
+        const { error: rulePinError } = await serviceClient
+          .from('attendance_office_rules')
+          .select(
+            'id, office_id, tenant_id, valid, start_time, end_time, late_cutoff_minutes, full_day_hours, half_day_hours, created_at, updated_at',
+          )
+          .limit(1);
+        expect(rulePinError).toBeNull();
+
+        // --- (b) tenant isolation: no policies ⇒ every direct PostgREST
+        // read is denied (empty, not an error), regardless of JWT.
+        const { error: seedOfficeError } = await serviceClient
+          .from('attendance_offices')
+          .insert({
+            id: '00000000-0000-0000-0000-000000000098',
+            tenant_id: probeTenantId,
+            name: 'Isolation Probe Office',
+            latitude: 19.1,
+            longitude: 72.8,
+            radius_m: 100,
+          });
+        expect(seedOfficeError).toBeNull();
+        const { error: seedRuleError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: '00000000-0000-0000-0000-000000000098',
+            tenant_id: probeTenantId,
+            valid: '[2026-01-01,)',
+            start_time: '09:00',
+            end_time: '17:00',
+            late_cutoff_minutes: 0,
+            full_day_hours: 8,
+            half_day_hours: 4,
+          });
+        expect(seedRuleError).toBeNull();
+
+        const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: anonOffices } = await anonClient
+          .from('attendance_offices')
+          .select('*');
+        expect(anonOffices).toEqual([]);
+        const { data: anonRules } = await anonClient
+          .from('attendance_office_rules')
+          .select('*');
+        expect(anonRules).toEqual([]);
+
+        const foreignJwt = mintJwt(probeOwnerId, FOREIGN_TENANT_ID, 'authenticated');
+        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: foreignOffices } = await foreignClient
+          .from('attendance_offices')
+          .select('*');
+        expect(foreignOffices).toEqual([]);
+        const { data: foreignRules } = await foreignClient
+          .from('attendance_office_rules')
+          .select('*');
+        expect(foreignRules).toEqual([]);
+
+        // Service role sees exactly the seeded rows.
+        const { data: serviceOffices } = await serviceClient
+          .from('attendance_offices')
+          .select('id')
+          .eq('tenant_id', probeTenantId);
+        expect(serviceOffices).toHaveLength(1);
+
+        // --- (c) office lifecycle via the RPCs. Clear the (b) seed so the
+        // assertions read only what this block created.
+        await serviceClient
+          .from('attendance_office_rules')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_offices')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+
+        const createArgs = {
+          p_tenant_id: probeTenantId,
+          p_actor_id: probeOwnerId,
+          p_name: 'Probe Office Alpha',
+          p_latitude: 19.1,
+          p_longitude: 72.8,
+          p_radius_m: 100,
+          p_start_time: '10:00',
+          p_end_time: '18:00',
+          p_late_cutoff_minutes: 15,
+          p_full_day_hours: 8,
+          p_half_day_hours: 4,
+        };
+        const { data: officeId, error: createError } = await serviceClient.rpc(
+          'attendance_create_office',
+          createArgs,
+        );
+        expect(createError).toBeNull();
+
+        // today comes from the single source (AD-7) — the seeded rule must
+        // cover it with an open end.
+        const { data: today, error: todayError } = await serviceClient.rpc(
+          'attendance_today',
+          { p_tenant_id: probeTenantId },
+        );
+        expect(todayError).toBeNull();
+        const { data: initialRules } = await serviceClient
+          .from('attendance_office_rules')
+          .select('office_id, valid, start_time')
+          .eq('office_id', officeId as string);
+        expect(initialRules).toHaveLength(1);
+        const initial = (initialRules as { valid: string; start_time: string }[])[0];
+        expect(initial.valid).toBe(`[${today},)`);
+        expect(initial.start_time).toBe('10:00:00');
+
+        // Duplicate name, case-insensitive → PT409 with the ErrorCode hint.
+        const { error: dupError } = await serviceClient.rpc(
+          'attendance_create_office',
+          { ...createArgs, p_name: 'PROBE office alpha' },
+        );
+        expect(dupError).not.toBeNull();
+        expect((dupError as { code: string }).code).toBe('PT409');
+        expect((dupError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_OFFICE_NAME_TAKEN',
+        );
+
+        // Unknown office → PT404 (no p_name in this signature's arg list).
+        const { error: missingError } = await serviceClient.rpc(
+          'attendance_update_office_rules',
+          {
+            p_tenant_id: probeTenantId,
+            p_actor_id: probeOwnerId,
+            p_office_id: '00000000-0000-0000-0000-0000000000ff',
+            p_start_time: '09:00',
+            p_end_time: '17:00',
+            p_late_cutoff_minutes: 20,
+            p_full_day_hours: 8,
+            p_half_day_hours: 4,
+          },
+        );
+        expect(missingError).not.toBeNull();
+        expect((missingError as { code: string }).code).toBe('PT404');
+        expect((missingError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_OFFICE_NOT_FOUND',
+        );
+
+        // --- (c2) rules edit: effective from TOMORROW — the covering range
+        // is clipped at tomorrow and a new [tomorrow, ∞) is inserted.
+        const editArgs = {
+          p_tenant_id: probeTenantId,
+          p_actor_id: probeOwnerId,
+          p_office_id: officeId as string,
+          p_start_time: '09:00',
+          p_end_time: '17:00',
+          p_late_cutoff_minutes: 20,
+          p_full_day_hours: 8,
+          p_half_day_hours: 4,
+        };
+        const { error: editError } = await serviceClient.rpc(
+          'attendance_update_office_rules',
+          editArgs,
+        );
+        expect(editError).toBeNull();
+        const tomorrow = new Date(
+          new Date(`${today}T12:00:00Z`).getTime() + 24 * 60 * 60 * 1000,
+        )
+          .toLocaleDateString('en-CA', { timeZone: 'UTC' });
+        const { data: rulesAfterEdit } = await serviceClient
+          .from('attendance_office_rules')
+          .select('valid, start_time, late_cutoff_minutes')
+          .eq('office_id', officeId as string)
+          .order('valid');
+        expect(rulesAfterEdit).toHaveLength(2);
+        expect((rulesAfterEdit as { valid: string }[])[0].valid).toBe(
+          `[${today},${tomorrow})`,
+        );
+        expect((rulesAfterEdit as { valid: string }[])[1].valid).toBe(
+          `[${tomorrow},)`,
+        );
+        expect((rulesAfterEdit as { start_time: string }[])[1].start_time).toBe(
+          '09:00:00',
+        );
+
+        // A second same-day edit REPLACES the future range (no overlap).
+        const { error: editTwoError } = await serviceClient.rpc(
+          'attendance_update_office_rules',
+          { ...editArgs, p_start_time: '08:00', p_late_cutoff_minutes: 5 },
+        );
+        expect(editTwoError).toBeNull();
+        const { data: rulesAfterSecondEdit } = await serviceClient
+          .from('attendance_office_rules')
+          .select('valid, start_time')
+          .eq('office_id', officeId as string)
+          .order('valid');
+        expect(rulesAfterSecondEdit).toHaveLength(2);
+        expect((rulesAfterSecondEdit as { valid: string }[])[1].valid).toBe(
+          `[${tomorrow},)`,
+        );
+        expect((rulesAfterSecondEdit as { start_time: string }[])[1].start_time).toBe(
+          '08:00:00',
+        );
+
+        // --- (c3) DB guards: the exclusion constraint and CHECKs.
+        const { error: overlapError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: officeId as string,
+            tenant_id: probeTenantId,
+            valid: `[${today},2030-01-01)`,
+            start_time: '09:00',
+            end_time: '17:00',
+            late_cutoff_minutes: 0,
+            full_day_hours: 8,
+            half_day_hours: 4,
+          });
+        expect(overlapError).not.toBeNull();
+        expect((overlapError as { code: string }).code).toBe('23P01');
+
+        const { error: checkError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: officeId as string,
+            tenant_id: probeTenantId,
+            valid: '[2031-01-01,)',
+            start_time: '09:00',
+            end_time: '17:00',
+            // Out of the 0–120 range → the CHECK, not the constraint.
+            late_cutoff_minutes: 500,
+            full_day_hours: 8,
+            half_day_hours: 4,
+          });
+        expect(checkError).not.toBeNull();
+        expect((checkError as { code: string }).code).toBe('23514');
+
+        // Cross-field CHECKs: inverted times and half ≥ full both 23514.
+        const { error: invertedTimeError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: officeId as string,
+            tenant_id: probeTenantId,
+            valid: '[2031-01-01,)',
+            start_time: '17:00',
+            end_time: '09:00',
+            late_cutoff_minutes: 0,
+            full_day_hours: 8,
+            half_day_hours: 4,
+          });
+        expect(invertedTimeError).not.toBeNull();
+        expect((invertedTimeError as { code: string }).code).toBe('23514');
+
+        const { error: halfFullError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: officeId as string,
+            tenant_id: probeTenantId,
+            valid: '[2031-01-01,)',
+            start_time: '09:00',
+            end_time: '17:00',
+            late_cutoff_minutes: 0,
+            full_day_hours: 4,
+            half_day_hours: 8,
+          });
+        expect(halfFullError).not.toBeNull();
+        expect((halfFullError as { code: string }).code).toBe('23514');
+
+        // Composite FK: a rule row whose tenant_id does not match its
+        // office's tenant is rejected (review hardening, migration …000007).
+        // The past range keeps the GIST exclusion out of the way so the FK
+        // is the only guard that can fire.
+        const { error: crossTenantRuleError } = await serviceClient
+          .from('attendance_office_rules')
+          .insert({
+            office_id: officeId as string,
+            tenant_id: FOREIGN_TENANT_ID,
+            valid: '[2020-01-01,2021-01-01)',
+            start_time: '09:00',
+            end_time: '17:00',
+            late_cutoff_minutes: 0,
+            full_day_hours: 8,
+            half_day_hours: 4,
+          });
+        expect(crossTenantRuleError).not.toBeNull();
+        expect((crossTenantRuleError as { code: string }).code).toBe('23503');
+
+        // The SECURITY DEFINER RPCs carry their own tenant guard: a foreign
+        // p_tenant_id fails before the office lookup (the RPC validates the
+        // tenant first) → PT404 ATTENDANCE_TENANT_NOT_FOUND.
+        const { error: foreignTenantRpcError } = await serviceClient.rpc(
+          'attendance_update_office_rules',
+          {
+            p_tenant_id: FOREIGN_TENANT_ID,
+            p_actor_id: probeOwnerId,
+            p_office_id: officeId as string,
+            p_start_time: '09:00',
+            p_end_time: '17:00',
+            p_late_cutoff_minutes: 0,
+            p_full_day_hours: 8,
+            p_half_day_hours: 4,
+          },
+        );
+        expect(foreignTenantRpcError).not.toBeNull();
+        expect((foreignTenantRpcError as { code: string }).code).toBe('PT404');
+        expect(
+          (foreignTenantRpcError as { hint?: string }).hint,
+        ).toBe('ATTENDANCE_TENANT_NOT_FOUND');
+
+        // --- (c4) blockers preview + archive. Pre-15-7 both fail loud
+        // (42P01, undefined relation); post-15-7 an office with no
+        // assignments archives cleanly and the second archive is a no-op.
+        // Accepted either way until 15-7 merges, then tightened.
+        const { data: blockers, error: blockersError } =
+          await serviceClient.rpc('attendance_office_archive_blockers', {
+            p_tenant_id: probeTenantId,
+            p_office_id: officeId as string,
+          });
+        if (blockersError) {
+          expect((blockersError as { code: string }).code).toBe('42P01');
+        } else {
+          expect(blockers).toEqual([]);
+        }
+
+        const { error: archiveError } = await serviceClient.rpc(
+          'attendance_archive_office',
+          {
+            p_tenant_id: probeTenantId,
+            p_actor_id: probeOwnerId,
+            p_office_id: officeId as string,
+          },
+        );
+        if (archiveError) {
+          expect((archiveError as { code: string }).code).toBe('42P01');
+        } else {
+          const { data: archivedRow } = await serviceClient
+            .from('attendance_offices')
+            .select('archived_at')
+            .eq('id', officeId as string)
+            .single();
+          expect(
+            (archivedRow as { archived_at: string | null }).archived_at,
+          ).not.toBeNull();
+          // Idempotent: archiving an archived office is a silent no-op.
+          const { error: reArchiveError } = await serviceClient.rpc(
+            'attendance_archive_office',
+            {
+              p_tenant_id: probeTenantId,
+              p_actor_id: probeOwnerId,
+              p_office_id: officeId as string,
+            },
+          );
+          expect(reArchiveError).toBeNull();
+        }
+      } finally {
+        // Cleanup in FK order, so the probe never leaks into the shared DB.
+        await serviceClient
+          .from('attendance_office_rules')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_offices')
           .delete()
           .eq('tenant_id', probeTenantId);
         await serviceClient.from('users').delete().eq('id', probeOwnerId);
