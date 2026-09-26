@@ -971,6 +971,22 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_priority: null,
         },
         workflow_steps_valid: { p_steps: [] },
+        // Story 15-2 attendance RPCs (migrations 20260926000003/4). All are
+        // SECURITY DEFINER with EXECUTE revoked from PUBLIC/anon/authenticated
+        // and granted to service_role — same 42501 pin as above. The probe
+        // ids mutate nothing: the privilege check fires before any body runs,
+        // and attendance_start_setup/complete_setup are unreachable anyway.
+        attendance_today: { p_tenant_id: PROBE_ID },
+        attendance_lock_tenant: { p_tenant_id: PROBE_ID, p_exclusive: true },
+        attendance_lock_employee: { p_employee_id: PROBE_ID },
+        attendance_complete_setup: {
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+        },
+        attendance_start_setup: {
+          p_tenant_id: PROBE_ID,
+          p_actor_id: PROBE_ID,
+        },
       };
 
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
@@ -998,6 +1014,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         'notifications_broadcast_changes',
         'report_requests_in_flight_guard',
         'update_updated_at_column',
+        // Story 15-2: timezone validator on tenants (BEFORE INSERT OR UPDATE
+        // OF timezone).
+        'tenants_timezone_guard',
       ];
       for (const name of TRIGGER_FUNCTIONS) {
         const { error } = await anonRpcClient.rpc(name, {});
@@ -1318,6 +1337,273 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         .limit(1);
       expect(error).toBeNull();
     },
+  );
+
+  maybeIt(
+    'Attendance foundation: timezone guard, table schema pins, settings/progress tenant isolation (Story 15-2)',
+    async () => {
+      // Story 15-2's real-DB probes, one seeded scenario:
+      //   (a) tenants.timezone validator — region-style names only; 'EST'
+      //       (a fixed offset abbreviation, not in pg_timezone_names with
+      //       a '/') is rejected PT422 with the ErrorCode hint, a real
+      //       IANA region is accepted and persisted.
+      //   (b) attendance_today — the single "today" source, returned as a
+      //       date string for the tenant's timezone.
+      //   (c) schema pins — the exact column lists attendance.service.ts
+      //       selects, run against the real tables (drift either way fails).
+      //   (d) tenant isolation — a service-seeded settings row for the probe
+      //       tenant is invisible to a bare anon client and to a JWT of a
+      //       foreign tenant (both RLS policies scope on
+      //       auth.jwt() ->> 'tenantId'), visible only with service role.
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // Probe ids continue the suite block (090/091 — 087-089 belong to the
+      // realtime probe). Probe-specific phone: users' partial UNIQUE indexes
+      // on (country_code, phone_number) make pre-cleans idempotent.
+      const probeTenantId = '00000000-0000-0000-0000-000000000090';
+      const probeOwnerId = '00000000-0000-0000-0000-000000000091';
+      const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-0000000000ff';
+
+      // Pre-clean (idempotency after a crashed prior run): attendance rows
+      // would cascade on tenant delete, but delete explicitly first — the
+      // same order the finally block uses.
+      await serviceClient
+        .from('attendance_setup_progress')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('attendance_settings')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient.from('users').delete().eq('id', probeOwnerId);
+      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+
+      const { error: seedOwnerError } = await serviceClient
+        .from('users')
+        .upsert(
+          {
+            id: probeOwnerId,
+            country_code: '+91',
+            phone_number: '9999000091',
+            role: 'owner',
+            status: 'active',
+          },
+          { onConflict: 'id' },
+        );
+      expect(seedOwnerError).toBeNull();
+      const { error: tenantUpsertError } = await serviceClient
+        .from('tenants')
+        .upsert(
+          {
+            id: probeTenantId,
+            owner_id: probeOwnerId,
+            company_name: 'Attendance Probe Co',
+            state_code: 'KA',
+          },
+          { onConflict: 'id' },
+        );
+      expect(tenantUpsertError).toBeNull();
+      // The 15-2 default — assert it so a future default change is caught.
+      const { data: seededTenant } = await serviceClient
+        .from('tenants')
+        .select('timezone')
+        .eq('id', probeTenantId)
+        .single();
+      expect(
+        (seededTenant as { timezone: string }).timezone,
+      ).toBe('Asia/Kolkata');
+
+      try {
+        // --- (a) timezone guard: fixed-offset abbreviation rejected PT422.
+        const { error: invalidTzError } = await serviceClient
+          .from('tenants')
+          .update({ timezone: 'EST' })
+          .eq('id', probeTenantId);
+        expect(invalidTzError).not.toBeNull();
+        expect((invalidTzError as { code: string }).code).toBe('PT422');
+        expect(
+          (invalidTzError as { hint?: string }).hint,
+        ).toBe('ATTENDANCE_INVALID_TIMEZONE');
+
+        // Real IANA region accepted and persisted.
+        const { error: validTzError } = await serviceClient
+          .from('tenants')
+          .update({ timezone: 'Europe/London' })
+          .eq('id', probeTenantId);
+        expect(validTzError).toBeNull();
+        const { data: tzRow } = await serviceClient
+          .from('tenants')
+          .select('timezone')
+          .eq('id', probeTenantId)
+          .single();
+        expect((tzRow as { timezone: string }).timezone).toBe('Europe/London');
+
+        // --- (b) attendance_today: a date string in the tenant's timezone.
+        // Compared against the date the clock renders for Europe/London — a
+        // bare format regex would pass even if the function stopped
+        // following the tenant timezone (review 2026-09-26).
+        const { data: today, error: todayError } = await serviceClient.rpc(
+          'attendance_today',
+          { p_tenant_id: probeTenantId },
+        );
+        expect(todayError).toBeNull();
+        const londonToday = new Date().toLocaleDateString('en-CA', {
+          timeZone: 'Europe/London',
+        });
+        expect(today).toBe(londonToday);
+
+        // --- (c) schema pins — guards both drift directions on the real
+        // tables: a missing/dropped migration (unknown column → error) and a
+        // drifted table shape. The service reads with select('*'), so these
+        // lists mirror every column the row mappers (toSetupStateResponse)
+        // may touch.
+        const { error: settingsPinError } = await serviceClient
+          .from('attendance_settings')
+          .select(
+            'tenant_id, enabled, setup_completed_at, created_at, updated_at',
+          )
+          .limit(1);
+        expect(settingsPinError).toBeNull();
+        const { error: progressPinError } = await serviceClient
+          .from('attendance_setup_progress')
+          .select('tenant_id, current_step, created_at, updated_at')
+          .limit(1);
+        expect(progressPinError).toBeNull();
+
+        // --- (d) tenant isolation. Seed one settings row + one progress row
+        // for the probe tenant via service role.
+        const { error: seedSettingsError } = await serviceClient
+          .from('attendance_settings')
+          .insert({ tenant_id: probeTenantId });
+        expect(seedSettingsError).toBeNull();
+        const { error: seedProgressError } = await serviceClient
+          .from('attendance_setup_progress')
+          .insert({ tenant_id: probeTenantId, current_step: 'offices' });
+        expect(seedProgressError).toBeNull();
+
+        // Bare anon key (no JWT): RLS is enabled with NO policies (review
+        // decision 2026-09-26 — module state is admin-client-only), so every
+        // direct PostgREST read is denied. Empty, not an error.
+        const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: anonSettings, error: anonSettingsError } =
+          await anonClient.from('attendance_settings').select('*');
+        expect(anonSettingsError).toBeNull();
+        expect(anonSettings).toEqual([]);
+        const { data: anonProgress, error: anonProgressError } =
+          await anonClient.from('attendance_setup_progress').select('*');
+        expect(anonProgressError).toBeNull();
+        expect(anonProgress).toEqual([]);
+
+        // A JWT naming a different tenant: same empty result — with no
+        // policies the deny is unconditional; the JWT's tenant claim is
+        // irrelevant by design.
+        const foreignJwt = mintJwt(probeOwnerId, FOREIGN_TENANT_ID, 'authenticated');
+        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: foreignSettings } = await foreignClient
+          .from('attendance_settings')
+          .select('*');
+        expect(foreignSettings).toEqual([]);
+        const { data: foreignProgress } = await foreignClient
+          .from('attendance_setup_progress')
+          .select('*');
+        expect(foreignProgress).toEqual([]);
+
+        // Service role sees exactly the seeded rows.
+        const { data: serviceSettings } = await serviceClient
+          .from('attendance_settings')
+          .select('tenant_id, enabled')
+          .eq('tenant_id', probeTenantId);
+        expect(serviceSettings).toHaveLength(1);
+        expect(
+          (serviceSettings as { enabled: boolean }[])[0].enabled,
+        ).toBe(false);
+        const { data: serviceProgress } = await serviceClient
+          .from('attendance_setup_progress')
+          .select('current_step')
+          .eq('tenant_id', probeTenantId);
+        expect(serviceProgress).toHaveLength(1);
+        expect(
+          (serviceProgress as { current_step: string }[])[0].current_step,
+        ).toBe('offices');
+        // --- (e) attendance_start_setup functional probe (review
+        // 2026-09-26): the privilege pins above never run the body, so the
+        // FR-1 restart contract — a restart NEVER resets progress — is
+        // exercised here. The rows seeded in (d) are cleared first so the
+        // RPC's on-conflict inserts are observable from scratch.
+        await serviceClient
+          .from('attendance_setup_progress')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_settings')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+
+        const { error: startOneError } = await serviceClient.rpc(
+          'attendance_start_setup',
+          { p_tenant_id: probeTenantId, p_actor_id: probeOwnerId },
+        );
+        expect(startOneError).toBeNull();
+        const { data: freshProgress } = await serviceClient
+          .from('attendance_setup_progress')
+          .select('current_step')
+          .eq('tenant_id', probeTenantId)
+          .single();
+        expect((freshProgress as { current_step: string }).current_step).toBe(
+          'offices',
+        );
+
+        // The owner advances the wizard, then restarts — the step must
+        // survive (on-conflict-do-nothing, never reset).
+        const { error: advanceError } = await serviceClient
+          .from('attendance_setup_progress')
+          .update({ current_step: 'timings' })
+          .eq('tenant_id', probeTenantId);
+        expect(advanceError).toBeNull();
+        const { error: startTwoError } = await serviceClient.rpc(
+          'attendance_start_setup',
+          { p_tenant_id: probeTenantId, p_actor_id: probeOwnerId },
+        );
+        expect(startTwoError).toBeNull();
+        const { data: resumedProgress } = await serviceClient
+          .from('attendance_setup_progress')
+          .select('current_step')
+          .eq('tenant_id', probeTenantId)
+          .single();
+        expect((resumedProgress as { current_step: string }).current_step).toBe(
+          'timings',
+        );
+        // Idempotent start also cannot duplicate the settings row.
+        const { data: settingsAfterRestart } = await serviceClient
+          .from('attendance_settings')
+          .select('tenant_id')
+          .eq('tenant_id', probeTenantId);
+        expect(settingsAfterRestart).toHaveLength(1);
+      } finally {
+        // Cleanup: attendance rows → users → tenants (FK order), so the
+        // probe never leaks into the shared live DB.
+        await serviceClient
+          .from('attendance_setup_progress')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_settings')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient.from('users').delete().eq('id', probeOwnerId);
+        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+      }
+    },
+    30000,
   );
 
   it('(always) RLS test suite is correctly structured', () => {

@@ -22,6 +22,7 @@ import { SyncModule } from './sync/sync.module';
 import { PlacesModule } from './places/places.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
+import { AttendanceModule } from './attendance/attendance.module';
 import { TelemetryShutdown } from './telemetry';
 
 @Module({
@@ -143,6 +144,7 @@ import { TelemetryShutdown } from './telemetry';
     PlacesModule,
     NotificationsModule,
     ReportsModule,
+    AttendanceModule,
   ],
   controllers: [HealthController],
   providers: [

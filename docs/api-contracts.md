@@ -628,6 +628,96 @@ re-queue twice; the losing call sees the row no longer failed. Fresh
 
 ---
 
+### Attendance setup (Epic 15, Story 15-2, owner only)
+
+Foundation routes for the FR-1 attendance setup wizard. No idempotency
+interceptor on any attendance route (AD-6) — start/step-save are idempotent
+by construction (single upsert RPC with on-conflict-do-nothing) and complete
+is state-guarded. Rows are created on demand: before the owner starts the
+wizard there is no `attendance_settings` row at all, and `started=false`
+reports that (200, not 404).
+
+Wizard steps (fixed vocabulary, DB CHECK-enforced): `offices` → `timings` →
+`weekly_off` → `holidays` (skippable) → `employees`.
+
+#### `GET /api/v1/attendance/setup` `[Bearer JWT, Role: owner]`
+
+Resume state. `started=false` until `POST /attendance/setup` is called.
+
+**Response:** `{ started, currentStep, setupCompletedAt, enabled }`
+(`currentStep`/`setupCompletedAt` are null before start/completion).
+
+**Responses:**
+- `200` — setup state
+- `400` — `VALIDATION_ERROR` (caller has no tenant)
+- `401` / `403` — as above
+
+#### `POST /api/v1/attendance/setup` `[Bearer JWT, Role: owner]`
+
+Start (or resume) the wizard through the `attendance_start_setup` RPC —
+idempotent: a restart mid-wizard never resets progress (the owner resumes at
+their last incomplete step on any device), and a double-tap cannot duplicate
+rows. `201` on the first start, `200` when already under way.
+
+**Response:** `{ started, currentStep, setupCompletedAt, enabled }` — same
+shape as GET, with the status code distinguishing first-start from resume.
+
+**Responses:**
+- `201` — wizard started (first time)
+- `200` — wizard already under way (returns current state)
+- `400` — `VALIDATION_ERROR` (caller has no tenant)
+- `401` / `403` — as above
+- `409` — `ATTENDANCE_SETUP_ALREADY_COMPLETED`
+
+#### `PATCH /api/v1/attendance/setup` `[Bearer JWT, Role: owner]`
+
+Persist the step the owner is now on (FR-1: progress saved after each step,
+survives closing the app or switching phones). Guarded UPDATE scoped to the
+tenant. The FE advances the marker; the DB pins the vocabulary (unknown
+steps → 422). Once setup is completed the wizard is closed — PATCH returns
+409 from then on.
+
+**Body:** `{ currentStep: 'offices' | 'timings' | 'weekly_off' | 'holidays' | 'employees' }`
+
+**Responses:**
+- `200` — step saved
+- `400` — `VALIDATION_ERROR` (caller has no tenant)
+- `401` / `403` — as above
+- `404` — `ATTENDANCE_SETUP_NOT_STARTED`
+- `409` — `ATTENDANCE_SETUP_ALREADY_COMPLETED` (setup completed)
+- `422` — unknown step value (ValidationPipe)
+
+#### `POST /api/v1/attendance/setup/complete` `[Bearer JWT, Role: owner]`
+
+Completes the wizard through the `attendance_complete_setup` RPC: takes the
+exclusive tenant lock (AD-5), verifies at least one active office and one
+tracked employee with an office assignment, then sets `setup_completed_at`
+and `enabled = true` (the wizard is the module's enable act; `enabled=false`
+remains the kill switch). Completable once Stories 15-3 (offices) and 15-7
+(enrolments) have shipped their tables — before then the RPC's gates report
+setup incomplete.
+
+**Response:** `{ started, currentStep, setupCompletedAt, enabled }`
+
+**Responses:**
+- `200` — setup completed
+- `401` / `403` — as above
+- `404` — `ATTENDANCE_SETUP_NOT_STARTED`
+- `409` — `ATTENDANCE_SETUP_ALREADY_COMPLETED`
+- `422` — `ATTENDANCE_SETUP_INCOMPLETE` (≥1 office and ≥1 tracked employee required)
+
+**DB foundation (this story, additive):** `tenants.timezone` (default
+`Asia/Kolkata`, validated by the `tenants_timezone_guard` trigger against
+`pg_timezone_names` — region-style names only, PT422
+`ATTENDANCE_INVALID_TIMEZONE` otherwise); `attendance_settings` +
+`attendance_setup_progress` tables (tenant-isolation RLS); shared helpers
+`attendance_today(p_tenant_id)`, `attendance_lock_tenant(tenant_id,
+exclusive)` / `attendance_lock_employee(employee_id)` (AD-5 advisory locks).
+Every attendance function is SECURITY DEFINER, executable by service_role
+only (AD-3).
+
+---
+
 ### Sync (technician only)
 
 #### `POST /api/v1/sync` `[Bearer JWT, Role: technician]`
