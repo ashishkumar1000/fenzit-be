@@ -287,6 +287,8 @@ describe('UsersService', () => {
     batchUsers?: DbResult;
     batchSkills?: DbResult;
     batchCustomers?: DbResult;
+    /** 15-7 access view; null data maps to the profile's NO_ATTENDANCE default. */
+    accessState?: DbResult;
   }) {
     const ownRow = opts.ownRow ?? { data: ownOwnerRow, error: null };
     const tenant = opts.tenant ?? { data: tenantRow, error: null };
@@ -318,6 +320,21 @@ describe('UsersService', () => {
       if (table === 'tenants') return tenantsTableHandler(tenant);
       if (table === 'user_skills') return skillsHandler;
       if (table === 'customers') return customersHandler;
+      if (table === 'attendance_access_state') {
+        // 15-7: select(*).eq(user_id).eq(tenant_id).maybeSingle() — the
+        // awaited chain resolves to the queued result.
+        const builder: Record<string, jest.Mock> = {};
+        for (const m of ['select', 'eq', 'maybeSingle']) {
+          builder[m] = jest.fn().mockImplementation(() =>
+            m === 'maybeSingle'
+              ? Promise.resolve(
+                  opts.accessState ?? { data: null, error: null },
+                )
+              : builder,
+          );
+        }
+        return builder;
+      }
       if (table === 'jobs') {
         return jobsTableHandler(
           jobsList,
@@ -690,6 +707,16 @@ describe('UsersService', () => {
           completed: 0,
           cancelled: 0,
         },
+        // 15-7: the access view rides the same profile response.
+        accessState: {
+          data: {
+            attendance_enabled: true,
+            access_state: 'active',
+            attendance_start_date: '2026-09-01',
+            onboarded_at: '2026-09-01T05:30:00+00:00',
+          },
+          error: null,
+        },
       });
 
       const result = await service.getMyProfile(technicianUser, {});
@@ -697,6 +724,13 @@ describe('UsersService', () => {
       expect(result.role).toBe(Role.TECHNICIAN);
       if (result.role !== Role.TECHNICIAN)
         throw new Error('expected technician shape');
+      // AD-17: first load carries the same access facts me/access serves.
+      expect(result.attendance).toEqual({
+        attendanceEnabled: true,
+        attendanceAccess: 'active',
+        attendanceStartDate: '2026-09-01',
+        onboardedAt: '2026-09-01T05:30:00+00:00',
+      });
       expect(result.skills.sort()).toEqual(
         ['AC Repair', 'Pest Control'].sort(),
       );

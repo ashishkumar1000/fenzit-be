@@ -102,6 +102,21 @@ export interface TechnicianProfileResponse extends UserProfileBase {
   skillIds: string[];
   jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
+  /**
+   * AD-17 (15-7): the attendance access state for first load — identical
+   * fields to GET /attendance/me/access, read from the same
+   * attendance_access_state view via the admin client (string table name;
+   * users never imports the attendance module). First load only — refetches
+   * use the light endpoint.
+   */
+  attendance: AttendanceAccessSummary;
+}
+
+export interface AttendanceAccessSummary {
+  attendanceEnabled: boolean;
+  attendanceAccess: 'none' | 'upcoming' | 'active' | 'history_only';
+  attendanceStartDate: string | null;
+  onboardedAt: string | null;
 }
 
 // Story 3.9 — every profile job row embeds the same technician/customer
@@ -183,6 +198,14 @@ const EMPTY_JOB_COUNTS: JobCounts = {
   cancelled: 0,
 };
 
+/** AD-17 default before a tenant exists — no tenant, no attendance. */
+const NO_ATTENDANCE_ACCESS: AttendanceAccessSummary = {
+  attendanceEnabled: false,
+  attendanceAccess: 'none',
+  attendanceStartDate: null,
+  onboardedAt: null,
+};
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -237,6 +260,7 @@ export class UsersService {
           skillIds: [],
           jobs: new PaginatedResponse<ProfileJobResponse>([], null),
           jobCounts: EMPTY_JOB_COUNTS,
+          attendance: NO_ATTENDANCE_ACCESS,
         };
       }
       return {
@@ -280,7 +304,7 @@ export class UsersService {
     };
 
     if (ownRow.role === Role.TECHNICIAN) {
-      const [skills, jobs, jobCounts] = await Promise.all([
+      const [skills, jobs, jobCounts, attendance] = await Promise.all([
         this.getOwnSkills(admin, user.userId),
         this.listProfileJobs(
           tenantId,
@@ -290,6 +314,7 @@ export class UsersService {
           query.jobsLimit,
         ),
         this.getJobCounts(tenantId, user.userId),
+        this.getAttendanceAccess(admin, tenantId, user.userId),
       ]);
 
       return {
@@ -300,6 +325,7 @@ export class UsersService {
         skillIds: skills.map((s) => s.id),
         jobs,
         jobCounts,
+        attendance,
       };
     }
 
@@ -395,6 +421,50 @@ export class UsersService {
         createdAt: row.created_at,
       };
     });
+  }
+
+  /**
+   * AD-17 (15-7): the technician's attendance access for first load, read
+   * from the attendance_access_state view via the admin client — the same
+   * rows GET /attendance/me/access serves. String table name on purpose:
+   * users never imports the attendance module. Fail loud on a read error;
+   * a missing row (e.g. a mid-provisioning DB) reads as "no attendance".
+   */
+  private async getAttendanceAccess(
+    admin: SupabaseClient,
+    tenantId: string,
+    userId: string,
+  ): Promise<AttendanceAccessSummary> {
+    const { data, error } = await admin
+      .from('attendance_access_state')
+      .select(
+        'attendance_enabled, access_state, attendance_start_date, onboarded_at',
+      )
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle<{
+        attendance_enabled: boolean;
+        access_state: 'none' | 'upcoming' | 'active' | 'history_only';
+        attendance_start_date: string | null;
+        onboarded_at: string | null;
+      }>();
+
+    if (error) {
+      this.logger.error('Failed to read attendance access state:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to fetch profile',
+      });
+    }
+    if (!data) {
+      return NO_ATTENDANCE_ACCESS;
+    }
+    return {
+      attendanceEnabled: data.attendance_enabled,
+      attendanceAccess: data.access_state,
+      attendanceStartDate: data.attendance_start_date,
+      onboardedAt: data.onboarded_at,
+    };
   }
 
   private async getOwnSkills(

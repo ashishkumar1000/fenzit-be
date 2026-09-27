@@ -8,13 +8,16 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 
 /**
  * HTTP boundary for the attendance module (Epic 15): stories 15-2 (setup
- * wizard) and 15-3 (offices). Pins what the unit specs cannot see — route
- * mounting through AppModule, the ValidationPipe's 422, the guards' 401/403
- * — with the DB boundary mocked at SupabaseClientFactory (unit specs cover
- * the service/RPC mapping; the real-DB probes live in the integration suite).
+ * wizard), 15-3 (offices) and 15-7 (enrolments + me routes). Pins what the
+ * unit specs cannot see — route mounting through AppModule, the
+ * ValidationPipe's 422, the guards' 401/403 — with the DB boundary mocked
+ * at SupabaseClientFactory (and, since 15-7's no-RPC writes, the direct pg
+ * pool): unit specs cover the service/model; the real-DB probes live in
+ * the integration suite.
  */
 
 type RpcResult = { data: unknown; error: Record<string, unknown> | null };
@@ -72,7 +75,7 @@ const OFFICE_PAYLOAD = {
   halfDayHours: 4,
 };
 
-describe('Attendance HTTP boundary (e2e, stories 15-2/15-3)', () => {
+describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
 
@@ -98,6 +101,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3)', () => {
       'order',
       'in',
       'update',
+      'upsert',
       'maybeSingle',
       'single',
     ]) {
@@ -120,6 +124,27 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3)', () => {
     rpcCalls.length = 0;
   }
 
+  // 15-7: the direct pg pool is stubbed with a content-dispatching fake tx —
+  // the enrolment writes' SQL shapes answer like the real DB would (locks,
+  // today, member/office lookups, empty range reads, view row). Per-test
+  // tweaks go through txBehaviour.
+  let txBehaviour:
+    | ((sql: string, params?: unknown[]) => { rows: unknown[] })
+    | null = null;
+
+  function pgTxOverride() {
+    return {
+      withTransaction: (work: (client: unknown) => Promise<unknown>) =>
+        work({
+          query: (sql: string, params?: unknown[]) =>
+            txBehaviour
+              ? txBehaviour(sql, params)
+              : { rows: [] },
+        }),
+      onModuleDestroy: async () => undefined,
+    };
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -139,6 +164,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3)', () => {
           }),
         })),
       })
+      .overrideProvider(PgPoolFactory)
+      .useValue(pgTxOverride())
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -1232,6 +1259,395 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3)', () => {
 
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body).error_code).toBe('FORBIDDEN');
+    });
+  });
+
+  describe('enrolment + me routes (story 15-7, no-RPC pg writes)', () => {
+    const EMPLOYEE_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000e5';
+
+    const viewRow = {
+      user_id: EMPLOYEE_ID,
+      tenant_id: TENANT_ID,
+      attendance_enabled: true,
+      access_state: 'active',
+      attendance_start_date: '2026-09-28',
+      enabled_at: '2026-09-28T04:00:00+00:00',
+      onboarded_at: null,
+      office_id: OFFICE_ID,
+      office_name: 'Andheri West',
+    };
+
+    /** The fake tx answering like the real DB for the enable happy path. */
+    function enableTx() {
+      txBehaviour = (sql: string) => {
+        if (sql.includes('attendance_today')) {
+          return { rows: [{ today: '2026-09-28' }] };
+        }
+        if (sql.includes('from public.users where')) {
+          return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
+        }
+        if (sql.includes('attendance_offices')) {
+          return {
+            rows: [
+              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
+            ],
+          };
+        }
+        if (
+          sql.includes('from public.attendance_enrolments where') ||
+          sql.includes('from public.attendance_office_assignments where')
+        ) {
+          return { rows: [] };
+        }
+        if (sql.includes('attendance_access_state')) {
+          return { rows: [viewRow] };
+        }
+        return { rows: [] }; // lock, BEGIN/COMMIT, writes
+      };
+    }
+
+    afterEach(() => {
+      txBehaviour = null;
+    });
+
+    it('PUT /attendance/enrolments/:employeeId enables through one pg transaction and returns the view state', async () => {
+      enableTx();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { officeId: OFFICE_ID, startDate: '2026-09-28' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        attendanceEnabled: true,
+        attendanceAccess: 'active',
+        attendanceStartDate: '2026-09-28',
+        officeId: OFFICE_ID,
+      });
+    });
+
+    it('PUT enrolments answers 409 ATTENDANCE_OFFICE_ARCHIVED for an archived office', async () => {
+      txBehaviour = (sql: string) => {
+        if (sql.includes('attendance_today')) {
+          return { rows: [{ today: '2026-09-28' }] };
+        }
+        if (sql.includes('from public.users where')) {
+          return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
+        }
+        if (sql.includes('attendance_offices')) {
+          return {
+            rows: [
+              {
+                id: OFFICE_ID,
+                name: 'Andheri West',
+                archived_at: '2026-09-20T00:00:00+00:00',
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      };
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { officeId: OFFICE_ID },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error_code).toBe(
+        'ATTENDANCE_OFFICE_ARCHIVED',
+      );
+    });
+
+    it('PUT enrolments rejects a malformed employee id with 400 before any DB work', async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/attendance/enrolments/not-a-uuid',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { officeId: OFFICE_ID },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('PUT enrolments rejects a missing officeId with 422 (ValidationPipe)', async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { startDate: '2026-10-01' },
+      });
+
+      expect(res.statusCode).toBe(422);
+    });
+
+    it('DELETE /attendance/enrolments/:employeeId disables and answers from the view (history_only after a past period)', async () => {
+      // Post-disable view read: the period was clipped at today, so the
+      // employee reads history_only — the stub row must be the POST-write
+      // state, not the enable fixture (review finding).
+      txBehaviour = (sql: string) => {
+        if (sql.includes('attendance_today')) {
+          return { rows: [{ today: '2026-09-28' }] };
+        }
+        if (sql.includes('from public.users where')) {
+          return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
+        }
+        if (sql.includes('attendance_offices')) {
+          return {
+            rows: [
+              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
+            ],
+          };
+        }
+        if (
+          sql.includes('from public.attendance_enrolments where') ||
+          sql.includes('from public.attendance_office_assignments where')
+        ) {
+          return { rows: [{ id: 'x', valid: '[2026-09-25,)' }] };
+        }
+        if (sql.includes('attendance_access_state')) {
+          return {
+            rows: [
+              {
+                ...viewRow,
+                access_state: 'history_only',
+                attendance_start_date: null,
+                enabled_at: null,
+                office_id: null,
+                office_name: null,
+              },
+            ],
+          };
+        }
+        return { rows: [] }; // lock, BEGIN/COMMIT, writes
+      };
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).attendanceAccess).toBe('history_only');
+    });
+
+    it('technician JWT is 403 on enrolment routes', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/enrolments',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('GET /attendance/me/access serves the technician their view state', async () => {
+      tableQueues.set('attendance_access_state', [
+        { data: viewRow, error: null },
+      ]);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/me/access',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        attendanceEnabled: true,
+        attendanceAccess: 'active',
+        attendanceStartDate: '2026-09-28',
+      });
+    });
+
+    it('owner JWT is 403 on me/access (technician-only surface)', async () => {
+      tableQueues.set('attendance_access_state', [
+        { data: viewRow, error: null },
+      ]);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/me/access',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('POST /attendance/me/onboarding records once and replays with the original timestamp', async () => {
+      tableQueues.set('attendance_onboarding', [
+        { data: null, error: null }, // upsert (ignored replay included)
+        { data: { onboarded_at: '2026-09-28T04:00:00+00:00' }, error: null }, // read-back
+      ]);
+
+      const first = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/onboarding',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+      expect(first.statusCode).toBe(200);
+      expect(JSON.parse(first.body)).toEqual({
+        onboardedAt: '2026-09-28T04:00:00+00:00',
+      });
+
+      // Replay: the queued read-back serves the ORIGINAL timestamp — the
+      // contract the test title names (review finding).
+      tableQueues.set('attendance_onboarding', [
+        { data: null, error: null },
+        { data: { onboarded_at: '2026-09-28T04:00:00+00:00' }, error: null },
+      ]);
+      const replay = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/onboarding',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(JSON.parse(replay.body)).toEqual(JSON.parse(first.body));
+    });
+
+    it('PUT /attendance/enrolments/:employeeId/office reassigns through one pg transaction', async () => {
+      txBehaviour = (sql: string) => {
+        if (sql.includes('attendance_today')) {
+          return { rows: [{ today: '2026-09-28' }] };
+        }
+        if (sql.includes('from public.users where')) {
+          return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
+        }
+        if (sql.includes('attendance_offices')) {
+          return {
+            rows: [
+              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
+            ],
+          };
+        }
+        if (sql.includes('from public.attendance_enrolments where')) {
+          return { rows: [{ id: 'enr', valid: '[2026-09-25,)' }] };
+        }
+        if (sql.includes('from public.attendance_office_assignments where')) {
+          return { rows: [{ id: 'asg', valid: '[2026-09-25,)' }] };
+        }
+        if (sql.includes('attendance_access_state')) {
+          return { rows: [viewRow] };
+        }
+        return { rows: [] };
+      };
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}/office`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { officeId: OFFICE_ID },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).attendanceAccess).toBe('active');
+    });
+
+    it('PUT /attendance/enrolments/:employeeId/office is 422 ATTENDANCE_ASSIGNMENT_NOT_ENROLLED when no enrolment covers the date', async () => {
+      txBehaviour = (sql: string) => {
+        if (sql.includes('attendance_today')) {
+          return { rows: [{ today: '2026-09-28' }] };
+        }
+        if (sql.includes('from public.users where')) {
+          return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
+        }
+        if (sql.includes('attendance_offices')) {
+          return {
+            rows: [
+              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
+            ],
+          };
+        }
+        if (sql.includes('from public.attendance_enrolments where')) {
+          // Upcoming-only: today is not covered.
+          return { rows: [{ id: 'enr', valid: '[2026-11-01,)' }] };
+        }
+        if (sql.includes('from public.attendance_office_assignments where')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      };
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/attendance/enrolments/${EMPLOYEE_ID}/office`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { officeId: OFFICE_ID },
+      });
+
+      expect(res.statusCode).toBe(422);
+      expect(JSON.parse(res.body).error_code).toBe(
+        'ATTENDANCE_ASSIGNMENT_NOT_ENROLLED',
+      );
+    });
+
+    it('GET /attendance/enrolments lists the roster (200, never 404)', async () => {
+      tableQueues.set('users', [
+        {
+          data: [
+            {
+              id: EMPLOYEE_ID,
+              name: 'Ravi',
+              country_code: '+91',
+              phone_number: '9999900005',
+            },
+          ],
+          error: null,
+        },
+      ]);
+      tableQueues.set('attendance_access_state', [
+        { data: [viewRow], error: null },
+      ]);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/enrolments',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const roster = JSON.parse(res.body);
+      expect(roster).toHaveLength(1);
+      expect(roster[0]).toMatchObject({
+        employeeId: EMPLOYEE_ID,
+        employeeName: 'Ravi',
+        phone: '+919999900005',
+        attendanceAccess: 'active',
+      });
+    });
+
+    it('enrolment routes reject a no-tenant owner JWT with 400 VALIDATION_ERROR', async () => {
+      const noTenantJwt = jwtService.sign({
+        sub: 'owner-uuid-e2e',
+        tenantId: null,
+        role: 'owner',
+      });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/enrolments',
+        headers: { authorization: `Bearer ${noTenantJwt}` },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('missing JWT is 401 on the new routes', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/enrolments',
+      });
+
+      expect(res.statusCode).toBe(401);
     });
   });
 });

@@ -158,7 +158,12 @@ Role-branched profile payload — the app's primary boot call.
 
 - **Owner:** tenant/company info, technician roster (with skills), customers
   page, jobs page, and jobCounts (`today/upcoming/overdue/completed/cancelled`)
-- **Technician:** own skills, own jobs page, own jobCounts
+- **Technician:** own skills, own jobs page, own jobCounts — plus the
+  `attendance` mirror (15-7/AD-17): `{ attendanceEnabled, attendanceAccess
+  ('none' | 'upcoming' | 'active' | 'history_only'), attendanceStartDate,
+  onboardedAt }` for first load, read from the same
+  `attendance_access_state` view as `GET /attendance/me/access`; refetches
+  use that light endpoint, not the profile
 
 Every row in the jobs page additionally embeds
 `technician: { id, name, countryCode, phoneNumber, skills: string[] }` (always
@@ -1032,6 +1037,130 @@ policies (deny-by-default, admin-client only). Notification dedupe keys are
 recipient-prefixed: `<tenantId>:<eventType>:<recipientId>:<holidayId>` (the
 14-2 convention). The AD-13 backend event registry lives in
 `src/attendance/notification-events.ts` (the FE mirrors it in 15-6).
+
+---
+
+### Attendance enrolments & access (Epic 15, Story 15-7 — owner writes, technician reads)
+
+FR-2/FR-6 enrolment lifecycle and the AD-17 access state. **No new RPCs**
+(user decision 2026-09-28, AD-3 amendment): the lifecycle writes run as ONE
+pg transaction each over the direct Postgres pool (`DATABASE_URL` — direct
+or session-pooler; never the transaction pooler), taking the existing
+`attendance_lock_tenant` (shared) + `attendance_lock_employee` (exclusive)
+helpers (AD-5, same lock space as the RPCs) and the existing
+`attendance_today` (AD-7); the AD-8 algorithm
+(delete-future → clip-covering → insert, `effective_from = greatest(from,
+today)`) is computed in `enrolments-response.model.ts` and executed in
+`enrolments.repository.ts`. A `DEFERRABLE INITIALLY DEFERRED` coverage
+constraint trigger (DB authority, NFR-4 — checked at COMMIT, since the
+enable co-writes two tables in separate statements) rejects any state where
+an enrolled date lacks its assignment or an assignment pokes outside an
+enrolment — surfaced as 422 `ATTENDANCE_ASSIGNMENT_GAP`. Liveness is
+required only for CURRENT-OR-FUTURE periods; closed history stays valid
+after its office is archived. There is **no bulk route**: FR-2's "enable
+all" is an FE loop of the single-employee PUT (each employee commits
+independently; per-employee failures are retried individually).
+
+**Access state** is computed once, in SQL, by the `attendance_access_state`
+view (revoked from anon/authenticated; admin client + pg pool only):
+`none` (never tracked, or the module kill switch
+`attendance_settings.enabled = false` — no attendance UI for anyone while
+off, history untouched), `upcoming` (next period starts in the future),
+`active` (an enrolment covers today), `history_only` (past periods only),
+plus `attendance_start_date`, `enabled_at`, `onboarded_at` and the live
+covering assignment's office. Every surface below reads those same rows.
+
+**DB foundation (this story, additive):** `attendance_enrolments
+(employee_id, valid daterange, enabled_at)`,
+`attendance_office_assignments (employee_id, office_id, valid)` — both
+AD-8 (`EXCLUDE USING gist` non-overlap, composite FKs onto
+`users(id, tenant_id)` / `attendance_offices(id, tenant_id)`); 
+`attendance_onboarding (employee_id PK, onboarded_at)`; RLS enabled, no
+policies on all three (deny-by-default). Reconciled pre-existing function
+bodies (signatures unchanged): complete-setup **Gate 2 now requires a live
+office**; the archive-blocker predicate is shared by
+`attendance_archive_office` / `attendance_office_archive_blockers`, ordered,
+deduped, and blocks on any current-or-future assignment of an enrolled
+employee; the holiday notification recipients and the impact preview use
+the tracked predicate (enrolment covers the date + live covering
+assignment). `attendance_records` does not exist yet — FR-6's
+"checked in today → applies from tomorrow" is probed and self-activates in
+Epic 16. `/users/me` (technician branch) carries the same access fields for
+first load, read from the view via the admin client (no attendance module
+import).
+
+#### `GET /api/v1/attendance/enrolments` `[Bearer JWT, Role: owner]`
+
+The roster: one row per technician — `{ employeeId, employeeName, phone,
+attendanceEnabled, attendanceAccess, attendanceStartDate, enabledAt,
+onboardedAt, officeId, officeName }` (state from the view; names from
+users). Empty until anyone is enrolled (200 `[]`, never 404).
+
+**Responses:** `200`; `400 VALIDATION_ERROR` (no tenant); `401/403`;
+`404 ATTENDANCE_TENANT_NOT_FOUND`.
+
+#### `PUT /api/v1/attendance/enrolments/:employeeId` `[Bearer JWT, Role: owner]`
+
+Enables attendance (FR-2) — or changes / re-states a future start date —
+co-writing the enrolment and the office assignment in one transaction.
+`startDate` defaults to today; past dates are clamped (never a 422).
+
+**Body:** `{ officeId: uuid, startDate?: 'YYYY-MM-DD' }`
+
+**Responses:**
+- `200` — the post-write access state
+- `400` — malformed employee id / no tenant / bad date
+- `404` — `ATTENDANCE_EMPLOYEE_NOT_FOUND` (not a tenant member) |
+  `ATTENDANCE_OFFICE_NOT_FOUND` | `ATTENDANCE_TENANT_NOT_FOUND`
+- `409` — `ATTENDANCE_OFFICE_ARCHIVED` (enrol with a live office)
+- `422` — `ATTENDANCE_ASSIGNMENT_GAP` (coverage trigger rejected at COMMIT)
+
+#### `PUT /api/v1/attendance/enrolments/:employeeId/office` `[Bearer JWT, Role: owner]`
+
+FR-6 reassignment. `effectiveFrom` defaults to today and must fall inside
+an enrolment (for an upcoming employee, pass their start date); applies
+from tomorrow automatically once `attendance_records` exists and the
+employee has checked in today.
+
+**Body:** `{ officeId: uuid, effectiveFrom?: 'YYYY-MM-DD' }`
+
+**Responses:** as the PUT above, plus `422
+ATTENDANCE_ASSIGNMENT_NOT_ENROLLED` (no enrolment covers the date).
+
+#### `DELETE /api/v1/attendance/enrolments/:employeeId` `[Bearer JWT, Role: owner]`
+
+Disables (FR-2): both ranges clipped at `effectiveFrom` (default today),
+history read-only; cancelling a future start removes the rows entirely.
+Idempotent.
+
+**Query:** `effectiveFrom?: 'YYYY-MM-DD'`
+
+**Responses:** `200` post-disable state (`history_only` after a past period;
+`none` when the same-day start was cancelled outright — a never-enrolled or
+already-disabled employee is an idempotent 200 with unchanged state);
+`400`/`401`/`403`/`404` as above.
+
+#### `GET /api/v1/attendance/me/access` `[Bearer JWT, Role: technician]`
+
+AD-17: the entry-point gate. The employee id comes only from the JWT.
+
+**Response:** `{ attendanceEnabled, attendanceAccess, attendanceStartDate,
+enabledAt, onboardedAt, officeId, officeName }` — kill switch off forces
+`attendanceAccess: 'none'`.
+
+**Responses:** `200`; `401`; `403` (non-technician role); `500` if the view
+read fails (fail-loud, never a fabricated state).
+
+#### `POST /api/v1/attendance/me/onboarding` `[Bearer JWT, Role: technician]`
+
+FR-4: records onboarding completion, once per employee (upsert with
+`ignoreDuplicates`); replays answer 200 with the ORIGINAL `onboardedAt`.
+
+**Response:** `{ onboardedAt }` — recording is allowed in any access state
+(the server records; the FE gates the UI); replays answer the original value.
+
+**Responses:** `200`; `401`; `403` (non-technician role); `400
+VALIDATION_ERROR` (no tenant).
 
 ---
 

@@ -14,3 +14,10 @@ process.env['CLOUDFLARE_R2_SECRET_KEY'] = 'test-secret-key';
 process.env['CLOUDFLARE_R2_BUCKET'] = 'test-bucket';
 process.env['WORKER_WEBHOOK_SECRET'] = 'test-webhook-secret';
 process.env['GOOGLE_PLACES_API_KEY'] = 'test-google-places-api-key';
+// The 15-7 pg pool fails fast on a missing URL at boot; tests never connect
+// (the pool is overridden in the attendance specs), so a dummy string keeps
+// AppModule happy. An empty-string export must fall back too — the pool's
+// fail-fast checks truthiness, and ??= would treat '' as present.
+if (!process.env['DATABASE_URL']) {
+  process.env['DATABASE_URL'] = 'postgresql://test:test@localhost:5432/test';
+}

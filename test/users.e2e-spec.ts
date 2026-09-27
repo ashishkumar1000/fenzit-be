@@ -57,6 +57,19 @@ describe('Users (e2e)', () => {
 
   beforeAll(async () => {
     const mockFrom = jest.fn().mockImplementation((table: string) => {
+      // 15-7: the technician profile reads the attendance access view; the
+      // generic builder below has no maybeSingle, so serve it a dedicated
+      // chain whose read resolves to "no row" (profile maps that to the
+      // attendance-free default).
+      if (table === 'attendance_access_state') {
+        const viewQb: Record<string, unknown> = {};
+        for (const method of ['select', 'eq', 'maybeSingle']) {
+          viewQb[method] = jest.fn().mockReturnValue(viewQb);
+        }
+        viewQb.then = (resolve: (v: unknown) => void) =>
+          resolve({ data: null, error: null });
+        return viewQb;
+      }
       const builder: Record<string, unknown> = {};
       for (const method of [
         'select',
