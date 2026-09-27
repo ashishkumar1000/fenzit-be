@@ -44,6 +44,7 @@ bun run start:dev          # nest start --watch (autoreload)
 | `bun run test`       | Unit tests (Jest, `*.spec.ts` under `src/`) |
 | `bun run test:cov`   | Coverage report → `coverage/`             |
 | `bun run test:e2e`   | E2E + integration suite (uses `test/jest-e2e.json`) |
+| `bun run test:e2e:real` | Same suite with real-DB probes — needs real **Node** (not Bun) + `.env` with `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`; env loaded via `node --env-file=.env` |
 | `bun run test:debug` | Node inspector + ts-jest                  |
 
 ## Environment Variables
@@ -91,6 +92,20 @@ AR-20.
 ```bash
 bun run test:e2e -- rls-isolation
 ```
+
+### Real-DB probes
+
+Most e2e/integration specs stub Supabase and run anywhere. The real-DB
+probes (schema pins, RPC behaviour, RLS with real JWTs) activate only when
+the environment carries real credentials — run them with:
+
+```bash
+bun run test:e2e:real
+```
+
+This loads `.env` via `node --env-file=.env` and refuses to run under Bun's
+engine (jest needs real Node — if your shell resolves `node` to Bun, run
+`nvm use` first; the script guards and tells you).
 
 ## Local Development Loop
 

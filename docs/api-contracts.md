@@ -854,6 +854,187 @@ lazily compiled — they fail loud until 15-7 lands.
 
 ---
 
+### Attendance weekly offs & holidays (Epic 15, Story 15-5, owner only)
+
+FR-18/19 weekly offs (tenant default + per-employee overrides) and FR-20
+holidays. Owner-only; day-status resolution that consumes these tables
+arrives with Epic 16 (16-1's `attendance_day_context`). No idempotency
+interceptor (AD-6): every weekly-off write is lock-serialised and
+converges on retry; a retried holiday add is a 409; notification fan-outs
+are dedupe-key bounded. "Today" comes only from `attendance_today` (AD-7).
+
+**Weekly-off vocabulary:** `days` is ISO weekday numbers, 1=Mon .. 7=Sun
+(stored sorted). At least one working day must remain (FR-18): a 7-day
+selection is rejected 422 (`ATTENDANCE_NO_WORKING_DAYS` — pre-DB service
+check, with the RPC's PT422 and the table CHECKs as backstops). An **empty `days` array is legal**:
+- on the default PUT it clears future defaults from `effectiveFrom`
+  (absence of a covering row = all 7 days working);
+- on an override PUT it means "this employee works all 7 days" (the
+  override **replaces** the tenant default while its range covers the
+  date, AD-22). Removing the override is the DELETE — a separate
+  operation; the employee then falls back to the tenant default.
+
+There is **no seeded default** — "the default is Sunday" is an FE
+preselection; the wizard's first save creates the row.
+
+#### `GET /api/v1/attendance/weekly-offs` `[Bearer JWT, Role: owner]`
+
+The tenant default: the selection valid on today (`default: null` = all
+7 days working, including never-configured), the earliest pending future
+edit (`next`), and the full effective-dated `history` (ascending). Range
+picks are made on the fetched rows against `attendance_today`.
+
+**Response 200:** `{ default: { days, validFrom, validTo } | null, next: … | null, history: […] }`
+
+**Responses:**
+- `200` — empty state is `{ default: null, next: null, history: [] }` (never-configured is a 200, not a 404)
+- `400` — `VALIDATION_ERROR` (owner without a company)
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — `attendance_today` fails loud)
+- `401` / `403` — as above
+
+#### `PUT /api/v1/attendance/weekly-offs` `[Bearer JWT, Role: owner]`
+
+Sets the tenant default through `attendance_set_weekly_off_default` —
+the AD-8 algorithm with `effectiveFrom` defaulting (and past values
+clamping) to today: future ranges are replaced, the covering range is
+clipped at `effectiveFrom`, the new range is `[effectiveFrom, ∞)`.
+
+**Body:** `{ days: number[] (1–7, unique, ≤6, empty allowed), effectiveFrom?: 'YYYY-MM-DD' }`
+
+**Responses:**
+- `200` — resolved default: `{ default, next, history }` (same shape as GET)
+- `400` — `VALIDATION_ERROR` (no tenant)
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND`
+- `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection, pre-DB) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
+
+#### `GET /api/v1/attendance/weekly-offs/overrides` `[Bearer JWT, Role: owner]`
+
+Per-employee overrides with current/pending picks. Employees without an
+override row are absent — they read the tenant default.
+
+**Response 200:** `[{ employeeId, employeeName, current: { days, validFrom, validTo } | null, next: … | null }]`
+
+**Responses:**
+- `200` — possibly empty list
+- `400` / `401` / `403` — as above
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — `attendance_today` fails loud)
+
+#### `PUT /api/v1/attendance/weekly-offs/overrides/:employeeId` `[Bearer JWT, Role: owner]`
+
+Sets one employee's override via `attendance_set_weekly_off_override`
+(same AD-8 algorithm, keyed on the employee).
+
+**Body:** `{ days: number[], effectiveFrom?: 'YYYY-MM-DD' }`
+
+**Responses:**
+- `200` — `{ employeeId, employeeName, current, next }`
+- `400` — `VALIDATION_ERROR` (malformed employee id / no tenant)
+- `404` — `ATTENDANCE_EMPLOYEE_NOT_FOUND` (employee not a tenant member) or `ATTENDANCE_TENANT_NOT_FOUND`
+- `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
+
+#### `DELETE /api/v1/attendance/weekly-offs/overrides/:employeeId?effectiveFrom=` `[Bearer JWT, Role: owner]`
+
+Removes the override from `effectiveFrom` (default today) via
+`attendance_remove_weekly_off_override` — clip-without-insert: earlier
+override dates keep their override; from `effectiveFrom` the employee
+reads the tenant default. Idempotent (no covering range → no-op).
+
+**Responses:**
+- `200` — post-removal state: `{ employeeId, employeeName, current, next }`
+- `400` / `404` — as above
+- `422` — `VALIDATION_ERROR` (malformed `effectiveFrom` query)
+
+#### `GET /api/v1/attendance/holidays` `[Bearer JWT, Role: owner]`
+
+Tenant-scoped holidays, ascending by date; the FE groups upcoming/past.
+
+**Response 200:** `[{ id, date: 'YYYY-MM-DD', name }]`
+
+**Responses:**
+- `200` — possibly empty list
+- `400` / `401` / `403` — as above
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — checked before the list read, the same fail-loud contract as the weekly-off reads)
+
+#### `POST /api/v1/attendance/holidays` `[Bearer JWT, Role: owner]`
+
+Adds a holiday via `attendance_add_holiday` (exclusive tenant lock).
+Past dates are allowed and silent (day statuses recompute on read,
+AD-10). Future dates fan an `attendance.holiday_added` notification out
+to tracked employees **in the same transaction** (AD-13) — until Story
+15-7 creates `attendance_enrolments` the recipient branch is a guarded
+no-op (zero notifications, correct: nobody can be tracked yet).
+
+**Body:** `{ date: 'YYYY-MM-DD', name: string (≤80, trimmed) }`
+
+**Responses:**
+- `201` — `{ id, date, name }`
+- `400` — `VALIDATION_ERROR` (no tenant)
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant)
+- `409` — `ATTENDANCE_HOLIDAY_TAKEN` (a holiday already exists on this date)
+- `422` — malformed date (ValidationPipe)
+
+#### `PATCH /api/v1/attendance/holidays/:id` `[Bearer JWT, Role: owner]`
+
+Renames a holiday via `attendance_update_holiday` (guarded UPDATE). The
+**date is immutable** — impact and notifications differ per date; a date
+change is remove + add. A `date` key in the body is rejected 422 even
+though the global pipe silently strips unknown keys (explicit raw-body
+check).
+
+**Body:** `{ name: string }`
+
+**Responses:**
+- `200` — `{ id, date, name }`
+- `400` — `VALIDATION_ERROR` (malformed id / no tenant)
+- `404` — `ATTENDANCE_HOLIDAY_NOT_FOUND` (unknown holiday) or `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the RPC resolves `attendance_today` first, so these are distinct codes)
+- `422` — `VALIDATION_ERROR` (`date` key present in the body)
+
+#### `DELETE /api/v1/attendance/holidays/:id` `[Bearer JWT, Role: owner]`
+
+Hard-deletes via `attendance_remove_holiday` (no archive — FR-20). Removed
+**future** dates fan an `attendance.holiday_removed` notification out to
+tracked employees so a planned day off doesn't vanish silently
+(scope decision 2026-09-27); pre-15-7 this is a guarded no-op.
+
+**Responses:**
+- `204` — removed
+- `400` — `VALIDATION_ERROR` (malformed id / no tenant)
+- `404` — `ATTENDANCE_HOLIDAY_NOT_FOUND` (unknown holiday) or `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the RPC resolves `attendance_today` first, so these are distinct codes)
+
+#### `GET /api/v1/attendance/holidays/impact?date=` `[Bearer JWT, Role: owner]`
+
+AD-24 preview: employees the holiday would affect. **Returns an empty
+list until 15-7 lands** (the tracked-employee query is behind the same
+`to_regclass` guard — never a 42P01). **Employees on approved leave
+overlapping the date arrive with Epic 17** (this route's extension point;
+the holiday-inside-leave notification ACs are re-tested there).
+
+**Response 200:** `{ date, affectedEmployees: [{ employeeId, employeeName }] }`
+
+**Responses:**
+- `200` — empty list pre-15-7 (never a 42P01)
+- `400` — `VALIDATION_ERROR` (no tenant)
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the RPC fails loud on `attendance_today`)
+- `422` — malformed `date` (ValidationPipe)
+
+**DB foundation (this story, additive):** `attendance_weekly_off_defaults`
+and `attendance_weekly_off_overrides` (`valid daterange` + `EXCLUDE USING
+gist` non-overlap on tenant_id / employee_id, `days` weekday-CHECKs,
+`cardinality(days) < 7` CHECK, `UNIQUE (id, tenant_id)` on users + composite
+child FK per the 15-3 hardening) and `holidays` (`UNIQUE (tenant_id,
+holiday_date)`); RPCs `attendance_set_weekly_off_default`,
+`attendance_set_weekly_off_override`,
+`attendance_remove_weekly_off_override`, `attendance_add_holiday`,
+`attendance_update_holiday`, `attendance_remove_holiday`, and the read
+function `attendance_holiday_impact` — every one SECURITY DEFINER,
+executable by service_role only (AD-3). All three tables: RLS enabled, no
+policies (deny-by-default, admin-client only). Notification dedupe keys are
+recipient-prefixed: `<tenantId>:<eventType>:<recipientId>:<holidayId>` (the
+14-2 convention). The AD-13 backend event registry lives in
+`src/attendance/notification-events.ts` (the FE mirrors it in 15-6).
+
+---
+
 ### Places (Epic 1 + Story 15-4, owner only)
 
 Google Places/Geocoding-backed address endpoints. No DB involvement

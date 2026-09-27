@@ -3,6 +3,10 @@ import { AttendanceService } from './attendance.service';
 import { AttendanceController } from './attendance.controller';
 import { OfficesService } from './offices.service';
 import { OfficesController } from './offices.controller';
+import { WeeklyOffsService } from './weekly-offs.service';
+import { WeeklyOffsController } from './weekly-offs.controller';
+import { HolidaysService } from './holidays.service';
+import { HolidaysController } from './holidays.controller';
 import { SupabaseModule } from '../supabase/supabase.module';
 
 /**
@@ -14,8 +18,23 @@ import { SupabaseModule } from '../supabase/supabase.module';
  */
 @Module({
   imports: [SupabaseModule],
-  controllers: [AttendanceController, OfficesController],
-  providers: [AttendanceService, OfficesService],
-  exports: [AttendanceService, OfficesService],
+  controllers: [
+    AttendanceController,
+    OfficesController,
+    WeeklyOffsController,
+    HolidaysController,
+  ],
+  providers: [
+    AttendanceService,
+    OfficesService,
+    WeeklyOffsService,
+    HolidaysService,
+  ],
+  exports: [
+    AttendanceService,
+    OfficesService,
+    WeeklyOffsService,
+    HolidaysService,
+  ],
 })
 export class AttendanceModule {}

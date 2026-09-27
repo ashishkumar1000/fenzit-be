@@ -24,7 +24,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e:real": "node -e \"if (globalThis.Bun) { console.error('real Node required — this shell resolved node to Bun (nvm not loaded?). Run: nvm use'); process.exit(1); } if (!require('fs').existsSync('.env')) { console.error('missing .env — the real-DB probes need SUPABASE_URL + SUPABASE_SERVICE_KEY (copy .env.example)'); process.exit(1); }\" && node --env-file=.env node_modules/.bin/jest --config ./test/jest-e2e.json"
   },
   "overrides": {
     "avvio": "~9.2.0"

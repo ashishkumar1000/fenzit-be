@@ -18,7 +18,9 @@ import { JwtService } from '@nestjs/jwt';
 // global. Polyfill from `ws` (devDependency) when missing — BEFORE any
 // realtime client is constructed.
 import RealtimeWebSocket from 'ws';
-if (typeof (globalThis as Record<string, unknown>)['WebSocket'] === 'undefined') {
+if (
+  typeof (globalThis as Record<string, unknown>)['WebSocket'] === 'undefined'
+) {
   (globalThis as Record<string, unknown>)['WebSocket'] = RealtimeWebSocket;
 }
 import { SupabaseClientFactory } from '../../src/common/factories/supabase-client.factory';
@@ -1024,6 +1026,46 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_office_id: PROBE_ID,
         },
+        // Story 15-5 weekly-off/holiday RPCs (migration 20260927000002, the
+        // dead p_actor_id dropped by 20260927000005) — same SECURITY DEFINER
+        // + revoke pattern, same 42501 pin. The probe ids mutate nothing: the
+        // privilege check fires before any body runs, and the notification
+        // fan-out branches are lazy-compiled against the 15-7 enrolments
+        // table (unreachable pre-15-7 even with a grant).
+        attendance_set_weekly_off_default: {
+          p_tenant_id: PROBE_ID,
+          p_days: [6, 7],
+          p_effective_from: null,
+        },
+        attendance_set_weekly_off_override: {
+          p_tenant_id: PROBE_ID,
+          p_employee_id: PROBE_ID,
+          p_days: [5],
+          p_effective_from: null,
+        },
+        attendance_remove_weekly_off_override: {
+          p_tenant_id: PROBE_ID,
+          p_employee_id: PROBE_ID,
+          p_effective_from: null,
+        },
+        attendance_add_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_date: '2030-01-01',
+          p_name: 'RLS probe holiday',
+        },
+        attendance_update_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_id: PROBE_ID,
+          p_name: 'RLS probe rename',
+        },
+        attendance_remove_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_id: PROBE_ID,
+        },
+        attendance_holiday_impact: {
+          p_tenant_id: PROBE_ID,
+          p_date: '2030-01-01',
+        },
       };
 
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
@@ -1101,7 +1143,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         .from('notifications')
         .delete()
         .in('user_id', [probeOwnerId, probeTechId]);
-      await serviceClient.from('users').delete().in('id', [probeOwnerId, probeTechId]);
+      await serviceClient
+        .from('users')
+        .delete()
+        .in('id', [probeOwnerId, probeTechId]);
       const { error: seedOwnerError } = await serviceClient
         .from('users')
         .upsert(
@@ -1185,9 +1230,12 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         // The channel name IS the topic: `user:<sub>:notifications` — any other
         // name is denied by the realtime.messages LIKE pattern (that mistake
         // would make this probe a false negative).
-        ownChannel = realtimeClient.channel(`user:${probeTechId}:notifications`, {
-          config: { private: true },
-        });
+        ownChannel = realtimeClient.channel(
+          `user:${probeTechId}:notifications`,
+          {
+            config: { private: true },
+          },
+        );
         const subscribed = new Promise<void>((resolve, reject) => {
           ownChannel!
             .on('broadcast', { event: 'INSERT' }, (msg) => {
@@ -1255,8 +1303,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         foreignChannel
           .on('broadcast', { event: 'INSERT' }, (msg) => {
             foreignEvents.push(
-              (msg as unknown as { payload: Record<string, unknown> })
-                .payload,
+              (msg as unknown as { payload: Record<string, unknown> }).payload,
             );
           })
           .subscribe((status) => {
@@ -1342,10 +1389,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .from('users')
           .delete()
           .in('id', [probeOwnerId, probeTechId]);
-        await serviceClient
-          .from('tenants')
-          .delete()
-          .eq('id', probeTenantId);
+        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
       }
     },
     30000,
@@ -1450,9 +1494,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         .select('timezone')
         .eq('id', probeTenantId)
         .single();
-      expect(
-        (seededTenant as { timezone: string }).timezone,
-      ).toBe('Asia/Kolkata');
+      expect((seededTenant as { timezone: string }).timezone).toBe(
+        'Asia/Kolkata',
+      );
 
       try {
         // --- (a) timezone guard: fixed-offset abbreviation rejected PT422.
@@ -1462,9 +1506,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .eq('id', probeTenantId);
         expect(invalidTzError).not.toBeNull();
         expect((invalidTzError as { code: string }).code).toBe('PT422');
-        expect(
-          (invalidTzError as { hint?: string }).hint,
-        ).toBe('ATTENDANCE_INVALID_TIMEZONE');
+        expect((invalidTzError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_INVALID_TIMEZONE',
+        );
 
         // Real IANA region accepted and persisted.
         const { error: validTzError } = await serviceClient
@@ -1540,7 +1584,11 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         // A JWT naming a different tenant: same empty result — with no
         // policies the deny is unconditional; the JWT's tenant claim is
         // irrelevant by design.
-        const foreignJwt = mintJwt(probeOwnerId, FOREIGN_TENANT_ID, 'authenticated');
+        const foreignJwt = mintJwt(
+          probeOwnerId,
+          FOREIGN_TENANT_ID,
+          'authenticated',
+        );
         const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
           global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
           auth: { persistSession: false, autoRefreshToken: false },
@@ -1560,9 +1608,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .select('tenant_id, enabled')
           .eq('tenant_id', probeTenantId);
         expect(serviceSettings).toHaveLength(1);
-        expect(
-          (serviceSettings as { enabled: boolean }[])[0].enabled,
-        ).toBe(false);
+        expect((serviceSettings as { enabled: boolean }[])[0].enabled).toBe(
+          false,
+        );
         const { data: serviceProgress } = await serviceClient
           .from('attendance_setup_progress')
           .select('current_step')
@@ -1767,7 +1815,11 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .select('*');
         expect(anonRules).toEqual([]);
 
-        const foreignJwt = mintJwt(probeOwnerId, FOREIGN_TENANT_ID, 'authenticated');
+        const foreignJwt = mintJwt(
+          probeOwnerId,
+          FOREIGN_TENANT_ID,
+          'authenticated',
+        );
         const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
           global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
           auth: { persistSession: false, autoRefreshToken: false },
@@ -1830,7 +1882,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .select('office_id, valid, start_time')
           .eq('office_id', officeId as string);
         expect(initialRules).toHaveLength(1);
-        const initial = (initialRules as { valid: string; start_time: string }[])[0];
+        const initial = (
+          initialRules as { valid: string; start_time: string }[]
+        )[0];
         expect(initial.valid).toBe(`[${today},)`);
         expect(initial.start_time).toBe('10:00:00');
 
@@ -1884,8 +1938,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(editError).toBeNull();
         const tomorrow = new Date(
           new Date(`${today}T12:00:00Z`).getTime() + 24 * 60 * 60 * 1000,
-        )
-          .toLocaleDateString('en-CA', { timeZone: 'UTC' });
+        ).toLocaleDateString('en-CA', { timeZone: 'UTC' });
         const { data: rulesAfterEdit } = await serviceClient
           .from('attendance_office_rules')
           .select('valid, start_time, late_cutoff_minutes')
@@ -1917,9 +1970,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect((rulesAfterSecondEdit as { valid: string }[])[1].valid).toBe(
           `[${tomorrow},)`,
         );
-        expect((rulesAfterSecondEdit as { start_time: string }[])[1].start_time).toBe(
-          '08:00:00',
-        );
+        expect(
+          (rulesAfterSecondEdit as { start_time: string }[])[1].start_time,
+        ).toBe('08:00:00');
 
         // --- (c3) DB guards: the exclusion constraint and CHECKs.
         const { error: overlapError } = await serviceClient
@@ -2021,9 +2074,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         );
         expect(foreignTenantRpcError).not.toBeNull();
         expect((foreignTenantRpcError as { code: string }).code).toBe('PT404');
-        expect(
-          (foreignTenantRpcError as { hint?: string }).hint,
-        ).toBe('ATTENDANCE_TENANT_NOT_FOUND');
+        expect((foreignTenantRpcError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_TENANT_NOT_FOUND',
+        );
 
         // --- (c4) blockers preview + archive. Amended 2026-09-26 (15-3
         // resolution): archive guards its blocker probe on the 15-7 tables'
@@ -2083,6 +2136,678 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .delete()
           .eq('tenant_id', probeTenantId);
         await serviceClient.from('users').delete().eq('id', probeOwnerId);
+        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+      }
+    },
+    30000,
+  );
+
+  maybeIt(
+    'Attendance weekly offs & holidays: schema pins, isolation, AD-8 lifecycle, holiday lifecycle (Story 15-5)',
+    async () => {
+      // Story 15-5's real-DB probes, one seeded scenario:
+      //   (a) schema pins — the exact columns weekly-offs-response.model and
+      //       holidays.service map.
+      //   (b) tenant isolation — seeded default/override/holiday rows are
+      //       invisible to a bare anon client and to a foreign-tenant JWT
+      //       (RLS enabled with NO policies, admin-client-only module state).
+      //   (c) weekly-off default lifecycle — AD-8: sort+dedupe, 7-day PT422,
+      //       CHECK 23514 backstop, GIST exclusion 23P01, future edit clips
+      //       the covering range, same-day re-edit replaces, empty days
+      //       clears, past effectiveFrom clamps to today.
+      //   (d) overrides — tenant-member gate PT404, removal clip-without-
+      //       insert + idempotency, empty days (works all 7), composite FK
+      //       23503 cross-tenant.
+      //   (e) holidays — future add returns the id with ZERO notifications
+      //       pre-15-7 (guard branch unreached), duplicate PT409, rename,
+      //       unknown PT404, hard remove silent, impact empty (never 42P01).
+      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+      expect(SERVICE_KEY).not.toBe('');
+      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      // a5-a7: attendance-probe block, unused by any other probe (090-098
+      // belong to the 15-2/15-3/user probes). Probe-specific phones: users'
+      // partial UNIQUE indexes on (country_code, phone_number) make
+      // pre-cleans idempotent.
+      const probeTenantId = '00000000-0000-0000-0000-0000000000a5';
+      const probeOwnerId = '00000000-0000-0000-0000-0000000000a6';
+      const probeTechId = '00000000-0000-0000-0000-0000000000a7';
+      const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-0000000000fd';
+
+      /** Calendar-safe date math (mirrors the 15-3 probe's tomorrow). */
+      function addDays(iso: string, days: number): string {
+        return new Date(
+          new Date(`${iso}T12:00:00Z`).getTime() + days * 24 * 60 * 60 * 1000,
+        ).toLocaleDateString('en-CA', { timeZone: 'UTC' });
+      }
+
+      // Pre-clean in FK order (overrides RESTRICT user deletion — users
+      // last; notifications have no cascade on user/tenant deletes).
+      await serviceClient
+        .from('notifications')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('attendance_weekly_off_overrides')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('attendance_weekly_off_defaults')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('holidays')
+        .delete()
+        .eq('tenant_id', probeTenantId);
+      await serviceClient
+        .from('users')
+        .delete()
+        .in('id', [probeOwnerId, probeTechId]);
+      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+
+      const { error: seedOwnerError } = await serviceClient
+        .from('users')
+        .upsert(
+          {
+            id: probeOwnerId,
+            country_code: '+91',
+            phone_number: '9999000095',
+            role: 'owner',
+            status: 'active',
+          },
+          { onConflict: 'id' },
+        );
+      expect(seedOwnerError).toBeNull();
+      const { error: tenantUpsertError } = await serviceClient
+        .from('tenants')
+        .upsert(
+          {
+            id: probeTenantId,
+            owner_id: probeOwnerId,
+            company_name: 'Weekly Off Probe Co',
+            state_code: 'KA',
+          },
+          { onConflict: 'id' },
+        );
+      expect(tenantUpsertError).toBeNull();
+      const { error: techError } = await serviceClient.from('users').upsert(
+        {
+          id: probeTechId,
+          tenant_id: probeTenantId,
+          country_code: '+91',
+          phone_number: '9999000096',
+          role: 'technician',
+          status: 'active',
+        },
+        { onConflict: 'id' },
+      );
+      expect(techError).toBeNull();
+
+      try {
+        // --- (a) schema pins: both directions of drift fail (a dropped
+        // migration errors on unknown columns; a drifted shape misses the
+        // list). Mirrors weekly-offs-response.model / holidays.service.
+        const { error: defaultsPinError } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('id, tenant_id, valid, days, created_at, updated_at')
+          .limit(1);
+        expect(defaultsPinError).toBeNull();
+        const { error: overridesPinError } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .select(
+            'id, tenant_id, employee_id, valid, days, created_at, updated_at',
+          )
+          .limit(1);
+        expect(overridesPinError).toBeNull();
+        const { error: holidaysPinError } = await serviceClient
+          .from('holidays')
+          .select('id, tenant_id, holiday_date, name, created_at, updated_at')
+          .limit(1);
+        expect(holidaysPinError).toBeNull();
+
+        // --- (b) tenant isolation: no policies ⇒ every direct PostgREST
+        // read is denied (empty, not an error), regardless of JWT.
+        const { error: seedDefaultError } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .insert({
+            tenant_id: probeTenantId,
+            valid: '[2026-01-01,)',
+            days: [6, 7],
+          });
+        expect(seedDefaultError).toBeNull();
+        const { error: seedOverrideError } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .insert({
+            tenant_id: probeTenantId,
+            employee_id: probeTechId,
+            valid: '[2026-01-01,)',
+            days: [1],
+          });
+        expect(seedOverrideError).toBeNull();
+        const { error: seedHolidayError } = await serviceClient
+          .from('holidays')
+          .insert({
+            tenant_id: probeTenantId,
+            holiday_date: '2026-01-26',
+            name: 'Isolation Probe Holiday',
+          });
+        expect(seedHolidayError).toBeNull();
+
+        const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        for (const table of [
+          'attendance_weekly_off_defaults',
+          'attendance_weekly_off_overrides',
+          'holidays',
+        ]) {
+          const { data: anonRows } = await anonClient.from(table).select('*');
+          expect(anonRows).toEqual([]);
+        }
+
+        const foreignJwt = mintJwt(
+          probeOwnerId,
+          FOREIGN_TENANT_ID,
+          'authenticated',
+        );
+        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        for (const table of [
+          'attendance_weekly_off_defaults',
+          'attendance_weekly_off_overrides',
+          'holidays',
+        ]) {
+          const { data: foreignRows } = await foreignClient
+            .from(table)
+            .select('*');
+          expect(foreignRows).toEqual([]);
+        }
+
+        // Service role sees exactly the seeded rows.
+        const { data: serviceDefaults } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('id')
+          .eq('tenant_id', probeTenantId);
+        expect(serviceDefaults).toHaveLength(1);
+
+        // --- (c) weekly-off default lifecycle via the RPC. Clear the (b)
+        // seed so the assertions read only what this block created.
+        await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('holidays')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+
+        const { data: today, error: todayError } = await serviceClient.rpc(
+          'attendance_today',
+          { p_tenant_id: probeTenantId },
+        );
+        expect(todayError).toBeNull();
+        const todayStr = today as string;
+
+        // Unsorted + duplicated input → one [today, ∞) row, days canonical.
+        const { error: setDefaultError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [7, 6, 6],
+            p_effective_from: null,
+          },
+        );
+        expect(setDefaultError).toBeNull();
+        const { data: firstDefault } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId)
+          .order('valid');
+        expect(firstDefault).toHaveLength(1);
+        expect(
+          (firstDefault as { valid: string; days: number[] }[])[0],
+        ).toEqual({
+          valid: `[${todayStr},)`,
+          days: [6, 7],
+        });
+
+        // FR-18: all seven days → PT422 with the ErrorCode hint.
+        const { error: sevenDayError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [1, 2, 3, 4, 5, 6, 7],
+            p_effective_from: null,
+          },
+        );
+        expect(sevenDayError).not.toBeNull();
+        expect((sevenDayError as { code: string }).code).toBe('PT422');
+        expect((sevenDayError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_NO_WORKING_DAYS',
+        );
+
+        // DB backstop: a direct 7-day insert dies on the days CHECK
+        // (23514). The past range keeps the GIST exclusion out of the way.
+        const { error: checkError } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .insert({
+            tenant_id: probeTenantId,
+            valid: '[2020-01-01,2021-01-01)',
+            days: [1, 2, 3, 4, 5, 6, 7],
+          });
+        expect(checkError).not.toBeNull();
+        expect((checkError as { code: string }).code).toBe('23514');
+
+        // AD-8 exclusion: an overlapping direct insert dies (23P01).
+        const { error: overlapError } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .insert({
+            tenant_id: probeTenantId,
+            valid: '[2026-01-01,)',
+            days: [1],
+          });
+        expect(overlapError).not.toBeNull();
+        expect((overlapError as { code: string }).code).toBe('23P01');
+
+        // Future edit: covering range clipped at the chosen date, new open
+        // range inserted, earlier dates unchanged.
+        const editFrom = addDays(todayStr, 8);
+        const { error: futureEditError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [1],
+            p_effective_from: editFrom,
+          },
+        );
+        expect(futureEditError).toBeNull();
+        const { data: afterFutureEdit } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId)
+          .order('valid');
+        expect(afterFutureEdit).toHaveLength(2);
+        expect(
+          (afterFutureEdit as { valid: string; days: number[] }[])[0],
+        ).toEqual({
+          valid: `[${todayStr},${editFrom})`,
+          days: [6, 7],
+        });
+        expect(
+          (afterFutureEdit as { valid: string; days: number[] }[])[1],
+        ).toEqual({
+          valid: `[${editFrom},)`,
+          days: [1],
+        });
+
+        // Same-day re-edit REPLACES the future range (no zombie ranges).
+        const { error: reEditError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [2],
+            p_effective_from: editFrom,
+          },
+        );
+        expect(reEditError).toBeNull();
+        const { data: afterReEdit } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId)
+          .order('valid');
+        expect(afterReEdit).toHaveLength(2);
+        expect((afterReEdit as { valid: string; days: number[] }[])[1]).toEqual(
+          {
+            valid: `[${editFrom},)`,
+            days: [2],
+          },
+        );
+
+        // Empty days = the explicit clear: clip+delete, nothing inserted.
+        // The past range survives (dates before it are unchanged).
+        const { error: clearError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [],
+            p_effective_from: editFrom,
+          },
+        );
+        expect(clearError).toBeNull();
+        const { data: afterClear } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId)
+          .order('valid');
+        expect(afterClear).toHaveLength(1);
+        expect((afterClear as { valid: string }[])[0].valid).toBe(
+          `[${todayStr},${editFrom})`,
+        );
+
+        // A past effectiveFrom clamps to today (AD-8 step 1, no +1 here —
+        // that forcing is office-rules-only): one fresh [today, ∞) row.
+        const { error: clampError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_default',
+          {
+            p_tenant_id: probeTenantId,
+            p_days: [3],
+            p_effective_from: '2020-01-01',
+          },
+        );
+        expect(clampError).toBeNull();
+        const { data: afterClamp } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId)
+          .order('valid');
+        expect(afterClamp).toHaveLength(1);
+        expect((afterClamp as { valid: string; days: number[] }[])[0]).toEqual({
+          valid: `[${todayStr},)`,
+          days: [3],
+        });
+
+        // --- (d) overrides. Set → remove → idempotent no-op.
+        const { error: setOverrideError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: probeTechId,
+            p_days: [5],
+            p_effective_from: null,
+          },
+        );
+        expect(setOverrideError).toBeNull();
+        const { data: overrideRows } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .select('employee_id, valid, days')
+          .eq('employee_id', probeTechId);
+        expect(overrideRows).toHaveLength(1);
+        expect(
+          (overrideRows as { valid: string; days: number[] }[])[0],
+        ).toEqual({
+          employee_id: probeTechId,
+          valid: `[${todayStr},)`,
+          days: [5],
+        });
+
+        // Non-member/unknown employee → PT404 with the ErrorCode hint.
+        const { error: foreignEmployeeError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: '00000000-0000-0000-0000-0000000000fe',
+            p_days: [5],
+            p_effective_from: null,
+          },
+        );
+        expect(foreignEmployeeError).not.toBeNull();
+        expect((foreignEmployeeError as { code: string }).code).toBe('PT404');
+        expect((foreignEmployeeError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+        );
+
+        // 7-day override → the same PT422.
+        const { error: overrideSevenError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: probeTechId,
+            p_days: [1, 2, 3, 4, 5, 6, 7],
+            p_effective_from: null,
+          },
+        );
+        expect(overrideSevenError).not.toBeNull();
+        expect((overrideSevenError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_NO_WORKING_DAYS',
+        );
+
+        // Removal: clip-without-insert → zero rows for the employee; the
+        // tenant default (the [today, ∞) days {3} row) resumes.
+        const { error: removeOverrideError } = await serviceClient.rpc(
+          'attendance_remove_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: probeTechId,
+            p_effective_from: null,
+          },
+        );
+        expect(removeOverrideError).toBeNull();
+        const { data: afterRemove } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .select('employee_id')
+          .eq('employee_id', probeTechId);
+        expect(afterRemove).toEqual([]);
+
+        // Second removal: an idempotent no-op (no covering range, no error).
+        const { error: removeAgainError } = await serviceClient.rpc(
+          'attendance_remove_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: probeTechId,
+            p_effective_from: null,
+          },
+        );
+        expect(removeAgainError).toBeNull();
+
+        // Empty days = the "works all 7 days" override (AD-22 replace): the
+        // setter stores the `{}` marker row — it does NOT fall back to the
+        // default like the default setter's clear does (the asymmetry is
+        // deliberate: absence of an override row means the default applies,
+        // so only the marker row can express all-7-working).
+        const { error: worksAllError } = await serviceClient.rpc(
+          'attendance_set_weekly_off_override',
+          {
+            p_tenant_id: probeTenantId,
+            p_employee_id: probeTechId,
+            p_days: [],
+            p_effective_from: null,
+          },
+        );
+        expect(worksAllError).toBeNull();
+        const { data: worksAllRows } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .select('valid, days')
+          .eq('employee_id', probeTechId);
+        expect(worksAllRows).toEqual([{ valid: `[${todayStr},)`, days: [] }]);
+
+        // The marker wins over the still-standing tenant default (no
+        // fallback): the default's [today, ∞) {3} row is untouched on its
+        // own table while the override covers the same date with {} — a
+        // resolver honouring AD-22 (override replaces default while its
+        // range covers the date) reads all-7-working here, not the
+        // default's {3}.
+        const { data: defaultDuringMarker } = await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .select('valid, days')
+          .eq('tenant_id', probeTenantId);
+        expect(defaultDuringMarker).toEqual([
+          { valid: `[${todayStr},)`, days: [3] },
+        ]);
+        await serviceClient.rpc('attendance_remove_weekly_off_override', {
+          p_tenant_id: probeTenantId,
+          p_employee_id: probeTechId,
+          p_effective_from: null,
+        });
+
+        // Composite FK: an override whose tenant_id disagrees with its
+        // employee's tenant dies (23503). The non-overlapping past range
+        // keeps the GIST exclusion out of the way.
+        const { error: crossTenantOverrideError } = await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .insert({
+            tenant_id: FOREIGN_TENANT_ID,
+            employee_id: probeTechId,
+            valid: '[2020-01-01,2021-01-01)',
+            days: [1],
+          });
+        expect(crossTenantOverrideError).not.toBeNull();
+        expect((crossTenantOverrideError as { code: string }).code).toBe(
+          '23503',
+        );
+
+        // --- (e) holidays. Future add: row saved, ZERO notifications
+        // pre-15-7 — the enrolments guard branch is unreached.
+        const futureDate = addDays(todayStr, 30);
+        const { data: holidayId, error: addFutureError } =
+          await serviceClient.rpc('attendance_add_holiday', {
+            p_tenant_id: probeTenantId,
+            p_holiday_date: futureDate,
+            p_name: 'Probe Future Holiday',
+          });
+        expect(addFutureError).toBeNull();
+        expect(holidayId).toBeTruthy();
+        const { data: holidayRows } = await serviceClient
+          .from('holidays')
+          .select('holiday_date, name')
+          .eq('tenant_id', probeTenantId)
+          .order('holiday_date');
+        expect(holidayRows).toHaveLength(1);
+        expect(
+          (holidayRows as { holiday_date: string }[])[0].holiday_date,
+        ).toBe(futureDate);
+
+        // Past add: saved silently (statuses recompute on read).
+        const { error: addPastError } = await serviceClient.rpc(
+          'attendance_add_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_date: '2020-01-01',
+            p_name: 'Probe Past Holiday',
+          },
+        );
+        expect(addPastError).toBeNull();
+
+        // Duplicate date → PT409 with the ErrorCode hint.
+        const { error: duplicateError } = await serviceClient.rpc(
+          'attendance_add_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_date: futureDate,
+            p_name: 'Probe Duplicate',
+          },
+        );
+        expect(duplicateError).not.toBeNull();
+        expect((duplicateError as { code: string }).code).toBe('PT409');
+        expect((duplicateError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_HOLIDAY_TAKEN',
+        );
+
+        // Rename works; the date is immutable (name-only UPDATE).
+        const { error: renameError } = await serviceClient.rpc(
+          'attendance_update_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_id: holidayId as string,
+            p_name: 'Probe Holiday Renamed',
+          },
+        );
+        expect(renameError).toBeNull();
+        const { data: renamedRow } = await serviceClient
+          .from('holidays')
+          .select('holiday_date, name')
+          .eq('id', holidayId as string)
+          .single();
+        expect(renamedRow as { holiday_date: string; name: string }).toEqual({
+          holiday_date: futureDate,
+          name: 'Probe Holiday Renamed',
+        });
+
+        // Unknown id → PT404 on update AND remove.
+        const UNKNOWN_HOLIDAY_ID = '00000000-0000-0000-0000-0000000000ff';
+        const { error: updateUnknownError } = await serviceClient.rpc(
+          'attendance_update_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_id: UNKNOWN_HOLIDAY_ID,
+            p_name: 'Ghost',
+          },
+        );
+        expect(updateUnknownError).not.toBeNull();
+        expect((updateUnknownError as { code: string }).code).toBe('PT404');
+        expect((updateUnknownError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_HOLIDAY_NOT_FOUND',
+        );
+
+        // Hard remove: the row goes; the guard branch emits nothing pre-15-7.
+        const { error: removeHolidayError } = await serviceClient.rpc(
+          'attendance_remove_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_id: holidayId as string,
+          },
+        );
+        expect(removeHolidayError).toBeNull();
+        const { data: afterRemoveHoliday } = await serviceClient
+          .from('holidays')
+          .select('id')
+          .eq('tenant_id', probeTenantId);
+        expect(afterRemoveHoliday).toHaveLength(1); // the past one only
+        const { error: removeUnknownError } = await serviceClient.rpc(
+          'attendance_remove_holiday',
+          {
+            p_tenant_id: probeTenantId,
+            p_holiday_id: holidayId as string,
+          },
+        );
+        expect(removeUnknownError).not.toBeNull();
+        expect((removeUnknownError as { code: string }).code).toBe('PT404');
+
+        // The whole lifecycle inserted ZERO notification rows — the
+        // to_regclass guard branch was never reached pre-15-7.
+        const { data: notificationRows } = await serviceClient
+          .from('notifications')
+          .select('id')
+          .eq('tenant_id', probeTenantId);
+        expect(notificationRows).toEqual([]);
+
+        // Impact preview: empty pre-15-7 (never a 42P01 — the Amendment-2
+        // guard holds), and fail-loud on an unknown tenant.
+        const { data: impactRows, error: impactError } =
+          await serviceClient.rpc('attendance_holiday_impact', {
+            p_tenant_id: probeTenantId,
+            p_date: futureDate,
+          });
+        expect(impactError).toBeNull();
+        expect(impactRows).toEqual([]);
+        const { error: impactForeignError } = await serviceClient.rpc(
+          'attendance_holiday_impact',
+          { p_tenant_id: FOREIGN_TENANT_ID, p_date: futureDate },
+        );
+        expect(impactForeignError).not.toBeNull();
+        expect((impactForeignError as { code: string }).code).toBe('PT404');
+        expect((impactForeignError as { hint?: string }).hint).toBe(
+          'ATTENDANCE_TENANT_NOT_FOUND',
+        );
+      } finally {
+        // Cleanup in FK order, so the probe never leaks into the shared DB.
+        await serviceClient
+          .from('notifications')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_weekly_off_overrides')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('attendance_weekly_off_defaults')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('holidays')
+          .delete()
+          .eq('tenant_id', probeTenantId);
+        await serviceClient
+          .from('users')
+          .delete()
+          .in('id', [probeOwnerId, probeTechId]);
         await serviceClient.from('tenants').delete().eq('id', probeTenantId);
       }
     },

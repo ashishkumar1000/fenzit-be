@@ -78,6 +78,7 @@ probe at `GET /health`.
 | `bun run test:cov` | Coverage report → `coverage/` |
 | `bun run test:e2e` | E2E + integration suite (uses `test/jest-e2e.json`) |
 | `bun run test:e2e -- rls-isolation` | **Hard launch blocker** for any RLS change (AR-20) |
+| `bun run test:e2e:real` | Same suite with the real-DB probes enabled — requires real **Node** (not Bun) + a `.env` with `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`; loads env via `node --env-file=.env`. If your terminal resolves `node` to Bun, run `nvm use` first (the script guards and tells you). |
 
 ## Project Structure
 
