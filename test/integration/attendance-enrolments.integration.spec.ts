@@ -46,13 +46,16 @@ const TENANT = randomUUID();
 const OWNER = randomUUID();
 const TECH_ACTIVE = randomUUID();
 const TECH_UPCOMING = randomUUID();
+const TECH_PAST = randomUUID();
 const OFFICE_A = randomUUID();
 const OFFICE_B = randomUUID();
+const OFFICE_C = randomUUID();
 /** Probe phone numbers (unique-enough prefix doubles as the cleanup key). */
 const PROBE_PHONES = [
   `7${Date.now()}`.slice(-10).replace(/^./, '7') + '1',
   `7${Date.now()}`.slice(-10).replace(/^./, '7') + '2',
   `7${Date.now()}`.slice(-10).replace(/^./, '7') + '3',
+  `7${Date.now()}`.slice(-10).replace(/^./, '7') + '4',
 ];
 /** A start date far enough out to stay in the future for the whole run. */
 const FUTURE_START = '2027-03-01';
@@ -189,12 +192,22 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
           phone_number: PROBE_PHONES[2],
           name: '15-7 probe tech (upcoming)',
         },
+        {
+          id: TECH_PAST,
+          tenant_id: TENANT,
+          role: 'technician',
+          status: 'active',
+          country_code: '+91',
+          phone_number: PROBE_PHONES[3],
+          name: '15-9 probe tech (backdated)',
+        },
       ]),
     );
     must(
       await admin.from('attendance_offices').insert([
         { id: OFFICE_A, tenant_id: TENANT, name: 'probe office A', latitude: 12.97, longitude: 77.59, radius_m: 100 },
         { id: OFFICE_B, tenant_id: TENANT, name: 'probe office B', latitude: 12.98, longitude: 77.6, radius_m: 100 },
+        { id: OFFICE_C, tenant_id: TENANT, name: 'probe office C', latitude: 12.99, longitude: 77.61, radius_m: 100 },
       ]),
     );
 
@@ -227,7 +240,7 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
     await admin
       .from('users')
       .delete()
-      .in('id', [OWNER, TECH_ACTIVE, TECH_UPCOMING]);
+      .in('id', [OWNER, TECH_ACTIVE, TECH_UPCOMING, TECH_PAST]);
     await admin.from('tenants').delete().eq('id', TENANT);
     await pool.end();
   });
@@ -529,5 +542,89 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
     });
     const state = await inTx((tx) => readAccessState(tx, TENANT, TECH_ACTIVE));
     expect(state.access_state).toBe('active');
+  });
+
+  // ── Story 15-9 pre-patch regression (20260928000001) ─────────────────
+  // The shipped view anchored the office join at the enrolment's period
+  // start, so an employee enrolled BEFORE today kept reading the OLD
+  // office forever after a reassignment — in the roster, me/access and
+  // /users/me alike. Every earlier probe here enrolled at `today`, the
+  // one case where period_start = today masks the bug; TECH_PAST's
+  // backdated period is the case that broke. Runs last: while these rows
+  // exist the holiday fan-out's exact recipient count would not hold.
+  maybeIt('15-9 pre-patch: the view reads TODAY\'s office after a reassignment of a backdated period', async () => {
+    // Backdated period: enrolment + assignment [today-3, ∞) at office B —
+    // both tables in ONE transaction (the deferred coverage trigger
+    // validates the pair at COMMIT).
+    const past = await pool.query(
+      'select (public.attendance_today($1) - 3)::text as d',
+      [TENANT],
+    );
+    const pastStart = past.rows[0].d;
+    await inTx(async (tx) => {
+      await insertAssignment(tx, TENANT, TECH_PAST, OFFICE_B, pastStart);
+      await insertEnrolment(tx, TENANT, TECH_PAST, pastStart);
+    });
+
+    const before = await inTx((tx) => readAccessState(tx, TENANT, TECH_PAST));
+    expect(before.access_state).toBe('active');
+    expect(before.attendance_start_date).toBe(pastStart);
+    expect(before.office_id).toBe(OFFICE_B);
+
+    // The AD-8 reassignment plan (assignments only): clip the covering leg
+    // at today, insert office C from today. The enrolment is untouched —
+    // the period start STAYS behind today, which is exactly what the old
+    // anchor got wrong.
+    await inTx(async (tx) => {
+      const assignments = await readAssignments(tx, TECH_PAST);
+      const covering = assignments.find(
+        (a) => rangeStart(a.valid) <= today && coversTodayOrLater(a.valid, today),
+      );
+      if (!covering) {
+        throw new Error('fixture drift: no covering assignment leg');
+      }
+      await clipRangeEnd(
+        tx,
+        'attendance_office_assignments',
+        covering.id,
+        today,
+      );
+      await insertAssignment(tx, TENANT, TECH_PAST, OFFICE_C, today);
+    });
+
+    // THE regression assertion: the view must report the office covering
+    // TODAY (C) — the shipped view returned B forever here.
+    const after = await inTx((tx) => readAccessState(tx, TENANT, TECH_PAST));
+    expect(after.access_state).toBe('active');
+    expect(after.office_id).toBe(OFFICE_C);
+    expect(after.office_name).toBe('probe office C');
+
+    // A SCHEDULED future move stays invisible until it takes effect: move
+    // back to office B effective FUTURE_START (clip C there, insert B) —
+    // every read keeps showing C, the assignment covering today.
+    await inTx(async (tx) => {
+      const assignments = await readAssignments(tx, TECH_PAST);
+      const covering = assignments.find(
+        (a) =>
+          rangeStart(a.valid) <= FUTURE_START &&
+          coversTodayOrLater(a.valid, FUTURE_START),
+      );
+      if (!covering) {
+        throw new Error('fixture drift: no leg covering the future date');
+      }
+      await clipRangeEnd(
+        tx,
+        'attendance_office_assignments',
+        covering.id,
+        FUTURE_START,
+      );
+      await insertAssignment(tx, TENANT, TECH_PAST, OFFICE_B, FUTURE_START);
+    });
+    const scheduled = await inTx((tx) =>
+      readAccessState(tx, TENANT, TECH_PAST),
+    );
+    expect(scheduled.access_state).toBe('active');
+    expect(scheduled.office_id).toBe(OFFICE_C);
+    expect(scheduled.attendance_start_date).toBe(pastStart);
   });
 });

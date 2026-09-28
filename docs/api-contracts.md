@@ -1068,7 +1068,10 @@ view (revoked from anon/authenticated; admin client + pg pool only):
 off, history untouched), `upcoming` (next period starts in the future),
 `active` (an enrolment covers today), `history_only` (past periods only),
 plus `attendance_start_date`, `enabled_at`, `onboarded_at` and the live
-covering assignment's office. Every surface below reads those same rows.
+covering assignment's office (anchored at **today** for an active
+employee — a reassignment moves the assignment forward while the
+enrolment's period start stays behind — and at the next period's start
+when upcoming; 20260928000001). Every surface below reads those same rows.
 
 **DB foundation (this story, additive):** `attendance_enrolments
 (employee_id, valid daterange, enabled_at)`,
@@ -1094,7 +1097,20 @@ import).
 The roster: one row per technician — `{ employeeId, employeeName, phone,
 attendanceEnabled, attendanceAccess, attendanceStartDate, enabledAt,
 onboardedAt, officeId, officeName }` (state from the view; names from
-users). Empty until anyone is enrolled (200 `[]`, never 404).
+users). Empty only when the tenant has no technicians (200 `[]`, never
+404) — enrolled or not, EVERY technician gets a row.
+
+**Field semantics (read before consuming — misreading these shipped a
+broken consumer once):** `attendanceEnabled` is the TENANT MODULE flag
+(`settings.enabled AND setup_completed_at IS NOT NULL`) — false for every
+row until setup completes; it is NOT "this employee is enrolled". The
+per-employee enrolment truth is `attendanceStartDate`, carried UNGATED:
+`<= today` the enrolment covers today, `> today` upcoming, `null` not
+enrolled (null never means "covers today"). `officeId`/`officeName` are
+the LIVE covering assignment (null while none covers today / the next
+period, or while its office is archived). `attendanceAccess` is the
+module-gated visibility state — a consumer gated on it sees nothing until
+setup completes; derive per-employee state from the ungated fields.
 
 **Responses:** `200`; `400 VALIDATION_ERROR` (no tenant); `401/403`;
 `404 ATTENDANCE_TENANT_NOT_FOUND`.
