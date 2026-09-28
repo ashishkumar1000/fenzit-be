@@ -1206,6 +1206,84 @@ view read and the tenant-date resolution (defence in depth — fail-loud);
 
 ---
 
+### Attendance check-in & check-out (Epic 16, Stories 16-1/16-2, technician only)
+
+One pg transaction per call over the direct pool (the 15-7 pattern — zero
+new SQL functions per the AD-3 amendment, 2026-09-27): shared tenant lock →
+exclusive employee lock (AD-5), `attendance_today` for the date (AD-7), the
+day context computed in `src/attendance/day-context.ts` (the single source
+of the per-employee-date facts, AD-22). Rejections are COMMITTED outcomes
+first — every call that passes validation writes exactly one
+`attendance_attempts` row (AD-6/AD-15) — and are then answered as ordinary
+errors; throwing inside the transaction would roll the attempt back, so the
+exception is raised only after COMMIT.
+
+**Headers:** `X-Idempotency-Key: <uuid v4>` — required; missing/malformed →
+`422 VALIDATION_ERROR` with no attempt row (AD-6). One key per user tap.
+
+**Body (both routes, the AD-20 capture object):**
+`{ latitude, longitude, accuracyM, mocked?: boolean|null, provider?:
+string|null, fixAgeMs, confirmLeaveCancel?: boolean }`. `mocked: null` =
+not detected. `confirmLeaveCancel` is accepted and ignored until Epic 17.
+
+- `POST /api/v1/attendance/me/check-in` → `201` (one `attendance_records`
+  INSERT per `UNIQUE (employee_id, work_date)`)
+- `POST /api/v1/attendance/me/check-out` → `201` (one guarded UPDATE of the
+  same row; `not_checked_in` when none, `already_checked_out` when closed)
+
+**Check-in response:** `{ workDate, checkinAt, lateMinutes, isLate,
+dayContext: { isWeeklyOff, isHoliday, holidayName, isWorkingDay } }`.
+**Check-out response:** `{ workDate, checkinAt, checkoutAt, workedMinutes,
+earlyCheckout, earlyCheckoutMinutes, dayContext }`. Instants are ISO-8601
+**with the tenant offset** (`2026-09-28T10:22:00+05:30`, AD-7) — the app
+formats the wall-clock parts and never converts timezones. `lateMinutes` /
+`earlyCheckout*` are `null` when no office rule covers today (D7).
+`lateMinutes = max(0, checkin − (start + lateCutOff))`,
+`workedMinutes` from the stored instants, truncated to whole minutes.
+
+**Server-side checks, in priority order (first wins):** rate-limit block
+(AD-15) → tracked gate (enrolment covers today + setup completed + module
+enabled; the FR-2 enable-day grace cannot block the check-in itself) →
+state conflicts → `stale_fix` (`fixAgeMs > 30000`, AD-20) →
+`low_accuracy` (`accuracyM > 100`) → `too_far` (haversine(pin, fix) >
+radius, distance computed server-side) → `mocked`. Weekly offs and
+holidays do NOT block check-in (FR-7 — the app confirms before calling).
+
+**Rate limit (AD-15):** only `too_far`/`low_accuracy`/`mocked`/`stale_fix`
+count. The 5th counted rejection within 10 minutes sets `blocked_until` =
+its time + 10 min; further attempts record `rate_limited` (not counted)
+and get `429` + `Retry-After`. The window is shared by check-in and
+check-out.
+
+**Fake-location alert (AD-13):** on the 3rd `mocked` attempt of the
+tenant-local calendar month the owner receives one
+`attendance.fake_location` notification (payload `employeeName`, `month`,
+`attemptCount`), deduped by
+`<tenantId>:attendance.fake_location:<ownerId>:<employeeId>:<yyyy-mm>`.
+
+**Error catalogue (AD-4 + `already_checked_out`):**
+
+- `422 ATTENDANCE_TOO_FAR` — body carries `distanceM` + `radiusM`
+- `422 ATTENDANCE_LOW_ACCURACY`
+- `422 ATTENDANCE_MOCK_LOCATION`
+- `422 ATTENDANCE_STALE_FIX`
+- `429 ATTENDANCE_RATE_LIMITED` — `Retry-After` header
+- `409 ATTENDANCE_ALREADY_CHECKED_IN` / `409 ATTENDANCE_ALREADY_CHECKED_OUT`
+- `409 ATTENDANCE_NOT_CHECKED_IN`
+- `403 ATTENDANCE_NOT_TRACKED`
+- `409 ATTENDANCE_LEAVE_CONFIRMATION_REQUIRED` — enum reserved for Epic 17
+
+A replayed idempotency key returns the stored outcome (success rebuilt from
+the record) with no second attempt row or side effect. Coordinates on
+rejected attempts are kept for the owner's dispute view; the 90-day prune
+is Epic 19 pg_cron work (AD-26).
+
+**Responses:** `201` on success; `401`; `403` (non-technician role or
+not-tracked); `422` (location catalogue or body validation); `429`; `500`
+only for contract breaks (fail-loud).
+
+---
+
 ### Places (Epic 1 + Story 15-4, owner only)
 
 Google Places/Geocoding-backed address endpoints. No DB involvement

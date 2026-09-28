@@ -11,6 +11,7 @@ import { EnrolmentsService } from './enrolments.service';
 import { EnrolmentsController } from './enrolments.controller';
 import { MeAttendanceService } from './me-attendance.service';
 import { MeAttendanceController } from './me-attendance.controller';
+import { CheckInOutService } from './check-in-out.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PgModule } from '../common/pg/pg.module';
 
@@ -39,6 +40,7 @@ import { PgModule } from '../common/pg/pg.module';
     HolidaysService,
     EnrolmentsService,
     MeAttendanceService,
+    CheckInOutService,
   ],
   exports: [
     AttendanceService,
@@ -47,6 +49,7 @@ import { PgModule } from '../common/pg/pg.module';
     HolidaysService,
     EnrolmentsService,
     MeAttendanceService,
+    CheckInOutService,
   ],
 })
 export class AttendanceModule {}

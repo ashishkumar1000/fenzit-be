@@ -16,6 +16,11 @@ export const ATTENDANCE_NOTIFICATION_EVENT = {
   HOLIDAY_ADDED: 'attendance.holiday_added',
   /** A future-dated holiday was removed — one row per tracked employee. */
   HOLIDAY_REMOVED: 'attendance.holiday_removed',
+  /**
+   * An employee's 3rd `mocked` check-in/out attempt this calendar month —
+   * one row per owner per employee per month, deduped by key (16-1).
+   */
+  FAKE_LOCATION: 'attendance.fake_location',
 } as const;
 
 export type AttendanceNotificationEvent =
@@ -62,6 +67,14 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
     payloadFields: ['holidayName', 'holidayDate'],
     dedupeKeyShape:
       '<tenantId>:attendance.holiday_removed:<recipientId>:<holidayId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.FAKE_LOCATION]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.FAKE_LOCATION,
+    recipients:
+      'The tenant owner, exactly once per employee per calendar month, on the 3rd counted mocked attempt (AD-13/FR-7).',
+    payloadFields: ['employeeName', 'month', 'attemptCount'],
+    dedupeKeyShape:
+      '<tenantId>:attendance.fake_location:<recipientId>:<employeeId>:<yyyy-mm>',
   },
 };
 
