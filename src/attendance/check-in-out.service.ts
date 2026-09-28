@@ -2,10 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
-import {
-  CHECKIN_MAX_ACCURACY_M,
-  FIX_MAX_AGE_MS,
-} from './constants';
+import { CHECKIN_MAX_ACCURACY_M, FIX_MAX_AGE_MS } from './constants';
 import { haversineDistanceM } from './geo';
 import { buildDayContext } from './day-context.read';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
@@ -37,6 +34,7 @@ import {
   rejectWithLadder,
 } from './check-in-out.rejections';
 import { CheckInOutDto } from './dto/check-in-out.dto';
+import { autoCancelLeaveForCheckIn } from './check-in-out.leave';
 
 /**
  * Check-in/out (16-1/16-2): one pg transaction per call (the 15-7 pattern
@@ -61,7 +59,12 @@ export class CheckInOutService {
     dto: CheckInOutDto,
     requestId: string,
   ): Promise<CheckInResponse> {
-    return this.run(user, dto, requestId, 'check_in') as Promise<CheckInResponse>;
+    return this.run(
+      user,
+      dto,
+      requestId,
+      'check_in',
+    ) as Promise<CheckInResponse>;
   }
 
   checkOut(
@@ -69,7 +72,12 @@ export class CheckInOutService {
     dto: CheckInOutDto,
     requestId: string,
   ): Promise<CheckOutResponse> {
-    return this.run(user, dto, requestId, 'check_out') as Promise<CheckOutResponse>;
+    return this.run(
+      user,
+      dto,
+      requestId,
+      'check_out',
+    ) as Promise<CheckOutResponse>;
   }
 
   private async run(
@@ -97,7 +105,10 @@ export class CheckInOutService {
     requestId: string,
     kind: AttemptKind,
     tenantId: string,
-  ): Promise<{ response?: CheckInResponse | CheckOutResponse; rejection?: unknown }> {
+  ): Promise<{
+    response?: CheckInResponse | CheckOutResponse;
+    rejection?: unknown;
+  }> {
     await lockTenantShared(tx, tenantId);
     await lockEmployee(tx, user.userId);
     const today = await tenantToday(tx, tenantId);
@@ -167,6 +178,20 @@ export class CheckInOutService {
     }
     if (kind === 'check_out' && record && record.checkout_at) {
       return { rejection: await reject('already_checked_out', ctx.officeName) };
+    }
+
+    // FR-9 (spec-17 D11): a full-day active leave on a working day needs
+    // the employee's explicit confirmation before this check-in cancels
+    // it — check-out is never gated. Not counted toward the rate limit.
+    const leaveGateActive =
+      kind === 'check_in' &&
+      ctx.leaveState !== null &&
+      ctx.leavePart === 'full_day' &&
+      ctx.isWorkingDay;
+    if (leaveGateActive && !dto.confirmLeaveCancel) {
+      return {
+        rejection: await reject('leave_confirmation_required', ctx.officeName),
+      };
     }
 
     // Tracked days have exactly one covering assignment (the coverage
@@ -246,6 +271,15 @@ export class CheckInOutService {
         mocked: dto.mocked === true,
         provider: location.provider,
       });
+      // FR-9 accepted path (spec-17 D11): the ladder passed, so the
+      // confirmed cancellation may proceed — ONLY today's leave date.
+      if (leaveGateActive) {
+        await autoCancelLeaveForCheckIn(tx, {
+          tenantId,
+          employeeId: user.userId,
+          workDate: today,
+        });
+      }
     } else {
       await updateRecordCheckout(tx, {
         recordId: (record as RecordRow).id,

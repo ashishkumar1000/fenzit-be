@@ -21,6 +21,22 @@ export const ATTENDANCE_NOTIFICATION_EVENT = {
    * one row per owner per employee per month, deduped by key (16-1).
    */
   FAKE_LOCATION: 'attendance.fake_location',
+  /** An employee submitted a leave request (17-1) — one row for the owner. */
+  LEAVE_APPLIED: 'leave.applied',
+  /** The owner created an approved leave on the employee's behalf (17-4). */
+  LEAVE_APPLIED_ON_BEHALF: 'leave.applied_on_behalf',
+  /** The owner approved the employee's leave (17-2). */
+  LEAVE_APPROVED: 'leave.approved',
+  /** The owner rejected the employee's leave, reason optional (17-2). */
+  LEAVE_REJECTED: 'leave.rejected',
+  /** The owner revoked the not-yet-started part of an approved leave (17-3). */
+  LEAVE_OWNER_REVOKED: 'leave.owner_revoked',
+  /** The employee cancelled the not-yet-started part of their leave (17-3). */
+  LEAVE_EMPLOYEE_CANCELLED: 'leave.employee_cancelled',
+  /** Disabling the employee cancelled their pending/future leave (17-1 D12). */
+  LEAVE_CANCELLED_BY_DISABLE: 'leave.cancelled_by_disable',
+  /** A confirmed check-in auto-cancelled today's full-day leave (17-4, FR-9). */
+  LEAVE_CHECKIN_AUTO_CANCEL: 'leave.checkin_auto_cancel',
 } as const;
 
 export type AttendanceNotificationEvent =
@@ -28,6 +44,9 @@ export type AttendanceNotificationEvent =
 
 /** The polymorphic deep-link kind for every attendance.* notification. */
 export const ATTENDANCE_ENTITY_TYPE = 'attendance';
+
+/** The polymorphic deep-link kind for every leave.* notification (17-1). */
+export const LEAVE_ENTITY_TYPE = 'leave';
 
 /**
  * Registry entry metadata. `payloadFields` is the self-contained camelCase
@@ -75,6 +94,65 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
     payloadFields: ['employeeName', 'month', 'attemptCount'],
     dedupeKeyShape:
       '<tenantId>:attendance.fake_location:<recipientId>:<employeeId>:<yyyy-mm>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED,
+    recipients:
+      'The tenant owner, once per request, when an employee submits leave (FR-12).',
+    payloadFields: ['employeeName', 'startDate', 'endDate', 'workingDays'],
+    dedupeKeyShape: '<tenantId>:leave.applied:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED_ON_BEHALF]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED_ON_BEHALF,
+    recipients:
+      'The employee, once per request, when the owner creates approved leave for them (FR-16).',
+    payloadFields: ['startDate', 'endDate', 'workingDays'],
+    dedupeKeyShape:
+      '<tenantId>:leave.applied_on_behalf:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVED,
+    recipients: 'The employee, once per request, on approval (FR-13).',
+    payloadFields: ['startDate', 'endDate', 'workingDays'],
+    dedupeKeyShape: '<tenantId>:leave.approved:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_REJECTED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_REJECTED,
+    recipients:
+      'The employee, once per request, on rejection — reason when given (FR-13).',
+    payloadFields: ['startDate', 'endDate', 'reason'],
+    dedupeKeyShape: '<tenantId>:leave.rejected:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_OWNER_REVOKED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_OWNER_REVOKED,
+    recipients:
+      'The employee, once per revoke call, with the exact revoked dates and the required reason (FR-14).',
+    payloadFields: ['startDate', 'endDate', 'revokedDates', 'reason'],
+    dedupeKeyShape: '<tenantId>:leave.owner_revoked:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_EMPLOYEE_CANCELLED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_EMPLOYEE_CANCELLED,
+    recipients:
+      'The tenant owner, once per cancel call, with the exact cancelled dates (FR-15).',
+    payloadFields: ['employeeName', 'startDate', 'endDate', 'cancelledDates'],
+    dedupeKeyShape:
+      '<tenantId>:leave.employee_cancelled:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_CANCELLED_BY_DISABLE]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_CANCELLED_BY_DISABLE,
+    recipients:
+      'The employee, once per affected request, when disabling them cancels pending/future leave (AD-23 disable).',
+    payloadFields: ['startDate', 'endDate', 'cancelledDates'],
+    dedupeKeyShape:
+      '<tenantId>:leave.cancelled_by_disable:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_CHECKIN_AUTO_CANCEL]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_CHECKIN_AUTO_CANCEL,
+    recipients:
+      'The tenant owner, once per cancelled leave date, when a confirmed check-in auto-cancels that day (FR-9).',
+    payloadFields: ['employeeName', 'leaveDate'],
+    dedupeKeyShape:
+      '<tenantId>:leave.checkin_auto_cancel:<recipientId>:<requestId>:<leaveDate>',
   },
 };
 

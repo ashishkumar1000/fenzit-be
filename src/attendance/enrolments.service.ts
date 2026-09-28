@@ -11,7 +11,11 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
-import { EnrolmentQueryDto, ReassignOfficeDto, SetEnrolmentDto } from './dto/enrolment.dto';
+import {
+  EnrolmentQueryDto,
+  ReassignOfficeDto,
+  SetEnrolmentDto,
+} from './dto/enrolment.dto';
 import {
   AccessStateResponse,
   AccessStateRow,
@@ -37,6 +41,7 @@ import {
   readOffice,
   tenantToday,
 } from './enrolments.repository';
+import { cancelLeaveOnDisable } from './leave-transition';
 
 /** The open-transaction client handed to repository functions. */
 type Tx = PoolClient;
@@ -102,7 +107,10 @@ export class EnrolmentsService {
       .from('attendance_access_state')
       .select('*')
       .eq('tenant_id', tenantId)
-      .in('user_id', technicians.map((t) => t.id));
+      .in(
+        'user_id',
+        technicians.map((t) => t.id),
+      );
     if (stateError) {
       this.logger.error('Failed to read access states:', { error: stateError });
       throw internalError('Failed to read enrolments');
@@ -137,7 +145,8 @@ export class EnrolmentsService {
     return this.inTransaction(async (tx) => {
       const today = await this.openLifecycle(tx, tenantId, employeeId);
       // AD-8 step 1: a past date is clamped to today, never a 422.
-      const start = dto.startDate && dto.startDate > today ? dto.startDate : today;
+      const start =
+        dto.startDate && dto.startDate > today ? dto.startDate : today;
 
       await this.requireTenantEmployee(tx, tenantId, employeeId);
       const office = await readOffice(tx, tenantId, dto.officeId);
@@ -148,8 +157,24 @@ export class EnrolmentsService {
       // Assignments first: the guard validates the full invariant at
       // COMMIT, so both halves land together — this order just keeps any
       // statement-level failure from ever leaving an assignment behind.
-      await this.applyPlan(tx, employeeId, dto.officeId, tenantId, start, true, true);
-      await this.applyPlan(tx, employeeId, dto.officeId, tenantId, start, true, false);
+      await this.applyPlan(
+        tx,
+        employeeId,
+        dto.officeId,
+        tenantId,
+        start,
+        true,
+        true,
+      );
+      await this.applyPlan(
+        tx,
+        employeeId,
+        dto.officeId,
+        tenantId,
+        start,
+        true,
+        false,
+      );
 
       return toAccessStateResponse(
         await readAccessState(tx, tenantId, employeeId),
@@ -171,7 +196,9 @@ export class EnrolmentsService {
     return this.inTransaction(async (tx) => {
       const today = await this.openLifecycle(tx, tenantId, employeeId);
       let effectiveFrom =
-        dto.effectiveFrom && dto.effectiveFrom > today ? dto.effectiveFrom : today;
+        dto.effectiveFrom && dto.effectiveFrom > today
+          ? dto.effectiveFrom
+          : today;
 
       await this.requireTenantEmployee(tx, tenantId, employeeId);
       const office = await readOffice(tx, tenantId, dto.officeId);
@@ -189,8 +216,8 @@ export class EnrolmentsService {
       }
 
       const enrolments = await readEnrolments(tx, employeeId);
-      const covering = enrolments.find(
-        (row) => rangeContains(parseDateRange(row.valid), effectiveFrom),
+      const covering = enrolments.find((row) =>
+        rangeContains(parseDateRange(row.valid), effectiveFrom),
       );
       if (!covering) {
         throw new HttpException(
@@ -203,7 +230,15 @@ export class EnrolmentsService {
         );
       }
 
-      await this.applyPlan(tx, employeeId, dto.officeId, tenantId, effectiveFrom, true, true);
+      await this.applyPlan(
+        tx,
+        employeeId,
+        dto.officeId,
+        tenantId,
+        effectiveFrom,
+        true,
+        true,
+      );
 
       return toAccessStateResponse(
         await readAccessState(tx, tenantId, employeeId),
@@ -225,12 +260,36 @@ export class EnrolmentsService {
     return this.inTransaction(async (tx) => {
       const today = await this.openLifecycle(tx, tenantId, employeeId);
       const effectiveFrom =
-        query.effectiveFrom && query.effectiveFrom > today ? query.effectiveFrom : today;
+        query.effectiveFrom && query.effectiveFrom > today
+          ? query.effectiveFrom
+          : today;
 
       await this.requireTenantEmployee(tx, tenantId, employeeId);
 
-      await this.applyPlan(tx, employeeId, null, tenantId, effectiveFrom, false, true);
-      await this.applyPlan(tx, employeeId, null, tenantId, effectiveFrom, false, false);
+      await this.applyPlan(
+        tx,
+        employeeId,
+        null,
+        tenantId,
+        effectiveFrom,
+        false,
+        true,
+      );
+      await this.applyPlan(
+        tx,
+        employeeId,
+        null,
+        tenantId,
+        effectiveFrom,
+        false,
+        false,
+      );
+
+      // AD-23's disable cause, live since the leave tables exist (spec-17
+      // D12): ALL pending leave + approved leave from the effective date is
+      // cancelled, and the employee is notified. Same transaction; the
+      // AD-5 locks are already held in the right order.
+      await cancelLeaveOnDisable(tx, tenantId, employeeId, effectiveFrom);
 
       return toAccessStateResponse(
         await readAccessState(tx, tenantId, employeeId),
@@ -267,66 +326,70 @@ export class EnrolmentsService {
     }
     if (plan.insertStart && insert) {
       if (isAssignment && officeId) {
-        await insertAssignment(tx, tenantId, employeeId, officeId, plan.insertStart);
+        await insertAssignment(
+          tx,
+          tenantId,
+          employeeId,
+          officeId,
+          plan.insertStart,
+        );
       } else if (!isAssignment) {
         await insertEnrolment(tx, tenantId, employeeId, plan.insertStart);
       }
     }
   }
 
-/**
- * Opens every lifecycle transaction the same way (AD-5): the SHARED tenant
- * lock via the existing helper — the same lock space as the attendance
- * RPCs — then the EXCLUSIVE employee lock (per-employee write; two owners
- * racing on one employee must serialise), then `attendance_today`.
- */
-private async openLifecycle(
-  tx: Tx,
-  tenantId: string,
-  employeeId: string,
-): Promise<string> {
-  await lockTenantShared(tx, tenantId);
-  await tx.query('select public.attendance_lock_employee($1)', [employeeId]);
-  try {
-    return await tenantToday(tx, tenantId);
-  } catch (err) {
-    if ((err as PgError)?.hint === 'ATTENDANCE_TENANT_NOT_FOUND') {
-      throw new NotFoundException({
-        error_code: ErrorCode.ATTENDANCE_TENANT_NOT_FOUND,
-        message: 'Company setup required before using attendance',
-      });
+  /**
+   * Opens every lifecycle transaction the same way (AD-5): the SHARED tenant
+   * lock via the existing helper — the same lock space as the attendance
+   * RPCs — then the EXCLUSIVE employee lock (per-employee write; two owners
+   * racing on one employee must serialise), then `attendance_today`.
+   */
+  private async openLifecycle(
+    tx: Tx,
+    tenantId: string,
+    employeeId: string,
+  ): Promise<string> {
+    await lockTenantShared(tx, tenantId);
+    await tx.query('select public.attendance_lock_employee($1)', [employeeId]);
+    try {
+      return await tenantToday(tx, tenantId);
+    } catch (err) {
+      if ((err as PgError)?.hint === 'ATTENDANCE_TENANT_NOT_FOUND') {
+        throw new NotFoundException({
+          error_code: ErrorCode.ATTENDANCE_TENANT_NOT_FOUND,
+          message: 'Company setup required before using attendance',
+        });
+      }
+      this.logger.error('attendance_today failed:', { err });
+      throw internalError('Failed to resolve tenant date');
     }
-    this.logger.error('attendance_today failed:', { err });
-    throw internalError('Failed to resolve tenant date');
   }
-}
 
-/**
- * One pg transaction with the documented error mapping: the coverage
- * trigger's COMMIT-time rejection (23514 + ATTENDANCE_ASSIGNMENT_GAP hint)
- * surfaces as 422, never a raw 500 (review finding — the docs promised a
- * 422 nothing produced).
- */
-private async inTransaction<T>(
-  work: (tx: Tx) => Promise<T>,
-): Promise<T> {
-  try {
-    return await this.pgPoolFactory.withTransaction(work);
-  } catch (err) {
-    const pgErr = err as PgError;
-    if (pgErr?.hint === 'ATTENDANCE_ASSIGNMENT_GAP') {
-      throw new HttpException(
-        {
-          error_code: ErrorCode.ATTENDANCE_ASSIGNMENT_GAP,
-          message:
-            'The enrolment would leave an enrolled date without its office assignment',
-        },
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
+  /**
+   * One pg transaction with the documented error mapping: the coverage
+   * trigger's COMMIT-time rejection (23514 + ATTENDANCE_ASSIGNMENT_GAP hint)
+   * surfaces as 422, never a raw 500 (review finding — the docs promised a
+   * 422 nothing produced).
+   */
+  private async inTransaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    try {
+      return await this.pgPoolFactory.withTransaction(work);
+    } catch (err) {
+      const pgErr = err as PgError;
+      if (pgErr?.hint === 'ATTENDANCE_ASSIGNMENT_GAP') {
+        throw new HttpException(
+          {
+            error_code: ErrorCode.ATTENDANCE_ASSIGNMENT_GAP,
+            message:
+              'The enrolment would leave an enrolled date without its office assignment',
+          },
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      throw err;
     }
-    throw err;
   }
-}
 
   /** 404 unless the employee belongs to the caller's tenant. */
   private async requireTenantEmployee(

@@ -18,7 +18,9 @@ export type CursorScope =
   | 'profile-jobs'
   | 'profile-jobs-today'
   | 'notifications-list'
-  | 'reports-list';
+  | 'reports-list'
+  | 'leave-me-list'
+  | 'leave-owner-list';
 
 interface CursorPayload {
   id: string;

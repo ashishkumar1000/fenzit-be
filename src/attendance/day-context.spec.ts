@@ -5,7 +5,10 @@ import {
   computeLateMinutes,
   computeMidpointMinute,
   dateInTz,
+  expectedEndMinute,
+  expectedStartMinute,
   isoWeekdayOf,
+  leaveCutoffPassed,
   minuteOfDayInTz,
   timeStringToMinutes,
   isWeeklyOffDay,
@@ -50,7 +53,9 @@ function facts(overrides: Partial<DayFacts> = {}): DayFacts {
 
 describe('wall-clock extraction (AD-7 — Intl, never a tz library)', () => {
   it('reads tenant-local minutes east of UTC', () => {
-    expect(minuteOfDayInTz(new Date('2026-09-28T04:00:00Z'), IST)).toBe(9 * 60 + 30);
+    expect(minuteOfDayInTz(new Date('2026-09-28T04:00:00Z'), IST)).toBe(
+      9 * 60 + 30,
+    );
   });
 
   it('reads tenant-local minutes west of UTC (day shifts back)', () => {
@@ -60,12 +65,16 @@ describe('wall-clock extraction (AD-7 — Intl, never a tz library)', () => {
   });
 
   it('is exact at UTC itself', () => {
-    expect(minuteOfDayInTz(new Date('2026-09-28T23:05:00Z'), 'UTC')).toBe(23 * 60 + 5);
+    expect(minuteOfDayInTz(new Date('2026-09-28T23:05:00Z'), 'UTC')).toBe(
+      23 * 60 + 5,
+    );
   });
 
   it('gives the tenant-local calendar date', () => {
     expect(dateInTz(new Date('2026-09-28T20:30:00Z'), IST)).toBe('2026-09-29');
-    expect(dateInTz(new Date('2026-09-28T20:30:00Z'), 'UTC')).toBe('2026-09-28');
+    expect(dateInTz(new Date('2026-09-28T20:30:00Z'), 'UTC')).toBe(
+      '2026-09-28',
+    );
   });
 
   it('rejects an unknown timezone loudly', () => {
@@ -131,8 +140,13 @@ describe('FR-2 enable-day grace (D10)', () => {
 
   it('not tracked without enrolment/setup/enabled regardless of grace', () => {
     expect(
-      applyEnableDayGrace(facts({ enrolmentCovers: false }), rule(), monday, IST, true)
-        .tracked,
+      applyEnableDayGrace(
+        facts({ enrolmentCovers: false }),
+        rule(),
+        monday,
+        IST,
+        true,
+      ).tracked,
     ).toBe(false);
     expect(
       applyEnableDayGrace(facts({ enabled: false }), rule(), monday, IST, false)
@@ -306,5 +320,78 @@ describe('assembleDayContext', () => {
     expect(ctx.endMinute).toBeNull();
     expect(ctx.midpointMinute).toBeNull();
     expect(ctx.lateCutoffMinutes).toBeNull();
+  });
+});
+
+/**
+ * The AD-22 leave seam helpers (spec-17 D3): FR-7's half-day expectations
+ * and the Office-Start leave cutoff — the ONE implementation the
+ * check-in/out late math and the revoke/cancel split both consume.
+ */
+describe('day-context leave helpers (17-1..17-4, D3)', () => {
+  const baseCtx = {
+    leavePart: null as 'full_day' | 'first_half' | 'second_half' | null,
+    leaveState: null as 'pending' | 'approved' | null,
+    startMinute: 540, // 09:00
+    endMinute: 1080, // 18:00
+    midpointMinute: 810, // 13:30
+  };
+
+  it('expectedStartMinute: the midpoint on a FIRST-half leave day, else the rule start (FR-7)', () => {
+    expect(expectedStartMinute({ ...baseCtx, leavePart: 'first_half' })).toBe(
+      810,
+    );
+    expect(expectedStartMinute({ ...baseCtx, leavePart: 'second_half' })).toBe(
+      540,
+    );
+    expect(expectedStartMinute({ ...baseCtx, leavePart: 'full_day' })).toBe(
+      540,
+    );
+    expect(
+      expectedStartMinute({ ...baseCtx, leavePart: null, startMinute: null }),
+    ).toBeNull();
+  });
+
+  it('expectedEndMinute: the midpoint on a SECOND-half leave day, else the rule end', () => {
+    expect(expectedEndMinute({ ...baseCtx, leavePart: 'second_half' })).toBe(
+      810,
+    );
+    expect(expectedEndMinute({ ...baseCtx, leavePart: 'first_half' })).toBe(
+      1080,
+    );
+    expect(expectedEndMinute({ ...baseCtx, leavePart: null })).toBe(1080);
+  });
+
+  it('leaveCutoffPassed: only when leave is active AND the Office Start has passed; no rule → NOT passed (D8)', () => {
+    expect(
+      leaveCutoffPassed(
+        { ...baseCtx, leaveState: 'approved', startMinute: 540 },
+        600,
+      ),
+    ).toBe(true);
+    expect(
+      leaveCutoffPassed(
+        { ...baseCtx, leaveState: 'approved', startMinute: 540 },
+        540,
+      ),
+    ).toBe(true); // now == start
+    expect(
+      leaveCutoffPassed(
+        { ...baseCtx, leaveState: 'approved', startMinute: 540 },
+        539,
+      ),
+    ).toBe(false);
+    expect(
+      leaveCutoffPassed(
+        { ...baseCtx, leaveState: null, startMinute: 540 },
+        600,
+      ),
+    ).toBe(false);
+    expect(
+      leaveCutoffPassed(
+        { ...baseCtx, leaveState: 'pending', startMinute: null },
+        600,
+      ),
+    ).toBe(false);
   });
 });

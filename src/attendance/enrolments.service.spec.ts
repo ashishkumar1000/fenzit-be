@@ -52,6 +52,8 @@ interface TxOptions {
   checkedInToday?: boolean;
   /** The coverage trigger rejects the write at COMMIT (review-patch case). */
   gapOnWrite?: boolean;
+  /** Epic 17 disable-sweep rows (defaults: none — no leave to cancel). */
+  leaveSweep?: unknown[];
 }
 
 function makeTx(options: TxOptions = {}) {
@@ -88,21 +90,32 @@ function makeTx(options: TxOptions = {}) {
     }
     if (sql.includes('from public.users where')) {
       return {
-        rows: options.employeeFound === false
-          ? []
-          : [{ id: EMPLOYEE, name: 'Ravi' }],
+        rows:
+          options.employeeFound === false
+            ? []
+            : [{ id: EMPLOYEE, name: 'Ravi' }],
       };
     }
     if (sql.includes('attendance_offices')) {
       return {
         rows: [
-          options.office ?? { id: OFFICE, name: 'Andheri West', archived_at: null },
+          options.office ?? {
+            id: OFFICE,
+            name: 'Andheri West',
+            archived_at: null,
+          },
         ],
       };
     }
     if (sql.includes('to_regclass')) {
       return {
-        rows: [{ reg: options.recordsTableExists ? 'public.attendance_records' : null }],
+        rows: [
+          {
+            reg: options.recordsTableExists
+              ? 'public.attendance_records'
+              : null,
+          },
+        ],
       };
     }
     if (sql.includes('attendance_records')) {
@@ -117,16 +130,25 @@ function makeTx(options: TxOptions = {}) {
     if (sql.includes('attendance_access_state')) {
       return { rows: [VIEW_ROW] };
     }
+    // Epic 17 (spec-17 D12): no leave to sweep by default — the dedicated
+    // disable-sweep specs inject rows through options.leaveSweep.
+    if (sql.includes('from public.leave_requests r')) {
+      return { rows: options.leaveSweep ?? [] };
+    }
+    if (sql.includes('insert into public.leave_request_days'))
+      return { rows: [] };
+    if (sql.includes('update public.leave_request_days')) return { rows: [] };
+    if (sql.includes('insert into public.leave_events')) return { rows: [] };
+    if (sql.includes('insert into public.notifications')) return { rows: [] };
+    if (sql.includes('select name from public.users'))
+      return { rows: [{ name: 'Ravi' }] };
     throw new Error(`unclassified query: ${sql}`);
   };
   const tx = { query: jest.fn(dispatch) };
   return { tx, writes };
 }
 
-function serviceWith(
-  txOptions: TxOptions,
-  viewRows: unknown[] = [VIEW_ROW],
-) {
+function serviceWith(txOptions: TxOptions, viewRows: unknown[] = [VIEW_ROW]) {
   const { tx, writes } = makeTx(txOptions);
   const admin = {
     from: jest.fn(() => {
@@ -196,7 +218,11 @@ describe('EnrolmentsService (story 15-7)', () => {
 
     it('refuses an archived office with 409 ATTENDANCE_OFFICE_ARCHIVED', async () => {
       const { service } = serviceWith({
-        office: { id: OFFICE, name: 'Andheri West', archived_at: '2026-09-20T00:00:00+00:00' },
+        office: {
+          id: OFFICE,
+          name: 'Andheri West',
+          archived_at: '2026-09-20T00:00:00+00:00',
+        },
       });
 
       const error = await service

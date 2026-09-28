@@ -94,6 +94,8 @@ function happyRouter(
     attemptRecord?: unknown;
     replay?: unknown;
     blockedUntil?: unknown;
+    /** findActiveLeaveForDate (the AD-22 leave seam, spec-17 D3/D11). */
+    leave?: unknown;
   } = {},
 ): QueryFn {
   let recordReads = 0;
@@ -130,11 +132,28 @@ function happyRouter(
       };
     if (sql.includes('attendance_office_assignments'))
       return { rows: [OFFICE], rowCount: 1 };
-    if (sql.includes('attendance_office_rules')) return { rows: [RULE], rowCount: 1 };
+    if (sql.includes('attendance_office_rules'))
+      return { rows: [RULE], rowCount: 1 };
     if (sql.includes('weekly_off_overrides')) return { rows: [], rowCount: 0 };
     if (sql.includes('weekly_off_defaults'))
       return { rows: [{ valid: '[2026-01-01,)', days: [7] }], rowCount: 1 };
     if (sql.includes('from public.holidays')) return { rows: [], rowCount: 0 };
+    // Epic 17 seam (spec-17 D3/D11): the active leave row for the date,
+    // present only when the FR-9 specs inject one.
+    if (sql.includes('from public.leave_request_days'))
+      return {
+        rows: overrides.leave ? [overrides.leave] : [],
+        rowCount: overrides.leave ? 1 : 0,
+      };
+    // FR-9 auto-cancel payload reads (spec-17 D11).
+    if (sql.includes('select name from public.users'))
+      return { rows: [{ name: 'Arya' }], rowCount: 1 };
+    if (sql.includes('insert into public.leave_request_days'))
+      return { rows: [], rowCount: 1 };
+    if (sql.includes('update public.leave_request_days'))
+      return { rows: [{ leave_date: '2026-09-28' }], rowCount: 1 };
+    if (sql.includes('insert into public.leave_events'))
+      return { rows: [], rowCount: 1 };
     if (sql.includes('insert into public.attendance_attempts'))
       return { rows: [{ id: 'attempt-1' }], rowCount: 1 };
     if (sql.includes('insert into public.attendance_records'))
@@ -143,7 +162,8 @@ function happyRouter(
       return { rows: [], rowCount: 1 };
     if (sql.includes('insert into public.notifications'))
       return { rows: [], rowCount: 1 };
-    if (sql.includes('outcome = any')) return { rows: [{ n: '0' }], rowCount: 1 };
+    if (sql.includes('outcome = any'))
+      return { rows: [{ n: '0' }], rowCount: 1 };
     if (sql.includes("outcome = 'mocked'")) return MOCKED_COUNT_DEFAULT;
     if (sql.includes('select id, name from public.users'))
       return { rows: [{ id: tech.userId, name: 'Arya' }], rowCount: 1 };
@@ -154,7 +174,8 @@ function happyRouter(
       };
     if (sql.includes('from public.attendance_records')) {
       recordReads++;
-      const first = overrides.preRecord !== undefined ? [overrides.preRecord] : [];
+      const first =
+        overrides.preRecord !== undefined ? [overrides.preRecord] : [];
       const rows =
         recordReads === 1
           ? first
@@ -180,7 +201,10 @@ function routerWith(
   };
 }
 
-const MOCKED_COUNT_DEFAULT = { rows: [{ n: '0', month: '2026-09' }], rowCount: 1 };
+const MOCKED_COUNT_DEFAULT = {
+  rows: [{ n: '0', month: '2026-09' }],
+  rowCount: 1,
+};
 
 async function rejectionOf(promise: Promise<unknown>): Promise<HttpException> {
   try {
@@ -204,7 +228,9 @@ describe('CheckInOutService — check-in (16-1)', () => {
     const tx = fakeTx(happyRouter({ preRecord: null, record: RECORD }));
     const svc = serviceWith(tx);
     await svc.checkIn(tech, dto(), CHECKIN_KEY);
-    const lockCalls = tx.queries.filter((q) => q.sql.includes('attendance_lock'));
+    const lockCalls = tx.queries.filter((q) =>
+      q.sql.includes('attendance_lock'),
+    );
     expect(lockCalls).toHaveLength(2);
     expect(lockCalls[0].sql).toContain('attendance_lock_tenant');
     expect(lockCalls[1].sql).toContain('attendance_lock_employee');
@@ -373,7 +399,9 @@ describe('CheckInOutService — check-in (16-1)', () => {
       'ATTENDANCE_TOO_FAR',
     );
     expect(
-      tx.queries.some((q) => q.sql.includes('insert into public.notifications')),
+      tx.queries.some((q) =>
+        q.sql.includes('insert into public.notifications'),
+      ),
     ).toBe(false);
   });
 
@@ -409,7 +437,10 @@ describe('CheckInOutService — check-in (16-1)', () => {
   it('mocked is recorded and the 3rd of the month alerts the owner (AD-13/D5)', async () => {
     const tx = fakeTx(
       routerWith({
-        "outcome = 'mocked'": { rows: [{ n: '3', month: '2026-09' }], rowCount: 1 },
+        "outcome = 'mocked'": {
+          rows: [{ n: '3', month: '2026-09' }],
+          rowCount: 1,
+        },
       }),
     );
     const svc = serviceWith(tx);
@@ -448,7 +479,10 @@ describe('CheckInOutService — check-in (16-1)', () => {
   it('mocked 2nd of the month alerts nobody', async () => {
     const tx = fakeTx(
       routerWith({
-        "outcome = 'mocked'": { rows: [{ n: '2', month: '2026-09' }], rowCount: 1 },
+        "outcome = 'mocked'": {
+          rows: [{ n: '2', month: '2026-09' }],
+          rowCount: 1,
+        },
       }),
     );
     const svc = serviceWith(tx);
@@ -457,7 +491,9 @@ describe('CheckInOutService — check-in (16-1)', () => {
       svc.checkIn(tech, dto({ mocked: true }), CHECKIN_KEY),
     ).rejects.toThrow(HttpException);
     expect(
-      tx.queries.some((q) => q.sql.includes('insert into public.notifications')),
+      tx.queries.some((q) =>
+        q.sql.includes('insert into public.notifications'),
+      ),
     ).toBe(false);
   });
 
@@ -545,11 +581,10 @@ describe('CheckInOutService — check-out (16-2)', () => {
     );
     const svc = serviceWith(tx);
 
-    const response = (await svc.checkOut(
-      tech,
-      dto(),
-      CHECKOUT_KEY,
-    )) as Record<string, unknown>;
+    const response = (await svc.checkOut(tech, dto(), CHECKOUT_KEY)) as Record<
+      string,
+      unknown
+    >;
 
     const update = tx.queries.find((q) =>
       q.sql.includes('update public.attendance_records'),
@@ -578,11 +613,10 @@ describe('CheckInOutService — check-out (16-2)', () => {
     );
     const svc = serviceWith(tx);
 
-    const response = (await svc.checkOut(
-      tech,
-      dto(),
-      CHECKOUT_KEY,
-    )) as Record<string, unknown>;
+    const response = (await svc.checkOut(tech, dto(), CHECKOUT_KEY)) as Record<
+      string,
+      unknown
+    >;
     expect(response).toMatchObject({
       earlyCheckout: false,
       earlyCheckoutMinutes: null,
@@ -605,7 +639,218 @@ describe('CheckInOutService — check-out (16-2)', () => {
       'ATTENDANCE_TOO_FAR',
     );
     expect(
-      tx.queries.some((q) => q.sql.includes('update public.attendance_records')),
+      tx.queries.some((q) =>
+        q.sql.includes('update public.attendance_records'),
+      ),
+    ).toBe(false);
+  });
+});
+
+/**
+ * FR-9 (spec-17 D11): check-in × leave. The gate answers a committed
+ * `leave_confirmation_required` 409 without the confirm flag; the
+ * confirmed path cancels ONLY today's date after the location ladder
+ * passes; half-days and off-days never gate; check-out is never gated.
+ */
+describe('CheckInOutService — check-in × leave (17-4, FR-9)', () => {
+  const FULL_DAY_LEAVE = {
+    state: 'approved',
+    part: 'full_day',
+    leave_request_db_id: 'leave-db-1',
+    request_id: '66666666-6666-4666-8666-666666666666',
+  };
+
+  it('gates without confirm: committed attempt row + 409, nothing else written', async () => {
+    const tx = fakeTx(happyRouter({ leave: FULL_DAY_LEAVE }));
+    const service = serviceWith(tx);
+    await expect(
+      service.checkIn(tech, dto(), CHECKIN_KEY),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { error_code: 'ATTENDANCE_LEAVE_CONFIRMATION_REQUIRED' },
+    });
+    const attempt = tx.queries.find((q) =>
+      q.sql.includes('insert into public.attendance_attempts'),
+    );
+    expect(attempt?.params?.[4]).toBe('leave_confirmation_required');
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('insert into public.attendance_records'),
+      ),
+    ).toBe(false);
+    expect(
+      tx.queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(false);
+  });
+
+  it('with confirm: the record is written and ONLY today transitions to cancelled', async () => {
+    const tx = fakeTx(
+      happyRouter({ leave: FULL_DAY_LEAVE, preRecord: null, record: RECORD }),
+    );
+    const service = serviceWith(tx);
+    const response = (await service.checkIn(
+      tech,
+      dto({ confirmLeaveCancel: true }),
+      CHECKIN_KEY,
+    )) as CheckInResponse;
+    expect(response.workDate).toBe('2026-09-28');
+    const update = tx.queries.find((q) =>
+      q.sql.includes('update public.leave_request_days'),
+    );
+    expect(update?.params?.[2]).toEqual(['2026-09-28']); // today ONLY
+    expect(update?.params?.[3]).toEqual(['pending', 'approved']);
+    const event = tx.queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[3]).toBe('checkin_auto_cancel');
+    const notification = tx.queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(notification?.params?.[1]).toBe('owner-1'); // the owner is notified
+    expect(JSON.parse(notification?.params?.[3] as string)).toEqual({
+      employeeName: 'Arya',
+      leaveDate: '2026-09-28',
+    });
+  });
+
+  it('a too_far fix with confirm stays 422 and leaves the leave untouched', async () => {
+    const tx = fakeTx(happyRouter({ leave: FULL_DAY_LEAVE }));
+    const service = serviceWith(tx);
+    await expect(
+      service.checkIn(
+        tech,
+        dto({ latitude: 28.6139, longitude: 77.209, confirmLeaveCancel: true }),
+        CHECKIN_KEY,
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('update public.leave_request_days'),
+      ),
+    ).toBe(false);
+    expect(
+      tx.queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(false);
+  });
+
+  it('a HALF-day leave never gates and never cancels (FR-9 exception)', async () => {
+    // second_half → the working half is the morning → the rule start (not
+    // the midpoint) still governs late; and no leave row is touched.
+    const tx = fakeTx(
+      happyRouter({
+        leave: { ...FULL_DAY_LEAVE, part: 'second_half' },
+        preRecord: null,
+        record: RECORD,
+      }),
+    );
+    const service = serviceWith(tx);
+    const response = (await service.checkIn(
+      tech,
+      dto(),
+      CHECKIN_KEY,
+    )) as CheckInResponse;
+    expect(response.lateMinutes).toBe(15); // 09:30 check-in vs 09:00 + 15 cutoff → exactly at the grace edge
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('update public.leave_request_days'),
+      ),
+    ).toBe(false);
+  });
+
+  it('a first-half leave day computes late from the MIDPOINT (FR-7 via D3)', async () => {
+    const tx = fakeTx(
+      happyRouter({
+        leave: { ...FULL_DAY_LEAVE, part: 'first_half' },
+        preRecord: null,
+        record: RECORD,
+      }),
+    );
+    const service = serviceWith(tx);
+    const response = (await service.checkIn(
+      tech,
+      dto(),
+      CHECKIN_KEY,
+    )) as CheckInResponse;
+    // Rule 09:00–18:00 → midpoint 13:30 (+15 cutoff → 13:45); check-in 09:30 is BEFORE it → not late.
+    expect(response.lateMinutes).toBe(0);
+    expect(response.isLate).toBe(false);
+  });
+
+  it('a PENDING leave day gates the same way; confirm cancels from pending', async () => {
+    const tx = fakeTx(
+      happyRouter({ leave: { ...FULL_DAY_LEAVE, state: 'pending' } }),
+    );
+    const service = serviceWith(tx);
+    await expect(
+      service.checkIn(tech, dto(), CHECKIN_KEY),
+    ).rejects.toMatchObject({ status: 409 });
+    const ok = fakeTx(
+      happyRouter({
+        leave: { ...FULL_DAY_LEAVE, state: 'pending' },
+        preRecord: null,
+        record: RECORD,
+      }),
+    );
+    await serviceWith(ok).checkIn(
+      tech,
+      dto({ confirmLeaveCancel: true }),
+      CHECKIN_KEY,
+    );
+    const update = ok.queries.find((q) =>
+      q.sql.includes('update public.leave_request_days'),
+    );
+    expect(update?.params?.[2]).toEqual(['2026-09-28']);
+  });
+
+  it('a weekly-off leave day (off day inside a span) never gates (D11)', async () => {
+    // weekly_off_defaults already answers days: [7] (Sunday); make the date
+    // a Sunday leave day — the gate requires isWorkingDay. The inner router
+    // is created ONCE: its record-read counter must survive across reads.
+    const inner = happyRouter({
+      leave: FULL_DAY_LEAVE,
+      preRecord: null,
+      record: RECORD,
+    });
+    const sundayRouter: QueryFn = (sql) => {
+      if (sql.includes('weekly_off_defaults')) {
+        return {
+          rows: [{ valid: '[2026-01-01,)', days: [1, 2, 3, 4, 5, 6, 7] }],
+          rowCount: 1,
+        };
+      }
+      return inner(sql);
+    };
+    const tx = fakeTx(sundayRouter);
+    const service = serviceWith(tx);
+    await service.checkIn(tech, dto(), CHECKIN_KEY);
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('update public.leave_request_days'),
+      ),
+    ).toBe(false);
+  });
+
+  it('check-OUT is never gated even on a full-day leave day (D11 scoping)', async () => {
+    const tx = fakeTx(
+      happyRouter({ leave: FULL_DAY_LEAVE, preRecord: RECORD, record: RECORD }),
+    );
+    const service = serviceWith(tx);
+    await service.checkOut(
+      tech,
+      dto({ confirmLeaveCancel: false }),
+      CHECKOUT_KEY,
+    );
+    expect(
+      tx.queries.some(
+        (q) =>
+          q.sql.includes('insert into public.attendance_attempts') &&
+          q.params?.[4] === 'leave_confirmation_required',
+      ),
+    ).toBe(false);
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('update public.leave_request_days'),
+      ),
     ).toBe(false);
   });
 });

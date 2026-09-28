@@ -49,7 +49,12 @@ export interface DayContext {
   holidayId: string | null;
   holidayName: string | null;
   isWorkingDay: boolean;
-  /** Epic 17 seam — the leave model does not exist yet, always null today. */
+  /**
+   * The AD-22 leave seam, live since Epic 17 (spec-17 D3): today's active
+   * leave day — pending or approved; null when the date has none.
+   */
+  leaveState: 'pending' | 'approved' | null;
+  /** The leave request's part when leaveState is set; null otherwise. */
   leavePart: 'full_day' | 'first_half' | 'second_half' | null;
 }
 
@@ -147,6 +152,60 @@ export function computeEarlyCheckoutMinutes(
   return checkoutMinute < endMinute ? endMinute - checkoutMinute : null;
 }
 
+/**
+ * FR-7's half-day expectation (AD-22's expected_start, live since Epic 17
+ * — spec-17 D3): on a FIRST-half leave day the working half is the
+ * afternoon, so Expected start is the Midpoint; otherwise the rule start.
+ */
+export function expectedStartMinute(ctx: {
+  leavePart: 'full_day' | 'first_half' | 'second_half' | null;
+  startMinute: number | null;
+  midpointMinute: number | null;
+}): number | null {
+  if (ctx.leavePart === 'first_half') return ctx.midpointMinute;
+  return ctx.startMinute;
+}
+
+/**
+ * FR-7's symmetric expectation: on a SECOND-half leave day the working
+ * half is the morning, so Expected end is the Midpoint; otherwise the
+ * rule end.
+ */
+export function expectedEndMinute(ctx: {
+  leavePart: 'full_day' | 'first_half' | 'second_half' | null;
+  endMinute: number | null;
+  midpointMinute: number | null;
+}): number | null {
+  if (ctx.leavePart === 'second_half') return ctx.midpointMinute;
+  return ctx.endMinute;
+}
+
+/**
+ * AD-22's leave cutoff (D8): today's leave counts as started once the
+ * Office Start has passed. When no rule covers the date there is no
+ * office start to miss — the cutoff counts as NOT passed (the permissive
+ * reading, spec-17 D8). `nowMinute` comes from the DB clock.
+ */
+/** The shared core: has this day's Office Start passed? No rule → NOT
+ * passed (the permissive reading, spec-17 D8). */
+export function isPastOfficeStart(
+  startMinute: number | null,
+  nowMinute: number,
+): boolean {
+  return startMinute !== null && nowMinute >= startMinute;
+}
+
+export function leaveCutoffPassed(
+  ctx: {
+    leaveState: 'pending' | 'approved' | null;
+    startMinute: number | null;
+  },
+  nowMinute: number,
+): boolean {
+  if (ctx.leaveState === null) return false;
+  return isPastOfficeStart(ctx.startMinute, nowMinute);
+}
+
 export function isWeeklyOffDay(days: number[], workDate: string): boolean {
   return days.includes(isoWeekdayOf(workDate));
 }
@@ -158,7 +217,10 @@ export function isWeeklyOffDay(days: number[], workDate: string): boolean {
  * the call being processed IS the check-in FR-2 carves out).
  */
 export function applyEnableDayGrace(
-  facts: Pick<DayFacts, 'enrolmentCovers' | 'setupCompleted' | 'enabled' | 'enabledAt'>,
+  facts: Pick<
+    DayFacts,
+    'enrolmentCovers' | 'setupCompleted' | 'enabled' | 'enabledAt'
+  >,
   rule: OfficeRuleRow | null,
   workDate: string,
   timezone: string,
@@ -184,6 +246,10 @@ export function assembleDayContext(
   facts: DayFacts,
   office: OfficeJoinRow | null,
   hasCheckIn: boolean,
+  leave: {
+    state: 'pending' | 'approved';
+    part: 'full_day' | 'first_half' | 'second_half';
+  } | null = null,
 ): DayContext {
   const rule = facts.rule;
   const startMinute = rule ? timeStringToMinutes(rule.start_time) : null;
@@ -222,7 +288,8 @@ export function assembleDayContext(
     holidayId: facts.holidayId,
     holidayName: facts.holidayName,
     isWorkingDay: !isWeeklyOff && !isHoliday,
-    leavePart: null,
+    leaveState: leave?.state ?? null,
+    leavePart: leave?.part ?? null,
   };
 }
 

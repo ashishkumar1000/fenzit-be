@@ -1410,6 +1410,86 @@ Receives a Cloudflare R2 storage event. Verifies HMAC, processes the event
 }
 ```
 
+---
+
+### Leave management (Epic 17, Stories 17-1..17-4)
+
+Three tables (`leave_requests`, `leave_request_days`, `leave_events` —
+migration `20260929000001`), zero new RPCs beyond the AD-11 state guard
+trigger `leave_request_days_state_guard()`; every write is one pg
+transaction in NestJS reusing the AD-5 lock helpers (spec:
+`spec-17-1-to-17-4-backend-leave-management.md`). Day states live ONLY in
+`leave-transition.ts` (AD-23's single writer); request-level status is
+DERIVED on read (order: pending > approved > revoked > cancelled >
+rejected, `DERIVED_STATUS_ORDER` in `leave.model.ts`) and `workingDays`
+recompute from current weekly-off/holiday facts.
+
+**Technician routes (`/api/v1/attendance/me/leave`):**
+
+- `GET …/me/leave/preview?startDate&endDate?&part?` → `200`
+  `{ ok: true, workingDays, totalDays, part, dates[] }` or
+  `200 { ok: false, errorCode, message }` — the same validation path as the
+  write, persists nothing; the app renders rejections inline.
+- `POST …/me/leave` — body `{ startDate, endDate?, part?, reason }` +
+  `X-Idempotency-Key` (required, UUID v4) → `201` request view. Replays
+  return the stored view with no second row; a key raced by a DIFFERENT
+  caller answers `409 DUPLICATE_RESOURCE`.
+- `GET …/me/leave?cursor&limit` → own history (cursor scope `leave-me-list`).
+- `GET …/me/leave/:id/preview` → `200 { action: 'cancel', actionDates,
+  keepDates, request }` (empty `actionDates` when nothing is actionable —
+  previews never 409).
+- `POST …/me/leave/:id/cancel` → `200` refreshed view + `cancelledDates`;
+  no reason (FR-15). Own retry answers `200`; a conflicting state `409
+  LEAVE_NOT_CANCELLABLE`.
+
+**Owner routes (`/api/v1/attendance/leave`):**
+
+- `GET …/leave?status?&employeeId?&cursor&limit` → `PaginatedResponse`
+  (cursor scope `leave-owner-list`); `status=pending` is the queue; the
+  filter matches the DERIVED status.
+- `GET …/leave/:id/preview` → revoke split (as above).
+- `POST …/leave/:id/approve` / `POST …/leave/:id/reject` (`{ reason? }` —
+  empty valid) → `200` refreshed view; own retry `200`, conflict `409
+  LEAVE_NOT_PENDING`.
+- `POST …/leave/:id/revoke` (`{ reason }` required) → `200` refreshed view
+  + `revokedDates`.
+- `POST …/leave/on-behalf` — `{ employeeId, startDate, endDate?, part?,
+  reason }` + `X-Idempotency-Key` → `201` with every day APPROVED
+  immediately (FR-16); a target outside the tenant answers `404
+  ATTENDANCE_EMPLOYEE_NOT_FOUND` before any other check.
+
+**The five apply rejections, in report order (first wins):** span/format
+(`LEAVE_INVALID_RANGE`, incl. the 62-day cap) → start-date floor
+(`LEAVE_BEFORE_START_DATE` — an UPCOMING employee may apply from their
+start date, FR-12) → 7-days-back (`LEAVE_TOO_OLD`) → a past-or-today date
+with a check-in (`LEAVE_CHECKED_IN_CONFLICT`) → every date off
+(`LEAVE_ALREADY_OFF`, "These days are already off") → overlap
+(`LEAVE_OVERLAP`, 409).
+
+**Split rule (revoke & cancel):** actionable = future dates, or today
+while now(tenant tz, DB clock) < that day's Office Start; revoke takes
+`approved` days only, cancel takes `pending`+`approved`. Past days (and
+today after the cutoff) STAY in their state — the request splits; when no
+rule covers today the cutoff counts as NOT passed.
+
+**FR-9 (check-in × leave):** a full-day active (pending/approved) leave on
+a WORKING day makes check-in answer `409
+ATTENDANCE_LEAVE_CONFIRMATION_REQUIRED` (a committed, rate-limit-exempt
+attempt row) until the client sends `confirmLeaveCancel: true`; the
+confirmed path cancels ONLY today's date after the location ladder passes
+(a rejected attempt never touches leave) and notifies the owner once per
+date. Half-day leave dates and weekly-off/holiday days inside a span never
+gate. On a first-half leave day `lateMinutes` is computed from the
+midpoint (FR-7); on a second-half leave day `earlyCheckout` compares to
+the midpoint.
+
+**Notifications (`leave.*`, entity_type `leave`, entity_id = the request):
+** applied (owner), applied_on_behalf (employee), approved, rejected
+(reason when given), owner_revoked (exact dates + reason),
+employee_cancelled (owner), cancelled_by_disable, checkin_auto_cancel
+(owner, deduped per date). Disabling an employee cancels ALL their pending
+leave plus approved leave from the disable's effective date (AD-23).
+
 ## Swagger
 
 OpenAPI is auto-generated at `/api/docs` in **non-production** environments

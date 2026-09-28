@@ -3,10 +3,33 @@ import { HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { internalError } from './attendance-rpc.helpers';
 import { buildDayContext } from './day-context.read';
-import { computeEarlyCheckoutMinutes, computeLateMinutes, DayContext, minuteOfDayInTz } from './day-context';
-import { findAttemptByIdempotencyKey, readActiveBlockedUntil, AttemptKind, AttemptRow } from './check-in-out.repository';
-import { findRecordByAttemptId, findRecordByEmployeeDate, RecordRow } from './check-in-out.records.repository';
-import { CheckInResponse, CheckOutResponse, DayContextFlags, outcomeToException, recordToResponse, ResponseMetrics } from './check-in-out.model';
+import {
+  computeEarlyCheckoutMinutes,
+  computeLateMinutes,
+  DayContext,
+  expectedEndMinute,
+  expectedStartMinute,
+  minuteOfDayInTz,
+} from './day-context';
+import {
+  findAttemptByIdempotencyKey,
+  readActiveBlockedUntil,
+  AttemptKind,
+  AttemptRow,
+} from './check-in-out.repository';
+import {
+  findRecordByAttemptId,
+  findRecordByEmployeeDate,
+  RecordRow,
+} from './check-in-out.records.repository';
+import {
+  CheckInResponse,
+  CheckOutResponse,
+  DayContextFlags,
+  outcomeToException,
+  recordToResponse,
+  ResponseMetrics,
+} from './check-in-out.model';
 import { tenantToday } from './enrolments.repository';
 
 /**
@@ -24,7 +47,10 @@ export async function replayResponse(
   employeeId: string,
   tenantId: string,
   kind: AttemptKind,
-): Promise<{ response?: CheckInResponse | CheckOutResponse; rejection?: HttpException }> {
+): Promise<{
+  response?: CheckInResponse | CheckOutResponse;
+  rejection?: HttpException;
+}> {
   if (row.kind !== kind) {
     const record = await findRecordByEmployeeDate(
       tx,
@@ -75,7 +101,13 @@ export async function replayResponse(
       });
       throw internalError('Failed to rebuild the attendance record');
     }
-    const ctx = await buildDayContext(tx, tenantId, employeeId, record.work_date, true);
+    const ctx = await buildDayContext(
+      tx,
+      tenantId,
+      employeeId,
+      record.work_date,
+      true,
+    );
     return {
       response: recordToResponse(
         record,
@@ -107,19 +139,23 @@ export async function replayResponse(
   };
 }
 
-/** D12 metrics — late for check-in, early-checkout for check-out. */
+/** D12 metrics — late for check-in, early-checkout for check-out. The
+ * FR-7 half-day expectations (spec-17 D3) shift the reference: a
+ * first-half leave day expects the employee from the Midpoint, a
+ * second-half leave day until the Midpoint. */
 export function metricsFor(
   ctx: DayContext,
   kind: AttemptKind,
   record: RecordRow,
 ): ResponseMetrics {
   if (kind === 'check_in') {
-    if (ctx.startMinute === null || ctx.lateCutoffMinutes === null) {
+    const startMinute = expectedStartMinute(ctx);
+    if (startMinute === null || ctx.lateCutoffMinutes === null) {
       return NO_METRICS;
     }
     const lateMinutes = computeLateMinutes(
       minuteOfDayInTz(new Date(record.checkin_at), ctx.timezone),
-      ctx.startMinute,
+      startMinute,
       ctx.lateCutoffMinutes,
     );
     return {
@@ -129,12 +165,13 @@ export function metricsFor(
       earlyCheckoutMinutes: null,
     };
   }
-  if (ctx.endMinute === null || !record.checkout_at) {
+  const endMinute = expectedEndMinute(ctx);
+  if (endMinute === null || !record.checkout_at) {
     return NO_METRICS;
   }
   const earlyCheckoutMinutes = computeEarlyCheckoutMinutes(
     minuteOfDayInTz(new Date(record.checkout_at), ctx.timezone),
-    ctx.endMinute,
+    endMinute,
   );
   return {
     lateMinutes: null,

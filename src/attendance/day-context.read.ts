@@ -1,7 +1,13 @@
 import { Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { internalError } from './attendance-rpc.helpers';
-import { OfficeRuleRow, WeeklyOffRow, pickRuleForDate, pickWeeklyOffDays } from './me-summary.model';
+import {
+  OfficeRuleRow,
+  WeeklyOffRow,
+  pickRuleForDate,
+  pickWeeklyOffDays,
+} from './me-summary.model';
+import { findActiveLeaveForDate } from './leave.repository';
 import {
   assembleDayContext,
   DayContext,
@@ -96,6 +102,10 @@ export async function buildDayContext(
     [assignment.rows[0]?.office_id ?? null, workDate],
   );
 
+  // The AD-22 leave seam (spec-17 D3): today's active leave row — at most
+  // one exists (the partial unique index admits no second pending/approved).
+  const leave = await findActiveLeaveForDate(tx, employeeId, workDate);
+
   const enrolmentRow = enrolment.rows[0] ?? null;
   const settingsRow = settings.rows[0] ?? null;
   const facts: DayFacts = {
@@ -117,6 +127,12 @@ export async function buildDayContext(
     facts,
     assignment.rows[0] ?? null,
     hasCheckIn,
+    leave
+      ? {
+          state: leave.state,
+          part: leave.part as 'full_day' | 'first_half' | 'second_half',
+        }
+      : null,
   );
 }
 

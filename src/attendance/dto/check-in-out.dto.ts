@@ -11,7 +11,6 @@ import {
   Min,
 } from 'class-validator';
 
-
 /**
  * The AD-20 capture object — the identical body both check-in and
  * check-out accept (16-1/16-2). The server makes every decision (PRD);
@@ -39,7 +38,8 @@ export class CheckInOutDto {
   accuracyM!: number;
 
   @ApiPropertyOptional({
-    description: 'True when the device reports the fix as mocked/simulated; null = not detected',
+    description:
+      'True when the device reports the fix as mocked/simulated; null = not detected',
     nullable: true,
   })
   @IsOptional()
@@ -70,7 +70,8 @@ export class CheckInOutDto {
   fixAgeMs!: number;
 
   @ApiPropertyOptional({
-    description: 'Unused until Epic 17 — confirms cancelling a full-day leave to check in',
+    description:
+      'Confirms cancelling a full-day active leave for today (FR-9); without it the check-in answers leave_confirmation_required',
   })
   @IsOptional()
   @IsBoolean()
