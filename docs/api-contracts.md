@@ -1178,6 +1178,30 @@ FR-4: records onboarding completion, once per employee (upsert with
 **Responses:** `200`; `401`; `403` (non-technician role); `400
 VALIDATION_ERROR` (no tenant).
 
+#### `GET /api/v1/attendance/me/summary` `[Bearer JWT, Role: technician]`
+
+Story 15-10: the FR-4 onboarding/entry summary — Office, Start/End time,
+Late cut-off, Weekly offs — for the states that have an anchored office.
+Office and the effective date come from the SAME `attendance_access_state`
+view row `me/access` reads (the office join anchored at TODAY when active,
+at the next period's start when upcoming), so the two endpoints can never
+disagree about which office applies. The rule shown is the office rule row
+covering that effective date (FR-5: rule changes apply from tomorrow);
+weekly offs are the employee's override covering it if one exists, else the
+tenant's effective defaults (an override with an empty `days` array = works
+all 7 days).
+
+**Response:** `{ officeId, officeName, startTime, endTime,
+lateCutOffMinutes, weeklyOffDays }`. Times travel as `HH:mm` (the API
+convention — 12-hour display is the app's job, NFR-5). `weeklyOffDays` are
+ISO weekday numbers `1=Mon..7=Sun`, sorted ascending; `[]` = no weekly
+offs. Fields are `null` when the state carries no anchored office.
+
+**Responses:** `200` (also for `none`/`history_only` — an honest empty
+payload, the endpoint is not defined for those states and the app never
+calls it there); `401`; `403` (non-technician role); `500` if any read
+fails (fail-loud, never a fabricated rule).
+
 ---
 
 ### Places (Epic 1 + Story 15-4, owner only)
