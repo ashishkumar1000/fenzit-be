@@ -139,13 +139,13 @@ async function main() {
     await query(
       `insert into public.attendance_office_rules
          (office_id, tenant_id, valid, start_time, end_time, late_cutoff_minutes, full_day_hours, half_day_hours)
-       values ($1, $2, daterange(current_date - 30, null, '[)'), '09:30', '18:00', 15, 8, 4)`,
-      [OFFICE, TENANT],
+       values ($1, $2, daterange($3::date - 30, null, '[)'), '09:30', '18:00', 15, 8, 4)`,
+      [OFFICE, TENANT, today],
     );
     await query(
       `insert into public.attendance_weekly_off_defaults (tenant_id, valid, days)
-       values ($1, daterange(current_date - 30, null, '[)'), array[7])`,
-      [TENANT],
+       values ($1, daterange($2::date - 30, null, '[)'), array[7])`,
+      [TENANT, today],
     );
     // UPCOMING: future-dated enrolment + matching assignment, both tables in ONE transaction.
     await query(
@@ -194,13 +194,13 @@ async function main() {
   await inTx(async ({ query }) => {
     await query(
       `insert into public.attendance_enrolments (tenant_id, employee_id, valid)
-       values ($1, $2, daterange(current_date, null, '[)'))`,
-      [TENANT, TECH],
+       values ($1, $2, daterange($3::date, null, '[)'))`,
+      [TENANT, TECH, today],
     );
     await query(
       `insert into public.attendance_office_assignments (tenant_id, employee_id, office_id, valid)
-       values ($1, $2, $3, daterange(current_date, null, '[)'))`,
-      [TENANT, TECH, OFFICE],
+       values ($1, $2, $3, daterange($4::date, null, '[)'))`,
+      [TENANT, TECH, OFFICE, today],
     );
   });
   const access3 = await call('GET me/access (active)', 'GET', '/attendance/me/access', techJwt);
@@ -212,8 +212,8 @@ async function main() {
   // Override REPLACES the default (AD-22).
   await pool.query(
     `insert into public.attendance_weekly_off_overrides (tenant_id, employee_id, valid, days)
-     values ($1, $2, daterange(current_date, null, '[)'), array[1])`,
-    [TENANT, TECH],
+     values ($1, $2, daterange($3::date, null, '[)'), array[1])`,
+    [TENANT, TECH, today],
   );
   const sum4 = await call('GET me/summary (override [1])', 'GET', '/attendance/me/summary', techJwt);
   if (JSON.stringify(sum4.json.weeklyOffDays) !== '[1]') fail('override [1] should REPLACE the default [7]', sum4.json);
@@ -248,7 +248,7 @@ main()
       await tx.query(`delete from public.attendance_offices where tenant_id = $1`, [TENANT]);
       await tx.query(`delete from public.attendance_setup_progress where tenant_id = $1`, [TENANT]);
       await tx.query(`delete from public.attendance_settings where tenant_id = $1`, [TENANT]);
-      await tx.query(`delete from public.users where tenant_id = $1`, [TENANT]);
+      await tx.query(`delete from public.users where tenant_id = $1 or id = $2 or id = $3`, [TENANT, OWNER, TECH]);
       await tx.query(`delete from public.tenants where id = $1`, [TENANT]);
       await tx.query('commit');
       console.log('cleanup committed (throwaway tenant removed)');

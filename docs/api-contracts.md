@@ -1199,8 +1199,10 @@ offs. Fields are `null` when the state carries no anchored office.
 
 **Responses:** `200` (also for `none`/`history_only` — an honest empty
 payload, the endpoint is not defined for those states and the app never
-calls it there); `401`; `403` (non-technician role); `500` if any read
-fails (fail-loud, never a fabricated rule).
+calls it there); `401`; `403` (non-technician role); `404`
+`ATTENDANCE_TENANT_NOT_FOUND` only if the tenant row vanishes between the
+view read and the tenant-date resolution (defence in depth — fail-loud);
+`500` if any read fails (fail-loud, never a fabricated rule).
 
 ---
 

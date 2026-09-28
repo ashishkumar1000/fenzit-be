@@ -115,12 +115,14 @@ export function toMeSummaryResponse(input: {
   };
 }
 
-/** The honest empty for states the endpoint is not defined for. */
-export const EMPTY_ME_SUMMARY: MeSummaryResponse = {
+/** The honest empty for states the endpoint is not defined for. Frozen —
+ *  every honest-empty 200 returns THE SAME object by reference, so a stray
+ *  mutation would poison all later responses process-wide. */
+export const EMPTY_ME_SUMMARY: MeSummaryResponse = Object.freeze({
   officeId: null,
   officeName: null,
   startTime: null,
   endTime: null,
   lateCutOffMinutes: null,
-  weeklyOffDays: [],
-};
+  weeklyOffDays: Object.freeze([]) as unknown as number[],
+});
