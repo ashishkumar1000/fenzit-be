@@ -116,7 +116,7 @@ export async function insertInitialLeaveDays(
     ) {
       throw leaveRejectionToException({
         errorCode: ErrorCode.LEAVE_OVERLAP,
-        message: 'Your request overlaps existing leave',
+        message: 'You already have a leave request covering one of these dates',
       });
     }
     throw err;

@@ -114,21 +114,21 @@ export function validateApplyFacts(
   if (floor !== null && dates[0] < floor) {
     return {
       errorCode: ErrorCode.LEAVE_BEFORE_START_DATE,
-      message: `You can apply for leave only on or after your start date (${floor})`,
+      message: `You can only apply for leave from ${floor} onward`,
     };
   }
   const oldestAllowed = addDays(facts.today, -LEAVE_MAX_PAST_DAYS);
   if (dates[0] < oldestAllowed) {
     return {
       errorCode: ErrorCode.LEAVE_TOO_OLD,
-      message: `Leave can be applied at most ${LEAVE_MAX_PAST_DAYS} days in the past`,
+      message: `You can only apply for leave up to ${LEAVE_MAX_PAST_DAYS} days in the past`,
     };
   }
   const checkedIn = facts.checkedInDates[0];
   if (checkedIn !== undefined) {
     return {
       errorCode: ErrorCode.LEAVE_CHECKED_IN_CONFLICT,
-      message: `You have already checked in on ${checkedIn}. It cannot be requested as leave`,
+      message: `You already checked in on ${checkedIn}, so it can't be requested as leave`,
     };
   }
   const workingDays = dates.filter((d) => facts.spanFacts.get(d)?.isWorkingDay);
@@ -154,7 +154,7 @@ export function validateApplyFacts(
   if (overlap !== undefined) {
     return {
       errorCode: ErrorCode.LEAVE_OVERLAP,
-      message: `Your request overlaps existing leave on ${overlap}`,
+      message: 'You already have a leave request covering one of these dates',
     };
   }
   return null;
