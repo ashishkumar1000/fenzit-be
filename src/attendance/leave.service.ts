@@ -39,6 +39,7 @@ import {
   readSettingsGate,
   readSpanFacts,
 } from './leave.repository';
+import { findActiveOverrideDates } from './corrections.repository';
 import {
   insertInitialLeaveDays,
   transitionLeaveDays,
@@ -224,7 +225,7 @@ export class LeaveService {
       input.dto.startDate,
       input.dto.endDate ?? input.dto.startDate,
     );
-    const [enrolment, settings, spanFacts, overlapping, checkedIn] =
+    const [enrolment, settings, spanFacts, overlapping, checkedIn, overrideDates] =
       await Promise.all([
         readEnrolmentFloor(tx, input.employeeId, today),
         readSettingsGate(tx, input.tenantId),
@@ -251,6 +252,12 @@ export class LeaveService {
           dates[dates.length - 1],
           today,
         ),
+        findActiveOverrideDates(tx, {
+          tenantId: input.tenantId,
+          employeeId: input.employeeId,
+          start: dates[0],
+          end: dates[dates.length - 1],
+        }),
       ]);
 
     const rejection = validateApplyFacts(dates, {
@@ -260,6 +267,7 @@ export class LeaveService {
       spanFacts,
       overlappingDates: overlapping.map((d) => d.leave_date),
       checkedInDates: checkedIn,
+      overrideDates,
     });
     if (rejection) throw leaveRejectionToException(rejection);
 

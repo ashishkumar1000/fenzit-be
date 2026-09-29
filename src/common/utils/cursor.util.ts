@@ -20,7 +20,9 @@ export type CursorScope =
   | 'notifications-list'
   | 'reports-list'
   | 'leave-me-list'
-  | 'leave-owner-list';
+  | 'leave-owner-list'
+  | 'day-corrections-owner'
+  | 'day-corrections-me';
 
 interface CursorPayload {
   id: string;

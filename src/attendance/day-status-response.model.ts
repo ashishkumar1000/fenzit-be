@@ -1,0 +1,138 @@
+/**
+ * Pure response model for the day-statuses reads (Epic 18, 18-1): the
+ * `DayStatusRow` a range read renders and its list envelope. The engine
+ * (day-status.model.ts) computes every number this file only shapes —
+ * nothing here re-derives a grade, a late count or a credit (AD-22: one
+ * implementation).
+ *
+ * The 12 keys of UX-DR1 ride on the engine's STATUS_KEYS (its own source
+ * of truth); the FE Badge vocabulary (18-3) is generated from that array's
+ * documentation, never re-enumerated here.
+ */
+import { toTenantOffsetIso } from './check-in-out.model';
+import type { LatestCorrectionView } from './correction.model';
+
+const STATUS_KEYS = [
+  'not_tracked',
+  'not_checked_in_yet',
+  'in_progress',
+  'weekly_off',
+  'holiday',
+  'worked_on_holiday',
+  'leave',
+  'half_day_leave',
+  'present',
+  'half_day',
+  'absent',
+  'checkout_missing',
+] as const;
+
+const MARKER_KEYS = [
+  'corrected',
+  'leave_pending',
+  'checkout_missing',
+  'fake_location_attempt',
+] as const;
+
+export type DayStatusKey = (typeof STATUS_KEYS)[number];
+export type DayMarkerKey = (typeof MARKER_KEYS)[number];
+export type AttendanceSource = 'gps' | 'manual' | null;
+
+/** One employee-day of the FR-10 grid (a `me` or owner range read row). */
+export interface DayStatusRow {
+  workDate: string;
+  status: DayStatusKey;
+  lateMinutes: number | null;
+  isLate: boolean;
+  earlyCheckoutMinutes: number | null;
+  earlyCheckout: boolean;
+  workedMinutes: number | null;
+  /** FR-11 credits — decimal, summing over any range (Epic 19 reads them). */
+  daysWorked: number;
+  leaveCredit: number;
+  workedOnHolidayCredit: number;
+  isWeeklyOff: boolean;
+  holidayName: string | null;
+  isWorkingDay: boolean;
+  officeId: string | null;
+  officeName: string | null;
+  /** Check-in/out as AD-7 tenant-offset ISO, from the effective instants
+   *  (a times-only override's instants replace the record's). */
+  checkinAt: string | null;
+  checkoutAt: string | null;
+  checkinSource: AttendanceSource;
+  checkoutSource: AttendanceSource;
+  markers: DayMarkerKey[];
+  /** One-liner for the sheet: the newest entry in the day's audit chain. */
+  latestCorrection?: LatestCorrectionView;
+}
+
+/** Owner: the single-employee range (the multi-employee grid is Epic 19). */
+export interface DayStatusesResponse {
+  employeeId: string;
+  from: string;
+  to: string;
+  days: DayStatusRow[];
+}
+
+/** Technician: the own range (identity from the JWT only). */
+export interface MeDayStatusesResponse {
+  from: string;
+  to: string;
+  days: DayStatusRow[];
+}
+
+export const STATUS_KEYS_READONLY: readonly DayStatusKey[] = STATUS_KEYS;
+export const MARKER_KEYS_READONLY: readonly DayMarkerKey[] = MARKER_KEYS;
+
+/**
+ * Wire mapper for one engine outcome: the ctx labels plus the instants as
+ * AD-7 tenant-offset ISO. `checkin`/`checkout` are the day's effective
+ * instants (the read layer passes them once). `isLate`/`earlyCheckout` are
+ * the same booleans the FR-4 today-record derives from the same imported
+ * math — the parity probe pins them.
+ */
+export function toDayStatusRow(input: {
+  workDate: string;
+  isWeeklyOff: boolean;
+  holidayName: string | null;
+  isWorkingDay: boolean;
+  officeId: string | null;
+  officeName: string | null;
+  timezone: string;
+  outcome: import('./day-status.model').DayStatusOutcome;
+  checkin: Date | null;
+  checkout: Date | null;
+  latestCorrection: LatestCorrectionView | null;
+}): DayStatusRow {
+  const { outcome, latestCorrection } = input;
+  return {
+    workDate: input.workDate,
+    status: outcome.status,
+    lateMinutes: outcome.lateMinutes,
+    isLate: outcome.isLate,
+    earlyCheckoutMinutes: outcome.earlyCheckoutMinutes,
+    earlyCheckout: outcome.earlyCheckout,
+    workedMinutes: outcome.workedMinutes,
+    daysWorked: outcome.daysWorked,
+    leaveCredit: outcome.leaveCredit,
+    workedOnHolidayCredit: outcome.workedOnHolidayCredit,
+    isWeeklyOff: input.isWeeklyOff,
+    holidayName: input.holidayName,
+    isWorkingDay: input.isWorkingDay,
+    officeId: input.officeId,
+    officeName: input.officeName,
+    checkinAt:
+      input.checkin != null
+        ? toTenantOffsetIso(input.checkin, input.timezone)
+        : null,
+    checkoutAt:
+      input.checkout != null
+        ? toTenantOffsetIso(input.checkout, input.timezone)
+        : null,
+    checkinSource: outcome.checkinSource,
+    checkoutSource: outcome.checkoutSource,
+    markers: [...outcome.markers],
+    ...(latestCorrection ? { latestCorrection } : {}),
+  };
+}

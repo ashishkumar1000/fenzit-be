@@ -77,6 +77,12 @@ export interface ApplyFactInput {
   spanFacts: Map<string, SpanDayFacts>;
   overlappingDates: string[];
   checkedInDates: string[];
+  /** D2 mirror gate: dates carrying a non-absent day override
+   *  (status present | half_day, or a times-only correction) — the
+   *  `findActiveOverrideDates` read's non-empty output. REQUIRED: a future
+   *  consumer omitting the list would silently re-open the double-credit
+   *  hole (review G2-P5). */
+  overrideDates: string[];
 }
 
 /**
@@ -127,9 +133,21 @@ export function validateApplyFacts(
   }
   const workingDays = dates.filter((d) => facts.spanFacts.get(d)?.isWorkingDay);
   if (workingDays.length === 0) {
+    // Before the mirror gate: an all-off span whose dates carry a
+    // corrected OFF-day reads LEAVE_ALREADY_OFF, not a correction conflict
+    // (the more specific rejection wins the report, G2-P6).
     return {
       errorCode: ErrorCode.LEAVE_ALREADY_OFF,
       message: 'These days are already off',
+    };
+  }
+  // The D2 mirror gate: a corrected day is owner-resolved — approved leave
+  // may sit only under a plain `absent` correction.
+  const corrected = facts.overrideDates[0];
+  if (corrected !== undefined) {
+    return {
+      errorCode: ErrorCode.LEAVE_CHECKED_IN_CONFLICT,
+      message: `You have a correction on ${corrected}. It cannot be requested as leave`,
     };
   }
   const overlap = facts.overlappingDates[0];

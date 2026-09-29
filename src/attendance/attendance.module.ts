@@ -16,6 +16,10 @@ import { LeaveService } from './leave.service';
 import { LeaveReadService } from './leave-read.service';
 import { MeLeaveController } from './me-leave.controller';
 import { LeaveController } from './leave.controller';
+import { DayStatusesService } from './day-status.read';
+import { DayStatusesController } from './day-statuses.controller';
+import { CorrectionsService } from './corrections.service';
+import { CorrectionsController } from './corrections.controller';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PgModule } from '../common/pg/pg.module';
 
@@ -38,6 +42,8 @@ import { PgModule } from '../common/pg/pg.module';
     MeAttendanceController,
     MeLeaveController,
     LeaveController,
+    DayStatusesController,
+    CorrectionsController,
   ],
   providers: [
     AttendanceService,
@@ -49,6 +55,8 @@ import { PgModule } from '../common/pg/pg.module';
     CheckInOutService,
     LeaveService,
     LeaveReadService,
+    DayStatusesService,
+    CorrectionsService,
   ],
   exports: [
     AttendanceService,

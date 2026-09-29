@@ -26,6 +26,11 @@ export interface OfficeRuleRow {
   start_time: string;
   end_time: string;
   late_cutoff_minutes: number;
+  /** Owner-configured grading thresholds, hours (G2-D1 ruling: these two
+   *  columns ARE the full/half-day thresholds — window minutes only drive
+   *  the late/early metrics). float8 from the SQL reads. */
+  full_day_hours: number;
+  half_day_hours: number;
 }
 
 /** One weekly-off defaults/overrides row (15-5 tables). */

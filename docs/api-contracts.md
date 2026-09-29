@@ -1506,6 +1506,108 @@ employee_cancelled (owner), cancelled_by_disable, checkin_auto_cancel
 (owner, deduped per date). Disabling an employee cancels ALL their pending
 leave plus approved leave from the disable's effective date (AD-23).
 
+## Day statuses & corrections (Epic 18, Stories 18-1/18-2)
+
+Two tables (migration `20260929000002`, review-hardened by
+`20260929000003` — the at-rest status-XOR-instants check and the
+corrections history page index): `attendance_day_overrides` — one
+ACTIVE row per `(employee_id, work_date)` (`UNIQUE`, status
+present | half_day | absent XOR manual instants, `deleted_at` soft
+removal; the engine reads only `deleted_at IS NULL` rows, so a removal
+recompute-lives on the next read) — and `attendance_corrections`, an
+append-only audit chain (per-date `seq`, note 1-500, old/new value JSON).
+New in the same migration: `attendance_attempts.acknowledged_at` (the
+AD-10 fake-location marker lifecycle). Zero new stored functions (AD-3
+amendment); all logic lives in `day-status.model.ts` (the FR-10 engine)
+and `corrections.service.ts` under the AD-5 employee lock.
+Spec: `spec-18-1-and-18-2-backend-day-status-and-corrections.md`.
+
+**The FR-10 engine (one implementation):** first-match-wins per
+employee-date — 1 active correction (status arm short-circuits; a
+times-only arm substitutes instants per field and evaluation CONTINUES,
+so a corrected check-in on an off-day reads `worked_on_holiday`) →
+2 `not_tracked` → 3 `worked_on_holiday` (weekly off ∪ holiday with a
+check-in; no Late/Early flags on off-day statuses) → 4 `weekly_off`
+/ `holiday` → 5 approved full-day leave, no check-in (`leave`,
+leaveCredit 1) → 6 `half_day_leave` (today's open record defers to rule
+10; the checkout_missing arm is past-only) → 7 graded
+present / half_day / absent by the worked minutes → 8 past open record
+(`checkout_missing`, daysWorked 0 until corrected) → 9 past `absent` →
+10 today/future (`not_checked_in_yet` / `in_progress`). Markers:
+`corrected` (active override), `leave_pending` (any pending part),
+`checkout_missing`, `fake_location_attempt` (unacknowledged mocked
+attempts — clears on acknowledge, AD-10). FR-11 credits per row:
+`daysWorked` (present 1, half_day 0.5, earned half 0.5, else 0),
+`leaveCredit` (1 / 0.5), `workedOnHolidayCredit` (1 / 0.5 / 0); leave
+outranked by rules 1/3/4/7 stays data-only with zero credits — Epic 19
+sums these same rows.
+
+**Routes (`/api/v1/attendance`; cross-tenant ids answer 404
+`ATTENDANCE_EMPLOYEE_NOT_FOUND` — no existence leak):**
+
+- `GET /attendance/day-statuses?employeeId&from&to` `[owner]` →
+  `200 { employeeId, from, to, days: DayStatusRow[] }` — every date of the
+  range, oldest first; `from ≤ to`, span ≤ 62 days (else `422
+  ATTENDANCE_INVALID_RANGE`); future dates valid input. `DayStatusRow`:
+  `{ workDate, status, lateMinutes, isLate, earlyCheckoutMinutes,
+  earlyCheckout, workedMinutes, daysWorked, leaveCredit,
+  workedOnHolidayCredit, isWeeklyOff, holidayName, isWorkingDay,
+  officeId, officeName, checkinAt, checkoutAt,
+  checkinSource: 'gps'|'manual'|null, checkoutSource, markers,
+  latestCorrection? }`; instants are tenant-offset ISO (AD-7).
+- `GET /attendance/me/day-statuses?from&to` `[technician]` → same rows for
+  the JWT identity; the AD-17 gate answers `403 ATTENDANCE_NOT_TRACKED`
+  when access state is none (history_only stays readable).
+- `PUT /attendance/corrections/:employeeId/:workDate` `[owner]` — body:
+  exactly one of `{ status: 'present'|'half_day'|'absent', note }` XOR
+  `{ checkinAt, checkoutAt?, note }` (a checkout alone → `422
+  VALIDATION_ERROR`; no `X-Idempotency-Key` — AD-6's letter: a replay is
+  a legitimate re-correction). A malformed `employeeId` (non-UUID) and a
+  malformed `workDate` both answer `422 VALIDATION_ERROR` pre-DB — never
+  Postgres's raw 400. Gates in order: 404
+  employee scope + note hygiene (trim, control chars, 1-500) → `422
+  ATTENDANCE_FUTURE_DATE` (workDate > tenant today) → `422
+  ATTENDANCE_DATE_NOT_TRACKED` → instants anchor the work date (check-in
+  exactly; check-out on the date or +1 day; NEITHER instant after DB now
+  → `422 ATTENDANCE_INVALID_RANGE`) → upsert + ONE audit row. `200 { workDate,
+  override, correctedAt, actorId }`; `attendance_records` is never touched.
+- `DELETE /attendance/corrections/:employeeId/:workDate` `[owner]` → soft
+  delete → `200 { deleted: boolean }`, `200 { deleted: false }` on an own
+  retry; ONE audit row ("Removed correction", new value empty).
+- `GET /attendance/corrections?employeeId&workDate?&cursor&limit`
+  `[owner]` and `GET /attendance/me/corrections?workDate?` `[technician]`
+  (the owner read 404s a foreign employee no-leak; a malformed
+  `employeeId` → `422 VALIDATION_ERROR`, same as the write routes; the
+  `me` read 403s `ATTENDANCE_NOT_TRACKED` when the access state is none)
+  → `PaginatedResponse` of `{ id, employeeId, workDate, correctedAt,
+  actorName, note, oldValue, newValue }`. Page bounds: `limit` 1-50
+  (default 20); pages order `created_at desc, id desc`; a foreign-scope
+  cursor → `400 VALIDATION_ERROR 'Invalid cursor'`. The
+  `attendance_correction_audit.seq` identity column is reserved for the
+  last-guard recompute chain — no consumer today; history reads order by
+  `created_at desc, id desc`, not `seq`. Cursors scope
+  `day-corrections-owner` / `day-corrections-me` — a cursor never replays
+  across the two endpoints.
+- `POST /attendance/attempts/acknowledge` `[owner]` — body
+  `{ employeeId, workDate }` → `200 { acknowledgedCount }` (200 even at
+  0; the attempt rows are kept for the dispute view, AD-4). Deliberate
+  asymmetry vs PUT/DELETE: acknowledge runs only the workDate-shape and
+  employee-404 gates — no future-date or track-day gate — because it
+  filters attempt rows rather than asserting a state change, and
+  accepting any date yields 200 at 0 instead of an error.
+
+**Interaction with leave (D2 mirror gate):** a leave apply or on-behalf
+apply (and the apply preview) rejects a target date carrying a
+NON-absent override — status present | half_day, or a times-only
+correction — with `LEAVE_CHECKED_IN_CONFLICT`; approved leave may sit
+only under a plain `absent` correction. The same code intentionally
+serves both arms (a check-in conflict and a correction conflict) — the
+message distinguishes them ("already checked in" vs "You have a
+correction on …"), a spec-sanctioned reuse so clients gate on one code.
+A correction landing on a date
+covered by active leave (pending or approved) is always allowed — the
+engine's recompute decides which side wins the status by the FR-10 order.
+
 ## Swagger
 
 OpenAPI is auto-generated at `/api/docs` in **non-production** environments

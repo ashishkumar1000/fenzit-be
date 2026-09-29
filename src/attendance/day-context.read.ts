@@ -96,7 +96,8 @@ export async function buildDayContext(
   // NULL (not '') when no assignment covers — an untyped '' fails uuid
   // conversion and would 500 the not-tracked path (review finding).
   const rules = await tx.query<OfficeRuleRow>(
-    `select id, valid::text, start_time::text, end_time::text, late_cutoff_minutes
+    `select id, valid::text, start_time::text, end_time::text, late_cutoff_minutes,
+            full_day_hours::float8, half_day_hours::float8
      from public.attendance_office_rules
      where office_id = $1::uuid and valid @> $2::date limit 1`,
     [assignment.rows[0]?.office_id ?? null, workDate],

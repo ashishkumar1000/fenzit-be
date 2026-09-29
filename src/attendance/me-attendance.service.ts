@@ -237,7 +237,7 @@ export class MeAttendanceService {
   ): Promise<OfficeRuleRow[]> {
     const { data, error } = await admin
       .from('attendance_office_rules')
-      .select('id, valid, start_time, end_time, late_cutoff_minutes')
+      .select('id, valid, start_time, end_time, late_cutoff_minutes, full_day_hours, half_day_hours')
       .eq('tenant_id', tenantId)
       .eq('office_id', officeId)
       .returns<OfficeRuleRow[]>();

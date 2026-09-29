@@ -53,6 +53,7 @@ function factInput(
     ]),
     overlappingDates: [],
     checkedInDates: [],
+    overrideDates: [],
     ...overrides,
   };
 }
@@ -222,6 +223,36 @@ describe('validateApplyFacts — the gate and the five rejections, in order', ()
         factInput({ checkedInDates: ['2026-09-29'] }),
       )?.errorCode,
     ).toBe(ErrorCode.LEAVE_CHECKED_IN_CONFLICT);
+    // The D2 mirror gate (review G2-P1): a NON-ABSENT override on a span
+    // date reads the same code with the correction message, naming the date.
+    const rejected = validateApplyFacts(
+      dates,
+      factInput({ overrideDates: ['2026-09-30'] }),
+    );
+    expect(rejected?.errorCode).toBe(ErrorCode.LEAVE_CHECKED_IN_CONFLICT);
+    expect(rejected?.message).toBe(
+      'You have a correction on 2026-09-30. It cannot be requested as leave',
+    );
+  });
+
+  it('admits leave over a plain `absent` correction (the only override leave may sit under)', () => {
+    // The mirror gate's fact read only returns non-absent dates, so an
+    // `absent`-only correction never appears — the permissive reading.
+    expect(
+      validateApplyFacts(dates, factInput({ overrideDates: [] })),
+    ).toBeNull();
+  });
+
+  it('the check-in conflict outranks the correction conflict (checked-in already proves presence, D6 order)', () => {
+    const rejection = validateApplyFacts(
+      dates,
+      factInput({
+        checkedInDates: ['2026-09-29'],
+        overrideDates: ['2026-09-30'],
+      }),
+    );
+    expect(rejection?.errorCode).toBe(ErrorCode.LEAVE_CHECKED_IN_CONFLICT);
+    expect(rejection?.message).toContain('already checked in');
   });
 
   it('rejects a range where every date is already off (FR-12 wording)', () => {
@@ -239,6 +270,14 @@ describe('validateApplyFacts — the gate and the five rejections, in order', ()
         message: 'These days are already off',
       }),
     );
+    // Even when an off date carries a corrected override, the all-off
+    // reading wins the report (review G2-P6: the specific rejection first).
+    expect(
+      validateApplyFacts(
+        ['2026-09-27', '2026-09-28'],
+        factInput({ spanFacts: allOff, overrideDates: ['2026-09-28'] }),
+      )?.errorCode,
+    ).toBe(ErrorCode.LEAVE_ALREADY_OFF);
   });
 
   it('admits a MIXED range and reports overlap last, naming the date', () => {

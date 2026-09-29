@@ -37,6 +37,7 @@ import {
   readSpanFacts,
   type LeaveListRow,
 } from './leave.repository';
+import { findActiveOverrideDates } from './corrections.repository';
 import {
   countWorkingDays,
   enumerateDates,
@@ -175,7 +176,7 @@ export class LeaveReadService {
     }
     const dates = enumerateDates(dto.startDate, dto.endDate ?? dto.startDate);
     const today = await tenantToday(tx, tenantId);
-    const [enrolment, settings, spanFacts, overlapping, checkedIn] =
+    const [enrolment, settings, spanFacts, overlapping, checkedIn, overrideDates] =
       await Promise.all([
         readEnrolmentFloor(tx, employeeId, today),
         readSettingsGate(tx, tenantId),
@@ -202,6 +203,12 @@ export class LeaveReadService {
           dates[dates.length - 1],
           today,
         ),
+        findActiveOverrideDates(tx, {
+          tenantId,
+          employeeId,
+          start: dates[0],
+          end: dates[dates.length - 1],
+        }),
       ]);
     const rejection = validateApplyFacts(dates, {
       today,
@@ -210,6 +217,7 @@ export class LeaveReadService {
       spanFacts,
       overlappingDates: overlapping.map((d) => d.leave_date),
       checkedInDates: checkedIn,
+      overrideDates,
     });
     if (rejection) {
       return {

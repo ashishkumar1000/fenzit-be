@@ -45,6 +45,11 @@ export interface DayContext {
   endMinute: number | null;
   midpointMinute: number | null;
   lateCutoffMinutes: number | null;
+  /** G2-D1 ruling: the owner-configured thresholds (full_day_hours /
+   *  half_day_hours × 60) — THE grading thresholds; the window span drives
+   *  only the late/early metrics. Null when no rule covers. */
+  fullDayMinutes: number | null;
+  halfDayMinutes: number | null;
   isWeeklyOff: boolean;
   holidayId: string | null;
   holidayName: string | null;
@@ -299,6 +304,8 @@ export function assembleDayContext(
         ? computeMidpointMinute(startMinute, endMinute)
         : null,
     lateCutoffMinutes: rule ? rule.late_cutoff_minutes : null,
+    fullDayMinutes: rule ? rule.full_day_hours * 60 : null,
+    halfDayMinutes: rule ? rule.half_day_hours * 60 : null,
     isWeeklyOff,
     holidayId: facts.holidayId,
     holidayName: facts.holidayName,
