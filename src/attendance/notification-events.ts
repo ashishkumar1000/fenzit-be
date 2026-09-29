@@ -37,6 +37,18 @@ export const ATTENDANCE_NOTIFICATION_EVENT = {
   LEAVE_CANCELLED_BY_DISABLE: 'leave.cancelled_by_disable',
   /** A confirmed check-in auto-cancelled today's full-day leave (17-4, FR-9). */
   LEAVE_CHECKIN_AUTO_CANCEL: 'leave.checkin_auto_cancel',
+  /**
+   * FR-23 (19-1): "You haven't checked in" — the tracked employee, at most
+   * once per work date (pg_cron's attendance_run_reminders writes the
+   * reminder arms; the dedupe rows below are database-guaranteed).
+   */
+  REMINDER_CHECKIN: 'attendance.reminder_checkin',
+  /** "You haven't checked out" — Expected end + the actual late minutes. */
+  REMINDER_CHECKOUT: 'attendance.reminder_checkout',
+  /** Daily not-checked-in summary — the owner, once per office per day. */
+  REMINDER_NOT_CHECKED_IN: 'attendance.reminder_not_checked_in',
+  /** Pending leave exist — the owner, once per day at 10:00 tenant wall time. */
+  PENDING_LEAVE_REMINDER: 'leave.pending_reminder',
 } as const;
 
 export type AttendanceNotificationEvent =
@@ -153,6 +165,49 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
     payloadFields: ['employeeName', 'leaveDate'],
     dedupeKeyShape:
       '<tenantId>:leave.checkin_auto_cancel:<recipientId>:<requestId>:<leaveDate>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKIN]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKIN,
+    // NFR-10 wave 1 (time-sensitive): tracked employee, working day, no
+    // check-in, no approved full-day leave; due at Start + Late cut-off
+    // (Midpoint + cut-off on an approved first-half leave day). Written by
+    // attendance_run_reminders() — never by an API request path.
+    recipients:
+      'A tracked employee, at most once per work_date (FR-23); never on weekly offs, holidays, an approved full-day leave, the enable-day grace or a status-only day override.',
+    payloadFields: ['workDate'],
+    dedupeKeyShape:
+      '<tenantId>:attendance.reminder_checkin:<recipientId>:<workDate>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKOUT]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKOUT,
+    // NFR-10 wave 1. Due at Expected end + actual late minutes (late = 0 →
+    // Expected end, user decision 2026-09-29); Midpoint + late minutes on
+    // an approved second-half leave day.
+    recipients:
+      'A tracked employee with a check-in and no check-out by the due instant, at most once per work_date.',
+    payloadFields: ['workDate', 'checkinAt'],
+    dedupeKeyShape:
+      '<tenantId>:attendance.reminder_checkout:<recipientId>:<workDate>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.REMINDER_NOT_CHECKED_IN]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.REMINDER_NOT_CHECKED_IN,
+    // NFR-10 wave 2 (informational): the owner, keyed per office so two
+    // offices summarise independently on the same day.
+    recipients:
+      'The tenant owner, once per office per day at that office’s Start + Late cut-off, when the office has tracked employees with no check-in and no approved full-day leave.',
+    payloadFields: ['officeName', 'notCheckedInCount', 'workDate'],
+    dedupeKeyShape:
+      '<tenantId>:attendance.reminder_not_checked_in:<recipientId>:<workDate>:<officeId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER,
+    // NFR-10 wave 2. A request arriving after 10:00 stays silent until
+    // tomorrow (FR-23's "once a day"): the key embeds the work date only.
+    recipients:
+      'The tenant owner, once per day at 10:00 tenant wall time, when any pending leave day exists for the tenant.',
+    payloadFields: ['pendingCount'],
+    dedupeKeyShape:
+      '<tenantId>:leave.pending_reminder:<recipientId>:<workDate>',
   },
 };
 

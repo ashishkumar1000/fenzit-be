@@ -1608,6 +1608,128 @@ A correction landing on a date
 covered by active leave (pending or approved) is always allowed — the
 engine's recompute decides which side wins the status by the FR-10 order.
 
+## Scheduled reminders & read views (Epic 19, Stories 19-1/19-2/19-3)
+
+Migration `20260929000004` (pg_cron — AD-14, the ONE sanctioned SQL-side
+behaviour in Epics 16–19; everything else stays NestJS-first, AD-22 = the
+TS `DayContext`).
+
+**19-1 — `attendance_run_reminders()` every 5 minutes** (`attendance-run-reminders`;
+per-tenant `BEGIN…EXCEPTION → RAISE WARNING` with the tenant id only — one
+tenant's failure never stops the others; dedupe keys are the 14-2
+tenant-prefixed shape riding the `notifications.dedupe_key` partial unique
+index with `ON CONFLICT DO NOTHING`, so a re-run never re-notifies). Fires
+only when an office rule, the enrolment AND the assignment all cover today
+(no rule → the employee drops out entirely) and never on weekly offs or
+holidays. Approved leave shifts/suppresses; pending leave suppresses
+nothing. Registry entries: `notification-events.ts` (AD-13 — the FE mirror
+is the Epic 19 FE stories' work).
+
+| Event (recipient) | Due instant (tenant wall time) | Payload (camelCase) | Dedupe key (tenant-prefixed) |
+|---|---|---|---|
+| `attendance.reminder_checkin` (employee; wave 1) | Start + Late cut-off (Midpoint + cut-off on an approved first-half leave day; an approved FULL-day leave suppresses) | `{ workDate }` | `<tenantId>:attendance.reminder_checkin:<recipientId>:<workDate>` |
+| `attendance.reminder_checkout` (employee; wave 1) | Expected end + actual late minutes (`late = 0` → Expected end; Midpoint + late on an approved second-half leave day) | `{ workDate, checkinAt }` | `<tenantId>:attendance.reminder_checkout:<recipientId>:<workDate>` |
+| `attendance.reminder_not_checked_in` (owner per office; wave 2) | Start + Late cut-off | `{ officeName, notCheckedInCount, workDate }` | `<tenantId>:attendance.reminder_not_checked_in:<recipientId>:<workDate>:<officeId>` |
+| `leave.pending_reminder` (owner; wave 2) | 10:00 tenant wall time, once per day | `{ pendingCount }` | `<tenantId>:leave.pending_reminder:<recipientId>:<workDate>` |
+
+Reminder recipients are FR-2-tracked and grace-aware (the enable-day grace
+skips the check-in reminder and the summary count); a status-only day
+override is an owner adjudication and suppresses both the employee
+reminders and the summary count for that day. Two hygiene jobs ship
+alongside: `cron-job-run-details-cleanup` (daily 03:00 — prunes
+`cron.job_run_details` past 7 days) and
+`attendance-attempts-coordinate-cleanup` (daily 03:10 — AD-26: nulls the
+coordinates of `outcome <> 'ok'` attempt rows after 90 days; accepted
+records' coordinates are kept forever).
+
+**NFR-9 (the reminder job's Grafana signal):** two OTel ObservableGauges —
+`attendance.reminder_job.runs` (last-24 h run count, the
+`cron.job.status` = succeeded | failed attribute) and
+`attendance.reminder_job.last_run_age_seconds` — observed at EXPORT time
+over `cron.job_run_details` via the pg pool seam
+(`src/telemetry/app-metrics.ts` + `ReminderJobMetricsBinder`). No timer in
+the web service (AD-14 posture), no new tables (AD-26). No finished run in
+the window → the gauges observe nothing.
+
+**18-5 fold-in — `attendance_complete_setup` gate 3** (migration
+`20260929000005`): every ACTIVE office must carry an office rule covering
+today at completion — else `422`-shaped PT422 with
+`ATTENDANCE_SETUP_INCOMPLETE` (`hint` the FE wizard maps). The gate
+messages are **owner-facing** and tell the owner WHY and what to do — gate
+3: "attendance setup could not be completed: office ««office»» has no
+timing rule covering today. Add a rule for this office, then try again.";
+gates 1–2 use the same owner-friendly treatment; the raw tenant-id text
+lives only in the SQL `detail` (never user-facing).
+
+**Read routes (aggregated in TypeScript over the 18-x day-status engine —
+one implementation; a dashboard/calendar/summary cell can never disagree):**
+
+#### `GET /api/v1/attendance/dashboard?officeId=` `[Bearer JWT, Role: owner]`
+
+FR-24, today only (no date params). Tiles: `tracked` (grid rows where the
+engine tracks today), `checkedIn` (status `in_progress` | `present` |
+`half_day` | `half_day_leave` | `worked_on_holiday` — engine-authoritative,
+includes status-only overrides), `notCheckedIn` (`not_checked_in_yet`),
+`late` (outcome `isLate`), `onLeave` (`leave` | `half_day_leave`).
+`checkedIn` and `onLeave` overlap on a checked-in half-day leave — the
+tiles answer five separate questions, not partitions. The optional
+`officeId` filters by today's covering assignment office (malformed →
+`422 VALIDATION_ERROR`; unknown-but-well-formed → `200` with zeros +
+empty flags, never `404`).
+
+**Flags:** `checkoutMissing` — past tracked dates with a check-in, no
+check-out and no adjudicating override (engine rule 8's exact set,
+override-only days included; clears when a correction lands);
+`fakeLocationAttempt` — unacknowledged `mocked` attempts grouped per
+employee-date with `attemptCount` (clears on acknowledge, AD-10). Rows:
+`{ employeeId, employeeName, workDate, officeName }` (+ `attemptCount`),
+ascending by workDate then name. A parity probe in the integration suite
+pins flag-set ↔ engine markers.
+
+**Responses:** `200` tiles + flags; `403` (non-owner); `422`
+`VALIDATION_ERROR`; `500` fail-loud.
+
+#### `GET /api/v1/attendance/monthly?from=&to=&officeId=` `[Bearer JWT, Role: owner]`
+
+FR-25 — one summary row per tracked employee with any day in the range
+(history-only/disabled employees included, FR-28; dates after disable read
+`not_tracked` and drop out). `from ≤ to`, span ≤ **31 days**, `to ≤
+tenant-today` (else `422 ATTENDANCE_INVALID_RANGE`). `officeId` filters by
+today's covering assignment office (unknown → `200` empty roster, never
+`404`). Office in each row = the assignment covering TODAY (the roster's
+current office). Sorting: resolved name, then id.
+
+**Response:** `{ from, to, employees: [{ employeeId, employeeName,
+officeId, officeName, summary }] }` with
+`summary: { daysWorked, halfDays, lateCount, leave, weeklyOffs, holidays,
+workedOnHoliday, absent, checkoutMissing }` — Σ/count of the engine's
+FR-11 credits over the same grid rows (no second implementation); a later
+correction flips `checkoutMissing`/`absent` live.
+
+#### `GET /api/v1/attendance/me/monthly?from=&to=` `[Bearer JWT, Role: technician]`
+
+FR-26 — the SAME summary shape for the JWT identity (server-side scoping;
+FR-11's owner↔me parity is structural — one aggregation function), plus
+`weeklyOffs` (the today-effective weekly-off weekdays, ISO `1=Mon..7=Sun`,
+via the shared `pickWeeklyOffDays` contract) and `upcomingHolidays` (the
+tenant's next 10 from today, `{ holidayDate, holidayName }`). Leave
+history is NOT duplicated — `GET /attendance/me/leave` serves it
+paginated. Range rules as the owner route (span ≤ 31, `to ≤ tenant-today`,
+422s).
+
+**Unbounded reads (accepted, 2026-09-29 review decision):** both flag
+strips and the monthly employee-set + grid carry no caps or pagination in
+the contract. The population is implicitly capped by the tenant's tracked
+roster (ENR ∩ ASSIGN ∩ active office), the routes are one screen's single
+load, and flags clear as they are handled — so a bounded shape was judged
+premature pre-launch (a `limit/cursor` option was estimated 1.5–2 h and
+deferred). If a tenant's roster or flag backlog grows past a screen's
+practical budget, revisit pagination here first.
+
+**Responses:** `200`; `403` `ATTENDANCE_NOT_TRACKED` (AD-17 gate — none;
+`history_only` reads the own-records rows); `422`
+`ATTENDANCE_INVALID_RANGE` / `VALIDATION_ERROR`; `500` fail-loud.
+
 ## Swagger
 
 OpenAPI is auto-generated at `/api/docs` in **non-production** environments

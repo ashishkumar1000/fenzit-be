@@ -69,7 +69,8 @@ interface AssignmentRow {
 
 type RuleRow = OfficeRuleRow & { office_id: string };
 
-interface RecordRow {
+/** Exported: the unit specs build real-typed grid rows (no mirror types). */
+export interface RecordRow {
   employee_id: string;
   work_date: string;
   checkin_at: Date | string;
@@ -89,7 +90,7 @@ interface LeaveDayRow {
   part: 'full_day' | 'first_half' | 'second_half';
 }
 
-interface OverrideRow {
+export interface OverrideRow {
   employee_id: string;
   work_date: string;
   status: string | null;

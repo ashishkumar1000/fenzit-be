@@ -50,6 +50,8 @@ const TECH_PAST = randomUUID();
 const OFFICE_A = randomUUID();
 const OFFICE_B = randomUUID();
 const OFFICE_C = randomUUID();
+/** The gate-3 drift probe's rule-less office (created and dropped in-test). */
+const OFFICE_D = randomUUID();
 /** Probe phone numbers (unique-enough prefix doubles as the cleanup key). */
 const PROBE_PHONES = [
   `7${Date.now()}`.slice(-10).replace(/^./, '7') + '1',
@@ -132,6 +134,7 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
           .delete()
           .eq('tenant_id', t);
         await admin.from('attendance_settings').delete().eq('tenant_id', t);
+        await admin.from('attendance_office_rules').delete().eq('tenant_id', t);
         await admin.from('attendance_offices').delete().eq('tenant_id', t);
         await admin.from('tenants').delete().eq('id', t);
       }
@@ -210,6 +213,25 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
         { id: OFFICE_C, tenant_id: TENANT, name: 'probe office C', latitude: 12.99, longitude: 77.61, radius_m: 100 },
       ]),
     );
+    // Gate 3 (AD-25, added by 19-1): completing setup is blocked while any
+    // ACTIVE office has no covering rule — this fixture predates the gate,
+    // so each of its live offices needs one. The open `valid` covers today
+    // (the gate's check date) and the probe's far-future dates alike; the
+    // rule content is irrelevant to these enrolment journeys.
+    must(
+      await admin.from('attendance_office_rules').insert([
+        ...[OFFICE_A, OFFICE_B, OFFICE_C].map((office_id) => ({
+          tenant_id: TENANT,
+          office_id,
+          valid: '[2000-01-01,)',
+          start_time: '09:00',
+          end_time: '18:00',
+          late_cutoff_minutes: 15,
+          full_day_hours: 8,
+          half_day_hours: 4,
+        })),
+      ]),
+    );
 
     const t = await pool.query(
       'select public.attendance_today($1)::text as today',
@@ -236,6 +258,12 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
       .delete()
       .eq('tenant_id', TENANT);
     await admin.from('attendance_settings').delete().eq('tenant_id', TENANT);
+    // Rules RESTRICT to their office (AD-25) — delete them BEFORE offices;
+    // the tenant drop takes whatever the per-table legs above missed.
+    await admin
+      .from('attendance_office_rules')
+      .delete()
+      .eq('tenant_id', TENANT);
     await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
     await admin
       .from('users')
@@ -260,6 +288,65 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
     });
     expect(error).not.toBeNull();
     expect(error?.hint).toBe('ATTENDANCE_SETUP_INCOMPLETE');
+  });
+
+  maybeIt('gate 3 rejects 422 and NAMES the rule-less office with the fix (18-5, D3)', async () => {
+    // A rule-less ACTIVE office among the rule-seeded ones — the only
+    // offending office, so the rejection names it deterministically.
+    const { error: officeErr } = await admin
+      .from('attendance_offices')
+      .insert({
+        id: OFFICE_D,
+        tenant_id: TENANT,
+        name: 'rule-less probe office',
+        latitude: 13.0,
+        longitude: 77.62,
+        radius_m: 100,
+      });
+    // `must` above is local to beforeAll's closure — inline the same check
+    // here so a fixture failure fails THIS test, not a later one.
+    if (officeErr) {
+      throw new Error(`fixture insert failed: ${officeErr.message}`);
+    }
+    try {
+      // Gate 2 must PASS for the probe to reach gate 3: seed the tracked
+      // pair in ONE transaction (the coverage guard's deferred trigger),
+      // and undo it in the finally so the later journeys start clean.
+      await inTx(async (tx) => {
+        await insertAssignment(tx, TENANT, TECH_ACTIVE, OFFICE_A, today);
+        await insertEnrolment(tx, TENANT, TECH_ACTIVE, today);
+      });
+
+      const { error } = await admin.rpc('attendance_complete_setup', {
+        p_tenant_id: TENANT,
+        p_actor_id: OWNER,
+      });
+      expect(error).not.toBeNull();
+      expect(error?.code).toBe('PT422');
+      expect(error?.hint).toBe('ATTENDANCE_SETUP_INCOMPLETE');
+      // D3 (user decision 2026-09-29): the owner is told WHY the completion
+      // failed, WHICH office is un-timed, and WHAT to do next.
+      expect(error?.message).toBe(
+        'attendance setup could not be completed: office «rule-less probe office» has no timing rule covering today. Add a rule for this office, then try again.',
+      );
+    } finally {
+      // The enrolment↔assignment pairing is enforced by function-based
+      // CHECKs (23514 ATTENDANCE_ASSIGNMENT_GAP) — a single-table REST
+      // delete trips the other table's gap check and silently no-ops, so
+      // the pair is stripped in ONE transaction (the seeding's own shape).
+      await inTx(async (tx) => {
+        await tx.query(
+          'delete from public.attendance_enrolments where employee_id = $1',
+          [TECH_ACTIVE],
+        );
+        await tx.query(
+          'delete from public.attendance_office_assignments where employee_id = $1',
+          [TECH_ACTIVE],
+        );
+      });
+      // No rule row exists, so the office deletes clean (rules RESTRICT).
+      await admin.from('attendance_offices').delete().eq('id', OFFICE_D);
+    }
   });
 
   maybeIt('enable co-writes the enrolment + assignment; kill switch still reads none', async () => {

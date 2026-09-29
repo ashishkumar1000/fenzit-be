@@ -51,11 +51,17 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
     }
   });
 
+  // 19-1 extended the registry with the four reminder events (the old pin
+  // listed the 11 pre-19-1 events); the reminder rows are the DB writer's
+  // (attendance_run_reminders) contract.
   it('registers exactly one metadata entry per event type', () => {
     expect(Object.keys(ATTENDANCE_NOTIFICATION_EVENT_REGISTRY).sort()).toEqual([
       'attendance.fake_location',
       'attendance.holiday_added',
       'attendance.holiday_removed',
+      'attendance.reminder_checkin',
+      'attendance.reminder_checkout',
+      'attendance.reminder_not_checked_in',
       'leave.applied',
       'leave.applied_on_behalf',
       'leave.approved',
@@ -63,6 +69,7 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
       'leave.checkin_auto_cancel',
       'leave.employee_cancelled',
       'leave.owner_revoked',
+      'leave.pending_reminder',
       'leave.rejected',
     ]);
     for (const [eventType, meta] of Object.entries(
@@ -132,6 +139,27 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
         ATTENDANCE_NOTIFICATION_EVENT.LEAVE_CHECKIN_AUTO_CANCEL
       ].payloadFields,
     ).toEqual(['employeeName', 'leaveDate']);
+    // 19-1's reminder events (the DB writer in 20260929000004).
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKIN
+      ].payloadFields,
+    ).toEqual(['workDate']);
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKOUT
+      ].payloadFields,
+    ).toEqual(['workDate', 'checkinAt']);
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_NOT_CHECKED_IN
+      ].payloadFields,
+    ).toEqual(['officeName', 'notCheckedInCount', 'workDate']);
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER
+      ].payloadFields,
+    ).toEqual(['pendingCount']);
   });
 
   it('embeds the recipient in every dedupe key — the global partial unique index is on dedupe_key alone', () => {
@@ -152,6 +180,32 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
     ).toBe(
       '<tenantId>:attendance.fake_location:<recipientId>:<employeeId>:<yyyy-mm>',
     );
+    // 19-1's reminder keys: the employee reminders key per work date (once
+    // a day), the owner summary additionally keys per office, and the
+    // pending-leave alert keys per day only (a request arriving after the
+    // 10:00 tick stays silent until tomorrow).
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKIN
+      ].dedupeKeyShape,
+    ).toBe('<tenantId>:attendance.reminder_checkin:<recipientId>:<workDate>');
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_CHECKOUT
+      ].dedupeKeyShape,
+    ).toBe('<tenantId>:attendance.reminder_checkout:<recipientId>:<workDate>');
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.REMINDER_NOT_CHECKED_IN
+      ].dedupeKeyShape,
+    ).toBe(
+      '<tenantId>:attendance.reminder_not_checked_in:<recipientId>:<workDate>:<officeId>',
+    );
+    expect(
+      ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
+        ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER
+      ].dedupeKeyShape,
+    ).toBe('<tenantId>:leave.pending_reminder:<recipientId>:<workDate>');
     for (const meta of Object.values(ATTENDANCE_NOTIFICATION_EVENT_REGISTRY)) {
       // 14-2 convention: the key starts with the tenant and carries the
       // recipient — a multi-recipient fan-out can never collide.
@@ -190,6 +244,12 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
       'leave.employee_cancelled',
       'leave.cancelled_by_disable',
       'leave.checkin_auto_cancel',
+      // 19-1's four reminder events (FR-23's closed vocabulary — the
+      // reminder set can never grow past this four-row table, SM-C2).
+      'attendance.reminder_checkin',
+      'attendance.reminder_checkout',
+      'attendance.reminder_not_checked_in',
+      'leave.pending_reminder',
     ]);
     expect(new Set(ATTENDANCE_NOTIFICATION_EVENT_TYPES).size).toBe(
       ATTENDANCE_NOTIFICATION_EVENT_TYPES.length,

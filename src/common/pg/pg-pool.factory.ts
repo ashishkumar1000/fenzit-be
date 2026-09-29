@@ -33,6 +33,16 @@ export class PgPoolFactory implements OnModuleDestroy {
       max: 5,
       ssl: { rejectUnauthorized: false },
       application_name: 'fenzit-be-attendance',
+      // NAT/firewall devices silently drop idle TCP connections between the
+      // 5-min cron ticks and long quiet stretches; TCP keepalives surface a
+      // dead socket as a connect error instead of a hung acquire. A 10 s
+      // connect timeout keeps a stalled connect from pinning pool slots
+      // indefinitely. (Supabase's connecting-to-postgres guidance for
+      // persistent backends: small fixed pool + direct/session connection —
+      // raise max only with evidence of queuing.)
+      connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
     });
   }
 
