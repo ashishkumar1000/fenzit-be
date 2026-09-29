@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import { workedMinutesBetween } from './day-context';
 import type { AttemptKind, AttemptLocation, AttemptRow } from './check-in-out.repository';
 import type { RecordRow } from './check-in-out.records.repository';
 import type { CheckInOutDto } from './dto/check-in-out.dto';
@@ -202,11 +203,9 @@ export function recordToResponse(
     };
   }
   const checkoutAt = new Date(record.checkout_at as Date | string);
-  const workedMinutes = Math.max(
-    0,
-    Math.trunc(
-      (checkoutAt.getTime() - new Date(record.checkin_at).getTime()) / 60_000,
-    ),
+  const workedMinutes = workedMinutesBetween(
+    record.checkin_at,
+    record.checkout_at as Date | string,
   );
   return {
     workDate: record.work_date,

@@ -211,6 +211,21 @@ export function isWeeklyOffDay(days: number[], workDate: string): boolean {
 }
 
 /**
+ * Whole worked minutes between the stored check-in/check-out instants
+ * (16-1 D12: instant-based, so a timezone change mid-day cannot corrupt
+ * it) — truncated, never negative. The ONE implementation: the check-in/out
+ * response and the FR-4 summary's todayRecord both import this.
+ */
+export function workedMinutesBetween(
+  checkinAt: Date | string,
+  checkoutAt: Date | string,
+): number {
+  const start = new Date(checkinAt).getTime();
+  const end = new Date(checkoutAt).getTime();
+  return Math.max(0, Math.trunc((end - start) / 60_000));
+}
+
+/**
  * The FR-2 enable-day grace: on the day tracking began, an employee whose
  * `enabled_at` falls after that day's Start is NOT tracked — unless there
  * is a check-in (D10: the check-in path passes `hasCheckIn: true`, because

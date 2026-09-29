@@ -54,8 +54,8 @@ type ReadResult = { data: unknown; error: unknown };
 
 /**
  * An admin mock shaped for getSummary: one qb per table (the service
- * resolves the rule + override + default reads concurrently via
- * Promise.all) plus the attendance_today RPC. Kept references let the
+ * resolves the rule + override + default + 16-4 Today reads concurrently
+ * via Promise.all) plus the attendance_today RPC. Kept references let the
  * failure-path tests assert WHO was (never) asked.
  */
 function summaryAdmin(parts: {
@@ -64,11 +64,21 @@ function summaryAdmin(parts: {
   overrides?: ReadResult;
   defaults?: ReadResult;
   today?: ReadResult;
+  officePin?: ReadResult;
+  holiday?: ReadResult;
+  record?: ReadResult;
+  timezone?: ReadResult;
 }) {
   const viewQb = accessQb(parts.view);
   const rulesQb = listQb(parts.rules ?? { data: [], error: null });
   const overridesQb = listQb(parts.overrides ?? { data: [], error: null });
   const defaultsQb = listQb(parts.defaults ?? { data: [], error: null });
+  const officePinQb = accessQb(parts.officePin ?? { data: null, error: null });
+  const holidayQb = accessQb(parts.holiday ?? { data: null, error: null });
+  const recordQb = accessQb(parts.record ?? { data: null, error: null });
+  const timezoneQb = accessQb(
+    parts.timezone ?? { data: { timezone: 'Asia/Kolkata' }, error: null },
+  );
   const from = jest.fn((table: string) => {
     switch (table) {
       case 'attendance_access_state':
@@ -79,6 +89,14 @@ function summaryAdmin(parts: {
         return overridesQb;
       case 'attendance_weekly_off_defaults':
         return defaultsQb;
+      case 'attendance_offices':
+        return officePinQb;
+      case 'holidays':
+        return holidayQb;
+      case 'attendance_records':
+        return recordQb;
+      case 'tenants':
+        return timezoneQb;
       default:
         throw new Error(`unexpected table read: ${table}`);
     }
@@ -90,6 +108,10 @@ function summaryAdmin(parts: {
     rulesQb,
     overridesQb,
     defaultsQb,
+    officePinQb,
+    holidayQb,
+    recordQb,
+    timezoneQb,
     from,
     rpc,
   };
@@ -276,6 +298,12 @@ describe('MeAttendanceService (story 15-7)', () => {
         endTime: '18:00',
         lateCutOffMinutes: 15,
         weeklyOffDays: [7],
+        // 16-4 Today extension: upcoming's anchor is a future date, so the
+        // facts/record must be null even though every read ran.
+        officeLatitude: null,
+        officeLongitude: null,
+        today: null,
+        todayRecord: null,
       });
     });
 
@@ -301,6 +329,16 @@ describe('MeAttendanceService (story 15-7)', () => {
         endTime: '18:00',
         lateCutOffMinutes: 15,
         weeklyOffDays: [],
+        officeLatitude: null,
+        officeLongitude: null,
+        today: {
+          date: '2026-03-10',
+          isWeeklyOff: false,
+          isHoliday: false,
+          holidayName: null,
+          isWorkingDay: true,
+        },
+        todayRecord: null,
       });
     });
 
@@ -319,6 +357,8 @@ describe('MeAttendanceService (story 15-7)', () => {
       const result = await service.getSummary(tech);
 
       expect(parts.from).not.toHaveBeenCalledWith('attendance_office_rules');
+      // No office → no pin read and no pin fields.
+      expect(parts.from).not.toHaveBeenCalledWith('attendance_offices');
       expect(result).toEqual({
         officeId: null,
         officeName: null,
@@ -326,6 +366,16 @@ describe('MeAttendanceService (story 15-7)', () => {
         endTime: null,
         lateCutOffMinutes: null,
         weeklyOffDays: [7],
+        officeLatitude: null,
+        officeLongitude: null,
+        today: {
+          date: '2026-03-10',
+          isWeeklyOff: false,
+          isHoliday: false,
+          holidayName: null,
+          isWorkingDay: true,
+        },
+        todayRecord: null,
       });
     });
 
@@ -397,7 +447,14 @@ describe('MeAttendanceService (story 15-7)', () => {
         'weekly-off defaults',
         (parts: ReturnType<typeof summaryAdmin>) => parts.defaultsQb,
       ],
-    ])(
+      [
+        'office pin',
+        (parts: ReturnType<typeof summaryAdmin>) => parts.officePinQb,
+      ],
+      ['holiday', (parts: ReturnType<typeof summaryAdmin>) => parts.holidayQb],
+      ['today record', (parts: ReturnType<typeof summaryAdmin>) => parts.recordQb],
+      ['tenant timezone', (parts: ReturnType<typeof summaryAdmin>) => parts.timezoneQb],
+    ] as const)(
       'fails loud (500, "Failed to read attendance summary") when the %s read errors',
       async (_label, failing) => {
         const parts = summaryAdmin({
@@ -405,17 +462,46 @@ describe('MeAttendanceService (story 15-7)', () => {
           rules: { data: [coveringRule], error: { message: 'boom' } },
           overrides: { data: [], error: { message: 'boom' } },
           defaults: { data: [sundayDefault], error: { message: 'boom' } },
+          officePin: { data: null, error: { message: 'boom' } },
+          holiday: { data: null, error: { message: 'boom' } },
+          record: { data: null, error: { message: 'boom' } },
+          timezone: { data: null, error: { message: 'boom' } },
           today: { data: '2026-03-10', error: null },
         });
         // Only ONE table errors per run — the others must not mask it.
-        for (const qb of [parts.rulesQb, parts.overridesQb, parts.defaultsQb]) {
-          qb.returns.mockReset();
-          qb.returns.mockResolvedValue({ data: [], error: null });
+        const healthy: Array<ReturnType<typeof summaryAdmin>[keyof ReturnType<typeof summaryAdmin>]> = [
+          parts.rulesQb,
+          parts.overridesQb,
+          parts.defaultsQb,
+          parts.officePinQb,
+          parts.holidayQb,
+          parts.recordQb,
+          parts.timezoneQb,
+        ];
+        for (const qb of healthy) {
+          if ('returns' in qb && typeof qb.returns === 'function') {
+            (qb.returns as jest.Mock).mockReset();
+            (qb.returns as jest.Mock).mockResolvedValue({ data: [], error: null });
+          } else {
+            (qb.maybeSingle as jest.Mock).mockReset();
+            (qb.maybeSingle as jest.Mock).mockResolvedValue({ data: null, error: null });
+          }
         }
-        failing(parts).returns.mockResolvedValue({
-          data: null,
-          error: { message: 'boom' },
-        });
+        const failingQb = failing(parts) as {
+          returns?: jest.Mock;
+          maybeSingle: jest.Mock;
+        };
+        if (failingQb.returns) {
+          failingQb.returns.mockResolvedValue({
+            data: null,
+            error: { message: 'boom' },
+          });
+        } else {
+          failingQb.maybeSingle.mockResolvedValue({
+            data: null,
+            error: { message: 'boom' },
+          });
+        }
         const service = serviceWith(parts.admin);
 
         const err = await rejectionOf(() => service.getSummary(tech));

@@ -44,6 +44,38 @@ export interface MeSummaryResponse {
   lateCutOffMinutes: number | null;
   /** ISO weekday numbers sorted ascending; [] = no weekly offs. */
   weeklyOffDays: number[];
+  /** Office pin for the Today screen's display-only distance hint (16-4). */
+  officeLatitude: number | null;
+  officeLongitude: number | null;
+  /** Today's day facts (16-4) — active ONLY, null otherwise. Built in
+   *  me-summary-today.model (the cycle-free layer above day-context). */
+  today: TodayFacts | null;
+  /** Today's record (16-4) — active ONLY, null when no record today. */
+  todayRecord: TodayRecordView | null;
+}
+
+/** Today's day facts (active employees only). Implemented in
+ *  me-summary-today.model — declared here so the response shape stays the
+ *  one definition this module owns. */
+export interface TodayFacts {
+  /** `YYYY-MM-DD` tenant-local (the server's today, AD-7). */
+  date: string;
+  isWeeklyOff: boolean;
+  isHoliday: boolean;
+  holidayName: string | null;
+  isWorkingDay: boolean;
+}
+
+/** The day's record as the Today screen renders it (mirror of the
+ *  check-in/out response fields; instants carry the tenant offset). */
+export interface TodayRecordView {
+  checkinAt: string;
+  checkoutAt: string | null;
+  lateMinutes: number | null;
+  isLate: boolean;
+  workedMinutes: number | null;
+  earlyCheckout: boolean | null;
+  earlyCheckoutMinutes: number | null;
 }
 
 /** The endpoint serves the two states that have an anchored office. */
@@ -104,6 +136,9 @@ export function toMeSummaryResponse(input: {
   row: Pick<AccessStateRow, 'office_id' | 'office_name'>;
   rule: OfficeRuleRow | null;
   weeklyOffDays: number[];
+  officePin: { latitude: number; longitude: number } | null;
+  today: TodayFacts | null;
+  todayRecord: TodayRecordView | null;
 }): MeSummaryResponse {
   return {
     officeId: input.row.office_id,
@@ -112,6 +147,10 @@ export function toMeSummaryResponse(input: {
     endTime: input.rule ? toHhmm(input.rule.end_time) : null,
     lateCutOffMinutes: input.rule ? input.rule.late_cutoff_minutes : null,
     weeklyOffDays: input.weeklyOffDays,
+    officeLatitude: input.officePin ? input.officePin.latitude : null,
+    officeLongitude: input.officePin ? input.officePin.longitude : null,
+    today: input.today,
+    todayRecord: input.todayRecord,
   };
 }
 
@@ -125,4 +164,8 @@ export const EMPTY_ME_SUMMARY: MeSummaryResponse = Object.freeze({
   endTime: null,
   lateCutOffMinutes: null,
   weeklyOffDays: Object.freeze([]) as unknown as number[],
+  officeLatitude: null,
+  officeLongitude: null,
+  today: null,
+  todayRecord: null,
 });

@@ -1192,10 +1192,26 @@ tenant's effective defaults (an override with an empty `days` array = works
 all 7 days).
 
 **Response:** `{ officeId, officeName, startTime, endTime,
-lateCutOffMinutes, weeklyOffDays }`. Times travel as `HH:mm` (the API
-convention — 12-hour display is the app's job, NFR-5). `weeklyOffDays` are
-ISO weekday numbers `1=Mon..7=Sun`, sorted ascending; `[]` = no weekly
-offs. Fields are `null` when the state carries no anchored office.
+lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude, today,
+todayRecord }`. Times travel as `HH:mm` (the API convention — 12-hour
+display is the app's job, NFR-5). `weeklyOffDays` are ISO weekday numbers
+`1=Mon..7=Sun`, sorted ascending; `[]` = no weekly offs. Fields are `null`
+when the state carries no anchored office.
+
+**Today extension (Story 16-4, active employees only):**
+`officeLatitude`/`officeLongitude` are the anchored office's pin (display
+inputs — the app's distance hint is display-only, NFR-2). `today` is
+`{ date, isWeeklyOff, isHoliday, holidayName, isWorkingDay }` for the
+server's today (AD-7) — the pre-flight dialog's input, so the app never
+derives a weekday or holiday client-side. `todayRecord` is
+`{ checkinAt, checkoutAt, lateMinutes, isLate, workedMinutes, earlyCheckout,
+earlyCheckoutMinutes }` — field names/semantics mirror the check-in/out
+responses; instants carry the tenant offset (AD-7/D11); `lateMinutes` is
+null when no rule covers today (D7); `workedMinutes`/`earlyCheckout*` are
+null until check-out; early checkout grades against the rule end (the
+leave-aware midpoint is Epic 18's grading concern). Both are `null` for
+`upcoming` (the anchor there is a future date) and in the honest-empty
+payload.
 
 **Responses:** `200` (also for `none`/`history_only` — an honest empty
 payload, the endpoint is not defined for those states and the app never

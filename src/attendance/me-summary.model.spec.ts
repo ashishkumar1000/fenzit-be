@@ -156,6 +156,22 @@ describe('toMeSummaryResponse', () => {
     office_id: 'office-1',
     office_name: 'Thane',
   };
+  const today = {
+    date: '2026-09-29',
+    isWeeklyOff: false,
+    isHoliday: false,
+    holidayName: null,
+    isWorkingDay: true,
+  };
+  const todayRecord = {
+    checkinAt: '2026-09-29T10:22:00+05:30',
+    checkoutAt: null,
+    lateMinutes: 0,
+    isLate: false,
+    workedMinutes: null,
+    earlyCheckout: null,
+    earlyCheckoutMinutes: null,
+  };
 
   it('truncates pg time values to HH:mm and passes office/cutoff/weekly-off fields through', () => {
     expect(
@@ -163,6 +179,9 @@ describe('toMeSummaryResponse', () => {
         row,
         rule: rule('r1', '[2026-01-01,)', '09:30:00', '18:00:00', 15),
         weeklyOffDays: [7],
+        officePin: { latitude: 19.076, longitude: 72.8777 },
+        today,
+        todayRecord,
       }),
     ).toEqual({
       officeId: 'office-1',
@@ -171,12 +190,23 @@ describe('toMeSummaryResponse', () => {
       endTime: '18:00',
       lateCutOffMinutes: 15,
       weeklyOffDays: [7],
+      officeLatitude: 19.076,
+      officeLongitude: 72.8777,
+      today,
+      todayRecord,
     });
   });
 
   it('a null rule nulls every time/cutoff field but the office fields still pass through', () => {
     expect(
-      toMeSummaryResponse({ row, rule: null, weeklyOffDays: [1, 7] }),
+      toMeSummaryResponse({
+        row,
+        rule: null,
+        weeklyOffDays: [1, 7],
+        officePin: null,
+        today: null,
+        todayRecord: null,
+      }),
     ).toEqual({
       officeId: 'office-1',
       officeName: 'Thane',
@@ -184,12 +214,16 @@ describe('toMeSummaryResponse', () => {
       endTime: null,
       lateCutOffMinutes: null,
       weeklyOffDays: [1, 7],
+      officeLatitude: null,
+      officeLongitude: null,
+      today: null,
+      todayRecord: null,
     });
   });
 });
 
 describe('EMPTY_ME_SUMMARY — the honest empty for none/history_only', () => {
-  it('is the exact all-null/[] payload', () => {
+  it('is the exact all-null/[] payload (incl. the 16-4 Today extension)', () => {
     expect(EMPTY_ME_SUMMARY).toEqual({
       officeId: null,
       officeName: null,
@@ -197,6 +231,10 @@ describe('EMPTY_ME_SUMMARY — the honest empty for none/history_only', () => {
       endTime: null,
       lateCutOffMinutes: null,
       weeklyOffDays: [],
+      officeLatitude: null,
+      officeLongitude: null,
+      today: null,
+      todayRecord: null,
     });
   });
 
@@ -205,8 +243,12 @@ describe('EMPTY_ME_SUMMARY — the honest empty for none/history_only', () => {
       'endTime',
       'lateCutOffMinutes',
       'officeId',
+      'officeLatitude',
+      'officeLongitude',
       'officeName',
       'startTime',
+      'today',
+      'todayRecord',
       'weeklyOffDays',
     ]);
   });

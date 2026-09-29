@@ -65,12 +65,12 @@ export class MeAttendanceController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'This employee’s attendance summary (FR-4): office, timings, late cut-off, weekly offs — active/upcoming only',
+      'This employee’s attendance summary (FR-4): office, timings, late cut-off, weekly offs, plus the Today extension (office pin, today’s day facts and record, 16-4) — active/upcoming only',
   })
   @ApiResponse({
     status: 200,
     description:
-      '{ officeId, officeName, startTime, endTime, lateCutOffMinutes, weeklyOffDays }. Office and the effective date come from the same access-state view row me/access reads, so the two can never disagree. Times are HH:mm (12-hour rendering is the app\'s); weeklyOffDays are ISO weekday numbers 1=Mon..7=Sun ([] = no weekly offs). none/history_only answer honestly empty.',
+      '{ officeId, officeName, startTime, endTime, lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude, today, todayRecord }. Office and the effective date come from the same access-state view row me/access reads, so the two can never disagree. Times are HH:mm (12-hour rendering is the app\'s); weeklyOffDays are ISO weekday numbers 1=Mon..7=Sun ([] = no weekly offs). officeLatitude/Longitude are the office pin (display-only distance hint). today = { date, isWeeklyOff, isHoliday, holidayName, isWorkingDay } and todayRecord = { checkinAt, checkoutAt, lateMinutes, isLate, workedMinutes, earlyCheckout, earlyCheckoutMinutes } exist ONLY for active employees (null otherwise; todayRecord null when no record today); instants carry the tenant offset. none/history_only answer honestly empty.',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   getSummary(@CurrentUser() user: RequestUser) {

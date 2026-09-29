@@ -17,6 +17,11 @@ import {
   toMeSummaryResponse,
 } from './me-summary.model';
 import type { OfficeRuleRow, WeeklyOffRow } from './me-summary.model';
+import {
+  closedRecordView,
+  openRecordView,
+  pickTodayFacts,
+} from './me-summary-today.model';
 
 /**
  * Technician-facing attendance reads (15-7): the AD-17 access state from
@@ -67,6 +72,13 @@ export class MeAttendanceService {
    * view row me/access reads; only the rule and weekly-off selection are
    * new reads. none/history_only answer honestly empty (disable clips
    * both ranges, so no office exists for them).
+   *
+   * 16-4 adds the Today extension (active only): office pin, today's day
+   * facts and today's record — the inputs the pre-flight dialog and the
+   * CheckInOutButton need WITHOUT a client-side date/weekday derivation
+   * (AD-7/AD-22). Every fact is built by me-summary-today.model over the
+   * same picked rule/weekly-off set already shown, so the extension can
+   * never disagree with the rest of the summary.
    */
   async getSummary(user: RequestUser): Promise<MeSummaryResponse> {
     const admin = this.supabaseClientFactory.createAdmin();
@@ -83,24 +95,139 @@ export class MeAttendanceService {
         ? row.attendance_start_date
         : await resolveTenantToday(admin, row.tenant_id);
 
-    const [rules, overrides, defaults] = await Promise.all([
-      row.office_id
-        ? this.readRules(admin, row.tenant_id, row.office_id)
-        : Promise.resolve([] as OfficeRuleRow[]),
-      this.readWeeklyOffRows(
-        admin,
-        'attendance_weekly_off_overrides',
-        row.tenant_id,
-        row.user_id,
-      ),
-      this.readWeeklyOffRows(admin, 'attendance_weekly_off_defaults', row.tenant_id),
-    ]);
+    const [rules, overrides, defaults, officePin, holidayName, record, timezone] =
+      await Promise.all([
+        row.office_id
+          ? this.readRules(admin, row.tenant_id, row.office_id)
+          : Promise.resolve([] as OfficeRuleRow[]),
+        this.readWeeklyOffRows(
+          admin,
+          'attendance_weekly_off_overrides',
+          row.tenant_id,
+          row.user_id,
+        ),
+        this.readWeeklyOffRows(admin, 'attendance_weekly_off_defaults', row.tenant_id),
+        row.office_id
+          ? this.readOfficePin(admin, row.tenant_id, row.office_id)
+          : Promise.resolve(null),
+        this.readHolidayName(admin, row.tenant_id, anchor),
+        this.readTodayRecord(admin, row.tenant_id, row.user_id, anchor),
+        this.readTimezone(admin, row.tenant_id),
+      ]);
+
+    const rule = pickRuleForDate(rules, anchor);
+    const weeklyOffDays = pickWeeklyOffDays(overrides, defaults, anchor);
+
+    // The Today extension exists only for `active` — the upcoming anchor
+    // is a future date, so "today's facts" would be a lie there.
+    const isActive = row.access_state === 'active';
+    const today = isActive
+      ? pickTodayFacts(weeklyOffDays, holidayName, anchor)
+      : null;
+    let todayRecord: MeSummaryResponse['todayRecord'] = null;
+    if (isActive && record) {
+      todayRecord =
+        record.checkout_at !== null
+          ? closedRecordView(
+              record as typeof record & { checkout_at: Date | string },
+              timezone,
+              rule,
+            )
+          : openRecordView(record, timezone, rule);
+    }
 
     return toMeSummaryResponse({
       row,
-      rule: pickRuleForDate(rules, anchor),
-      weeklyOffDays: pickWeeklyOffDays(overrides, defaults, anchor),
+      rule,
+      weeklyOffDays,
+      officePin,
+      today,
+      todayRecord,
     });
+  }
+
+  /** The office pin (display-only distance hint input). */
+  private async readOfficePin(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    tenantId: string,
+    officeId: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    const { data, error } = await admin
+      .from('attendance_offices')
+      .select('latitude, longitude')
+      .eq('tenant_id', tenantId)
+      .eq('id', officeId)
+      .maybeSingle<{ latitude: number; longitude: number }>();
+    if (error) {
+      this.logger.error('Failed to read office pin:', { error });
+      throw internalError('Failed to read attendance summary');
+    }
+    return data ?? null;
+  }
+
+  /** Today's holiday name (null when today is not a holiday). */
+  private async readHolidayName(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    tenantId: string,
+    anchor: string,
+  ): Promise<string | null> {
+    const { data, error } = await admin
+      .from('holidays')
+      .select('name')
+      .eq('tenant_id', tenantId)
+      .eq('holiday_date', anchor)
+      .maybeSingle<{ name: string }>();
+    if (error) {
+      this.logger.error('Failed to read holiday:', { error });
+      throw internalError('Failed to read attendance summary');
+    }
+    return data?.name ?? null;
+  }
+
+  /** Today's attendance record (null when none yet). */
+  private async readTodayRecord(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    tenantId: string,
+    employeeId: string,
+    anchor: string,
+  ): Promise<{
+    work_date: string;
+    checkin_at: Date | string;
+    checkout_at: Date | string | null;
+  } | null> {
+    const { data, error } = await admin
+      .from('attendance_records')
+      .select('work_date, checkin_at, checkout_at')
+      .eq('tenant_id', tenantId)
+      .eq('employee_id', employeeId)
+      .eq('work_date', anchor)
+      .maybeSingle<{
+        work_date: string;
+        checkin_at: Date | string;
+        checkout_at: Date | string | null;
+      }>();
+    if (error) {
+      this.logger.error('Failed to read today record:', { error });
+      throw internalError('Failed to read attendance summary');
+    }
+    return data ?? null;
+  }
+
+  /** The tenant IANA timezone (AD-7's single clock). */
+  private async readTimezone(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    tenantId: string,
+  ): Promise<string> {
+    const { data, error } = await admin
+      .from('tenants')
+      .select('timezone')
+      .eq('id', tenantId)
+      .maybeSingle<{ timezone: string }>();
+    if (error || !data?.timezone) {
+      this.logger.error('Failed to read tenant timezone:', { error });
+      throw internalError('Failed to read attendance summary');
+    }
+    return data.timezone;
   }
 
   private async readRules(
