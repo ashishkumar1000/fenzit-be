@@ -70,7 +70,7 @@ export class MeAttendanceController {
   @ApiResponse({
     status: 200,
     description:
-      '{ officeId, officeName, startTime, endTime, lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude, today, todayRecord }. Office and the effective date come from the same access-state view row me/access reads, so the two can never disagree. Times are HH:mm (12-hour rendering is the app\'s); weeklyOffDays are ISO weekday numbers 1=Mon..7=Sun ([] = no weekly offs). officeLatitude/Longitude are the office pin (display-only distance hint). today = { date, isWeeklyOff, isHoliday, holidayName, isWorkingDay } and todayRecord = { checkinAt, checkoutAt, lateMinutes, isLate, workedMinutes, earlyCheckout, earlyCheckoutMinutes } exist ONLY for active employees (null otherwise; todayRecord null when no record today); instants carry the tenant offset. none/history_only answer honestly empty.',
+      "{ officeId, officeName, startTime, endTime, lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude, today, todayRecord }. Office and the effective date come from the same access-state view row me/access reads, so the two can never disagree. Times are HH:mm (12-hour rendering is the app's); weeklyOffDays are ISO weekday numbers 1=Mon..7=Sun ([] = no weekly offs). officeLatitude/Longitude are the office pin (display-only distance hint). today = { date, isWeeklyOff, isHoliday, holidayName, isWorkingDay, leaveState, leavePart } and todayRecord = { checkinAt, checkoutAt, lateMinutes, isLate, workedMinutes, earlyCheckout, earlyCheckoutMinutes } exist ONLY for active employees (null otherwise; todayRecord null when no record today); instants carry the tenant offset. leaveState is 'pending' | 'approved' | null — today's active leave (17-8), null when no live leave covers today (cancelled/revoked/none); leavePart mirrors the request's part ('full_day' | 'first_half' | 'second_half'), null with leaveState. none/history_only answer honestly empty.",
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   getSummary(@CurrentUser() user: RequestUser) {
@@ -145,8 +145,7 @@ export class MeAttendanceController {
   })
   @ApiResponse({
     status: 409,
-    description:
-      'ATTENDANCE_NOT_CHECKED_IN or ATTENDANCE_ALREADY_CHECKED_OUT',
+    description: 'ATTENDANCE_NOT_CHECKED_IN or ATTENDANCE_ALREADY_CHECKED_OUT',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({

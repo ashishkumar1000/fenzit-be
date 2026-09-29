@@ -1201,9 +1201,18 @@ when the state carries no anchored office.
 **Today extension (Story 16-4, active employees only):**
 `officeLatitude`/`officeLongitude` are the anchored office's pin (display
 inputs — the app's distance hint is display-only, NFR-2). `today` is
-`{ date, isWeeklyOff, isHoliday, holidayName, isWorkingDay }` for the
-server's today (AD-7) — the pre-flight dialog's input, so the app never
-derives a weekday or holiday client-side. `todayRecord` is
+`{ date, isWeeklyOff, isHoliday, holidayName, isWorkingDay, leaveState,
+leavePart }` for the server's today (AD-7) — the pre-flight dialog's
+input, so the app never derives a weekday or holiday client-side.
+`leaveState` is `'pending' | 'approved' | null` — today's ACTIVE leave
+(Story 17-8): a `leave_request_days` row covering today in a live state,
+null when none does (cancelled/revoked/no leave all read null);
+`leavePart` mirrors the covering request's part
+(`'full_day' | 'first_half' | 'second_half'`), null with `leaveState`.
+The app checks in straight through a pending/approved leave at its own
+risk — the server still owns every verdict (the D11 gate asks for
+confirmation only on `leaveState != null && leavePart === 'full_day'`
+working days). `todayRecord` is
 `{ checkinAt, checkoutAt, lateMinutes, isLate, workedMinutes, earlyCheckout,
 earlyCheckoutMinutes }` — field names/semantics mirror the check-in/out
 responses; instants carry the tenant offset (AD-7/D11); `lateMinutes` is

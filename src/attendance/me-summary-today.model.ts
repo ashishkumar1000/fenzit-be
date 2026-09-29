@@ -41,10 +41,18 @@ export interface SummaryRecordRow {
  * override-aware set `pickWeeklyOffDays` returned for the same date, so
  * the facts can never disagree with the summary's own `weeklyOffDays`.
  */
+/** The summary read's active-leave row (17-8 D1) — the DB CHECK enums
+ *  narrow here; the service passes what `readTodayLeave` returned. */
+export interface SummaryLeaveRow {
+  state: 'pending' | 'approved';
+  part: 'full_day' | 'first_half' | 'second_half';
+}
+
 export function pickTodayFacts(
   weeklyOffDays: number[],
   holidayName: string | null,
   date: string,
+  leave: SummaryLeaveRow | null = null,
 ): TodayFacts {
   const isWeeklyOff = isWeeklyOffDay(weeklyOffDays, date);
   const isHoliday = holidayName !== null;
@@ -54,6 +62,10 @@ export function pickTodayFacts(
     isHoliday,
     holidayName,
     isWorkingDay: !isWeeklyOff && !isHoliday,
+    // The leave facts ride the SAME null-otherwise contract as the
+    // today extension itself: no live leave row -> both null (17-8 D1).
+    leaveState: leave?.state ?? null,
+    leavePart: leave?.part ?? null,
   };
 }
 

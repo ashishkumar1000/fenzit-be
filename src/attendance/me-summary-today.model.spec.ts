@@ -16,9 +16,7 @@ import type { OfficeRuleRow } from './me-summary.model';
  * did not, these must still pass.
  */
 
-const rule = (
-  overrides: Partial<OfficeRuleRow> = {},
-): OfficeRuleRow => ({
+const rule = (overrides: Partial<OfficeRuleRow> = {}): OfficeRuleRow => ({
   id: 'rule-1',
   valid: '[2026-01-01,)',
   start_time: '09:30:00',
@@ -28,13 +26,15 @@ const rule = (
 });
 
 describe('pickTodayFacts — the pre-flight truth table', () => {
-  it('a plain working day: isWorkingDay true, both off-flags false', () => {
+  it('a plain working day: isWorkingDay true, both off-flags false, leave honest nulls', () => {
     expect(pickTodayFacts([7], null, '2026-09-29')).toEqual({
       date: '2026-09-29',
       isWeeklyOff: false,
       isHoliday: false,
       holidayName: null,
       isWorkingDay: true,
+      leaveState: null,
+      leavePart: null,
     });
   });
 
@@ -67,6 +67,44 @@ describe('pickTodayFacts — the pre-flight truth table', () => {
       isWeeklyOff: false,
       isWorkingDay: true,
     });
+  });
+});
+
+describe('pickTodayFacts — the 17-8 leave facts (D1)', () => {
+  it.each([
+    ['pending', 'full_day'],
+    ['pending', 'first_half'],
+    ['pending', 'second_half'],
+    ['approved', 'full_day'],
+    ['approved', 'first_half'],
+    ['approved', 'second_half'],
+  ])(
+    '%s × %s rides through verbatim (byte-parity names with day-context)',
+    (state, part) => {
+      expect(
+        pickTodayFacts([7], null, '2026-09-29', {
+          state: state as 'pending' | 'approved',
+          part: part as 'full_day' | 'first_half' | 'second_half',
+        }),
+      ).toMatchObject({ leaveState: state, leavePart: part });
+    },
+  );
+
+  it('no live leave row (cancelled/revoked/none) → both leave fields honest nulls', () => {
+    const facts = pickTodayFacts([], null, '2026-09-29', null);
+    expect(facts.leaveState).toBeNull();
+    expect(facts.leavePart).toBeNull();
+  });
+
+  it('the leave facts do NOT touch isWorkingDay — an off-day inside leave stays isWorkingDay false with leaveState non-null (the exact shape the FE predicate must handle)', () => {
+    const facts = pickTodayFacts([2], null, '2026-09-29', {
+      state: 'approved',
+      part: 'full_day',
+    });
+    expect(facts.isWeeklyOff).toBe(true);
+    expect(facts.isWorkingDay).toBe(false);
+    expect(facts.leaveState).toBe('approved');
+    expect(facts.leavePart).toBe('full_day');
   });
 });
 

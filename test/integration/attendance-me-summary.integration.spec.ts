@@ -335,7 +335,10 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
       .from('attendance_weekly_off_defaults')
       .delete()
       .eq('tenant_id', TENANT);
-    await admin.from('attendance_office_rules').delete().eq('tenant_id', TENANT);
+    await admin
+      .from('attendance_office_rules')
+      .delete()
+      .eq('tenant_id', TENANT);
     await admin.from('attendance_onboarding').delete().eq('tenant_id', TENANT);
     await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
     await admin
@@ -343,6 +346,10 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
       .delete()
       .eq('tenant_id', TENANT);
     await admin.from('attendance_settings').delete().eq('tenant_id', TENANT);
+    // 17-8 probe residue: days before requests (the request FK is
+    // RESTRICT) and both before users (the employee FK is RESTRICT too).
+    await admin.from('leave_request_days').delete().eq('tenant_id', TENANT);
+    await admin.from('leave_requests').delete().eq('tenant_id', TENANT);
     await admin.from('users').delete().in('id', [OWNER, TECH]);
     await admin.from('tenants').delete().eq('id', TENANT);
   }
@@ -378,234 +385,325 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
     },
   );
 
-  maybeIt('none: after the future rows go, the summary answers the honest empty shape', async () => {
-    // Delete-style cancel of the future period (both tables, ONE txn).
-    await inTx(async (tx) => {
-      const assignments = await readAssignments(tx, TECH);
-      const enrolments = await readEnrolments(tx, TECH);
-      await deleteRanges(
-        tx,
-        'attendance_office_assignments',
-        assignments.map((r) => r.id),
+  maybeIt(
+    'none: after the future rows go, the summary answers the honest empty shape',
+    async () => {
+      // Delete-style cancel of the future period (both tables, ONE txn).
+      await inTx(async (tx) => {
+        const assignments = await readAssignments(tx, TECH);
+        const enrolments = await readEnrolments(tx, TECH);
+        await deleteRanges(
+          tx,
+          'attendance_office_assignments',
+          assignments.map((r) => r.id),
+        );
+        await deleteRanges(
+          tx,
+          'attendance_enrolments',
+          enrolments.map((r) => r.id),
+        );
+      });
+
+      const summary = await service.getSummary(techUser);
+
+      // Settings are enabled+completed but nothing is tracked: access none,
+      // and the endpoint answers all-null/[] rather than a stale office.
+      expect(summary).toEqual(EMPTY_ME_SUMMARY);
+    },
+  );
+
+  maybeIt(
+    'active: SQL-inserted covering-today period reads the live office, its rule and [7]',
+    async () => {
+      await inTx(async (tx) => {
+        await insertAssignment(tx, TENANT, TECH, OFFICE_MAIN, today);
+        await insertEnrolment(tx, TENANT, TECH, today);
+      });
+
+      const summary = await service.getSummary(techUser);
+
+      // The default weekly off is [7]; whether TODAY is a weekly off depends
+      // on the run day — the expected facts compute the same way the pure
+      // helper does (ISO weekday from the date, UTC space — no DST).
+      const weekdayOf = (date: string) =>
+        ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+      const isWeeklyOffToday = weekdayOf(today) === 7;
+
+      expect(summary).toEqual({
+        officeId: OFFICE_MAIN,
+        officeName: 'probe summary office (main)',
+        startTime: '09:30',
+        endTime: '18:00',
+        lateCutOffMinutes: 15,
+        weeklyOffDays: [7],
+        // 16-4 Today extension (active): pin + facts present, no record yet.
+        officeLatitude: 12.97,
+        officeLongitude: 77.59,
+        today: {
+          date: today,
+          isWeeklyOff: isWeeklyOffToday,
+          isHoliday: false,
+          holidayName: null,
+          isWorkingDay: !isWeeklyOffToday,
+          leaveState: null,
+          leavePart: null,
+        },
+        todayRecord: null,
+      });
+    },
+  );
+
+  maybeIt(
+    '17-8 today leave facts: an approved covering leave reads state+part, a cancelled one reads null',
+    async () => {
+      // The active leave seam mirrored on the summary: one live
+      // pending/approved day row at most (the partial unique index). Insert
+      // a real approved request covering today, read it, then cancel the
+      // days and watch the facts fall back to honest nulls.
+      const requestId = randomUUID();
+      must(
+        await admin.from('leave_requests').insert({
+          id: requestId,
+          tenant_id: TENANT,
+          employee_id: TECH,
+          request_id: randomUUID(),
+          start_date: today,
+          end_date: today,
+          part: 'first_half',
+          reason: 'probe summary leave',
+          created_by: TECH,
+        }),
       );
-      await deleteRanges(
-        tx,
-        'attendance_enrolments',
-        enrolments.map((r) => r.id),
+      must(
+        await admin.from('leave_request_days').insert({
+          tenant_id: TENANT,
+          leave_request_id: requestId,
+          employee_id: TECH,
+          leave_date: today,
+          state: 'approved',
+        }),
       );
-    });
 
-    const summary = await service.getSummary(techUser);
+      const withLeave = await service.getSummary(techUser);
+      expect(withLeave.today).toMatchObject({
+        leaveState: 'approved',
+        leavePart: 'first_half',
+      });
 
-    // Settings are enabled+completed but nothing is tracked: access none,
-    // and the endpoint answers all-null/[] rather than a stale office.
-    expect(summary).toEqual(EMPTY_ME_SUMMARY);
-  });
+      // The auto-cancel shape (17-4's check-in transition): the day row goes
+      // 'cancelled' — the summary must read null/null again.
+      must(
+        await admin
+          .from('leave_request_days')
+          .update({ state: 'cancelled' })
+          .eq('leave_request_id', requestId),
+      );
 
-  maybeIt('active: SQL-inserted covering-today period reads the live office, its rule and [7]', async () => {
-    await inTx(async (tx) => {
-      await insertAssignment(tx, TENANT, TECH, OFFICE_MAIN, today);
-      await insertEnrolment(tx, TENANT, TECH, today);
-    });
+      const afterCancel = await service.getSummary(techUser);
+      expect(afterCancel.today).toMatchObject({
+        leaveState: null,
+        leavePart: null,
+      });
 
-    const summary = await service.getSummary(techUser);
+      // Days first — the request FK is RESTRICT, so the user teardown below
+      // would fail with an orphaned day row.
+      await admin
+        .from('leave_request_days')
+        .delete()
+        .eq('leave_request_id', requestId);
+      await admin.from('leave_requests').delete().eq('id', requestId);
+    },
+  );
 
-    // The default weekly off is [7]; whether TODAY is a weekly off depends
-    // on the run day — the expected facts compute the same way the pure
-    // helper does (ISO weekday from the date, UTC space — no DST).
-    const weekdayOf = (date: string) =>
-      ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
-    const isWeeklyOffToday = weekdayOf(today) === 7;
+  maybeIt(
+    '16-4 today facts: a holiday row today flips isHoliday/holidayName/isWorkingDay, then un-flips',
+    async () => {
+      must(
+        await admin.from('holidays').insert({
+          tenant_id: TENANT,
+          holiday_date: today,
+          name: 'probe holiday',
+        }),
+      );
 
-    expect(summary).toEqual({
-      officeId: OFFICE_MAIN,
-      officeName: 'probe summary office (main)',
-      startTime: '09:30',
-      endTime: '18:00',
-      lateCutOffMinutes: 15,
-      weeklyOffDays: [7],
-      // 16-4 Today extension (active): pin + facts present, no record yet.
-      officeLatitude: 12.97,
-      officeLongitude: 77.59,
-      today: {
+      const withHoliday = await service.getSummary(techUser);
+      expect(withHoliday.today).toMatchObject({
         date: today,
-        isWeeklyOff: isWeeklyOffToday,
+        isHoliday: true,
+        holidayName: 'probe holiday',
+        isWorkingDay: false,
+      });
+
+      await admin.from('holidays').delete().eq('tenant_id', TENANT);
+
+      const after = await service.getSummary(techUser);
+      expect(after.today).toMatchObject({
         isHoliday: false,
         holidayName: null,
-        isWorkingDay: !isWeeklyOffToday,
-      },
-      todayRecord: null,
-    });
-  });
+      });
+    },
+  );
 
-  maybeIt('16-4 today facts: a holiday row today flips isHoliday/holidayName/isWorkingDay, then un-flips', async () => {
-    must(
+  maybeIt(
+    '16-4 todayRecord: an open record grades lateMinutes against the rule and carries the tenant offset',
+    async () => {
+      // An ok attempt row first — attendance_records.checkin_attempt_id is
+      // NOT NULL with an FK to it. Check-in 10:22 tenant-local vs rule
+      // 09:30+15 → late 37, isLate.
+      const attemptId = randomUUID();
+      must(
+        await admin.from('attendance_attempts').insert({
+          id: attemptId,
+          tenant_id: TENANT,
+          employee_id: TECH,
+          request_id: randomUUID(),
+          kind: 'check_in',
+          outcome: 'ok',
+        }),
+      );
+      must(
+        await admin.from('attendance_records').insert({
+          tenant_id: TENANT,
+          employee_id: TECH,
+          work_date: today,
+          office_id: OFFICE_MAIN,
+          radius_m: 100,
+          // 10:22 IST as an explicit-offset instant (the tenant default is
+          // Asia/Kolkata; PostgREST parses the offset, not SQL expressions).
+          checkin_at: `${today}T10:22:00+05:30`,
+          checkin_attempt_id: attemptId,
+          checkin_lat: 12.97,
+          checkin_lng: 77.59,
+          checkin_accuracy_m: 12,
+          checkin_distance_m: 40,
+          checkin_mocked: false,
+        }),
+      );
+
+      const summary = await service.getSummary(techUser);
+
+      const rec = summary.todayRecord;
+      expect(rec).not.toBeNull();
+      expect(rec!.checkoutAt).toBeNull();
+      expect(rec!.workedMinutes).toBeNull();
+      expect(rec!.earlyCheckout).toBeNull();
+      expect(rec!.lateMinutes).toBe(37);
+      expect(rec!.isLate).toBe(true);
+      // AD-7/D11: the wall-clock parts travel in the string, tenant offset
+      // (the tenant default Asia/Kolkata) — the FE never converts.
+      expect(rec!.checkinAt).toBe(`${today}T10:22:00+05:30`);
+
+      // Keep the record for the close-out step below (its own probe).
+    },
+  );
+
+  maybeIt(
+    '16-4 todayRecord: closing the record adds workedMinutes (instants, truncated) + earlyCheckout',
+    async () => {
+      const checkoutAttempt = randomUUID();
+      must(
+        await admin.from('attendance_attempts').insert({
+          id: checkoutAttempt,
+          tenant_id: TENANT,
+          employee_id: TECH,
+          request_id: randomUUID(),
+          kind: 'check_out',
+          outcome: 'ok',
+        }),
+      );
+      // The checkout-pair CHECK demands the paired attempt id.
+      const upd = await admin
+        .from('attendance_records')
+        .update({
+          checkout_at: `${today}T18:05:00+05:30`,
+          checkout_attempt_id: checkoutAttempt,
+        })
+        .eq('tenant_id', TENANT)
+        .eq('employee_id', TECH);
+      if (upd.error)
+        throw new Error(`fixture update failed: ${upd.error.message}`);
+
+      const summary = await service.getSummary(techUser);
+
+      // 10:22 → 18:05 = 7 h 43 m = 463 whole minutes; 18:05 is past the
+      // 18:00 rule end → earlyCheckout false.
+      expect(summary.todayRecord).toMatchObject({
+        checkoutAt: `${today}T18:05:00+05:30`,
+        workedMinutes: 463,
+        earlyCheckout: false,
+        earlyCheckoutMinutes: null,
+        lateMinutes: 37,
+        isLate: true,
+      });
+    },
+  );
+
+  maybeIt(
+    'override precedence: a covering [1] override replaces the default; removing it restores [7]',
+    async () => {
+      must(
+        await admin.from('attendance_weekly_off_overrides').insert({
+          tenant_id: TENANT,
+          employee_id: TECH,
+          valid: `[${today},)`,
+          days: [1],
+        }),
+      );
+
+      const overridden = await service.getSummary(techUser);
+      expect(overridden.weeklyOffDays).toEqual([1]);
+      // The override changes ONLY the weekly offs.
+      expect(overridden.officeId).toBe(OFFICE_MAIN);
+      expect(overridden.startTime).toBe('09:30');
+
       await admin
-        .from('holidays')
-        .insert({ tenant_id: TENANT, holiday_date: today, name: 'probe holiday' }),
-    );
+        .from('attendance_weekly_off_overrides')
+        .delete()
+        .eq('tenant_id', TENANT);
 
-    const withHoliday = await service.getSummary(techUser);
-    expect(withHoliday.today).toMatchObject({
-      date: today,
-      isHoliday: true,
-      holidayName: 'probe holiday',
-      isWorkingDay: false,
-    });
+      const restored = await service.getSummary(techUser);
+      expect(restored.weeklyOffDays).toEqual([7]);
+    },
+  );
 
-    await admin.from('holidays').delete().eq('tenant_id', TENANT);
+  maybeIt(
+    'cleanup removed every fixture row — zero residue under the probe tenant',
+    async () => {
+      // The final journey step performs the teardown itself so the residue
+      // assertion is testable; afterAll re-runs it (idempotent) as a safety
+      // net if an earlier step threw.
+      await cleanupFixtures();
 
-    const after = await service.getSummary(techUser);
-    expect(after.today).toMatchObject({ isHoliday: false, holidayName: null });
-  });
-
-  maybeIt('16-4 todayRecord: an open record grades lateMinutes against the rule and carries the tenant offset', async () => {
-    // An ok attempt row first — attendance_records.checkin_attempt_id is
-    // NOT NULL with an FK to it. Check-in 10:22 tenant-local vs rule
-    // 09:30+15 → late 37, isLate.
-    const attemptId = randomUUID();
-    must(
-      await admin.from('attendance_attempts').insert({
-        id: attemptId,
-        tenant_id: TENANT,
-        employee_id: TECH,
-        request_id: randomUUID(),
-        kind: 'check_in',
-        outcome: 'ok',
-      }),
-    );
-    must(
-      await admin.from('attendance_records').insert({
-        tenant_id: TENANT,
-        employee_id: TECH,
-        work_date: today,
-        office_id: OFFICE_MAIN,
-        radius_m: 100,
-        // 10:22 IST as an explicit-offset instant (the tenant default is
-        // Asia/Kolkata; PostgREST parses the offset, not SQL expressions).
-        checkin_at: `${today}T10:22:00+05:30`,
-        checkin_attempt_id: attemptId,
-        checkin_lat: 12.97,
-        checkin_lng: 77.59,
-        checkin_accuracy_m: 12,
-        checkin_distance_m: 40,
-        checkin_mocked: false,
-      }),
-    );
-
-    const summary = await service.getSummary(techUser);
-
-    const rec = summary.todayRecord;
-    expect(rec).not.toBeNull();
-    expect(rec!.checkoutAt).toBeNull();
-    expect(rec!.workedMinutes).toBeNull();
-    expect(rec!.earlyCheckout).toBeNull();
-    expect(rec!.lateMinutes).toBe(37);
-    expect(rec!.isLate).toBe(true);
-    // AD-7/D11: the wall-clock parts travel in the string, tenant offset
-    // (the tenant default Asia/Kolkata) — the FE never converts.
-    expect(rec!.checkinAt).toBe(`${today}T10:22:00+05:30`);
-
-    // Keep the record for the close-out step below (its own probe).
-  });
-
-  maybeIt('16-4 todayRecord: closing the record adds workedMinutes (instants, truncated) + earlyCheckout', async () => {
-    const checkoutAttempt = randomUUID();
-    must(
-      await admin.from('attendance_attempts').insert({
-        id: checkoutAttempt,
-        tenant_id: TENANT,
-        employee_id: TECH,
-        request_id: randomUUID(),
-        kind: 'check_out',
-        outcome: 'ok',
-      }),
-    );
-    // The checkout-pair CHECK demands the paired attempt id.
-    const upd = await admin
-      .from('attendance_records')
-      .update({
-        checkout_at: `${today}T18:05:00+05:30`,
-        checkout_attempt_id: checkoutAttempt,
-      })
-      .eq('tenant_id', TENANT)
-      .eq('employee_id', TECH);
-    if (upd.error) throw new Error(`fixture update failed: ${upd.error.message}`);
-
-    const summary = await service.getSummary(techUser);
-
-    // 10:22 → 18:05 = 7 h 43 m = 463 whole minutes; 18:05 is past the
-    // 18:00 rule end → earlyCheckout false.
-    expect(summary.todayRecord).toMatchObject({
-      checkoutAt: `${today}T18:05:00+05:30`,
-      workedMinutes: 463,
-      earlyCheckout: false,
-      earlyCheckoutMinutes: null,
-      lateMinutes: 37,
-      isLate: true,
-    });
-  });
-
-  maybeIt('override precedence: a covering [1] override replaces the default; removing it restores [7]', async () => {
-    must(
-      await admin.from('attendance_weekly_off_overrides').insert({
-        tenant_id: TENANT,
-        employee_id: TECH,
-        valid: `[${today},)`,
-        days: [1],
-      }),
-    );
-
-    const overridden = await service.getSummary(techUser);
-    expect(overridden.weeklyOffDays).toEqual([1]);
-    // The override changes ONLY the weekly offs.
-    expect(overridden.officeId).toBe(OFFICE_MAIN);
-    expect(overridden.startTime).toBe('09:30');
-
-    await admin
-      .from('attendance_weekly_off_overrides')
-      .delete()
-      .eq('tenant_id', TENANT);
-
-    const restored = await service.getSummary(techUser);
-    expect(restored.weeklyOffDays).toEqual([7]);
-  });
-
-  maybeIt('cleanup removed every fixture row — zero residue under the probe tenant', async () => {
-    // The final journey step performs the teardown itself so the residue
-    // assertion is testable; afterAll re-runs it (idempotent) as a safety
-    // net if an earlier step threw.
-    await cleanupFixtures();
-
-    for (const table of [
-      'attendance_office_assignments',
-      'attendance_enrolments',
-      'attendance_weekly_off_overrides',
-      'attendance_weekly_off_defaults',
-      'attendance_office_rules',
-      'attendance_onboarding',
-      'attendance_offices',
-      'attendance_setup_progress',
-      'attendance_settings',
-      'attendance_records',
-      'attendance_attempts',
-      'holidays',
-    ]) {
-      const { rows } = await pool.query(
-        `select count(*)::int as n from public.${table} where tenant_id = $1`,
+      for (const table of [
+        'attendance_office_assignments',
+        'attendance_enrolments',
+        'attendance_weekly_off_overrides',
+        'attendance_weekly_off_defaults',
+        'attendance_office_rules',
+        'attendance_onboarding',
+        'attendance_offices',
+        'attendance_setup_progress',
+        'attendance_settings',
+        'attendance_records',
+        'attendance_attempts',
+        'holidays',
+      ]) {
+        const { rows } = await pool.query(
+          `select count(*)::int as n from public.${table} where tenant_id = $1`,
+          [TENANT],
+        );
+        expect(rows[0].n).toBe(0);
+      }
+      const { rows: userRows } = await pool.query(
+        'select count(*)::int as n from public.users where id = any($1::uuid[])',
+        [[OWNER, TECH]],
+      );
+      expect(userRows[0].n).toBe(0);
+      const { rows: tenantRows } = await pool.query(
+        'select count(*)::int as n from public.tenants where id = $1',
         [TENANT],
       );
-      expect(rows[0].n).toBe(0);
-    }
-    const { rows: userRows } = await pool.query(
-      'select count(*)::int as n from public.users where id = any($1::uuid[])',
-      [[OWNER, TECH]],
-    );
-    expect(userRows[0].n).toBe(0);
-    const { rows: tenantRows } = await pool.query(
-      'select count(*)::int as n from public.tenants where id = $1',
-      [TENANT],
-    );
-    expect(tenantRows[0].n).toBe(0);
-  });
+      expect(tenantRows[0].n).toBe(0);
+    },
+  );
 });

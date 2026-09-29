@@ -40,6 +40,16 @@ function accessQb(result: { data: unknown; error: unknown }) {
   return qb;
 }
 
+/** The 17-8 today-leave qb: `.select().eq().eq().in().maybeSingle()`. */
+function leaveQb(result: { data: unknown; error: unknown }) {
+  const qb: Record<string, jest.Mock> = {};
+  for (const m of ['select', 'eq', 'eq', 'in']) {
+    qb[m] = jest.fn().mockReturnValue(qb);
+  }
+  qb.maybeSingle = jest.fn().mockResolvedValue(result);
+  return qb;
+}
+
 /** Terminal `.returns()` list-read qb (rules / weekly-off tables). */
 function listQb(result: { data: unknown; error: unknown }) {
   const qb: Record<string, jest.Mock> = {};
@@ -67,6 +77,7 @@ function summaryAdmin(parts: {
   officePin?: ReadResult;
   holiday?: ReadResult;
   record?: ReadResult;
+  leave?: ReadResult;
   timezone?: ReadResult;
 }) {
   const viewQb = accessQb(parts.view);
@@ -76,6 +87,7 @@ function summaryAdmin(parts: {
   const officePinQb = accessQb(parts.officePin ?? { data: null, error: null });
   const holidayQb = accessQb(parts.holiday ?? { data: null, error: null });
   const recordQb = accessQb(parts.record ?? { data: null, error: null });
+  const leaveQ = leaveQb(parts.leave ?? { data: null, error: null });
   const timezoneQb = accessQb(
     parts.timezone ?? { data: { timezone: 'Asia/Kolkata' }, error: null },
   );
@@ -95,6 +107,8 @@ function summaryAdmin(parts: {
         return holidayQb;
       case 'attendance_records':
         return recordQb;
+      case 'leave_request_days':
+        return leaveQ;
       case 'tenants':
         return timezoneQb;
       default:
@@ -111,6 +125,7 @@ function summaryAdmin(parts: {
     officePinQb,
     holidayQb,
     recordQb,
+    leaveQb: leaveQ,
     timezoneQb,
     from,
     rpc,
@@ -191,9 +206,10 @@ describe('MeAttendanceService (story 15-7)', () => {
       for (const m of ['select', 'eq']) {
         selectQb[m] = jest.fn().mockReturnValue(selectQb);
       }
-      selectQb.single = jest
-        .fn()
-        .mockResolvedValue({ data: { onboarded_at: '2026-09-28T04:00:00+00:00' }, error: null });
+      selectQb.single = jest.fn().mockResolvedValue({
+        data: { onboarded_at: '2026-09-28T04:00:00+00:00' },
+        error: null,
+      });
       const from = jest.fn((table: string) =>
         table === 'attendance_onboarding'
           ? {
@@ -242,7 +258,10 @@ describe('MeAttendanceService (story 15-7)', () => {
       '%s answers the honest EMPTY_ME_SUMMARY with ZERO additional reads',
       async (state) => {
         const parts = summaryAdmin({
-          view: { data: { ...summarisableRow, access_state: state }, error: null },
+          view: {
+            data: { ...summarisableRow, access_state: state },
+            error: null,
+          },
         });
         const service = serviceWith(parts.admin);
 
@@ -270,7 +289,10 @@ describe('MeAttendanceService (story 15-7)', () => {
         },
         // Covers the start date (1 Nov) but NOT the RPC-less today — if the
         // anchor were anything else, the rule pick would come back empty.
-        rules: { data: [{ ...coveringRule, valid: '[2026-11-01,)' }], error: null },
+        rules: {
+          data: [{ ...coveringRule, valid: '[2026-11-01,)' }],
+          error: null,
+        },
         defaults: { data: [sundayDefault], error: null },
       });
       const service = serviceWith(parts.admin);
@@ -279,7 +301,9 @@ describe('MeAttendanceService (story 15-7)', () => {
 
       expect(parts.rpc).not.toHaveBeenCalled();
       expect(parts.from).toHaveBeenCalledWith('attendance_office_rules');
-      expect(parts.from).toHaveBeenCalledWith('attendance_weekly_off_overrides');
+      expect(parts.from).toHaveBeenCalledWith(
+        'attendance_weekly_off_overrides',
+      );
       expect(parts.from).toHaveBeenCalledWith('attendance_weekly_off_defaults');
       // Rules are office-scoped and employee overrides are employee-scoped.
       expect(parts.rulesQb.eq).toHaveBeenCalledWith('office_id', 'office-1');
@@ -337,6 +361,8 @@ describe('MeAttendanceService (story 15-7)', () => {
           isHoliday: false,
           holidayName: null,
           isWorkingDay: true,
+          leaveState: null,
+          leavePart: null,
         },
         todayRecord: null,
       });
@@ -374,6 +400,8 @@ describe('MeAttendanceService (story 15-7)', () => {
           isHoliday: false,
           holidayName: null,
           isWorkingDay: true,
+          leaveState: null,
+          leavePart: null,
         },
         todayRecord: null,
       });
@@ -407,10 +435,7 @@ describe('MeAttendanceService (story 15-7)', () => {
         ),
       ).toEqual([7]);
       expect(
-        await summaryWith(
-          { data: [], error: null },
-          { data: [], error: null },
-        ),
+        await summaryWith({ data: [], error: null }, { data: [], error: null }),
       ).toEqual([]);
     });
 
@@ -452,8 +477,14 @@ describe('MeAttendanceService (story 15-7)', () => {
         (parts: ReturnType<typeof summaryAdmin>) => parts.officePinQb,
       ],
       ['holiday', (parts: ReturnType<typeof summaryAdmin>) => parts.holidayQb],
-      ['today record', (parts: ReturnType<typeof summaryAdmin>) => parts.recordQb],
-      ['tenant timezone', (parts: ReturnType<typeof summaryAdmin>) => parts.timezoneQb],
+      [
+        'today record',
+        (parts: ReturnType<typeof summaryAdmin>) => parts.recordQb,
+      ],
+      [
+        'tenant timezone',
+        (parts: ReturnType<typeof summaryAdmin>) => parts.timezoneQb,
+      ],
     ] as const)(
       'fails loud (500, "Failed to read attendance summary") when the %s read errors',
       async (_label, failing) => {
@@ -469,7 +500,9 @@ describe('MeAttendanceService (story 15-7)', () => {
           today: { data: '2026-03-10', error: null },
         });
         // Only ONE table errors per run — the others must not mask it.
-        const healthy: Array<ReturnType<typeof summaryAdmin>[keyof ReturnType<typeof summaryAdmin>]> = [
+        const healthy: Array<
+          ReturnType<typeof summaryAdmin>[keyof ReturnType<typeof summaryAdmin>]
+        > = [
           parts.rulesQb,
           parts.overridesQb,
           parts.defaultsQb,
@@ -480,11 +513,17 @@ describe('MeAttendanceService (story 15-7)', () => {
         ];
         for (const qb of healthy) {
           if ('returns' in qb && typeof qb.returns === 'function') {
-            (qb.returns as jest.Mock).mockReset();
-            (qb.returns as jest.Mock).mockResolvedValue({ data: [], error: null });
+            qb.returns.mockReset();
+            qb.returns.mockResolvedValue({
+              data: [],
+              error: null,
+            });
           } else {
             (qb.maybeSingle as jest.Mock).mockReset();
-            (qb.maybeSingle as jest.Mock).mockResolvedValue({ data: null, error: null });
+            (qb.maybeSingle as jest.Mock).mockResolvedValue({
+              data: null,
+              error: null,
+            });
           }
         }
         const failingQb = failing(parts) as {
@@ -525,6 +564,135 @@ describe('MeAttendanceService (story 15-7)', () => {
         message: 'Failed to resolve tenant date',
       });
       expect(parts.from).not.toHaveBeenCalledWith('attendance_office_rules');
+    });
+  });
+
+  describe('GET summary — the 17-8 today-leave read (D1)', () => {
+    // Local copies — the 15-10 fixtures above live in that describe's scope.
+    const summarisableRow = {
+      user_id: 'tech-uuid',
+      tenant_id: 'tenant-uuid',
+      attendance_enabled: true,
+      access_state: 'active',
+      attendance_start_date: '2026-01-01',
+      enabled_at: '2026-01-01T04:00:00+00:00',
+      onboarded_at: null,
+      office_id: 'office-1',
+      office_name: 'Thane',
+    };
+    const coveringRule = {
+      id: 'rule-1',
+      valid: '[2026-11-01,)',
+      start_time: '09:30:00',
+      end_time: '18:00:00',
+      late_cutoff_minutes: 15,
+    };
+    const sundayDefault = { valid: '[2026-01-01,)', days: [7] };
+
+    it('an active leave row rides onto today (byte-parity field names)', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        today: { data: '2026-03-10', error: null },
+        leave: {
+          data: { state: 'pending', leave_requests: { part: 'full_day' } },
+          error: null,
+        },
+      });
+      const service = serviceWith(parts.admin);
+
+      const result = await service.getSummary(tech);
+      expect(result.today).toMatchObject({
+        leaveState: 'pending',
+        leavePart: 'full_day',
+      });
+    });
+
+    it('the read mirrors the day-context seam: employee+date, live states only, FK join, maybeSingle', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        today: { data: '2026-03-10', error: null },
+      });
+      const service = serviceWith(parts.admin);
+      await service.getSummary(tech);
+
+      expect(parts.from).toHaveBeenCalledWith('leave_request_days');
+      expect(parts.leaveQb.select).toHaveBeenCalledWith(
+        'state, leave_requests!leave_request_days_request_fkey(part)',
+      );
+      expect(parts.leaveQb.eq).toHaveBeenCalledWith('employee_id', 'tech-uuid');
+      expect(parts.leaveQb.eq).toHaveBeenCalledWith('leave_date', '2026-03-10');
+      expect(parts.leaveQb.in).toHaveBeenCalledWith('state', [
+        'pending',
+        'approved',
+      ]);
+      expect(parts.leaveQb.maybeSingle).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancelled/revoked/none → the maybeSingle null keeps today leave-shaped with honest nulls', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        today: { data: '2026-03-10', error: null },
+      });
+      const service = serviceWith(parts.admin);
+
+      const result = await service.getSummary(tech);
+      expect(result.today).toMatchObject({ leaveState: null, leavePart: null });
+    });
+
+    it('a failing leave read propagates as 500 — never a silent no-leave lie', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        today: { data: '2026-03-10', error: null },
+        leave: { data: null, error: { message: 'boom' } },
+      });
+      const service = serviceWith(parts.admin);
+
+      const err = await rejectionOf(() => service.getSummary(tech));
+      expect(err.getResponse()).toMatchObject({
+        message: 'Failed to read today leave',
+      });
+    });
+
+    it('a wire-shape drift (state/part outside the CHECK enums) fails loud, never fabricates', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        today: { data: '2026-03-10', error: null },
+        leave: {
+          data: { state: 'cancelled', leave_requests: { part: 'full_day' } },
+          error: null,
+        },
+      });
+      const service = serviceWith(parts.admin);
+
+      const err = await rejectionOf(() => service.getSummary(tech));
+      expect(err.getResponse()).toMatchObject({
+        message: 'Failed to read today leave',
+      });
+    });
+
+    it('upcoming keeps today null (the leave read still runs but feeds nothing)', async () => {
+      const parts = summaryAdmin({
+        view: {
+          data: {
+            ...summarisableRow,
+            access_state: 'upcoming',
+            attendance_start_date: '2026-11-01',
+          },
+          error: null,
+        },
+        rules: {
+          data: [{ ...coveringRule, valid: '[2026-11-01,)' }],
+          error: null,
+        },
+        defaults: { data: [sundayDefault], error: null },
+      });
+      const service = serviceWith(parts.admin);
+
+      const result = await service.getSummary(tech);
+      expect(result.today).toBeNull();
+      // The read ran against the FUTURE anchor and found nothing — a leave
+      // covering the start date must never leak into an upcoming summary.
+      expect(parts.leaveQb.eq).toHaveBeenCalledWith('leave_date', '2026-11-01');
     });
   });
 });

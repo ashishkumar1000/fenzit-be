@@ -69,6 +69,16 @@ export interface TodayFacts {
   isHoliday: boolean;
   holidayName: string | null;
   isWorkingDay: boolean;
+  /**
+   * Today's ACTIVE leave (17-8 D1): the AD-22 seam mirrored on the
+   * summary — `'pending' | 'approved'` when a `leave_request_days` row
+   * covers today in a live state, else null (cancelled/revoked/no leave
+   * all read null — exactly the shape the D11 gate already handles).
+   * Named byte-parity with day-context's own fields.
+   */
+  leaveState: 'pending' | 'approved' | null;
+  /** The covering request's part (DB CHECK enum); null with leaveState. */
+  leavePart: 'full_day' | 'first_half' | 'second_half' | null;
 }
 
 /** The day's record as the Today screen renders it (mirror of the

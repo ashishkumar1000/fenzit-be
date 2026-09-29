@@ -16,8 +16,9 @@ import {
  * check-out accept (16-1/16-2). The server makes every decision (PRD);
  * these fields describe the fix, they never carry verdicts. `mocked: null`
  * means "not detected" (best-effort detection). `confirmLeaveCancel` is
- * accepted now and ignored until Epic 17 builds the leave model (spec D14)
- * so 16-4's client can send it from day one without a contract change.
+ * consumed by the check-in transaction's leave-confirmation path since
+ * 17-4 (D11 — it authorises the auto-cancel of a full-day leave); the
+ * other paths ignore it, and the FE only ever sends it from that dialog.
  */
 export class CheckInOutDto {
   @ApiProperty({ description: 'Fix latitude', minimum: -90, maximum: 90 })

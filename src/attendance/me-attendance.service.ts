@@ -7,7 +7,11 @@ import {
   toAccessStateResponse,
 } from './enrolments-response.model';
 import { markOnboarded } from './enrolments.repository';
-import { internalError, requireTenant, resolveTenantToday } from './attendance-rpc.helpers';
+import {
+  internalError,
+  requireTenant,
+  resolveTenantToday,
+} from './attendance-rpc.helpers';
 import {
   EMPTY_ME_SUMMARY,
   isSummarisableState,
@@ -95,25 +99,38 @@ export class MeAttendanceService {
         ? row.attendance_start_date
         : await resolveTenantToday(admin, row.tenant_id);
 
-    const [rules, overrides, defaults, officePin, holidayName, record, timezone] =
-      await Promise.all([
-        row.office_id
-          ? this.readRules(admin, row.tenant_id, row.office_id)
-          : Promise.resolve([] as OfficeRuleRow[]),
-        this.readWeeklyOffRows(
-          admin,
-          'attendance_weekly_off_overrides',
-          row.tenant_id,
-          row.user_id,
-        ),
-        this.readWeeklyOffRows(admin, 'attendance_weekly_off_defaults', row.tenant_id),
-        row.office_id
-          ? this.readOfficePin(admin, row.tenant_id, row.office_id)
-          : Promise.resolve(null),
-        this.readHolidayName(admin, row.tenant_id, anchor),
-        this.readTodayRecord(admin, row.tenant_id, row.user_id, anchor),
-        this.readTimezone(admin, row.tenant_id),
-      ]);
+    const [
+      rules,
+      overrides,
+      defaults,
+      officePin,
+      holidayName,
+      record,
+      todayLeave,
+      timezone,
+    ] = await Promise.all([
+      row.office_id
+        ? this.readRules(admin, row.tenant_id, row.office_id)
+        : Promise.resolve([] as OfficeRuleRow[]),
+      this.readWeeklyOffRows(
+        admin,
+        'attendance_weekly_off_overrides',
+        row.tenant_id,
+        row.user_id,
+      ),
+      this.readWeeklyOffRows(
+        admin,
+        'attendance_weekly_off_defaults',
+        row.tenant_id,
+      ),
+      row.office_id
+        ? this.readOfficePin(admin, row.tenant_id, row.office_id)
+        : Promise.resolve(null),
+      this.readHolidayName(admin, row.tenant_id, anchor),
+      this.readTodayRecord(admin, row.tenant_id, row.user_id, anchor),
+      this.readTodayLeave(admin, row.user_id, anchor),
+      this.readTimezone(admin, row.tenant_id),
+    ]);
 
     const rule = pickRuleForDate(rules, anchor);
     const weeklyOffDays = pickWeeklyOffDays(overrides, defaults, anchor);
@@ -122,7 +139,7 @@ export class MeAttendanceService {
     // is a future date, so "today's facts" would be a lie there.
     const isActive = row.access_state === 'active';
     const today = isActive
-      ? pickTodayFacts(weeklyOffDays, holidayName, anchor)
+      ? pickTodayFacts(weeklyOffDays, holidayName, anchor, todayLeave)
       : null;
     let todayRecord: MeSummaryResponse['todayRecord'] = null;
     if (isActive && record) {
@@ -163,6 +180,51 @@ export class MeAttendanceService {
       throw internalError('Failed to read attendance summary');
     }
     return data ?? null;
+  }
+
+  /**
+   * Today's ACTIVE leave (17-8 D1): the AD-22 leave seam mirrored for the
+   * summary. `findActiveLeaveForDate` (day-context) is pg-tx-typed and the
+   * summary path is the admin client, so this is a NEW supabase read with
+   * the SAME semantics: employee+date, `state in ('pending','approved')`,
+   * the request's `part` via the FK join, `maybeSingle` under the
+   * at-most-one partial unique index. Cancelled/revoked/none all read
+   * null — the FE treats absence as "no dialog", the D11 gate as usual.
+   */
+  private async readTodayLeave(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    userId: string,
+    anchor: string,
+  ): Promise<{
+    state: 'pending' | 'approved';
+    part: 'full_day' | 'first_half' | 'second_half';
+  } | null> {
+    const { data, error } = await admin
+      .from('leave_request_days')
+      .select('state, leave_requests!leave_request_days_request_fkey(part)')
+      .eq('employee_id', userId)
+      .eq('leave_date', anchor)
+      .in('state', ['pending', 'approved'])
+      .maybeSingle<{
+        state: string;
+        leave_requests: { part: string } | null;
+      }>();
+
+    if (error) {
+      this.logger.error('Failed to read today leave:', { error });
+      throw internalError('Failed to read today leave');
+    }
+    if (!data) return null;
+    const part = data.leave_requests?.part;
+    if (
+      (data.state !== 'pending' && data.state !== 'approved') ||
+      (part !== 'full_day' && part !== 'first_half' && part !== 'second_half')
+    ) {
+      // The DB CHECKs admit only these; a drift here means the wire lied —
+      // fail loud rather than fabricate a shape the FE would branch on.
+      throw internalError('Failed to read today leave');
+    }
+    return { state: data.state, part };
   }
 
   /** Today's holiday name (null when today is not a holiday). */
@@ -237,7 +299,9 @@ export class MeAttendanceService {
   ): Promise<OfficeRuleRow[]> {
     const { data, error } = await admin
       .from('attendance_office_rules')
-      .select('id, valid, start_time, end_time, late_cutoff_minutes, full_day_hours, half_day_hours')
+      .select(
+        'id, valid, start_time, end_time, late_cutoff_minutes, full_day_hours, half_day_hours',
+      )
       .eq('tenant_id', tenantId)
       .eq('office_id', officeId)
       .returns<OfficeRuleRow[]>();

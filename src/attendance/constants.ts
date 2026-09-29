@@ -31,8 +31,9 @@ export const COUNTED_OUTCOMES = [
 export type CountedOutcome = (typeof COUNTED_OUTCOMES)[number];
 
 /** Every outcome the attempts CHECK constraint admits (migration 20260928000002).
- * `leave_confirmation_required` has no writer until Epic 17 (spec D14) but is
- * admitted now so Epic 17's first writer cannot 23514 (review finding). */
+ * `leave_confirmation_required` is written by the check-in transaction's
+ * leave-confirmation path since 17-4 (spec D11) — the attempt row makes
+ * the auto-cancel auditable like every other outcome. */
 export const ATTEMPT_OUTCOMES = [
   ...COUNTED_OUTCOMES,
   'ok',
