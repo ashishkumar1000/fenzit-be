@@ -128,6 +128,12 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
       return { rows: [{ employee_id: EMPLOYEE_ID }] };
     // 19-3's roster metas (distinct on + the today-office left lateral).
     if (sql.includes('distinct on (e.employee_id)')) return { rows: [metaRow] };
+    // 19-4's office registry (the picker's rows; the live office carries
+    // today's only tracked employee).
+    if (sql.includes('and archived_at is null\n       order by name'))
+      return {
+        rows: [{ id: OFFICE_ID, name: 'Andheri West' }],
+      };
     if (sql.includes('timezone from public.tenants'))
       return { rows: [{ timezone: TENANT_TZ }] };
     if (sql.includes('from public.attendance_settings'))
@@ -236,7 +242,11 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(Object.keys(body)).toEqual(['date', 'counts', 'flags']);
+      expect(Object.keys(body)).toEqual(['date', 'counts', 'offices', 'flags']);
+      // The registry row's shape (the picker reads id/name/tracked/checkedIn).
+      expect(body.offices).toEqual([
+        { id: OFFICE_ID, name: 'Andheri West', tracked: 1, checkedIn: 0 },
+      ]);
       expect(Object.keys(body.counts)).toEqual([
         'tracked',
         'checkedIn',

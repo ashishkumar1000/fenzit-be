@@ -20,6 +20,14 @@ const body: DashboardResponse = {
     late: 1,
     onLeave: 1,
   },
+  offices: [
+    {
+      id: 'o1',
+      name: 'HQ',
+      tracked: 3,
+      checkedIn: 1,
+    },
+  ],
   flags: {
     checkoutMissing: [
       {
@@ -43,7 +51,13 @@ const body: DashboardResponse = {
 
 describe('DashboardResponse — the wire key sets (D5)', () => {
   it('the dashboard body carries exactly the pinned keys at every level', () => {
-    expect(Object.keys(body).sort()).toEqual(['counts', 'date', 'flags']);
+    expect(Object.keys(body).sort()).toEqual(['counts', 'date', 'flags', 'offices']);
+    expect(Object.keys(body.offices[0]).sort()).toEqual([
+      'checkedIn',
+      'id',
+      'name',
+      'tracked',
+    ]);
     expect(Object.keys(body.counts).sort()).toEqual([
       'checkedIn',
       'late',

@@ -577,6 +577,24 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       expect([TECHS.A, TECHS.B]).toContain(flag.employeeId);
       expect(flag.workDate).toBe(d1);
     }
+    // The office registry (the 19-4 picker): every NON-ARCHIVED office —
+    // the archived office drops out — its stats over the FULL tenant
+    // scope, so the live office carries all five tracked rows + both
+    // checked-in legs.
+    expect(Object.keys(res.offices[0]).sort()).toEqual([
+      'checkedIn',
+      'id',
+      'name',
+      'tracked',
+    ]);
+    expect(res.offices).toEqual([
+      {
+        id: officeId,
+        name: 'dashboard probe office',
+        tracked: 5,
+        checkedIn: 2,
+      },
+    ]);
   });
 
   maybeIt('the flag strips mirror the engine exactly, including override-only days', async () => {
@@ -641,6 +659,18 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       onLeave: 0,
     });
     expect(res.flags).toEqual({ checkoutMissing: [], fakeLocationAttempt: [] });
+    // Even a filter that EMPTIES the tiles leaves the registry FULL-SCOPE —
+    // the picker must never inherit the fetch's filter (the 19-4 review's
+    // full-tenant contract; the pre-fix accumulation lived below the filter
+    // and zeroed every office on ANY filtered fetch, including this one).
+    expect(res.offices).toEqual([
+      {
+        id: officeId,
+        name: 'dashboard probe office',
+        tracked: 5,
+        checkedIn: 2,
+      },
+    ]);
   });
 
   maybeIt('monthly range rules: 31 days reads, 32 and future-end 422', async () => {

@@ -44,10 +44,23 @@ export interface FakeLocationFlagRow {
   attemptCount: number;
 }
 
+/** An office of the picker registry with today's stats (19-4 redesign) —
+ *  every non-archived attendance office, tracked/checkedIn over the FULL
+ *  tenant scope (never the fetch's filter — the picker must list every
+ *  office with its own truth). */
+export interface DashboardOfficeRow {
+  id: string;
+  name: string;
+  tracked: number;
+  checkedIn: number;
+}
+
 export interface DashboardResponse {
   /** The tile date — `attendance_today()`'s tenant-local YYYY-MM-DD. */
   date: string;
   counts: DashboardCounts;
+  /** The office registry with today's stats — the office picker's rows. */
+  offices: DashboardOfficeRow[];
   flags: {
     checkoutMissing: CheckoutMissingFlagRow[];
     fakeLocationAttempt: FakeLocationFlagRow[];
