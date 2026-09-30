@@ -19,6 +19,10 @@ export interface EmployeeMonthlyRow {
 export interface MonthlyResponse {
   from: string;
   to: string;
+  /** Tenant-local today (`YYYY-MM-DD`) — the same tenantToday the range
+   * check resolves; 19-5's FE clamps its request window against this echo
+   * (the wire truth, never the device clock). */
+  today: string;
   employees: EmployeeMonthlyRow[];
 }
 
@@ -37,6 +41,9 @@ export interface HolidayRow {
 export interface MeMonthlyResponse {
   from: string;
   to: string;
+  /** Tenant-local today (`YYYY-MM-DD`) — the same tenantToday the range
+   * check resolves (19-6's self view consumes the same echo). */
+  today: string;
   summary: MonthlyEmployeeSummary;
   weeklyOffs: number[];
   upcomingHolidays: HolidayRow[];

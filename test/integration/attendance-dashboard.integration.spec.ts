@@ -682,6 +682,9 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     const ok = await monthly.forOwner(user(OWNER, 'owner'), d31, today);
     expect(ok.from).toBe(d31);
     expect(ok.to).toBe(today);
+    // 19-5's D2 echo: the response carries the same tenant-today the
+    // range check resolved — the FE's request-shaping clock.
+    expect(ok.today).toBe(today);
 
     // A 32-day span, BOTH routes, validated before any SQL.
     for (const read of [
@@ -795,7 +798,12 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       today,
       randomUUID(), // well-formed, no such office — a filter, not a fetch
     );
-    expect(unknown).toEqual({ from: d3, to: today, employees: [] });
+    expect(unknown).toEqual({
+      from: d3,
+      to: today,
+      today, // 19-5's D2 echo rides every response
+      employees: [],
+    });
   });
 
   maybeIt('FR-11 parity — the owner row and the self view agree cell for cell', async () => {

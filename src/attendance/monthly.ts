@@ -123,7 +123,7 @@ export class MonthlyService {
       );
       const employeeIds = metas.map((m) => m.employee_id);
       if (employeeIds.length === 0) {
-        return { from, to, employees: [] };
+        return { from, to, today, employees: [] };
       }
       const rows = await readDayStatusGrid(
         tx,
@@ -158,7 +158,7 @@ export class MonthlyService {
             ? -1
             : 1,
       );
-      return { from, to, employees };
+      return { from, to, today, employees };
     });
   }
 
@@ -188,7 +188,7 @@ export class MonthlyService {
         tenantId,
         today,
       );
-      return { from, to, summary, weeklyOffs, upcomingHolidays };
+      return { from, to, today, summary, weeklyOffs, upcomingHolidays };
     });
   }
 

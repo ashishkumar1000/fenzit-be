@@ -313,9 +313,13 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(Object.keys(body)).toEqual(['from', 'to', 'employees']);
+      expect(Object.keys(body)).toEqual(['from', 'to', 'today', 'employees']);
       expect(body.from).toBe(FROM);
       expect(body.to).toBe(TO);
+      // 19-5's D2 echo: the same tenant-today the range check resolves —
+      // the FE clamps its request window against this, never the device
+      // clock.
+      expect(body.today).toBe(TODAY);
       expect(body.employees).toHaveLength(1);
       expect(Object.keys(body.employees[0])).toEqual([
         'employeeId',
@@ -420,10 +424,13 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
       expect(Object.keys(body)).toEqual([
         'from',
         'to',
+        'today',
         'summary',
         'weeklyOffs',
         'upcomingHolidays',
       ]);
+      // The same D2 echo the owner route carries (one service, one clock).
+      expect(body.today).toBe(TODAY);
       // FR-11's structural parity: one aggregation function as the owner
       // route's summary — same keys, same credit steps.
       expect(Object.keys(body.summary)).toEqual([

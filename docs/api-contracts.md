@@ -1716,23 +1716,26 @@ today's covering assignment office (unknown → `200` empty roster, never
 `404`). Office in each row = the assignment covering TODAY (the roster's
 current office). Sorting: resolved name, then id.
 
-**Response:** `{ from, to, employees: [{ employeeId, employeeName,
+**Response:** `{ from, to, today, employees: [{ employeeId, employeeName,
 officeId, officeName, summary }] }` with
 `summary: { daysWorked, halfDays, lateCount, leave, weeklyOffs, holidays,
 workedOnHoliday, absent, checkoutMissing }` — Σ/count of the engine's
 FR-11 credits over the same grid rows (no second implementation); a later
-correction flips `checkoutMissing`/`absent` live.
+correction flips `checkoutMissing`/`absent` live. `today` is the
+tenant-local clock (`YYYY-MM-DD`) the range check resolves — the same
+value the `to ≤ tenant-today` check compares against, echoed so the FE
+shapes its request window from the wire, never the device clock (19-5).
 
 #### `GET /api/v1/attendance/me/monthly?from=&to=` `[Bearer JWT, Role: technician]`
 
 FR-26 — the SAME summary shape for the JWT identity (server-side scoping;
 FR-11's owner↔me parity is structural — one aggregation function), plus
-`weeklyOffs` (the today-effective weekly-off weekdays, ISO `1=Mon..7=Sun`,
-via the shared `pickWeeklyOffDays` contract) and `upcomingHolidays` (the
-tenant's next 10 from today, `{ holidayDate, holidayName }`). Leave
-history is NOT duplicated — `GET /attendance/me/leave` serves it
-paginated. Range rules as the owner route (span ≤ 31, `to ≤ tenant-today`,
-422s).
+`today` (the same tenant-local echo the owner route carries), `weeklyOffs`
+(the today-effective weekly-off weekdays, ISO `1=Mon..7=Sun`, via the
+shared `pickWeeklyOffDays` contract) and `upcomingHolidays` (the tenant's
+next 10 from today, `{ holidayDate, holidayName }`). Leave history is NOT
+duplicated — `GET /attendance/me/leave` serves it paginated. Range rules
+as the owner route (span ≤ 31, `to ≤ tenant-today`, 422s).
 
 **Unbounded reads (accepted, 2026-09-29 review decision):** both flag
 strips and the monthly employee-set + grid carry no caps or pagination in

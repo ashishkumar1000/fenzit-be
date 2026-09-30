@@ -10,12 +10,14 @@ import type {
  * `summary`'s key set is D6's tile VOCABULARY (the same nine the calendar
  * grades into), so the pin freezes the serialized KEY SETS via typed
  * fixtures before a live page reads an empty cell. A change to the
- * implementation (not the requirement) must not turn these red.
+ * implementation (not the requirement) must not turn these red. 19-5 adds
+ * the `today` echo on both bodies (D2) — the FE's request-shaping clock.
  */
 
 const body: MonthlyResponse = {
   from: '2026-09-01',
   to: '2026-09-29',
+  today: '2026-09-29',
   employees: [
     {
       employeeId: 'e1',
@@ -40,6 +42,7 @@ const body: MonthlyResponse = {
 const me: MeMonthlyResponse = {
   from: '2026-09-01',
   to: '2026-09-29',
+  today: '2026-09-29',
   summary: body.employees[0].summary,
   weeklyOffs: [0, 6],
   upcomingHolidays: [{ holidayDate: '2026-10-02', holidayName: 'Gandhi Jayanti' }],
@@ -47,7 +50,13 @@ const me: MeMonthlyResponse = {
 
 describe('MonthlyResponse — the wire key sets (D6)', () => {
   it('the owner monthly body carries exactly the pinned keys', () => {
-    expect(Object.keys(body).sort()).toEqual(['employees', 'from', 'to']);
+    expect(Object.keys(body).sort()).toEqual([
+      'employees',
+      'from',
+      'to',
+      'today',
+    ]);
+    expect(body.today).toBe('2026-09-29');
     expect(Object.keys(body.employees[0]).sort()).toEqual([
       'employeeId',
       'employeeName',
@@ -74,14 +83,16 @@ describe('MonthlyResponse — the wire key sets (D6)', () => {
     );
   });
 
-  it('the self view adds weeklyOffs + upcomingHolidays — nothing else moves', () => {
+  it('the self view adds today + weeklyOffs + upcomingHolidays — nothing else moves', () => {
     expect(Object.keys(me).sort()).toEqual([
       'from',
       'summary',
       'to',
+      'today',
       'upcomingHolidays',
       'weeklyOffs',
     ]);
+    expect(me.today).toBe('2026-09-29');
     expect(Object.keys(me.upcomingHolidays[0]).sort()).toEqual([
       'holidayDate',
       'holidayName',
