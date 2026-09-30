@@ -172,6 +172,15 @@ describe('Users (e2e)', () => {
         'today',
         'upcoming',
       ]);
+      // 2026-09-30 — the owner branch carries the attendance mirror over the
+      // wire (the tenant flag gates the Home entry point). The mock's view
+      // read resolves no row → the attendance-free default.
+      expect(body.attendance).toEqual({
+        attendanceEnabled: false,
+        attendanceAccess: 'none',
+        attendanceStartDate: null,
+        onboardedAt: null,
+      });
     });
 
     it('technician — 200 with the role-specific shape (skills, no customers)', async () => {
@@ -214,6 +223,14 @@ describe('Users (e2e)', () => {
         overdue: 0,
         completed: 0,
         cancelled: 0,
+      });
+      // Pre-onboarding: no tenant → the attendance-free default, still
+      // present so the FE gate reads one stable field.
+      expect(body.attendance).toEqual({
+        attendanceEnabled: false,
+        attendanceAccess: 'none',
+        attendanceStartDate: null,
+        onboardedAt: null,
       });
     });
 

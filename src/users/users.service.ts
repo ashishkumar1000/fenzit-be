@@ -94,6 +94,16 @@ export interface OwnerProfileResponse extends UserProfileBase {
   customers: PaginatedResponse<CustomerListItem>;
   jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
+  /**
+   * The same attendance mirror the technician branch carries (2026-09-30):
+   * `attendanceEnabled` is the TENANT flag (`attendance_settings.enabled AND
+   * setup_completed_at IS NOT NULL` — the view computes it for owner rows
+   * too), and it is what gates owner-side entry points (the Home tile). An
+   * owner's `attendanceAccess` reads 'none' — owners are never enrolled —
+   * but the field stays view-driven, not hardcoded, so the shape survives
+   * owner enrolment if it ever exists.
+   */
+  attendance: AttendanceAccessSummary;
 }
 
 export interface TechnicianProfileResponse extends UserProfileBase {
@@ -272,6 +282,9 @@ export class UsersService {
         customers: new PaginatedResponse<CustomerListItem>([], null),
         jobs: new PaginatedResponse<ProfileJobResponse>([], null),
         jobCounts: EMPTY_JOB_COUNTS,
+        // No tenant → the attendance-free default (the view has no row to
+        // read) — same as the technician pre-onboarding shape above.
+        attendance: NO_ATTENDANCE_ACCESS,
       };
     }
 
@@ -329,7 +342,7 @@ export class UsersService {
       };
     }
 
-    const [technicians, customers, jobs, jobCounts, customerCount] =
+    const [technicians, customers, jobs, jobCounts, customerCount, attendance] =
       await Promise.all([
         this.listTechnicians(admin, tenantId),
         // Pass the DB-fresh tenantId (not the possibly-stale JWT claim on `user`)
@@ -349,6 +362,10 @@ export class UsersService {
         ),
         this.getJobCounts(tenantId, null),
         this.customersService.countCustomers(tenantId),
+        // The owner branch carries the mirror too (2026-09-30): the tenant
+        // attendance flag rides the boot call, so the Home entry point needs
+        // no second round trip (same AD-17 rationale as the technician side).
+        this.getAttendanceAccess(admin, tenantId, user.userId),
       ]);
 
     return {
@@ -361,6 +378,7 @@ export class UsersService {
       customers,
       jobs,
       jobCounts,
+      attendance,
     };
   }
 

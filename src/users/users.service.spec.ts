@@ -401,6 +401,15 @@ describe('UsersService', () => {
         ['Plumbing', 'Electrical', 'Wiring'].sort(),
       );
       expect(result.customers).toBe(emptyCustomersPage);
+      // 2026-09-30 — the owner branch carries the attendance mirror too (the
+      // tenant flag gates the Home entry point). The mock's view read
+      // resolves no row → the attendance-free default.
+      expect(result.attendance).toEqual({
+        attendanceEnabled: false,
+        attendanceAccess: 'none',
+        attendanceStartDate: null,
+        onboardedAt: null,
+      });
       // Story 3.9 — every profile job row now embeds technician + customer.
       // Mocks return no embed rows, so the fallbacks (id-only, null names) show.
       expect(result.jobs.data).toEqual([
@@ -435,6 +444,34 @@ describe('UsersService', () => {
         overdue: 1,
         completed: 5,
         cancelled: 0,
+      });
+    });
+
+    it('carries the view-driven tenant attendance flag on the owner mirror', async () => {
+      // The view computes attendance_enabled for owner rows too — the
+      // production truth the Home entry tile gates on. access_state stays
+      // whatever the view says ('none' — owners are never enrolled): the
+      // branch is a pass-through, never a hardcode.
+      mockAdmin({
+        accessState: {
+          data: {
+            attendance_enabled: true,
+            access_state: 'none',
+            attendance_start_date: null,
+            onboarded_at: null,
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      if (result.role !== Role.OWNER) throw new Error('expected owner shape');
+      expect(result.attendance).toEqual({
+        attendanceEnabled: true,
+        attendanceAccess: 'none',
+        attendanceStartDate: null,
+        onboardedAt: null,
       });
     });
 
@@ -625,6 +662,14 @@ describe('UsersService', () => {
         overdue: 0,
         completed: 0,
         cancelled: 0,
+      });
+      // No tenant → no view row → the attendance-free default (the shape
+      // stays present so the FE gate reads one stable field).
+      expect(result.attendance).toEqual({
+        attendanceEnabled: false,
+        attendanceAccess: 'none',
+        attendanceStartDate: null,
+        onboardedAt: null,
       });
       // only the own-profile lookup should have run
       expect(from).toHaveBeenCalledTimes(1);

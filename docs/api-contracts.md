@@ -158,6 +158,12 @@ Role-branched profile payload — the app's primary boot call.
 
 - **Owner:** tenant/company info, technician roster (with skills), customers
   page, jobs page, and jobCounts (`today/upcoming/overdue/completed/cancelled`)
+  — plus the same `attendance` mirror the technician branch carries
+  (2026-09-30): `attendanceEnabled` is the TENANT flag
+  (`attendance_settings.enabled AND setup_completed_at IS NOT NULL`), which
+  gates owner-side entry points (the Home attendance tile); an owner's
+  `attendanceAccess` reads `'none'` (owners are never enrolled). The
+  pre-onboarding owner (no tenant) carries the attendance-free default.
 - **Technician:** own skills, own jobs page, own jobCounts — plus the
   `attendance` mirror (15-7/AD-17): `{ attendanceEnabled, attendanceAccess
   ('none' | 'upcoming' | 'active' | 'history_only'), attendanceStartDate,
