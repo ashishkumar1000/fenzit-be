@@ -290,6 +290,56 @@ describe('Attendance journey (real DB, real routes)', () => {
     expect(JSON.parse(res.body).flags.checkoutMissing).toEqual([]);
   });
 
+  maybeIt('19-5 — the owner monthly view echoes the tenant today, and the office filter narrows the rows', async () => {
+    const today = await scalarDate(0);
+    const d1 = await scalarDate(-1);
+    const headers = { authorization: `Bearer ${bearerFor(owner, 'owner')}` };
+
+    // The two-day window [d1, today] rides the 19-4 leg's fixtures
+    // (enrolments cover 60 days back; tech 2's d1 record has a check-in
+    // and no checkout — his summary must carry it as checkout missing).
+    let res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attendance/monthly?from=${d1}&to=${today}`,
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const unfiltered = JSON.parse(res.body) as {
+      today: string;
+      employees: Array<{ employeeName: string; summary: { checkoutMissing: number } }>;
+    };
+    // The `today` echo (19-5 D2): the FE clamps its current-month window
+    // against THIS value — the wire truth, never a client clock.
+    expect(unfiltered.today).toBe(today);
+    expect(unfiltered.employees).toHaveLength(2);
+    const tech2 = unfiltered.employees.find(e => e.employeeName === 'journey tech 2');
+    expect(tech2?.summary.checkoutMissing).toBe(1);
+
+    // The filter intersects with the today-covering assignment office
+    // (BE D6): filtering by tech 1's covering office leaves exactly his
+    // row, echo intact. (The offices live in the 19-4 leg's scope — the
+    // covering assignment is the referee read, not a shared constant.)
+    const tech1Office = (
+      await pool.query<{ office_id: string }>(
+        `select office_id from public.attendance_office_assignments
+         where tenant_id = $1 and employee_id = $2 and valid @> $3::date
+         limit 1`,
+        [tenant, techs[0], today],
+      )
+    ).rows[0].office_id;
+    res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attendance/monthly?from=${d1}&to=${today}&officeId=${tech1Office}`,
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const filtered = JSON.parse(res.body);
+    expect(filtered.today).toBe(today);
+    expect(filtered.employees.map((e: { employeeName: string }) => e.employeeName)).toEqual([
+      'journey tech 1',
+    ]);
+  });
+
   /** An office rule covering every probe date. */
   async function seedRule(officeId: string): Promise<string> {
     return must(
