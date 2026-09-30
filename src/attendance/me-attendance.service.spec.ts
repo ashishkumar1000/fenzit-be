@@ -171,10 +171,94 @@ describe('MeAttendanceService (story 15-7)', () => {
         attendanceEnabled: true,
         attendanceAccess: 'upcoming',
         attendanceStartDate: '2026-11-01',
+        attendanceEndedOn: null,
         enabledAt: null,
         onboardedAt: null,
         officeId: 'office-1',
         officeName: 'Thane',
+      });
+    });
+
+    it.each(['active', 'upcoming'] as const)(
+      '19-6: %s answers attendanceEndedOn null (the view CASE-gates the date to history_only)',
+      async (state) => {
+        const service = serviceWith({
+          from: () =>
+            accessQb({
+              data: {
+                user_id: 'tech-uuid',
+                tenant_id: 'tenant-uuid',
+                attendance_enabled: true,
+                access_state: state,
+                attendance_start_date: '2026-01-01',
+                // The gated view answers null here (20260930000001) — the
+                // service maps the wire, it never re-derives state.
+                attendance_ended_on: null,
+                enabled_at: null,
+                onboarded_at: null,
+                office_id: null,
+                office_name: null,
+              },
+              error: null,
+            }),
+        });
+
+        await expect(service.getAccess(tech)).resolves.toMatchObject({
+          attendanceAccess: state,
+          attendanceEndedOn: null,
+        });
+      },
+    );
+
+    it('19-6: history_only carries the last tracked day for the ended note', async () => {
+      const service = serviceWith({
+        from: () =>
+          accessQb({
+            data: {
+              user_id: 'tech-uuid',
+              tenant_id: 'tenant-uuid',
+              attendance_enabled: true,
+              access_state: 'history_only',
+              attendance_start_date: null,
+              attendance_ended_on: '2026-08-31',
+              enabled_at: null,
+              onboarded_at: null,
+              office_id: null,
+              office_name: null,
+            },
+            error: null,
+          }),
+      });
+
+      await expect(service.getAccess(tech)).resolves.toMatchObject({
+        attendanceAccess: 'history_only',
+        attendanceEndedOn: '2026-08-31',
+      });
+    });
+
+    it('19-6: history_only with no closed period answers null (defensive, never a fabricated date)', async () => {
+      const service = serviceWith({
+        from: () =>
+          accessQb({
+            data: {
+              user_id: 'tech-uuid',
+              tenant_id: 'tenant-uuid',
+              attendance_enabled: true,
+              access_state: 'history_only',
+              attendance_start_date: null,
+              attendance_ended_on: null,
+              enabled_at: null,
+              onboarded_at: null,
+              office_id: null,
+              office_name: null,
+            },
+            error: null,
+          }),
+      });
+
+      await expect(service.getAccess(tech)).resolves.toMatchObject({
+        attendanceAccess: 'history_only',
+        attendanceEndedOn: null,
       });
     });
 

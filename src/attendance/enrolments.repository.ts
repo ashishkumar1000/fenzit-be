@@ -196,13 +196,15 @@ export async function readAccessState(
     attendance_enabled: boolean;
     access_state: AccessStateRow['access_state'];
     attendance_start_date: string;
+    attendance_ended_on: string | null;
     enabled_at: Date;
     onboarded_at: Date | null;
     office_id: string | null;
     office_name: string | null;
   }>(
     `select user_id, tenant_id, attendance_enabled, access_state,
-            attendance_start_date::text, enabled_at, onboarded_at,
+            attendance_start_date::text, attendance_ended_on::text,
+            enabled_at, onboarded_at,
             office_id::text, office_name
      from public.attendance_access_state
      where user_id = $1 and tenant_id = $2`,

@@ -50,6 +50,7 @@ const NONE_STATE: AccessStateResponse = {
   attendanceEnabled: false,
   attendanceAccess: 'none',
   attendanceStartDate: null,
+  attendanceEndedOn: null,
   enabledAt: null,
   onboardedAt: null,
   officeId: null,

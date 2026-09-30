@@ -1101,10 +1101,11 @@ import).
 #### `GET /api/v1/attendance/enrolments` `[Bearer JWT, Role: owner]`
 
 The roster: one row per technician — `{ employeeId, employeeName, phone,
-attendanceEnabled, attendanceAccess, attendanceStartDate, enabledAt,
-onboardedAt, officeId, officeName }` (state from the view; names from
+attendanceEnabled, attendanceAccess, attendanceStartDate, attendanceEndedOn,
+enabledAt, onboardedAt, officeId, officeName }` (state from the view; names from
 users). Empty only when the tenant has no technicians (200 `[]`, never
-404) — enrolled or not, EVERY technician gets a row.
+404) — enrolled or not, EVERY technician gets a row. `attendanceEndedOn`
+carries the me/access history_only-only semantics (19-6).
 
 **Field semantics (read before consuming — misreading these shipped a
 broken consumer once):** `attendanceEnabled` is the TENANT MODULE flag
@@ -1167,8 +1168,14 @@ already-disabled employee is an idempotent 200 with unchanged state);
 AD-17: the entry-point gate. The employee id comes only from the JWT.
 
 **Response:** `{ attendanceEnabled, attendanceAccess, attendanceStartDate,
-enabledAt, onboardedAt, officeId, officeName }` — kill switch off forces
-`attendanceAccess: 'none'`.
+attendanceEndedOn, enabledAt, onboardedAt, officeId, officeName }` — kill
+switch off forces `attendanceAccess: 'none'`. `attendanceEndedOn` (19-6)
+is the LAST TRACKED DAY (`YYYY-MM-DD`) for the "tracking ended on" note,
+populated ONLY in `history_only` by the view's CASE gate (`null` while
+active/upcoming, so a disable→re-enrol employee never carries a stale
+date; `null` never means "ended today" — gate on `attendanceAccess`
+first). View semantics (20260930000001): `max(upper(valid)) - 1` over
+closed enrolment periods, excluding `'infinity'` uppers.
 
 **Responses:** `200`; `401`; `403` (non-technician role); `500` if the view
 read fails (fail-loud, never a fabricated state).

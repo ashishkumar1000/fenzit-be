@@ -1465,6 +1465,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         attendanceEnabled: true,
         attendanceAccess: 'active',
         attendanceStartDate: '2026-09-28',
+        // 19-6: history_only-only by the view's CASE gate — null while active.
+        attendanceEndedOn: null,
       });
     });
 

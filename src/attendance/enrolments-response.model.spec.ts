@@ -138,6 +138,7 @@ describe('toAccessStateResponse', () => {
     attendance_enabled: true,
     access_state: 'upcoming',
     attendance_start_date: '2026-11-01',
+    attendance_ended_on: null,
     enabled_at: null,
     onboarded_at: '2026-09-27T10:00:00+00:00',
     office_id: 'o1',
@@ -149,11 +150,28 @@ describe('toAccessStateResponse', () => {
       attendanceEnabled: true,
       attendanceAccess: 'upcoming',
       attendanceStartDate: '2026-11-01',
+      attendanceEndedOn: null,
       enabledAt: null,
       onboardedAt: '2026-09-27T10:00:00+00:00',
       officeId: 'o1',
       officeName: 'Andheri West',
     });
+  });
+
+  it('19-6: maps attendance_ended_on verbatim and degrades an absent column to null', () => {
+    expect(
+      toAccessStateResponse({
+        ...viewRow,
+        access_state: 'history_only',
+        attendance_ended_on: '2026-08-31',
+      }).attendanceEndedOn,
+    ).toBe('2026-08-31');
+    // An older view (pre-20260930000001) omits the column entirely.
+    const legacy = toAccessStateResponse({
+      ...viewRow,
+      attendance_ended_on: undefined as unknown as string | null,
+    });
+    expect(legacy.attendanceEndedOn).toBeNull();
   });
 
   it('does not invent values the view did not send (a null stays null)', () => {

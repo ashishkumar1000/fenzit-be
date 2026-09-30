@@ -109,12 +109,22 @@ export interface AccessStateRow {
   onboarded_at: string | null;
   office_id: string | null;
   office_name: string | null;
+  /** Last tracked day (19-6); null in every state but history_only — the
+   *  view's CASE gate (20260930000001). */
+  attendance_ended_on: string | null;
 }
 
 export interface AccessStateResponse {
   attendanceEnabled: boolean;
   attendanceAccess: 'none' | 'upcoming' | 'active' | 'history_only';
   attendanceStartDate: string | null;
+  /**
+   * The last tracked day, `YYYY-MM-DD` (19-6) — history_only ONLY by the
+   * view's CASE gate; null while active/upcoming so a disable→re-enrol
+   * employee never carries a stale "ended" date. null here never means
+   * "ended today"; consumers must gate on `attendanceAccess` first.
+   */
+  attendanceEndedOn: string | null;
   /** `enabled_at` of the period covering today (null when not active). */
   enabledAt: string | null;
   onboardedAt: string | null;
@@ -129,6 +139,9 @@ export function toAccessStateResponse(
     attendanceEnabled: row.attendance_enabled,
     attendanceAccess: row.access_state,
     attendanceStartDate: row.attendance_start_date,
+    // ?? null: an older view (pre-20260930000001) omits the column — the
+    // dateless posture is the degraded answer, never an undefined leak.
+    attendanceEndedOn: row.attendance_ended_on ?? null,
     enabledAt: row.enabled_at,
     onboardedAt: row.onboarded_at,
     officeId: row.office_id,

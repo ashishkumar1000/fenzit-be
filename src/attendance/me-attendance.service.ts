@@ -33,6 +33,12 @@ import {
  * record. 15-10 adds the FR-4 summary — office/timings/cut-off/weekly
  * offs, anchored on the SAME view row me/access returns so the two
  * endpoints can never disagree about which office applies.
+ *
+ * 19-6 adds `attendanceEndedOn` to the access response (the
+ * "Attendance tracking ended on {date}" note's only wire source). The
+ * mapping is history_only-only by the view's CASE gate (20260930000001) —
+ * active/upcoming answer null, so no consumer-side state re-derivation is
+ * ever needed.
  */
 @Injectable()
 export class MeAttendanceService {
