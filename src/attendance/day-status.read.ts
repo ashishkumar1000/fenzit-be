@@ -75,6 +75,8 @@ export interface RecordRow {
   work_date: string;
   checkin_at: Date | string;
   checkout_at: Date | string | null;
+  checkin_distance_m: number | null;
+  checkout_distance_m: number | null;
 }
 
 interface AttemptFactRow {
@@ -259,7 +261,8 @@ export async function readDayStatusGrid(
             .then((r) => r.rows),
       tx
         .query<RecordRow>(
-          `select employee_id, work_date::text, checkin_at, checkout_at
+          `select employee_id, work_date::text, checkin_at, checkout_at,
+                  checkin_distance_m, checkout_distance_m
            from public.attendance_records
            where tenant_id = $1::uuid and employee_id = any($2::uuid[])
              and work_date between $3::date and $4::date`,
@@ -406,6 +409,8 @@ export async function readDayStatusGrid(
               work_date: record.work_date,
               checkin_at: record.checkin_at,
               checkout_at: record.checkout_at,
+              checkin_distance_m: record.checkin_distance_m,
+              checkout_distance_m: record.checkout_distance_m,
             }
           : null,
         override: override
@@ -479,6 +484,7 @@ export class DayStatusesService {
         employeeId,
         from,
         to,
+        today: rows[0]?.today ?? (await tenantToday(tx, tenantId)),
         days: rows.map((row) => this.toResponseRow(row)),
       };
     });
@@ -504,7 +510,12 @@ export class DayStatusesService {
         user.userId,
       );
       const rows = await readDayStatusGrid(tx, tenantId, [user.userId], from, to);
-      return { from, to, days: rows.map((row) => this.toResponseRow(row)) };
+      return {
+        from,
+        to,
+        today: rows[0]?.today ?? (await tenantToday(tx, tenantId)),
+        days: rows.map((row) => this.toResponseRow(row)),
+      };
     });
   }
 
@@ -518,6 +529,18 @@ export class DayStatusesService {
       today: row.today,
     });
     const { checkin, checkout } = effectiveInstants(row.record, row.override);
+    // spec-18-3 D2: the stored distances describe the ORIGINAL GPS fix — a
+    // times-only correction substitutes manual instants, so a distance is
+    // surfaced ONLY when the paired source is 'gps' (never paired with a
+    // manual time).
+    const checkinDistanceM =
+      outcome.checkinSource === 'gps' && row.record
+        ? row.record.checkin_distance_m
+        : null;
+    const checkoutDistanceM =
+      outcome.checkoutSource === 'gps' && row.record
+        ? row.record.checkout_distance_m
+        : null;
     const latestCorrection: LatestCorrectionView | null = row.latestCorrection
       ? {
           // AD-7 tenant-offset spelling — the audit's UTC instant would show
@@ -543,6 +566,8 @@ export class DayStatusesService {
       outcome,
       checkin,
       checkout,
+      checkinDistanceM,
+      checkoutDistanceM,
       latestCorrection,
     });
   }

@@ -36,7 +36,7 @@ export class DayStatusesController {
   })
   @ApiResponse({
     status: 200,
-    description: '{ employeeId, from, to, days: DayStatusRow[] } — every date of the range, oldest first',
+    description: '{ employeeId, from, to, today, days: DayStatusRow[] } — every date of the range, oldest first; today = the tenant-local date the read ran under',
   })
   @ApiResponse({
     status: 404,

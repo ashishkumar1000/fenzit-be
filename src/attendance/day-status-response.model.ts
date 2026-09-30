@@ -62,6 +62,13 @@ export interface DayStatusRow {
   checkoutAt: string | null;
   checkinSource: AttendanceSource;
   checkoutSource: AttendanceSource;
+  /** The GPS-measured distance from the office pin (metres) — the stored
+   *  record columns, surfaced ONLY for gps-sourced instants: a times-only
+   *  correction substitutes manual instants while the stored distance
+   *  still describes the original GPS fix (spec-18-3 D2). Null for a
+   *  manual source or a day with no record. */
+  checkinDistanceM: number | null;
+  checkoutDistanceM: number | null;
   markers: DayMarkerKey[];
   /** One-liner for the sheet: the newest entry in the day's audit chain. */
   latestCorrection?: LatestCorrectionView;
@@ -72,6 +79,9 @@ export interface DayStatusesResponse {
   employeeId: string;
   from: string;
   to: string;
+  /** The tenant-local date the read ran under — the FE's today ring and
+   *  hosts never derive a device date (Foundation rule; spec-18-3 D2). */
+  today: string;
   days: DayStatusRow[];
 }
 
@@ -79,6 +89,8 @@ export interface DayStatusesResponse {
 export interface MeDayStatusesResponse {
   from: string;
   to: string;
+  /** The tenant-local date the read ran under (spec-18-3 D2). */
+  today: string;
   days: DayStatusRow[];
 }
 
@@ -103,6 +115,8 @@ export function toDayStatusRow(input: {
   outcome: import('./day-status.model').DayStatusOutcome;
   checkin: Date | null;
   checkout: Date | null;
+  checkinDistanceM: number | null;
+  checkoutDistanceM: number | null;
   latestCorrection: LatestCorrectionView | null;
 }): DayStatusRow {
   const { outcome, latestCorrection } = input;
@@ -132,6 +146,8 @@ export function toDayStatusRow(input: {
         : null,
     checkinSource: outcome.checkinSource,
     checkoutSource: outcome.checkoutSource,
+    checkinDistanceM: input.checkinDistanceM,
+    checkoutDistanceM: input.checkoutDistanceM,
     markers: [...outcome.markers],
     ...(latestCorrection ? { latestCorrection } : {}),
   };

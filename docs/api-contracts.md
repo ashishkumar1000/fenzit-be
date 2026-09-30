@@ -1555,17 +1555,25 @@ sums these same rows.
 `ATTENDANCE_EMPLOYEE_NOT_FOUND` — no existence leak):**
 
 - `GET /attendance/day-statuses?employeeId&from&to` `[owner]` →
-  `200 { employeeId, from, to, days: DayStatusRow[] }` — every date of the
-  range, oldest first; `from ≤ to`, span ≤ 62 days (else `422
+  `200 { employeeId, from, to, today, days: DayStatusRow[] }` — every date of the
+  range, oldest first; `today` is the tenant-local date the read ran under
+  (spec-18-3 D2 — clients never derive a device date); `from ≤ to`, span ≤ 62
+  days (else `422
   ATTENDANCE_INVALID_RANGE`); future dates valid input. `DayStatusRow`:
   `{ workDate, status, lateMinutes, isLate, earlyCheckoutMinutes,
   earlyCheckout, workedMinutes, daysWorked, leaveCredit,
   workedOnHolidayCredit, isWeeklyOff, holidayName, isWorkingDay,
   officeId, officeName, checkinAt, checkoutAt,
-  checkinSource: 'gps'|'manual'|null, checkoutSource, markers,
-  latestCorrection? }`; instants are tenant-offset ISO (AD-7).
-- `GET /attendance/me/day-statuses?from&to` `[technician]` → same rows for
-  the JWT identity; the AD-17 gate answers `403 ATTENDANCE_NOT_TRACKED`
+  checkinSource: 'gps'|'manual'|null, checkoutSource,
+  checkinDistanceM, checkoutDistanceM, markers,
+  latestCorrection? }`; instants are tenant-offset ISO (AD-7); the
+  distances (metres, the stored record columns) are surfaced ONLY for
+  gps-sourced instants — a times-only correction substitutes manual
+  instants while the stored distance describes the original GPS fix, so
+  the field is null for a manual source or a record-less day (spec-18-3 D2).
+- `GET /attendance/me/day-statuses?from&to` `[technician]` → same rows
+  (and the same `today` echo) for the JWT identity; the AD-17 gate answers
+  `403 ATTENDANCE_NOT_TRACKED`
   when access state is none (history_only stays readable).
 - `PUT /attendance/corrections/:employeeId/:workDate` `[owner]` — body:
   exactly one of `{ status: 'present'|'half_day'|'absent', note }` XOR

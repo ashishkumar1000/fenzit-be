@@ -50,6 +50,8 @@ const row = (over: Partial<Parameters<typeof toDayStatusRow>[0]> = {}) =>
     outcome: OUTCOME,
     checkin: new Date('2026-09-28T09:50:00+05:30'),
     checkout: new Date('2026-09-28T18:40:00+05:30'),
+    checkinDistanceM: 42,
+    checkoutDistanceM: 17,
     latestCorrection: null,
     ...over,
   });
@@ -96,6 +98,20 @@ describe('toDayStatusRow — the instants as AD-7 tenant-offset ISO', () => {
     const r = row({ outcome, checkin: new Date('2026-09-28T10:00:00+05:30') });
     expect(r.checkinSource).toBe('manual');
     expect(r.checkinAt).toBe('2026-09-28T10:00:00+05:30');
+  });
+});
+
+describe('toDayStatusRow — the spec-18-3 D2 distance pass-through', () => {
+  it('carries the read-gated distances verbatim (the gps gate lives in the read)', () => {
+    expect(row().checkinDistanceM).toBe(42);
+    expect(row().checkoutDistanceM).toBe(17);
+    // The read nulls a distance when the paired source is not 'gps' (a
+    // times-only correction substitutes manual instants while the stored
+    // distance still describes the ORIGINAL GPS fix) — the mapper passes
+    // the decision through untouched.
+    expect(
+      row({ checkinDistanceM: null, checkoutDistanceM: null }).checkinDistanceM,
+    ).toBeNull();
   });
 });
 
