@@ -415,17 +415,22 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
         [TENANT, TECHS.future, officeId, tomorrow],
       );
       // History-only (tech 9, FR-28): period clipped so it covers D-3..D-1
-      // only, with one complete record inside it.
+      // only, with one complete record inside it. The dates are TZ-LOCAL
+      // (the same clock as `today`/d1..d3 computed above) — bare
+      // `current_date` is the SERVER's UTC date and drifts a day from the
+      // tenant-local one around midnight IST, which graded one of this
+      // tech's absent legs not_tracked (found 2026-10-02, 00:1x IST: the
+      // suite crossed midnight and the D-1 leg fell out of coverage).
       await legs.query(
         `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
-         values ($1, $2, daterange(current_date - 3, current_date, '[)'), now() - interval '60 days')`,
-        [TENANT, TECHS.history],
+         values ($1, $2, daterange((now() at time zone $3)::date - 3, (now() at time zone $3)::date, '[)'), now() - interval '60 days')`,
+        [TENANT, TECHS.history, TZ],
       );
       await legs.query(
         `insert into public.attendance_office_assignments
            (tenant_id, employee_id, office_id, valid)
-         values ($1, $2, $3, daterange(current_date - 3, current_date, '[)'))`,
-        [TENANT, TECHS.history, officeId],
+         values ($1, $2, $3, daterange((now() at time zone $4)::date - 3, (now() at time zone $4)::date, '[)'))`,
+        [TENANT, TECHS.history, officeId, TZ],
       );
       await legs.query('commit');
     } finally {
@@ -657,6 +662,9 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       notCheckedIn: 0,
       late: 0,
       onLeave: 0,
+      // 20-2 phase A: the reserved field is on EVERY response — including
+      // this zeroed one — always 0 until the partition flip.
+      shortDay: 0,
     });
     expect(res.flags).toEqual({ checkoutMissing: [], fakeLocationAttempt: [] });
     // Even a filter that EMPTIES the tiles leaves the registry FULL-SCOPE —

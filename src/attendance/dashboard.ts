@@ -81,6 +81,10 @@ export class DashboardService {
         tracked: 0,
         checkedIn: 0,
         notCheckedIn: 0,
+        // Reserved (story 20-2 phase A): the field ships always-present so
+        // the app's new build can require it with zero risk — always 0
+        // until the phase-C partition flip.
+        shortDay: 0,
         late: 0,
         onLeave: 0,
       };

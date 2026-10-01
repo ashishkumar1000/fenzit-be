@@ -22,6 +22,11 @@ export interface DashboardCounts {
    *  punch-in/out, below D5's half-day threshold) or owner-adjudicated;
    *  the tile's question is "who hasn't reported". */
   notCheckedIn: number;
+  /** Reserved (story 20-2 phase A): always 0 until the phase-C partition
+   *  flip. Once live it holds the ENGINE-graded short-day rows — a rule-7
+   *  `absent` (punch-in AND punch-out under the half-day threshold, no
+   *  owner status override), moved out of `notCheckedIn`, never copied. */
+  shortDay: number;
   /** outcome.isLate among the checkedIn rows only (the engine keeps
    *  Late null wherever there is no check-in instant, so late is a
    *  qualifier of checkedIn — never a fourth bucket). */

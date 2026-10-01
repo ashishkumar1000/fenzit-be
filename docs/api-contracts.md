@@ -1728,7 +1728,10 @@ weekly_off, holiday, and both `absent` grades: a sub-half-day
 punch-in/out that the engine rules below D5's half-day threshold, or an
 owner-adjudicated `absent` override), `late` (`outcome.isLate` — a
 qualifier of `checkedIn`, not a fourth bucket; it only counts inside
-that bucket). The three main tiles PARTITION `tracked` (2026-10-01
+that bucket). RESERVED (story 20-2 phase A): the counts also carry
+`shortDay`, always `0` until the partition flip — the app may require
+it today (fail-closed normalizer) without any behaviour change yet.
+The three main tiles PARTITION `tracked` (2026-10-01
 user ruling after an on-device under-count: the bucket follows the
 OUTCOME STATUS — the same grade the calendar cell shows — so a tile can
 never disagree with the calendar; a punched half-day leaver reads on
