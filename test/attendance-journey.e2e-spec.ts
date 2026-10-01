@@ -215,7 +215,10 @@ describe('Attendance journey (real DB, real routes)', () => {
     await seedInOut(techs[1], d1, south, ruleSouth, '09:40', null);
 
     // REFEREE — the DB facts every API answer below must agree with: each
-    // live office carries exactly one covering assignment today.
+    // live office carries exactly one covering assignment today. Order-
+    // independent compare — the SQL sorts by office_id, and the offices'
+    // server-generated UUIDs do not sort in insertion order (the pin was
+    // a run-order flake).
     const covering = await pool.query<{ office_id: string; cnt: string }>(
       `select office_id, count(*)::text as cnt
        from public.attendance_office_assignments
@@ -223,10 +226,12 @@ describe('Attendance journey (real DB, real routes)', () => {
        group by office_id order by office_id`,
       [tenant, today],
     );
-    expect(covering.rows).toEqual([
-      { office_id: north, cnt: '1' },
-      { office_id: south, cnt: '1' },
-    ]);
+    expect(new Map(covering.rows.map((r) => [r.office_id, r.cnt]))).toEqual(
+      new Map([
+        [north, '1'],
+        [south, '1'],
+      ]),
+    );
 
     // STEP 1 — owner dashboard, unfiltered: both techs tracked, tech 1's
     // in_progress leg checked in, BOTH offices their own truth.
@@ -243,6 +248,9 @@ describe('Attendance journey (real DB, real routes)', () => {
       notCheckedIn: 1,
       late: 0,
       onLeave: 0,
+      // 20-2: Short day rides the four-bucket partition — zero here (no
+      // rule-7 punch pair in this leg's fixture).
+      shortDay: 0,
     });
     expect(unfiltered.offices).toEqual([
       { id: north, name: 'journey north', tracked: 1, checkedIn: 1 },
@@ -274,6 +282,7 @@ describe('Attendance journey (real DB, real routes)', () => {
       notCheckedIn: 1,
       late: 0,
       onLeave: 0,
+      shortDay: 0,
     });
     expect(filtered.offices).toEqual(unfiltered.offices);
     expect(filtered.flags.checkoutMissing).toEqual(

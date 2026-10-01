@@ -1,10 +1,11 @@
 /**
  * 19-2's wire shapes (spec D5). On TODAY the tiles PARTITION `tracked`
- * (the 2026-10-01 user ruling — checkedIn + notCheckedIn + onLeave must
- * add up to tracked): every tracked row lands in exactly one bucket,
- * keyed by the OUTCOME STATUS — the same grade the calendar cell and the
- * day sheet show (the 19-2 module header's tile/calendar invariant).
- * `late` is not a fourth bucket — it counts only inside `checkedIn`.
+ * (the FOUR buckets — checkedIn + notCheckedIn + onLeave + shortDay must
+ * add up to tracked, story 20-2; rows move, never copy): every tracked
+ * row lands in exactly one bucket, keyed by the OUTCOME STATUS — the
+ * same grade the calendar cell and the day sheet show (the 19-2 module
+ * header's tile/calendar invariant). `late` is not a bucket — it counts
+ * only inside `checkedIn`.
  */
 
 export interface DashboardCounts {
@@ -17,14 +18,16 @@ export interface DashboardCounts {
    *  override (that reads notCheckedIn) — the bucket follows the
    *  owner's grade, never the raw punches. */
   checkedIn: number;
-  /** Everything not checked-in-or-leave: not_checked_in_yet |
-   *  weekly_off | holiday | absent — engine-graded (a sub-half-day
-   *  punch-in/out, below D5's half-day threshold) or owner-adjudicated;
-   *  the tile's question is "who hasn't reported". */
+  /** Everything not checked-in-or-leave and not a short day:
+   *  not_checked_in_yet | weekly_off | holiday | the not-short-day
+   *  `absent` grades — an owner-adjudicated `absent` override or the
+   *  past-no-check-in rule-9 `absent` (a rule-7 sub-half-day punch-in/out
+   *  reads shortDay instead); the tile's question is "who hasn't
+   *  reported an actual day". */
   notCheckedIn: number;
   /** outcome.isLate among the checkedIn rows only (the engine keeps
    *  Late null wherever there is no check-in instant, so late is a
-   *  qualifier of checkedIn — never a fourth bucket). */
+   *  qualifier of checkedIn — not a bucket). */
   late: number;
   /** A leave grade — leave | half_day_leave (the leave credit stays a
    *  day-sheet/summary truth; the tile reads the person "on leave"). */

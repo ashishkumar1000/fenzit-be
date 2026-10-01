@@ -10,7 +10,7 @@ import { DashboardFlagReads } from './dashboard-flags';
 import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response.model';
 
 /**
- * 19-2's owner dashboard read (spec D5): FR-24's five tiles + the two
+ * 19-2's owner dashboard read (spec D5): FR-24's six tiles + the two
  * unresolved-past-flag strips. The tiles are derived from ONE engine grid
  * read — `readDayStatusGrid(tx, tenantId, trackedTodayIds, today, today)`
  * — so a tile and the calendar can never disagree (FR-10 lives only in
@@ -125,10 +125,10 @@ export class DashboardService {
           // disagree with them (presence statuses carry an instant by
           // construction — rules 7/10 and rule 3 require a punch, and a
           // rule-1 presence override grades the day present exactly as
-          // the calendar reads it). The 2026-10-01 user ruling: the three
-          // buckets add up to `tracked` — a sub-half-day punch-in/out
-          // grades `absent` and NO LONGER vanishes (it counts not checked
-          // in), nor does a weekly-off/holiday row.
+          // the calendar reads it). The FOUR buckets add up to `tracked`
+          // (the 2026-10-02 ruling, story 20-2): everything the engine
+          // grades `absent` except a rule-7 short day counts not checked
+          // in.
           const checkedIn = CHECKED_IN_STATUSES.has(outcome.status);
 
           // Per-office tallies over the FULL tenant scope (the picker must

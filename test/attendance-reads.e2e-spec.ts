@@ -247,12 +247,15 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
       expect(body.offices).toEqual([
         { id: OFFICE_ID, name: 'Andheri West', tracked: 1, checkedIn: 0 },
       ]);
+      // Six counts (20-2's Short day tile) — the four buckets partition
+      // `tracked` (checkedIn + notCheckedIn + onLeave + shortDay).
       expect(Object.keys(body.counts)).toEqual([
         'tracked',
         'checkedIn',
         'notCheckedIn',
         'late',
         'onLeave',
+        'shortDay',
       ]);
       expect(Object.keys(body.flags)).toEqual([
         'checkoutMissing',
@@ -267,6 +270,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
         notCheckedIn: 1,
         late: 0,
         onLeave: 0,
+        shortDay: 0,
       });
       expect(body.flags).toEqual({
         checkoutMissing: [],

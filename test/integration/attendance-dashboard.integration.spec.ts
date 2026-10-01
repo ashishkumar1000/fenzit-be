@@ -557,19 +557,31 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     await pool.end();
   });
 
-  maybeIt('the five tiles answer the engine grid exactly (overlaps included)', async () => {
+  maybeIt('the SIX tiles answer the engine grid exactly (the four buckets PARTITION tracked)', async () => {
     const res = await dashboard.today(user(OWNER, 'owner'));
     expect(res.date).toBe(today);
     // Tracked = enrolment ∩ assignment ∩ ACTIVE office covering today:
     // techs 1, 2, 3, 6, 7 (E's office is archived; future is not live yet;
     // history's period ended yesterday; gate has no enrolment at all).
     expect(res.counts.tracked).toBe(5);
-    // checkedIn: A's in_progress leg + F's present leg. The five tiles are
-    // SEPARATE questions, never a partition of tracked.
+    // checkedIn: A's in_progress leg + F's present leg (late rides INSIDE
+    // checkedIn — a qualifier, never a fifth bucket).
     expect(res.counts.checkedIn).toBe(2);
     expect(res.counts.notCheckedIn).toBe(2); // B, G
+    // 20-2's fourth bucket, ENGINE-graded only: this base fixture has no
+    // rule-7 leg (no sub-half-day punch pair today), so Short day is 0
+    // even though B holds not-short-day `absent` grades — the flip keeps
+    // them not checked in.
+    expect(res.counts.shortDay).toBe(0);
     expect(res.counts.late).toBe(1); // F's 12:00 check-in
     expect(res.counts.onLeave).toBe(1); // C's approved full-day leave
+    // The rows MOVE, never copy — the partition holds on this scope too.
+    expect(
+      res.counts.checkedIn +
+        res.counts.notCheckedIn +
+        res.counts.shortDay +
+        res.counts.onLeave,
+    ).toBe(res.counts.tracked);
     // The strips are PAST-window reads by design (they surface unresolved
     // history on today's dashboard) — B's past days flag here and the
     // attempts on D-1 bucket by the ATTEMPT date; their exact contents
@@ -654,6 +666,82 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     expect([...wireSet].sort()).toEqual([...engine].sort());
   });
 
+  maybeIt('20-2: a rule-7 SUB-half-day punch pair TODAY moves to shortDay, and the owner `absent` override moves the SAME facts back out', async () => {
+    // G: check-in AND check-out today, 7 worked minutes — under the
+    // office rule's 4 h half-day floor the engine grades rule 7
+    // `absent`. With the flip live the row MOVES out of notCheckedIn
+    // (never copies) and the four buckets still partition tracked.
+    await seedRecord(TECHS.G, today, '09:40:00', '09:47:00');
+    try {
+      const res = await dashboard.today(user(OWNER, 'owner'));
+      expect(res.counts).toEqual({
+        tracked: 5,
+        checkedIn: 2, // A (in_progress), F (late rides inside)
+        notCheckedIn: 1, // B only — G moved OUT
+        shortDay: 1, // G's rule-7 leg
+        late: 1,
+        onLeave: 1,
+      });
+      expect(
+        res.counts.checkedIn +
+          res.counts.notCheckedIn +
+          res.counts.shortDay +
+          res.counts.onLeave,
+      ).toBe(res.counts.tracked);
+
+      // Second leg — the OWNER'S WORD overrides the tiles (the 20-2
+      // ruling): the SAME punch facts + an adjudicated `absent` status
+      // override grades rule-1 absent → G STAYS out of short day and
+      // reads notCheckedIn. Status only — the DB pair-check forbids
+      // manual instants beside a status, so this is the real shape.
+      const ov = (
+        await pool.query<{ id: string }>(
+          `insert into public.attendance_day_overrides
+             (tenant_id, employee_id, work_date, status, created_by)
+           values ($1, $2, $3, 'absent', $4)
+           returning id`,
+          [TENANT, TECHS.G, today, OWNER],
+        )
+      ).rows[0].id;
+      try {
+        const res2 = await dashboard.today(user(OWNER, 'owner'));
+        expect(res2.counts).toEqual({
+          tracked: 5,
+          checkedIn: 2,
+          notCheckedIn: 2, // B, G-back (the override grade) — rule 1 wins
+          shortDay: 0, // unchanged-OUT — the override leg is NOT short-day
+          late: 1,
+          onLeave: 1,
+        });
+        expect(
+          res2.counts.checkedIn +
+            res2.counts.notCheckedIn +
+            res2.counts.shortDay +
+            res2.counts.onLeave,
+        ).toBe(res2.counts.tracked);
+      } finally {
+        await pool.query(
+          `delete from public.attendance_day_overrides where id = $1`,
+          [ov],
+        );
+      }
+    } finally {
+      // Self-clean so later tests read the pre-leg shape (afterAll runs
+      // LAST, while this test's neighbours come before it).
+      await pool.query(
+        `delete from public.attendance_records
+         where tenant_id = $1 and employee_id = $2 and work_date = $3`,
+        [TENANT, TECHS.G, today],
+      );
+      await pool.query(
+        `delete from public.attendance_attempts
+         where tenant_id = $1 and employee_id = $2
+           and attempted_at >= $3 and attempted_at <= $4`,
+        [TENANT, TECHS.G, ist(today, '09:40:00'), ist(today, '09:47:00')],
+      );
+    }
+  });
+
   maybeIt('an unknown-but-well-formed officeId answers 200 with zeros, never 404', async () => {
     const res = await dashboard.today(user(OWNER, 'owner'), randomUUID());
     expect(res.counts).toEqual({
@@ -662,8 +750,8 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       notCheckedIn: 0,
       late: 0,
       onLeave: 0,
-      // 20-2 phase A: the reserved field is on EVERY response — including
-      // this zeroed one — always 0 until the partition flip.
+      // 20-2: the bucket list is on EVERY response — including this
+      // zeroed one, shortDay at 0 (an empty roster has no short days).
       shortDay: 0,
     });
     expect(res.flags).toEqual({ checkoutMissing: [], fakeLocationAttempt: [] });
