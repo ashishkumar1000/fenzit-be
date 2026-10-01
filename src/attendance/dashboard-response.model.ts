@@ -1,26 +1,33 @@
 /**
- * 19-2's wire shapes (spec D5). The counts are answers to five separate
- * questions over the same engine grid rows — NOT partitions of `tracked`
- * (the documented overlap: a checked-in half_day_leave row counts in both
- * `checkedIn` and `onLeave`; the FE 19-4 tiles promise no summing
- * invariant).
+ * 19-2's wire shapes (spec D5). On TODAY the tiles PARTITION `tracked`
+ * (the 2026-10-01 user ruling — checkedIn + notCheckedIn + onLeave must
+ * add up to tracked): every tracked row lands in exactly one bucket,
+ * keyed by the OUTCOME STATUS — the same grade the calendar cell and the
+ * day sheet show (the 19-2 module header's tile/calendar invariant).
+ * `late` is not a fourth bucket — it counts only inside `checkedIn`.
  */
 
 export interface DashboardCounts {
   /** Employees tracked today (grid rows where ctx.tracked). */
   tracked: number;
-  /** Check-in instant today: in_progress | present | half_day |
-   *  half_day_leave | worked_on_holiday (engine-authoritative — includes
-   *  status-only overrides). A half_day_leave counts only with a check-in
-   *  instant; rule 6 grades a never-appeared half-day leaver that status
-   *  with NO check-in at all — leave, not a check-in. */
+  /** A presence grade — in_progress | present | half_day |
+   *  worked_on_holiday (the calendar says these people reported).
+   *  Includes a rule-1 status-only `present`/`half_day` override even
+   *  where no punch landed, and excludes an owner-adjudicated `absent`
+   *  override (that reads notCheckedIn) — the bucket follows the
+   *  owner's grade, never the raw punches. */
   checkedIn: number;
-  /** status `not_checked_in_yet`. */
+  /** Everything not checked-in-or-leave: not_checked_in_yet |
+   *  weekly_off | holiday | absent — engine-graded (a sub-half-day
+   *  punch-in/out, below D5's half-day threshold) or owner-adjudicated;
+   *  the tile's question is "who hasn't reported". */
   notCheckedIn: number;
-  /** outcome.isLate (never true on off-day statuses — the engine keeps
-   *  Late null there). */
+  /** outcome.isLate among the checkedIn rows only (the engine keeps
+   *  Late null wherever there is no check-in instant, so late is a
+   *  qualifier of checkedIn — never a fourth bucket). */
   late: number;
-  /** status `leave` or `half_day_leave` (leaveCredit ≥ 0.5 today). */
+  /** A leave grade — leave | half_day_leave (the leave credit stays a
+   *  day-sheet/summary truth; the tile reads the person "on leave"). */
   onLeave: number;
 }
 

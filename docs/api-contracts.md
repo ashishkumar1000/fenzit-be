@@ -1719,15 +1719,23 @@ one implementation; a dashboard/calendar/summary cell can never disagree):**
 #### `GET /api/v1/attendance/dashboard?officeId=` `[Bearer JWT, Role: owner]`
 
 FR-24, today only (no date params). Tiles: `tracked` (grid rows where the
-engine tracks today), `checkedIn` (status `in_progress` | `present` |
-`half_day` | `half_day_leave` | `worked_on_holiday` — engine-authoritative,
-includes status-only overrides), `notCheckedIn` (`not_checked_in_yet`),
-`late` (outcome `isLate`), `onLeave` (`leave` | `half_day_leave`).
-`checkedIn` and `onLeave` overlap on a checked-in half-day leave — the
-tiles answer five separate questions, not partitions. The optional
-`officeId` filters by today's covering assignment office (malformed →
-`422 VALIDATION_ERROR`; unknown-but-well-formed → `200` with zeros +
-empty flags, never `404`).
+engine tracks today), `checkedIn` (a presence grade — in_progress |
+present | half_day | worked_on_holiday; includes a rule-1 status-only
+`present`/`half_day` override even where no punch landed), `onLeave`
+(a leave grade — `leave` | `half_day_leave`, however much of it was
+actually worked), `notCheckedIn` (everything else — not_checked_in_yet,
+weekly_off, holiday, and both `absent` grades: a sub-half-day
+punch-in/out that the engine rules below D5's half-day threshold, or an
+owner-adjudicated `absent` override), `late` (`outcome.isLate` — a
+qualifier of `checkedIn`, not a fourth bucket; it only counts inside
+that bucket). The three main tiles PARTITION `tracked` (2026-10-01
+user ruling after an on-device under-count: the bucket follows the
+OUTCOME STATUS — the same grade the calendar cell shows — so a tile can
+never disagree with the calendar; a punched half-day leaver reads on
+leave and their worked half stays a day-sheet/summary truth). The
+optional `officeId` filters by today's covering assignment office
+(malformed → `422 VALIDATION_ERROR`; unknown-but-well-formed → `200`
+with zeros + empty flags, never `404`).
 
 **Flags:** `checkoutMissing` — past tracked dates with a check-in, no
 check-out and no adjudicating override (engine rule 8's exact set,

@@ -35,7 +35,7 @@ export class DashboardController {
   @ApiResponse({
     status: 200,
     description:
-      '{ date, counts: { tracked, checkedIn, notCheckedIn, late, onLeave }, flags: { checkoutMissing[], fakeLocationAttempt[] } } — checkedIn and onLeave overlap on a checked-in half_day_leave',
+      '{ date, counts: { tracked, checkedIn, notCheckedIn, late, onLeave }, flags: { checkoutMissing[], fakeLocationAttempt[] } } — the tiles PARTITION tracked (bucket follows the calendar grade: checkedIn = in_progress|present|half_day|worked_on_holiday; onLeave = leave|half_day_leave; notCheckedIn = everything else, incl. weekly_off/holiday and any `absent`); late counts only inside checkedIn',
   })
   @ApiResponse({
     status: 422,

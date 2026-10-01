@@ -5,7 +5,7 @@ import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { requireTenant } from './attendance-rpc.helpers';
 import { tenantToday } from './enrolments.repository';
 import { readDayStatusGrid } from './day-status.read';
-import { computeDayStatus, effectiveInstants } from './day-status.model';
+import { computeDayStatus } from './day-status.model';
 import { DashboardFlagReads } from './dashboard-flags';
 import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response.model';
 
@@ -27,19 +27,27 @@ import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response
  * today — FR-2's rule, consumed not re-implemented).
  */
 
-/** D5's checked-in set — engine-authoritative, includes overrides. The
- *  `half_day_leave` member additionally requires a check-in instant at the
- *  counting site (rule 6 grades a never-appeared half-day leaver with no
- *  check-in at all — that row is leave, not a check-in). */
+/** D5's on-leave statuses. On TODAY the buckets PARTITION tracked (the
+ *  2026-10-01 user ruling — checkedIn + notCheckedIn + onLeave must add
+ *  up to tracked): the bucket follows the OUTCOME STATUS (the same grade
+ *  the calendar cell shows — the module header's tile/calendar invariant),
+ *  not the raw punch instants: a presence status is "checked in", a leave
+ *  grade is "on leave", and everything else — including a sub-half-day
+ *  punch-in/out's rule-7 `absent` (the on-device under-count this fixes)
+ *  and an owner-adjudicated `absent` override — reads not checked in.
+ *  The earlier half_day_leave/checked-in overlap is dropped: a half-day
+ *  leaver reads on leave, their worked half staying a day-sheet/summary
+ *  truth (FR-11's never-mixed rule). Late stays a qualifier of checked
+ *  in — it only counts inside the checked-in bucket. (NOT the same
+  question as the reminder RPC's `notCheckedInCount` — that one keys on
+  raw instants with its own conditions for past-cutoff nudges.) */
 const CHECKED_IN_STATUSES = new Set([
   'in_progress',
   'present',
   'half_day',
-  'half_day_leave',
   'worked_on_holiday',
 ]);
 
-/** D5's on-leave statuses (half_day_leave overlaps with checkedIn). */
 const ON_LEAVE_STATUSES = new Set(['leave', 'half_day_leave']);
 
 interface TrackedTodayRow {
@@ -100,10 +108,16 @@ export class DashboardService {
             hasUnackMockedAttempt: row.hasUnackMockedAttempt,
             today: row.today,
           });
-          const checkedIn =
-            CHECKED_IN_STATUSES.has(outcome.status) &&
-            (outcome.status !== 'half_day_leave' ||
-              effectiveInstants(row.record, row.override).checkin !== null);
+          // The bucket key is the OUTCOME STATUS — the same grade the
+          // calendar cell and the day sheet show, so a tile can never
+          // disagree with them (presence statuses carry an instant by
+          // construction — rules 7/10 and rule 3 require a punch, and a
+          // rule-1 presence override grades the day present exactly as
+          // the calendar reads it). The 2026-10-01 user ruling: the three
+          // buckets add up to `tracked` — a sub-half-day punch-in/out
+          // grades `absent` and NO LONGER vanishes (it counts not checked
+          // in), nor does a weekly-off/holiday row.
+          const checkedIn = CHECKED_IN_STATUSES.has(outcome.status);
 
           // Per-office tallies over the FULL tenant scope (the picker must
           // list every office with its own truth, whatever this fetch's
@@ -131,20 +145,22 @@ export class DashboardService {
           }
 
           counts.tracked += 1;
+          // The partition (the ON_LEAVE_STATUSES docblock's ruling): a
+          // presence grade is checked in, a leave grade is on leave, and
+          // everything else — not_checked_in_yet, weekly_off, holiday,
+          // and both `absent` grades (engine-ruled sub-half-day and
+          // owner-adjudicated) — is not checked in. One status, one
+          // bucket: every tracked row lands in exactly one.
           if (checkedIn) {
-            // D5's letter: `checkedIn` counts rows with a check-in instant
-            // today. A never-appeared half_day_leave (rule 6 grades the
-            // approved half-day leave with NO check-in at all) is leave,
-            // not a check-in — the audit's over-count. Every other set
-            // member carries an instant by definition (the tile still
-            // overlaps `onLeave` with the checked-in half).
             counts.checkedIn += 1;
-          }
-          if (outcome.status === 'not_checked_in_yet') {
+          } else if (ON_LEAVE_STATUSES.has(outcome.status)) {
+            counts.onLeave += 1;
+          } else {
             counts.notCheckedIn += 1;
           }
-          if (outcome.isLate) counts.late += 1;
-          if (ON_LEAVE_STATUSES.has(outcome.status)) counts.onLeave += 1;
+          // Late qualifies the CHECKED-IN rows only — a late flag can
+          // never read against a not-checked-in or on-leave person.
+          if (checkedIn && outcome.isLate) counts.late += 1;
         }
       }
       const offices: DashboardOfficeRow[] = await this.readOfficeRegistry(
