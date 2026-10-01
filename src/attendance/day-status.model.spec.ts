@@ -48,6 +48,7 @@ const ctx = (over: Partial<DayContext> = {}): DayContext => ({
   isWorkingDay: true,
   leaveState: null,
   leavePart: null,
+  leaveRequestId: null,
   ...over,
 });
 

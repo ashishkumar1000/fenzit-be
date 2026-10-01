@@ -409,6 +409,7 @@ describe('UsersService', () => {
         attendanceAccess: 'none',
         attendanceStartDate: null,
         onboardedAt: null,
+        pendingLeaveRequests: 0,
       });
       // Story 3.9 — every profile job row now embeds technician + customer.
       // Mocks return no embed rows, so the fallbacks (id-only, null names) show.
@@ -472,6 +473,7 @@ describe('UsersService', () => {
         attendanceAccess: 'none',
         attendanceStartDate: null,
         onboardedAt: null,
+        pendingLeaveRequests: 0,
       });
     });
 
@@ -670,6 +672,7 @@ describe('UsersService', () => {
         attendanceAccess: 'none',
         attendanceStartDate: null,
         onboardedAt: null,
+        pendingLeaveRequests: 0,
       });
       // only the own-profile lookup should have run
       expect(from).toHaveBeenCalledTimes(1);
@@ -775,6 +778,7 @@ describe('UsersService', () => {
         attendanceAccess: 'active',
         attendanceStartDate: '2026-09-01',
         onboardedAt: '2026-09-01T05:30:00+00:00',
+        pendingLeaveRequests: 0,
       });
       expect(result.skills.sort()).toEqual(
         ['AC Repair', 'Pest Control'].sort(),

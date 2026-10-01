@@ -345,7 +345,9 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(Object.keys(body)).toEqual(['from', 'to', 'days']);
+      // The `today` echo (spec-18-3 D2) rides every day-statuses response —
+      // the pin went stale when that echo landed; this list is the contract.
+      expect(Object.keys(body)).toEqual(['from', 'to', 'today', 'days']);
       expect(body.days[0]).toMatchObject({
         workDate: FROM,
         status: 'present',

@@ -70,6 +70,14 @@ export interface DayStatusRow {
   checkinDistanceM: number | null;
   checkoutDistanceM: number | null;
   markers: DayMarkerKey[];
+  /** The covering leave_requests.id (uuid) when the day carries an active
+   *  pending/approved leave day — the same condition that produces the
+   *  `leave`/`half_day_leave` statuses or the `leave_pending` marker. Null
+   *  otherwise (and OFF when the engine sees no active leave row: a
+   *  rejected/cancelled/revoked day exposes no request id). The FE uses it
+   *  to resolve the request it wants to cancel or re-file without a
+   *  separate lookup. */
+  leaveRequestId: string | null;
   /** One-liner for the sheet: the newest entry in the day's audit chain. */
   latestCorrection?: LatestCorrectionView;
 }
@@ -117,6 +125,7 @@ export function toDayStatusRow(input: {
   checkout: Date | null;
   checkinDistanceM: number | null;
   checkoutDistanceM: number | null;
+  leaveRequestId: string | null;
   latestCorrection: LatestCorrectionView | null;
 }): DayStatusRow {
   const { outcome, latestCorrection } = input;
@@ -149,6 +158,7 @@ export function toDayStatusRow(input: {
     checkinDistanceM: input.checkinDistanceM,
     checkoutDistanceM: input.checkoutDistanceM,
     markers: [...outcome.markers],
+    leaveRequestId: input.leaveRequestId,
     ...(latestCorrection ? { latestCorrection } : {}),
   };
 }

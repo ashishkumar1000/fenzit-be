@@ -167,9 +167,21 @@ Role-branched profile payload — the app's primary boot call.
 - **Technician:** own skills, own jobs page, own jobCounts — plus the
   `attendance` mirror (15-7/AD-17): `{ attendanceEnabled, attendanceAccess
   ('none' | 'upcoming' | 'active' | 'history_only'), attendanceStartDate,
-  onboardedAt }` for first load, read from the same
+  onboardedAt, pendingLeaveRequests }` for first load, read from the same
   `attendance_access_state` view as `GET /attendance/me/access`; refetches
   use that light endpoint, not the profile
+- **`attendance.pendingLeaveRequests` (20-1)** — view column (migration
+  20261001000001): the tenant's leave REQUESTS whose review is still owed —
+  `count(distinct leave_request_id)` over `leave_request_days` rows still
+  `pending` (the same pending-queue definition the owner leave list and the
+  19-4 reminder serve; a partially-handled request still counts). The
+  OWNER'S attention fact — the view evaluates it only on the owner's row
+  while the module is on (enabled + setup completed); every other mirror
+  row (technicians, module-off tenants) reads 0. The FE gates the strip on
+  the owner role + count > 0. First-load only: it does NOT live on
+  `GET /attendance/me/access`, so after the owner handles requests the
+  number stays stale until the next profile fetch (Home strip rebuilds on
+  next app open); the refresh endpoint is unchanged in this story.
 
 Every row in the jobs page additionally embeds
 `technician: { id, name, countryCode, phoneNumber, skills: string[] }` (always
@@ -1579,11 +1591,21 @@ sums these same rows.
   officeId, officeName, checkinAt, checkoutAt,
   checkinSource: 'gps'|'manual'|null, checkoutSource,
   checkinDistanceM, checkoutDistanceM, markers,
-  latestCorrection? }`; instants are tenant-offset ISO (AD-7); the
+  latestCorrection?, leaveRequestId }`; instants are tenant-offset ISO (AD-7); the
   distances (metres, the stored record columns) are surfaced ONLY for
   gps-sourced instants — a times-only correction substitutes manual
   instants while the stored distance describes the original GPS fix, so
   the field is null for a manual source or a record-less day (spec-18-3 D2).
+  `leaveRequestId` (20-1): the covering `leave_requests.id` when the day
+  carries an active pending/approved leave day-row, `null` otherwise —
+  per-day request ids ride ONLY these day-status rows (the profile mirror
+  and the access summary never carry them). The FE sheet uses it to
+  resolve the request for its leave actions: a still-pending day's id goes
+  to the technician cancel route, and "convert to full day" is a FE
+  composition of cancel + re-file (the BE serves only
+  `POST /attendance/me/leave/:id/cancel` and the apply route — no convert
+  route). A stale id on a raced day answers
+  `409 LEAVE_NOT_CANCELLABLE` and the FE re-resolves the day.
 - `GET /attendance/me/day-statuses?from&to` `[technician]` → same rows
   (and the same `today` echo) for the JWT identity; the AD-17 gate answers
   `403 ATTENDANCE_NOT_TRACKED`

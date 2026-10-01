@@ -180,6 +180,7 @@ describe('Users (e2e)', () => {
         attendanceAccess: 'none',
         attendanceStartDate: null,
         onboardedAt: null,
+        pendingLeaveRequests: 0,
       });
     });
 
@@ -231,6 +232,7 @@ describe('Users (e2e)', () => {
         attendanceAccess: 'none',
         attendanceStartDate: null,
         onboardedAt: null,
+        pendingLeaveRequests: 0,
       });
     });
 

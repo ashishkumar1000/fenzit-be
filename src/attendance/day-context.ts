@@ -61,6 +61,9 @@ export interface DayContext {
   leaveState: 'pending' | 'approved' | null;
   /** The leave request's part when leaveState is set; null otherwise. */
   leavePart: 'full_day' | 'first_half' | 'second_half' | null;
+  /** The covering leave_requests.id (uuid) when leaveState is set; the
+   *  uuid the leave views/cancel carry. Null otherwise. */
+  leaveRequestId: string | null;
 }
 
 /** Input rows for the pure computations below. */
@@ -269,6 +272,8 @@ export function assembleDayContext(
   leave: {
     state: 'pending' | 'approved';
     part: 'full_day' | 'first_half' | 'second_half';
+    /** leave_requests.id — see DayContext.leaveRequestId. */
+    leaveRequestId: string;
   } | null = null,
 ): DayContext {
   const rule = facts.rule;
@@ -312,6 +317,7 @@ export function assembleDayContext(
     isWorkingDay: !isWeeklyOff && !isHoliday,
     leaveState: leave?.state ?? null,
     leavePart: leave?.part ?? null,
+    leaveRequestId: leave?.leaveRequestId ?? null,
   };
 }
 

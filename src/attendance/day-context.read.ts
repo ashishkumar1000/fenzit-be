@@ -132,6 +132,7 @@ export async function buildDayContext(
       ? {
           state: leave.state,
           part: leave.part as 'full_day' | 'first_half' | 'second_half',
+          leaveRequestId: leave.leaveRequestDbId,
         }
       : null,
   );

@@ -90,6 +90,9 @@ interface LeaveDayRow {
   leave_date: string;
   state: 'pending' | 'approved';
   part: 'full_day' | 'first_half' | 'second_half';
+  /** leave_requests.id — the uuid the leave views/cancel carry as
+   *  LeaveRequestView.id, so the FE can act on the covering request. */
+  leave_request_id: string;
 }
 
 export interface OverrideRow {
@@ -284,7 +287,8 @@ export async function readDayStatusGrid(
         .then((r) => r.rows),
       tx
         .query<LeaveDayRow>(
-          `select d.employee_id, d.leave_date::text, d.state, r.part
+          `select d.employee_id, d.leave_date::text, d.state, r.part,
+                  d.leave_request_id::text
            from public.leave_request_days d
            join public.leave_requests r on r.id = d.leave_request_id
            where d.tenant_id = $1::uuid and d.employee_id = any($2::uuid[])
@@ -396,7 +400,13 @@ export async function readDayStatusGrid(
         facts,
         office,
         hasCheckIn,
-        leave ? { state: leave.state, part: leave.part } : null,
+        leave
+          ? {
+              state: leave.state,
+              part: leave.part,
+              leaveRequestId: leave.leave_request_id,
+            }
+          : null,
       );
       grid.push({
         employeeId,
@@ -568,6 +578,7 @@ export class DayStatusesService {
       checkout,
       checkinDistanceM,
       checkoutDistanceM,
+      leaveRequestId: row.ctx.leaveRequestId,
       latestCorrection,
     });
   }

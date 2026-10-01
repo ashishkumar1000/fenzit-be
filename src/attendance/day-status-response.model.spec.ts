@@ -18,7 +18,7 @@ const OUTCOME = computeDayStatus({
     officeRulesId: 'r1', startMinute: 570, endMinute: 1110, midpointMinute: 840,
     lateCutoffMinutes: 15, fullDayMinutes: 480, halfDayMinutes: 240,
     isWeeklyOff: false, holidayId: null, holidayName: null,
-    isWorkingDay: true, leaveState: null, leavePart: null,
+    isWorkingDay: true, leaveState: null, leavePart: null, leaveRequestId: null,
   },
   record: {
     // 09:50 and 18:40 in tenant wall time (late by 5, worked 530).
@@ -52,6 +52,7 @@ const row = (over: Partial<Parameters<typeof toDayStatusRow>[0]> = {}) =>
     checkout: new Date('2026-09-28T18:40:00+05:30'),
     checkinDistanceM: 42,
     checkoutDistanceM: 17,
+    leaveRequestId: null,
     latestCorrection: null,
     ...over,
   });

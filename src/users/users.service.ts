@@ -127,6 +127,15 @@ export interface AttendanceAccessSummary {
   attendanceAccess: 'none' | 'upcoming' | 'active' | 'history_only';
   attendanceStartDate: string | null;
   onboardedAt: string | null;
+  /**
+   * Owner attention fact (2026-10): leave requests of the tenant that
+   * still have at least one `pending` leave_request_days row — the same
+   * "pending queue" definition the owner leave list serves. Rides every
+   * mirror branch (owner + technician) from the access view, so the FE
+   * stays fail-hidden without a second boot call (view column semantics
+   * documented on the migration).
+   */
+  pendingLeaveRequests: number;
 }
 
 // Story 3.9 — every profile job row embeds the same technician/customer
@@ -214,7 +223,16 @@ const NO_ATTENDANCE_ACCESS: AttendanceAccessSummary = {
   attendanceAccess: 'none',
   attendanceStartDate: null,
   onboardedAt: null,
+  pendingLeaveRequests: 0,
 };
+
+/** 20-1: the view column arrives as a numeric (or a bigint-as-string);
+ * a drifted value fails HIDDEN to 0 — the strip stays quiet rather than
+ * showing a wrong number. */
+function pendingLeaveRequestsMapped(raw: number | string | undefined | null) {
+  const n = Number(raw ?? 0);
+  return { pendingLeaveRequests: Number.isFinite(n) ? n : 0 };
+}
 
 @Injectable()
 export class UsersService {
@@ -456,7 +474,7 @@ export class UsersService {
     const { data, error } = await admin
       .from('attendance_access_state')
       .select(
-        'attendance_enabled, access_state, attendance_start_date, onboarded_at',
+        'attendance_enabled, access_state, attendance_start_date, onboarded_at, pending_leave_requests',
       )
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
@@ -465,6 +483,7 @@ export class UsersService {
         access_state: 'none' | 'upcoming' | 'active' | 'history_only';
         attendance_start_date: string | null;
         onboarded_at: string | null;
+        pending_leave_requests: number;
       }>();
 
     if (error) {
@@ -482,6 +501,7 @@ export class UsersService {
       attendanceAccess: data.access_state,
       attendanceStartDate: data.attendance_start_date,
       onboardedAt: data.onboarded_at,
+      ...pendingLeaveRequestsMapped(data.pending_leave_requests),
     };
   }
 
