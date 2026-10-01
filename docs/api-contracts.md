@@ -1728,15 +1728,19 @@ weekly_off, holiday, and both `absent` grades: a sub-half-day
 punch-in/out that the engine rules below D5's half-day threshold, or an
 owner-adjudicated `absent` override), `late` (`outcome.isLate` — a
 qualifier of `checkedIn`, not a fourth bucket; it only counts inside
-that bucket). RESERVED (story 20-2 phase A): the counts also carry
-`shortDay`, always `0` until the partition flip — the app may require
-it today (fail-closed normalizer) without any behaviour change yet.
-The three main tiles PARTITION `tracked` (2026-10-01
-user ruling after an on-device under-count: the bucket follows the
-OUTCOME STATUS — the same grade the calendar cell shows — so a tile can
-never disagree with the calendar; a punched half-day leaver reads on
-leave and their worked half stays a day-sheet/summary truth). The
-optional `officeId` filters by today's covering assignment office
+that bucket). The FOUR buckets PARTITION `tracked` (2026-10-01 ruling
+after an on-device under-count: the bucket follows the OUTCOME STATUS —
+the same grade the calendar cell shows — so a tile can never disagree
+with the calendar; a punched half-day leaver reads on leave and their
+worked half stays a day-sheet/summary truth). `shortDay` holds the
+ENGINE-graded short-day rows — a rule-7 `absent`: a punch-in AND
+punch-out that the engine graded below the half-day threshold, with no
+owner status override (row moves out of `notCheckedIn`, never copies —
+`tracked = checkedIn + notCheckedIn + onLeave + shortDay`). An
+owner-adjudicated `absent` override and the past-no-check-in rule-9
+`absent` stay under `notCheckedIn` — the owner's word overrides the
+tile, always. The optional `officeId` filters by
+today's covering assignment office
 (malformed → `422 VALIDATION_ERROR`; unknown-but-well-formed → `200`
 with zeros + empty flags, never `404`).
 

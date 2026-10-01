@@ -32,15 +32,24 @@ import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response
  *  up to tracked): the bucket follows the OUTCOME STATUS (the same grade
  *  the calendar cell shows — the module header's tile/calendar invariant),
  *  not the raw punch instants: a presence status is "checked in", a leave
- *  grade is "on leave", and everything else — including a sub-half-day
- *  punch-in/out's rule-7 `absent` (the on-device under-count this fixes)
- *  and an owner-adjudicated `absent` override — reads not checked in.
+ *  grade is "on leave", and everything else — an owner-adjudicated
+ *  `absent` override included — reads not checked in (the rule-7
+ *  carve-out lives at the end of this block).
  *  The earlier half_day_leave/checked-in overlap is dropped: a half-day
  *  leaver reads on leave, their worked half staying a day-sheet/summary
  *  truth (FR-11's never-mixed rule). Late stays a qualifier of checked
  *  in — it only counts inside the checked-in bucket. (NOT the same
-  question as the reminder RPC's `notCheckedInCount` — that one keys on
-  raw instants with its own conditions for past-cutoff nudges.) */
+ *  question as the reminder RPC's `notCheckedInCount` — that one keys on
+ *  raw instants with its own conditions for past-cutoff nudges.)
+ *
+ *  20-2 (the user's 2026-10-01 follow-up): the rule-7 `absent` a
+ *  punch-in AND punch-out under the half-day threshold grades now OWN
+ *  their "Short day" bucket — parking a visible punch-in under "not
+ *  checked in" misled the owner. So the partition's absent status
+ *  SPLITS by origin: ENGINE-graded (no owner status override, worked
+ *  minutes present) → shortDay; owner-adjudicated (rule 1) and the
+ *  past-no-check-in grade (rule 9, no worked minutes) stay not checked
+ *  in — the owner's word overrides the tile, always. */
 const CHECKED_IN_STATUSES = new Set([
   'in_progress',
   'present',
@@ -81,12 +90,11 @@ export class DashboardService {
         tracked: 0,
         checkedIn: 0,
         notCheckedIn: 0,
-        // Reserved (story 20-2 phase A): the field ships always-present so
-        // the app's new build can require it with zero risk — always 0
-        // until the phase-C partition flip.
-        shortDay: 0,
         late: 0,
         onLeave: 0,
+        // 20-2: live since the partition flip — the engine-graded
+        // rule-7 short-day rows (see the route comment below).
+        shortDay: 0,
       };
       /** The office registry with today's stats (the picker's subtitles) —
        *  offices with zero tracked employees included (the mock lists
@@ -149,16 +157,25 @@ export class DashboardService {
           }
 
           counts.tracked += 1;
-          // The partition (the ON_LEAVE_STATUSES docblock's ruling): a
-          // presence grade is checked in, a leave grade is on leave, and
-          // everything else — not_checked_in_yet, weekly_off, holiday,
-          // and both `absent` grades (engine-ruled sub-half-day and
-          // owner-adjudicated) — is not checked in. One status, one
-          // bucket: every tracked row lands in exactly one.
+          // The partition (the CHECKED_IN_STATUSES docblock's ruling):
+          // presence → checked in, leave → on leave, and the `absent`
+          // status splits BY ORIGIN — the engine's rule-7 short-day grade
+          // (no override status, worked minutes on the outcome; rule 9's
+          // no-punch absent has workedMinutes null, rule 1 is excluded by
+          // the override) → Short day; everything else —
+          // not_checked_in_yet, weekly_off, holiday, owner-adjudicated
+          // `absent`, rule-9 `absent` — is not checked in. Rows MOVE,
+          // never copy: one tracked row lands in exactly one bucket.
           if (checkedIn) {
             counts.checkedIn += 1;
           } else if (ON_LEAVE_STATUSES.has(outcome.status)) {
             counts.onLeave += 1;
+          } else if (
+            outcome.status === 'absent' &&
+            row.override?.status == null &&
+            outcome.workedMinutes !== null
+          ) {
+            counts.shortDay += 1;
           } else {
             counts.notCheckedIn += 1;
           }

@@ -30,12 +30,12 @@ export class DashboardController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'FR-24 today’s tiles (tracked / checkedIn / notCheckedIn / late / onLeave) and the unresolved flags (checkout-missing, mocked attempts)',
+      'FR-24 today’s tiles (tracked / checkedIn / notCheckedIn / shortDay / late / onLeave) and the unresolved flags (checkout-missing, mocked attempts)',
   })
   @ApiResponse({
     status: 200,
     description:
-      '{ date, counts: { tracked, checkedIn, notCheckedIn, late, onLeave }, flags: { checkoutMissing[], fakeLocationAttempt[] } } — the tiles PARTITION tracked (bucket follows the calendar grade: checkedIn = in_progress|present|half_day|worked_on_holiday; onLeave = leave|half_day_leave; notCheckedIn = everything else, incl. weekly_off/holiday and any `absent`); late counts only inside checkedIn',
+      '{ date, counts: { tracked, checkedIn, notCheckedIn, shortDay, late, onLeave }, flags: { checkoutMissing[], fakeLocationAttempt[] } } — the four buckets PARTITION tracked (bucket follows the calendar grade, with shortDay split by the absent origin: checkedIn = in_progress|present|half_day|worked_on_holiday; onLeave = leave|half_day_leave; shortDay = the ENGINE-graded rule-7 `absent` (punch-in AND punch-out under the half-day threshold, no owner status override); notCheckedIn = everything else, incl. weekly_off/holiday, owner-adjudicated `absent` overrides and the past-no-check-in `absent`); late counts only inside checkedIn',
   })
   @ApiResponse({
     status: 422,

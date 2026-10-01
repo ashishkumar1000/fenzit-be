@@ -22,11 +22,6 @@ export interface DashboardCounts {
    *  punch-in/out, below D5's half-day threshold) or owner-adjudicated;
    *  the tile's question is "who hasn't reported". */
   notCheckedIn: number;
-  /** Reserved (story 20-2 phase A): always 0 until the phase-C partition
-   *  flip. Once live it holds the ENGINE-graded short-day rows — a rule-7
-   *  `absent` (punch-in AND punch-out under the half-day threshold, no
-   *  owner status override), moved out of `notCheckedIn`, never copied. */
-  shortDay: number;
   /** outcome.isLate among the checkedIn rows only (the engine keeps
    *  Late null wherever there is no check-in instant, so late is a
    *  qualifier of checkedIn — never a fourth bucket). */
@@ -34,6 +29,14 @@ export interface DashboardCounts {
   /** A leave grade — leave | half_day_leave (the leave credit stays a
    *  day-sheet/summary truth; the tile reads the person "on leave"). */
   onLeave: number;
+  /** The ENGINE-graded short-day rows (story 20-2, live): a rule-7
+   *  `absent` — punch-in AND punch-out under the half-day threshold, no
+   *  owner status override. An owner-adjudicated `absent` override and
+   *  the past-no-check-in rule-9 `absent` stay in notCheckedIn — the
+   *  owner's word overrides the tile, always. Rows move here out of
+   *  `notCheckedIn`, never copy: tracked = checkedIn + notCheckedIn +
+   *  onLeave + shortDay. */
+  shortDay: number;
 }
 
 /** A past tracked day with a check-in and no check-out (engine rule 8). */
