@@ -195,7 +195,7 @@ describe('closedRecordView — checked in and out', () => {
     expect(r.earlyCheckout).toBe(false);
   });
 
-  it('sub-minute spans truncate to whole minutes (30 s → 0, never 1)', () => {
+  it('sub-minute spans count as 1 minute (30 s → 1, never 0 — user-directed 2026-10-02)', () => {
     const r = closedRecordView(
       {
         ...record,
@@ -205,7 +205,7 @@ describe('closedRecordView — checked in and out', () => {
       'Asia/Kolkata',
       null,
     );
-    expect(r.workedMinutes).toBe(0);
+    expect(r.workedMinutes).toBe(1);
   });
 
   it('no rule → late and early honest nulls, but workedMinutes still grades', () => {

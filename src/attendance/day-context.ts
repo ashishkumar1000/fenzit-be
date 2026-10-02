@@ -221,8 +221,13 @@ export function isWeeklyOffDay(days: number[], workDate: string): boolean {
 /**
  * Whole worked minutes between the stored check-in/check-out instants
  * (16-1 D12: instant-based, so a timezone change mid-day cannot corrupt
- * it) — truncated, never negative. The ONE implementation: the check-in/out
- * response and the FR-4 summary's todayRecord both import this.
+ * it) — never negative. The ONE implementation: the check-in/out response
+ * and the FR-4 summary's todayRecord both import this.
+ *
+ * Rounding (user-directed, 2026-10-02): nearest minute with a 1-minute
+ * floor for any non-zero span. The old truncation turned a 3:34→3:35
+ * punch into "0 h 00 m" whenever the real elapsed was under 60 s — a
+ * minute worked must never display as zero.
  */
 export function workedMinutesBetween(
   checkinAt: Date | string,
@@ -230,7 +235,9 @@ export function workedMinutesBetween(
 ): number {
   const start = new Date(checkinAt).getTime();
   const end = new Date(checkoutAt).getTime();
-  return Math.max(0, Math.trunc((end - start) / 60_000));
+  const elapsedMs = Math.max(0, end - start);
+  if (elapsedMs === 0) return 0;
+  return Math.max(1, Math.round(elapsedMs / 60_000));
 }
 
 /**

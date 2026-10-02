@@ -163,6 +163,8 @@ describe('recordToResponse (AD-6 replay rebuild)', () => {
       flags,
       metrics,
     ) as { workedMinutes: number };
-    expect(response.workedMinutes).toBe(3); // trunc(230s / 60) = 3
+    // Rounded to the NEAREST minute (user-directed, 2026-10-02 — the old
+    // truncation displayed a 3:34→3:35 punch as "0 h 00 m"): round(230/60)=4.
+    expect(response.workedMinutes).toBe(4);
   });
 });
