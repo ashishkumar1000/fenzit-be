@@ -651,6 +651,14 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
     expect(await keysSince(before)).toEqual([
       `${TENANT}:attendance.reminder_checkout:${E.secondHalf}:${D}`,
     ]);
+    // B-BUG-1 boundary: a tick ONE SECOND before a due instant must fire
+    // NOTHING. PG's rounding `::int` cast read 14:29:59 as the 14:30
+    // threshold minute and fired the displaced first-half check-in early
+    // (bug-bash 2026-10-02, live-proven at 09:14:59 vs a 09:15:00
+    // threshold); the floor()ed clock must hold the second back.
+    const beforePre = await keyOf();
+    await tick('14:29:59');
+    expect(await keysSince(beforePre)).toEqual([]);
     // The displaced first-half check-in is due at Midpoint + cut-off =
     // 14:15 — a full tick later, the two arms can never collide.
     const before1430 = await keyOf();
