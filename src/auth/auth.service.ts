@@ -38,6 +38,13 @@ const OTP_RATE_LIMIT_WINDOW = 600;
 const OTP_RATE_LIMIT_MAX = 5;
 const OTP_MAX_ATTEMPTS = 5;
 
+// PRE-RELEASE MASTER OTP (user-directed, 2026-10-02): while the pre-DLT dev
+// flag is on, 816001 verifies ANY live session — the release build has no
+// __DEV__ chip and DLT SMS is not live, so this is the only way to log in.
+// REMOVE AT GO-LIVE: it is gated on OTP_DEV_ECHO, so unsetting that flag for
+// the SMS cutover also kills the master code even if this line is missed.
+const PRE_RELEASE_MASTER_OTP = '816001';
+
 /**
  * Supabase Realtime tokens are short-lived on purpose — the login JWT is
  * never-expire by design, and Realtime needs a fresh claim set anyway (see
@@ -123,6 +130,15 @@ export class AuthService {
     return process.env['OTP_DEV_ECHO']?.trim() === 'true';
   }
 
+  /** The pre-release master code rides the SAME dev flag as the response
+   *  echo: on in this pre-DLT window, and flipping the flag for the SMS
+   *  cutover disables it with no code change (see the constant's note). */
+  private acceptsPreReleaseMasterOtp(otpCode: string): boolean {
+    return (
+      this.otpDevEchoEnabled() && otpCode === PRE_RELEASE_MASTER_OTP
+    );
+  }
+
   async verifyOtp(dto: VerifyOtpDto): Promise<{
     token: string;
     user: {
@@ -150,7 +166,9 @@ export class AuthService {
       });
     }
 
-    const isValid = await bcrypt.compare(otpCode, session.otpHash);
+    const isValid =
+      (await bcrypt.compare(otpCode, session.otpHash)) ||
+      this.acceptsPreReleaseMasterOtp(otpCode);
 
     if (!isValid) {
       session.attempts += 1;

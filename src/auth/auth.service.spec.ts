@@ -190,6 +190,66 @@ describe('AuthService', () => {
       };
     }
 
+    /** Arrange a live session whose REAL code differs from the given one, so
+     *  only the pre-release master path can verify. */
+    function mockLiveSession() {
+      otpSessionStore.get.mockResolvedValue({
+        countryCode: '+91',
+        phoneNumber: '1234567890',
+        otpHash: bcrypt.hashSync('999999', 10),
+        attempts: 0,
+        locked: false,
+        expiresAt: Date.now() + 300_000,
+      });
+      otpSessionStore.delete.mockResolvedValue(undefined);
+      jwtService.signAsync.mockResolvedValueOnce('master-jwt');
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        mockFindUser({
+          id: '550e8400-e29b-41d4-a716-446655440000',
+          country_code: '+91',
+          phone_number: '1234567890',
+          name: null,
+          role: 'technician',
+          tenant_id: null,
+          status: 'active',
+        }) as never,
+      );
+    }
+
+    it('PRE-RELEASE MASTER OTP: 816001 verifies ANY live session while OTP_DEV_ECHO=true (user-directed, remove at go-live)', async () => {
+      const prevEcho = process.env['OTP_DEV_ECHO'];
+      process.env['OTP_DEV_ECHO'] = 'true';
+      try {
+        mockLiveSession();
+        const result = await service.verifyOtp({
+          otpSessionId: 'session-id',
+          otpCode: '816001',
+        });
+        expect(result).toHaveProperty('token', 'master-jwt');
+        expect(otpSessionStore.delete).toHaveBeenCalled();
+      } finally {
+        if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+        else process.env['OTP_DEV_ECHO'] = prevEcho;
+      }
+    });
+
+    it('the master code is DEAD once OTP_DEV_ECHO is unset (the go-live flag flip removes it)', async () => {
+      const prevEcho = process.env['OTP_DEV_ECHO'];
+      delete process.env['OTP_DEV_ECHO'];
+      try {
+        mockLiveSession();
+        await expect(
+          service.verifyOtp({ otpSessionId: 'session-id', otpCode: '816001' }),
+        ).rejects.toMatchObject({
+          status: 401,
+          response: expect.objectContaining({ error_code: 'INVALID_OTP' }),
+        });
+      } finally {
+        if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+        else process.env['OTP_DEV_ECHO'] = prevEcho;
+      }
+    });
+
     it('should verify OTP and issue JWT for valid code', async () => {
       const otp = '123456';
       const otpHash = await bcrypt.hash(otp, 10);
