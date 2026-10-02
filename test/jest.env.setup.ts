@@ -14,6 +14,10 @@ process.env['CLOUDFLARE_R2_SECRET_KEY'] = 'test-secret-key';
 process.env['CLOUDFLARE_R2_BUCKET'] = 'test-bucket';
 process.env['WORKER_WEBHOOK_SECRET'] = 'test-webhook-secret';
 process.env['GOOGLE_PLACES_API_KEY'] = 'test-google-places-api-key';
+// The HTTP OTP tests read the echoed code from the send response (the same
+// contract the app's __DEV__ chip uses in dev). Never set this on a
+// reachable deployment — see auth.service.ts otpDevEchoEnabled.
+process.env['OTP_DEV_ECHO'] = 'true';
 // The 15-7 pg pool fails fast on a missing URL at boot; tests never connect
 // (the pool is overridden in the attendance specs), so a dummy string keeps
 // AppModule happy. An empty-string export must fall back too — the pool's

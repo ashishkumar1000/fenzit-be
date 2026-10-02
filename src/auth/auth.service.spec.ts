@@ -123,6 +123,55 @@ describe('AuthService', () => {
         response: expect.objectContaining({ retryAfterSeconds: 333 }),
       });
     });
+
+    it('should NOT echo the code in the response by default (OTP_DEV_ECHO unset)', async () => {
+      const prevEcho = process.env['OTP_DEV_ECHO'];
+      delete process.env['OTP_DEV_ECHO'];
+      const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
+      otpDeliveryProvider.send.mockResolvedValue(undefined);
+      otpSessionStore.set.mockResolvedValue(undefined);
+
+      const result = await service.sendOtp(dto);
+
+      // The send endpoint is public — an echoed code in its response is
+      // equivalent to having no OTP factor (bug-bash 2026-10-02 F2).
+      expect(result).not.toHaveProperty('otp');
+      if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+      else process.env['OTP_DEV_ECHO'] = prevEcho;
+    });
+
+    it('should echo the code only when OTP_DEV_ECHO=true (pre-DLT dev convenience)', async () => {
+      const prevEcho = process.env['OTP_DEV_ECHO'];
+      process.env['OTP_DEV_ECHO'] = 'true';
+      try {
+        const dto: SendOtpDto = {
+          countryCode: '+91',
+          phoneNumber: '1234567890',
+        };
+        otpSessionStore.increment.mockResolvedValue({
+          count: 1,
+          windowRemainingSeconds: 600,
+        });
+        otpDeliveryProvider.send.mockResolvedValue(undefined);
+        otpSessionStore.set.mockResolvedValue(undefined);
+
+        const result = await service.sendOtp(dto);
+
+        expect(result.otp).toMatch(/^\d{6}$/);
+        // The delivered code and the echoed code are the same one.
+        expect(otpDeliveryProvider.send).toHaveBeenCalledWith(
+          '+911234567890',
+          result.otp,
+        );
+      } finally {
+        if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+        else process.env['OTP_DEV_ECHO'] = prevEcho;
+      }
+    });
   });
 
   describe('verifyOtp', () => {
@@ -150,6 +199,7 @@ describe('AuthService', () => {
         otpHash,
         attempts: 0,
         locked: false,
+        expiresAt: Date.now() + 300_000,
       };
 
       const userId = '550e8400-e29b-41d4-a716-446655440000';
@@ -185,39 +235,76 @@ describe('AuthService', () => {
       expect(otpSessionStore.delete).toHaveBeenCalled();
     });
 
-    it('should accept any 6-digit code in mock mode', async () => {
-      const otp = '123456';
-      const otpHash = await bcrypt.hash(otp, 10);
+    it('should reject a wrong code with INVALID_OTP and count the attempt', async () => {
+      const otpHash = await bcrypt.hash('123456', 10);
       const session: OtpSession = {
         countryCode: '+91',
         phoneNumber: '1234567890',
         otpHash,
         attempts: 0,
         locked: false,
-      };
-
-      const mockUser = {
-        id: '550e8400-e29b-41d4-a716-446655440000',
-        country_code: '+91',
-        phone_number: '1234567890',
-        name: null,
-        role: 'owner',
-        tenant_id: null,
-        status: 'active',
+        expiresAt: Date.now() + 300_000,
       };
 
       otpSessionStore.get.mockResolvedValue(session);
-      jwtService.signAsync.mockResolvedValueOnce('final-jwt');
-      otpSessionStore.delete.mockResolvedValue(undefined);
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        mockFindUser(mockUser) as never,
+      otpSessionStore.set.mockResolvedValue(undefined);
+
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: '999999' }),
+      ).rejects.toMatchObject({
+        status: 401,
+        response: expect.objectContaining({ error_code: 'INVALID_OTP' }),
+      });
+      // The failed attempt is persisted so the lockout ladder can climb.
+      expect(otpSessionStore.set).toHaveBeenCalledWith(
+        'session-id',
+        expect.objectContaining({ attempts: 1, locked: false }),
+        expect.any(Number),
+      );
+      expect(otpSessionStore.delete).not.toHaveBeenCalled();
+    });
+
+    it('should lock the session after 5 wrong codes — the correct code then answers OTP_SESSION_LOCKED', async () => {
+      const otpHash = await bcrypt.hash('123456', 10);
+      const session: OtpSession = {
+        countryCode: '+91',
+        phoneNumber: '1234567890',
+        otpHash,
+        attempts: 0,
+        locked: false,
+        expiresAt: Date.now() + 300_000,
+      };
+
+      otpSessionStore.get.mockImplementation(async () => ({ ...session }));
+      otpSessionStore.set.mockImplementation(
+        async (_id: string, s: OtpSession) => {
+          session.attempts = s.attempts;
+          session.locked = s.locked;
+          return undefined;
+        },
       );
 
-      const result = await service.verifyOtp({
-        otpSessionId: 'session-id',
-        otpCode: '999999',
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await expect(
+          service.verifyOtp({ otpSessionId: 'session-id', otpCode: '000000' }),
+        ).rejects.toMatchObject({
+          response: expect.objectContaining({ error_code: 'INVALID_OTP' }),
+        });
+      }
+
+      // The 5th failure locked the session in the store.
+      expect(session).toMatchObject({ attempts: 5, locked: true });
+
+      // Even the CORRECT code is refused while locked (brute force dies here).
+      otpSessionStore.get.mockResolvedValue({
+        ...session,
       });
-      expect(result.token).toBe('final-jwt');
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: '123456' }),
+      ).rejects.toMatchObject({
+        status: 401,
+        response: expect.objectContaining({ error_code: 'OTP_SESSION_LOCKED' }),
+      });
     });
 
     it('should throw error if session is locked', async () => {
@@ -227,6 +314,7 @@ describe('AuthService', () => {
         otpHash: await bcrypt.hash('123456', 10),
         attempts: 5,
         locked: true,
+        expiresAt: Date.now() + 300_000,
       };
 
       otpSessionStore.get.mockResolvedValue(session);
@@ -728,6 +816,7 @@ describe('AuthService', () => {
         otpHash,
         attempts: 0,
         locked: false,
+        expiresAt: Date.now() + 300_000,
       };
 
       otpSessionStore.get.mockResolvedValue(session);
@@ -782,6 +871,7 @@ describe('AuthService', () => {
         otpHash,
         attempts: 0,
         locked: false,
+        expiresAt: Date.now() + 300_000,
       };
 
       otpSessionStore.get.mockResolvedValue(session);

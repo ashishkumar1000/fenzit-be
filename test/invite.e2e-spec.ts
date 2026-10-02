@@ -379,12 +379,14 @@ describe('Technician Invitation (e2e)', () => {
         payload: { countryCode: '+91', phoneNumber: '2222222222' },
       });
       expect(sendResponse.statusCode).toBe(200);
-      const { otp_session_id } = JSON.parse(sendResponse.body);
+      const sendBody = JSON.parse(sendResponse.body);
+      // OTP_DEV_ECHO is on in the test env — read the code like a dev client.
+      expect(sendBody.otp).toMatch(/^\d{6}$/);
 
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: otp_session_id, otpCode: '123456' },
+        payload: { otpSessionId: sendBody.otp_session_id, otpCode: sendBody.otp },
       });
 
       expect(verifyResponse.statusCode).toBe(200);

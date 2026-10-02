@@ -24,11 +24,16 @@ tokens minted by `GET /api/v1/auth/realtime-token` are socket-only).
   (`src/common/utils/ist-day-range.util.ts`, timezone `Asia/Kolkata`).
 - **Rate limiting:** Applied to OTP send endpoint (returns 429).
 
-### Phase 1 mock OTP
+### OTP verification
 
-`POST /api/v1/auth/otp/verify` accepts **any 6-digit code** — `isValid` is
-hardcoded to `true`. Real verification with `bcrypt.compare` is a
-**pre-launch blocker** (deferred-work.md W1).
+`POST /api/v1/auth/otp/verify` compares the submitted code against the
+session's bcrypt hash (`bcrypt.compare`) — wrong codes answer `401 INVALID_OTP`
+and count toward the 5-attempt session lockout; locked sessions answer
+`401 OTP_SESSION_LOCKED` until they expire. `POST /api/v1/auth/otp/send`
+echoes the code in its response **only** when the server runs with
+`OTP_DEV_ECHO=true` (pre-DLT dev convenience for the app's `__DEV__` chip) —
+the field must be absent in production (bug-bash 2026-10-02, findings F1/F2;
+closed the deferred-work.md W1 blocker).
 
 ## Auth Roles
 

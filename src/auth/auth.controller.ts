@@ -37,12 +37,12 @@ export class AuthController {
   @ApiOperation({ summary: 'Request OTP for phone number' })
   @ApiResponse({
     status: 200,
-    description: 'OTP sent successfully',
+    description:
+      'OTP sent successfully. The response carries otp ONLY when the server runs with OTP_DEV_ECHO=true (pre-DLT dev convenience for the app\'s __DEV__ chip) — it must be absent in production.',
     schema: {
       example: {
         otp_session_id: '550e8400-e29b-41d4-a716-446655440000',
         expires_at: '2026-06-19T21:51:00Z',
-        otp: '123456',
       },
     },
   })

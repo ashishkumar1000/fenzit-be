@@ -4,6 +4,13 @@ export interface OtpSession {
   otpHash: string;
   attempts: number;
   locked: boolean;
+  /**
+   * Absolute session expiry (epoch ms). A failed-attempt write must hold
+   * the REMAINING ttl against this, not a fresh window — otherwise paced
+   * wrong guesses extend the session past its advertised expires_at
+   * (bug-bash 2026-10-02 review, EC-1).
+   */
+  expiresAt: number;
 }
 
 export interface OtpRateLimitIncrementResult {

@@ -150,12 +150,17 @@ describe('Auth Integration Tests (e2e)', () => {
       });
 
       expect(sendResponse.statusCode).toBe(200);
-      const sessionId = JSON.parse(sendResponse.body).otp_session_id;
+      const sendBody = JSON.parse(sendResponse.body);
+      const sessionId = sendBody.otp_session_id;
+      // OTP_DEV_ECHO is on in the test env (jest.env.setup.ts) — the same
+      // contract the app's __DEV__ chip consumes; the test reads the code
+      // exactly like a dev client does.
+      expect(sendBody.otp).toMatch(/^\d{6}$/);
 
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: sessionId, otpCode: '123456' },
+        payload: { otpSessionId: sessionId, otpCode: sendBody.otp },
       });
 
       expect(verifyResponse.statusCode).toBe(200);
@@ -171,7 +176,7 @@ describe('Auth Integration Tests (e2e)', () => {
       );
     });
 
-    it('should accept any 6-digit code in mock mode (Phase 1 behavior)', async () => {
+    it('should reject a wrong code with 401 INVALID_OTP over HTTP', async () => {
       const sendResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/send',
@@ -186,7 +191,41 @@ describe('Auth Integration Tests (e2e)', () => {
         payload: { otpSessionId: sessionId, otpCode: '000000' },
       });
 
-      expect(verifyResponse.statusCode).toBe(200);
+      // The Phase-1 accept-any-code behavior is gone (bug-bash 2026-10-02
+      // F1): a wrong code is a 401 with the INVALID_OTP contract, and the
+      // session survives for the lockout ladder.
+      expect(verifyResponse.statusCode).toBe(401);
+      expect(JSON.parse(verifyResponse.body).error_code).toBe('INVALID_OTP');
+    });
+
+    it('should lock the session after 5 wrong codes and refuse the correct one', async () => {
+      const sendResponse = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/send',
+        payload: { countryCode: '+91', phoneNumber: '7777777777' },
+      });
+      const sendBody = JSON.parse(sendResponse.body);
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const wrong = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/otp/verify',
+          payload: { otpSessionId: sendBody.otp_session_id, otpCode: '000000' },
+        });
+        expect(wrong.statusCode).toBe(401);
+        expect(JSON.parse(wrong.body).error_code).toBe('INVALID_OTP');
+      }
+
+      const locked = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/verify',
+        payload: {
+          otpSessionId: sendBody.otp_session_id,
+          otpCode: sendBody.otp as string,
+        },
+      });
+      expect(locked.statusCode).toBe(401);
+      expect(JSON.parse(locked.body).error_code).toBe('OTP_SESSION_LOCKED');
     });
 
     it('should reject expired/non-existent session', async () => {
@@ -241,18 +280,24 @@ describe('Auth Integration Tests (e2e)', () => {
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: sendBody.otp_session_id, otpCode: '123456' },
+        payload: {
+          otpSessionId: sendBody.otp_session_id,
+          otpCode: sendBody.otp as string,
+        },
       });
 
       const token = JSON.parse(verifyResponse.body).token;
 
-      const healthResponse = await app.inject({
+      // A genuinely PROTECTED route — /health is @Public and would answer
+      // 200 to any body, valid JWT or not (review VG-1).
+      const realtimeResponse = await app.inject({
         method: 'GET',
-        url: '/api/v1/health',
+        url: '/api/v1/auth/realtime-token',
         headers: { authorization: `Bearer ${token}` },
       });
 
-      expect(healthResponse.statusCode).toBe(200);
+      expect(realtimeResponse.statusCode).toBe(200);
+      expect(JSON.parse(realtimeResponse.body)).toHaveProperty('token');
     });
   });
 });

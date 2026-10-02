@@ -60,7 +60,7 @@ export class AuthService {
 
   async sendOtp(
     dto: SendOtpDto,
-  ): Promise<{ otp_session_id: string; expires_at: string; otp: string }> {
+  ): Promise<{ otp_session_id: string; expires_at: string; otp?: string }> {
     const { countryCode, phoneNumber } = dto;
     const e164 = `${countryCode}${phoneNumber}`;
 
@@ -85,12 +85,14 @@ export class AuthService {
     const otpHash = await bcrypt.hash(otp, 10);
 
     const sessionId = this.generateUuid();
+    const expiresAt = Date.now() + OTP_TTL_SECONDS * 1000;
     const session: OtpSession = {
       countryCode,
       phoneNumber,
       otpHash,
       attempts: 0,
       locked: false,
+      expiresAt,
     };
 
     await this.otpSessionStore.set(sessionId, session, OTP_TTL_SECONDS);
@@ -98,15 +100,27 @@ export class AuthService {
 
     this.logger.log(`OTP for ${e164}: ${otp}`);
 
-    const expiresAt = new Date(
-      Date.now() + OTP_TTL_SECONDS * 1000,
-    ).toISOString();
-
-    return {
+    const payload: {
+      otp_session_id: string;
+      expires_at: string;
+      otp?: string;
+    } = {
       otp_session_id: sessionId,
-      expires_at: expiresAt,
-      otp,
+      expires_at: new Date(expiresAt).toISOString(),
     };
+    // SECURITY: the code is echoed back ONLY when OTP_DEV_ECHO=true — a
+    // pre-DLT convenience so the app's __DEV__ chip can fill it. The send
+    // endpoint is public, so an echo that is on in a reachable environment
+    // is equivalent to having no OTP factor at all (bug-bash 2026-10-02,
+    // finding F2). Default OFF; Render must not set this once DLT lands.
+    if (this.otpDevEchoEnabled()) {
+      payload.otp = otp;
+    }
+    return payload;
+  }
+
+  private otpDevEchoEnabled(): boolean {
+    return process.env['OTP_DEV_ECHO']?.trim() === 'true';
   }
 
   async verifyOtp(dto: VerifyOtpDto): Promise<{
@@ -136,15 +150,25 @@ export class AuthService {
       });
     }
 
-    // Phase 2: replace with `await bcrypt.compare(otpCode, session.otpHash)`
-    const isValid = true;
+    const isValid = await bcrypt.compare(otpCode, session.otpHash);
 
     if (!isValid) {
       session.attempts += 1;
       if (session.attempts >= OTP_MAX_ATTEMPTS) {
         session.locked = true;
       }
-      await this.otpSessionStore.set(otpSessionId, session, OTP_TTL_SECONDS);
+      // Hold the session's REMAINING ttl — a fresh window here would let
+      // paced wrong guesses extend the session past its advertised
+      // expires_at (review EC-1).
+      const remainingSeconds = Math.max(
+        1,
+        Math.ceil((session.expiresAt - Date.now()) / 1000),
+      );
+      await this.otpSessionStore.set(
+        otpSessionId,
+        session,
+        remainingSeconds,
+      );
       throw new UnauthorizedException({
         error_code: ErrorCode.INVALID_OTP,
         message: 'Invalid OTP code',
