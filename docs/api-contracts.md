@@ -1222,15 +1222,21 @@ tenant's effective defaults (an override with an empty `days` array = works
 all 7 days).
 
 **Response:** `{ officeId, officeName, startTime, endTime,
-lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude, today,
-todayRecord }`. Times travel as `HH:mm` (the API convention — 12-hour
-display is the app's job, NFR-5). `weeklyOffDays` are ISO weekday numbers
-`1=Mon..7=Sun`, sorted ascending; `[]` = no weekly offs. Fields are `null`
-when the state carries no anchored office.
+lateCutOffMinutes, weeklyOffDays, officeLatitude, officeLongitude,
+officeRadius, today, todayRecord }`. Times travel as `HH:mm` (the API
+convention — 12-hour display is the app's job, NFR-5). `weeklyOffDays` are
+ISO weekday numbers `1=Mon..7=Sun`, sorted ascending; `[]` = no weekly
+offs. Fields are `null` when the state carries no anchored office.
 
 **Today extension (Story 16-4, active employees only):**
 `officeLatitude`/`officeLongitude` are the anchored office's pin (display
-inputs — the app's distance hint is display-only, NFR-2). `today` is
+inputs — the app's distance hint is display-only, NFR-2). `officeRadius`
+(Story 20-3) is the anchored office's geofence radius in metres
+(`attendance_offices.radius_m`, the same value the check-in gates read
+server-side) — a prescreen/display input for the app's punch button; the
+server remains authoritative for every punch, so the client-side lock must
+never reject on its own, and `null` (no office / a radiusless column /
+older wire) means "never locked". `today` is
 `{ date, isWeeklyOff, isHoliday, holidayName, isWorkingDay, leaveState,
 leavePart }` for the server's today (AD-7) — the pre-flight dialog's
 input, so the app never derives a weekday or holiday client-side.

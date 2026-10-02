@@ -169,18 +169,31 @@ export class MeAttendanceService {
     });
   }
 
-  /** The office pin (display-only distance hint input). */
+  /**
+   * The office pin (display-only distance hint input). 20-3 adds `radius_m`
+   * — the SAME geofence radius the check-in/out gates read — exposed as the
+   * summary's officeRadius so the client can prescreen the punch. It is NOT
+   * the punch's authority: the server still gates every press.
+   */
   private async readOfficePin(
     admin: ReturnType<SupabaseClientFactory['createAdmin']>,
     tenantId: string,
     officeId: string,
-  ): Promise<{ latitude: number; longitude: number } | null> {
+  ): Promise<{
+    latitude: number;
+    longitude: number;
+    radius_m: number | null;
+  } | null> {
     const { data, error } = await admin
       .from('attendance_offices')
-      .select('latitude, longitude')
+      .select('latitude, longitude, radius_m')
       .eq('tenant_id', tenantId)
       .eq('id', officeId)
-      .maybeSingle<{ latitude: number; longitude: number }>();
+      .maybeSingle<{
+        latitude: number;
+        longitude: number;
+        radius_m: number | null;
+      }>();
     if (error) {
       this.logger.error('Failed to read office pin:', { error });
       throw internalError('Failed to read attendance summary');

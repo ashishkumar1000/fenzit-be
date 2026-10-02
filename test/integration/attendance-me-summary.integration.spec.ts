@@ -379,6 +379,7 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
         // "today" would be a lie.
         officeLatitude: 12.98,
         officeLongitude: 77.6,
+        officeRadius: 100, // 20-3: the FUTURE office's radius passes through
         today: null,
         todayRecord: null,
       });
@@ -439,6 +440,7 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
         // 16-4 Today extension (active): pin + facts present, no record yet.
         officeLatitude: 12.97,
         officeLongitude: 77.59,
+        officeRadius: 100, // 20-3: the LIVE office's radius passes through
         today: {
           date: today,
           isWeeklyOff: isWeeklyOffToday,

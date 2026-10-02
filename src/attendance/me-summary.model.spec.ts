@@ -179,7 +179,9 @@ describe('toMeSummaryResponse', () => {
         row,
         rule: rule('r1', '[2026-01-01,)', '09:30:00', '18:00:00', 15),
         weeklyOffDays: [7],
-        officePin: { latitude: 19.076, longitude: 72.8777 },
+        // 20-3: the pin read carries the office's radius_m — the punch
+        // gate's server-side value, exposed as officeRadius.
+        officePin: { latitude: 19.076, longitude: 72.8777, radius_m: 120 },
         today,
         todayRecord,
       }),
@@ -192,9 +194,23 @@ describe('toMeSummaryResponse', () => {
       weeklyOffDays: [7],
       officeLatitude: 19.076,
       officeLongitude: 72.8777,
+      officeRadius: 120,
       today,
       todayRecord,
     });
+  });
+
+  it('20-3: a radiusless pin column maps to officeRadius null (the FE fail-opens, never locks)', () => {
+    expect(
+      toMeSummaryResponse({
+        row,
+        rule: null,
+        weeklyOffDays: [],
+        officePin: { latitude: 19.076, longitude: 72.8777, radius_m: null },
+        today: null,
+        todayRecord: null,
+      }).officeRadius,
+    ).toBeNull();
   });
 
   it('a null rule nulls every time/cutoff field but the office fields still pass through', () => {
@@ -216,6 +232,7 @@ describe('toMeSummaryResponse', () => {
       weeklyOffDays: [1, 7],
       officeLatitude: null,
       officeLongitude: null,
+      officeRadius: null,
       today: null,
       todayRecord: null,
     });
@@ -233,6 +250,7 @@ describe('EMPTY_ME_SUMMARY — the honest empty for none/history_only', () => {
       weeklyOffDays: [],
       officeLatitude: null,
       officeLongitude: null,
+      officeRadius: null,
       today: null,
       todayRecord: null,
     });
@@ -246,6 +264,7 @@ describe('EMPTY_ME_SUMMARY — the honest empty for none/history_only', () => {
       'officeLatitude',
       'officeLongitude',
       'officeName',
+      'officeRadius',
       'startTime',
       'today',
       'todayRecord',

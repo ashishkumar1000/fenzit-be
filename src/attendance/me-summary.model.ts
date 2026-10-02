@@ -52,6 +52,11 @@ export interface MeSummaryResponse {
   /** Office pin for the Today screen's display-only distance hint (16-4). */
   officeLatitude: number | null;
   officeLongitude: number | null;
+  /** The office's geofence radius in metres (20-3) — the SAME value the
+   *  check-in/out gates read server-side. Display/prescreen input only:
+   *  the server remains authoritative for every punch, so a client-side
+   *  lock must NEVER reject on its own. */
+  officeRadius: number | null;
   /** Today's day facts (16-4) — active ONLY, null otherwise. Built in
    *  me-summary-today.model (the cycle-free layer above day-context). */
   today: TodayFacts | null;
@@ -151,7 +156,9 @@ export function toMeSummaryResponse(input: {
   row: Pick<AccessStateRow, 'office_id' | 'office_name'>;
   rule: OfficeRuleRow | null;
   weeklyOffDays: number[];
-  officePin: { latitude: number; longitude: number } | null;
+  officePin:
+    | { latitude: number; longitude: number; radius_m: number | null }
+    | null;
   today: TodayFacts | null;
   todayRecord: TodayRecordView | null;
 }): MeSummaryResponse {
@@ -164,6 +171,9 @@ export function toMeSummaryResponse(input: {
     weeklyOffDays: input.weeklyOffDays,
     officeLatitude: input.officePin ? input.officePin.latitude : null,
     officeLongitude: input.officePin ? input.officePin.longitude : null,
+    // The office's radius_m passes straight through (null column → null
+    // field — the FE fail-opens on a null/absent radius).
+    officeRadius: input.officePin ? input.officePin.radius_m : null,
     today: input.today,
     todayRecord: input.todayRecord,
   };
@@ -181,6 +191,7 @@ export const EMPTY_ME_SUMMARY: MeSummaryResponse = Object.freeze({
   weeklyOffDays: Object.freeze([]) as unknown as number[],
   officeLatitude: null,
   officeLongitude: null,
+  officeRadius: null,
   today: null,
   todayRecord: null,
 });

@@ -410,6 +410,7 @@ describe('MeAttendanceService (story 15-7)', () => {
         // facts/record must be null even though every read ran.
         officeLatitude: null,
         officeLongitude: null,
+        officeRadius: null,
         today: null,
         todayRecord: null,
       });
@@ -439,6 +440,7 @@ describe('MeAttendanceService (story 15-7)', () => {
         weeklyOffDays: [],
         officeLatitude: null,
         officeLongitude: null,
+        officeRadius: null,
         today: {
           date: '2026-03-10',
           isWeeklyOff: false,
@@ -449,6 +451,33 @@ describe('MeAttendanceService (story 15-7)', () => {
           leavePart: null,
         },
         todayRecord: null,
+      });
+    });
+
+    it('20-3: the office pin read carries radius_m and officeRadius passes through', async () => {
+      const parts = summaryAdmin({
+        view: { data: summarisableRow, error: null },
+        rules: { data: [coveringRule], error: null },
+        officePin: {
+          data: { latitude: 19.076, longitude: 72.8777, radius_m: 120 },
+          error: null,
+        },
+        today: { data: '2026-03-10', error: null },
+      });
+      const service = serviceWith(parts.admin);
+
+      const result = await service.getSummary(tech);
+
+      // The pin read selects the radius with the pin — one read, no extra
+      // wire call for the punch prescreen input.
+      expect(parts.from).toHaveBeenCalledWith('attendance_offices');
+      expect(parts.officePinQb.select).toHaveBeenCalledWith(
+        'latitude, longitude, radius_m',
+      );
+      expect(result).toMatchObject({
+        officeLatitude: 19.076,
+        officeLongitude: 72.8777,
+        officeRadius: 120,
       });
     });
 
@@ -478,6 +507,7 @@ describe('MeAttendanceService (story 15-7)', () => {
         weeklyOffDays: [7],
         officeLatitude: null,
         officeLongitude: null,
+        officeRadius: null,
         today: {
           date: '2026-03-10',
           isWeeklyOff: false,
