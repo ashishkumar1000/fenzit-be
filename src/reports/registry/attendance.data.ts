@@ -292,7 +292,12 @@ function enumerateWeeks(startDate: string, endDate: string): {
       Date.parse(endDate),
     );
     const end = new Date(endMs).toISOString().slice(0, 10);
-    weeks.push({ label: weekLabel(cursor, end), start: cursor, end });
+    // A clipped 1-day chunk reads "27 Sep", not the silly "27 Sep – 27 Sep".
+    weeks.push({
+      label: cursor === end ? shortDate(cursor) : weekLabel(cursor, end),
+      start: cursor,
+      end,
+    });
     cursor = new Date(endMs + 86_400_000).toISOString().slice(0, 10);
   }
   return weeks;

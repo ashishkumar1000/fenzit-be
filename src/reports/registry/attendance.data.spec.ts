@@ -586,6 +586,37 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     expect(data.weeks[data.weeks.length - 1].label).toBe('28 Sep – 30 Sep');
   });
 
+  it('a clipped 1-day chunk labels itself plainly ("27 Sep", not "27 Sep – 27 Sep")', async () => {
+    const pg = pgStub({ ...baseFixtures(), records: [] });
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
+      attendance_attempts: [],
+    });
+
+    // 27 Sep 2026 is a SUNDAY — a Sun-start 7-day range clips it alone,
+    // then runs Mon 28 Sep – Sat 3 Oct (the production case).
+    const data = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        params: { start_date: '2026-09-27', end_date: '2026-10-03' },
+      }),
+    );
+    expect(data.weeks.map((w) => w.label)).toEqual(['27 Sep', '28 Sep – 3 Oct']);
+
+    // A 1-day range is just that one day.
+    const oneDay = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        params: { start_date: '2026-09-27', end_date: '2026-09-27' },
+      }),
+    );
+    expect(oneDay.weeks.map((w) => w.label)).toEqual(['27 Sep']);
+  });
+
   it('an office bucket whose rows are ALL untracked is dropped (no "(no office) · N employees · all zeros" row)', async () => {
     // Assignments exist, but every grid row is pre-enrolment/untracked:
     // the bucket carries no office truth and read like broken data.
