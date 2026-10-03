@@ -18,7 +18,7 @@ const mockUser = {
   status: 'active',
 };
 
-const mockSelectSingle = jest.fn();
+const mockSelectOrdered = jest.fn();
 const mockInsertSelectSingle = jest.fn();
 
 const mockAdminClient = {
@@ -27,7 +27,7 @@ const mockAdminClient = {
       return {
         select: jest.fn().mockReturnValue({
           eq: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({ single: mockSelectSingle }),
+            eq: jest.fn().mockReturnValue({ order: mockSelectOrdered }),
           }),
         }),
         insert: jest.fn().mockReturnValue({
@@ -135,10 +135,7 @@ describe('Auth Integration Tests (e2e)', () => {
 
   describe('POST /api/v1/auth/otp/verify', () => {
     beforeEach(() => {
-      mockSelectSingle.mockResolvedValue({
-        data: null,
-        error: { code: 'PGRST116' },
-      });
+      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
       mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
     });
 
@@ -261,10 +258,7 @@ describe('Auth Integration Tests (e2e)', () => {
 
   describe('JWT authentication', () => {
     beforeEach(() => {
-      mockSelectSingle.mockResolvedValue({
-        data: null,
-        error: { code: 'PGRST116' },
-      });
+      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
       mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
     });
 

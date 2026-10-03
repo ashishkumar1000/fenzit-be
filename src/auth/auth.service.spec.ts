@@ -175,14 +175,21 @@ describe('AuthService', () => {
   });
 
   describe('verifyOtp', () => {
-    /** Returns a single-call from() mock for findOrCreateUser (select → eq → eq → single) */
+    /**
+     * Returns a single-call from() mock for findOrCreateUser
+     * (select → eq → eq → order). The FN-2026-10-03 fix made the query
+     * return a ROW LIST (dedup across stub rows), so `.order` resolves the
+     * awaited `{ data, error }` with the user as the single row.
+     */
     function mockFindUser(user: object) {
       return {
         from: jest.fn().mockReturnValue({
           select: jest.fn().mockReturnValue({
             eq: jest.fn().mockReturnValue({
               eq: jest.fn().mockReturnValue({
-                single: jest.fn().mockResolvedValueOnce({ data: user }),
+                order: jest
+                  .fn()
+                  .mockResolvedValueOnce({ data: [user], error: null }),
               }),
             }),
           }),
@@ -892,7 +899,9 @@ describe('AuthService', () => {
           select: jest.fn().mockReturnValue({
             eq: jest.fn().mockReturnValue({
               eq: jest.fn().mockReturnValue({
-                single: jest.fn().mockResolvedValueOnce({ data: invitedUser }),
+                order: jest
+                  .fn()
+                  .mockResolvedValueOnce({ data: [invitedUser], error: null }),
               }),
             }),
           }),
@@ -954,7 +963,9 @@ describe('AuthService', () => {
           select: jest.fn().mockReturnValue({
             eq: jest.fn().mockReturnValue({
               eq: jest.fn().mockReturnValue({
-                single: jest.fn().mockResolvedValueOnce({ data: activeUser }),
+                order: jest
+                  .fn()
+                  .mockResolvedValueOnce({ data: [activeUser], error: null }),
               }),
             }),
           }),

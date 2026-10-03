@@ -456,24 +456,35 @@ export class AuthService {
     tenant_id: string | null;
     status: string;
   }> {
-    const { data: existingUser, error } = await supabaseClient
+    const { data: matchingUsers, error } = await supabaseClient
       .from('users')
       .select('id, country_code, phone_number, name, role, tenant_id, status')
       .eq('country_code', countryCode)
       .eq('phone_number', phoneNumber)
-      .single();
+      .order('created_at', { ascending: true });
 
-    if (existingUser) {
-      return existingUser;
-    }
-
-    // PGRST116 = no rows returned — expected for a new phone number
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
       this.logger.error('Failed to query user:', { error });
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Failed to query user',
+        message: 'We could not sign you in right now. Please try again in a few minutes.',
       });
+    }
+
+    if (matchingUsers && matchingUsers.length > 0) {
+      // A phone can have several rows (cross-tenant invites, plus legacy
+      // owner stubs created by earlier partial signups). Pick the row that
+      // can actually sign in: a real membership (active first, then invited)
+      // always beats a tenant-less stub; oldest row breaks remaining ties.
+      // `.single()` here treated "multiple rows" as "no rows" and fell into
+      // the create path below, minting a new stub on every login (FN-2026-10-03).
+      const withTenant = matchingUsers.filter((u) => u.tenant_id !== null);
+      const picked =
+        withTenant.find((u) => u.status === 'active') ??
+        withTenant.find((u) => u.status === 'invited') ??
+        withTenant[0] ??
+        matchingUsers[0];
+      return picked;
     }
 
     const newUserId = this.generateUuid();
@@ -492,6 +503,22 @@ export class AuthService {
       .single();
 
     if (createError || !newUser) {
+      // A concurrent first login can create the row between our select and
+      // this insert (unique violation 23505) — read it back instead of
+      // failing the login.
+      if (createError?.code === '23505') {
+        const { data: racedUser } = await supabaseClient
+          .from('users')
+          .select('id, country_code, phone_number, name, role, tenant_id, status')
+          .eq('country_code', countryCode)
+          .eq('phone_number', phoneNumber)
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (racedUser) {
+          return racedUser;
+        }
+      }
       this.logger.error('Failed to create user:', {
         error: createError,
         message: createError?.message,
@@ -499,7 +526,7 @@ export class AuthService {
       });
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Failed to create user',
+        message: 'We could not sign you in right now. Please try again in a few minutes.',
       });
     }
 

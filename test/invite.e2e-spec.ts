@@ -337,14 +337,15 @@ describe('Technician Invitation (e2e)', () => {
         from: jest.fn().mockImplementation(() => {
           fromCallCount++;
           if (fromCallCount === 1) {
-            // First call: findOrCreateUser select (eq x2 for country_code + phone_number)
+            // First call: findOrCreateUser select (eq x2 for country_code +
+            // phone_number, then .order() — returns every matching row)
             return {
               select: jest.fn().mockReturnValue({
                 eq: jest.fn().mockReturnValue({
                   eq: jest.fn().mockReturnValue({
-                    single: jest
+                    order: jest
                       .fn()
-                      .mockResolvedValue({ data: invitedUser, error: null }),
+                      .mockResolvedValue({ data: [invitedUser], error: null }),
                   }),
                 }),
               }),
