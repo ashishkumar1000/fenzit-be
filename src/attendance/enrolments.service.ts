@@ -224,8 +224,7 @@ export class EnrolmentsService {
         throw new HttpException(
           {
             error_code: ErrorCode.ATTENDANCE_ASSIGNMENT_NOT_ENROLLED,
-            message:
-              'The employee has no enrolment covering the effective date',
+            message: 'No attendance record covers that date yet.',
           },
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
@@ -382,8 +381,7 @@ export class EnrolmentsService {
         throw new HttpException(
           {
             error_code: ErrorCode.ATTENDANCE_ASSIGNMENT_GAP,
-            message:
-              'The enrolment would leave an enrolled date without its office assignment',
+            message: 'Assign this person to an office first.',
           },
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
@@ -411,7 +409,7 @@ export class EnrolmentsService {
     return new HttpException(
       {
         error_code: ErrorCode.ATTENDANCE_OFFICE_ARCHIVED,
-        message: `${name} is archived. Pick a live office.`,
+        message: `${name} is archived. Pick an active office.`,
       },
       HttpStatus.CONFLICT,
     );

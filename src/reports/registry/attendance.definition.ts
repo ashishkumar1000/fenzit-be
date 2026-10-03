@@ -55,7 +55,7 @@ function invalid(message: string): BadRequestException {
 
 export const attendanceReportDefinition: ReportDefinition = {
   type: ATTENDANCE_REPORT_TYPE,
-  label: 'Attendance Report',
+  label: 'Attendance report',
   maxTechnicianIds: MAX_EMPLOYEES_PER_ATTENDANCE_REPORT,
 
   validateParams(raw: RawReportParams): ReportParams {
@@ -66,7 +66,7 @@ export const attendanceReportDefinition: ReportDefinition = {
     const officeIds = [...new Set(raw.officeIds ?? [])];
     if (officeIds.length > MAX_OFFICES_PER_REPORT) {
       throw invalid(
-        `A report can be scoped to at most ${MAX_OFFICES_PER_REPORT} offices`,
+        `You can include at most ${MAX_OFFICES_PER_REPORT} offices in one report.`,
       );
     }
     // Shape gate before membership: a malformed uuid inside `.in()` is a

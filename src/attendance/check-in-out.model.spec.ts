@@ -73,17 +73,29 @@ describe('outcomeToException bodies', () => {
     expect(body['distanceM']).toBe(600);
     expect(body['radiusM']).toBe(100);
     expect(body['message']).toBe(
-      'You are 600 m from Andheri office. Move within 100 m.',
+      'You are 600 m from Andheri office. Go closer (within 100 m) and check in.',
+    );
+  });
+
+  it('too_far formats kilometres over 1 km and flips the verb for check-out', () => {
+    expect(
+      outcomeMessage('too_far', 'check_out', {
+        officeName: 'Andheri office',
+        distanceM: 1250,
+        radiusM: 100,
+      }),
+    ).toBe(
+      'You are 1.3 km from Andheri office. Go closer (within 100 m) and check out.',
     );
   });
 
   it('mocked copy is kind-aware', () => {
-    expect(
-      outcomeMessage('mocked', 'check_in', { officeName: null }),
-    ).toBe('Turn off fake location apps to check in');
-    expect(
-      outcomeMessage('mocked', 'check_out', { officeName: null }),
-    ).toBe('Turn off fake location apps to check out');
+    expect(outcomeMessage('mocked', 'check_in', { officeName: null })).toBe(
+      'Turn off fake location apps to check in',
+    );
+    expect(outcomeMessage('mocked', 'check_out', { officeName: null })).toBe(
+      'Turn off fake location apps to check out',
+    );
   });
 
   it('rate_limited carries retryAfterSeconds (the filter lifts it to Retry-After)', () => {
@@ -97,8 +109,14 @@ describe('outcomeToException bodies', () => {
   });
 
   it('PRD copy for low_accuracy', () => {
-    expect(outcomeMessage('low_accuracy', 'check_in', { officeName: null })).toBe(
-      'Location not accurate enough, try again in the open',
+    expect(
+      outcomeMessage('low_accuracy', 'check_in', { officeName: null }),
+    ).toBe('Location not accurate. Go to an open area and try again.');
+  });
+
+  it('stale_fix copy ends with a period', () => {
+    expect(outcomeMessage('stale_fix', 'check_in', { officeName: null })).toBe(
+      'Your location seems outdated. Please try again.',
     );
   });
 });

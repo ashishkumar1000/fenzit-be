@@ -33,7 +33,7 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
   describe('identity + shape', () => {
     it('registers under the stable attendance_report type with a plain label', () => {
       expect(attendanceReportDefinition.type).toBe(ATTENDANCE_REPORT_TYPE);
-      expect(attendanceReportDefinition.label).toBe('Attendance Report');
+      expect(attendanceReportDefinition.label).toBe('Attendance report');
     });
 
     it('raises the explicit-people cap above the job report 25 (roster scale)', () => {
@@ -156,7 +156,10 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
 
     it('rejects with ATTENDANCE_NOT_ENABLED when the module is off', async () => {
       const admin = adminFor({
-        attendance_settings: { data: { enabled: false, setup_completed_at: null }, error: null },
+        attendance_settings: {
+          data: { enabled: false, setup_completed_at: null },
+          error: null,
+        },
       });
       await expectErrorCode(
         attendanceReportDefinition.validateAccess!(admin, TENANT, { ...base }),
@@ -166,7 +169,10 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
 
     it('rejects with ATTENDANCE_NOT_ENABLED when setup never completed', async () => {
       const admin = adminFor({
-        attendance_settings: { data: { enabled: true, setup_completed_at: null }, error: null },
+        attendance_settings: {
+          data: { enabled: true, setup_completed_at: null },
+          error: null,
+        },
       });
       await expectErrorCode(
         attendanceReportDefinition.validateAccess!(admin, TENANT, { ...base }),
@@ -230,7 +236,10 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
     it('skips the office probe entirely when no offices are selected', async () => {
       const from = jest.fn((table: string) =>
         table === 'attendance_settings'
-          ? chain({ data: { enabled: true, setup_completed_at: 'x' }, error: null })
+          ? chain({
+              data: { enabled: true, setup_completed_at: 'x' },
+              error: null,
+            })
           : chain({ data: null, error: null }),
       );
       const admin = {

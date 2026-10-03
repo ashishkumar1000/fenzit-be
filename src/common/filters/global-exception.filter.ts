@@ -21,7 +21,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let errorCode = ErrorCode.INTERNAL_SERVER_ERROR;
-    let message = 'An unexpected error occurred';
+    let message = 'Something went wrong. Please try again.';
     // Extra structured fields a thrown exception may carry alongside
     // error_code/message (e.g. currentStep on an INVALID_WORKFLOW_STEP 422).
     // Forwarded verbatim into the response body; empty for ordinary errors.

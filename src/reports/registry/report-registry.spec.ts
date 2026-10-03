@@ -11,10 +11,10 @@ describe('ReportRegistry — both report types resolve (21-1)', () => {
   it('resolves the job report and the attendance report by their stable ids', () => {
     const registry = new ReportRegistry();
     expect(registry.get(TECHNICIAN_JOB_ACTIVITY_TYPE)?.label).toBe(
-      'Technician Job Report',
+      'Technician job report',
     );
     expect(registry.get(ATTENDANCE_REPORT_TYPE)?.label).toBe(
-      'Attendance Report',
+      'Attendance report',
     );
   });
 });

@@ -22,7 +22,7 @@ describe('TechnicianJobActivityDefinition (story 12-5)', () => {
   });
 
   it('carries the human-facing label and both engine hooks', () => {
-    expect(technicianJobActivityDefinition.label).toBe('Technician Job Report');
+    expect(technicianJobActivityDefinition.label).toBe('Technician job report');
     expect(technicianJobActivityDefinition.fetchData).toBe(
       fetchTechnicianJobActivityData,
     );

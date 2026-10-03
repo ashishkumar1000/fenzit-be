@@ -22,20 +22,20 @@ import {
  */
 export class CheckInOutDto {
   @ApiProperty({ description: 'Fix latitude', minimum: -90, maximum: 90 })
-  @IsNumber()
-  @Min(-90)
-  @Max(90)
+  @IsNumber(undefined, { message: 'Please try again with a clearer location.' })
+  @Min(-90, { message: 'Please try again with a clearer location.' })
+  @Max(90, { message: 'Please try again with a clearer location.' })
   latitude!: number;
 
   @ApiProperty({ description: 'Fix longitude', minimum: -180, maximum: 180 })
-  @IsNumber()
-  @Min(-180)
-  @Max(180)
+  @IsNumber(undefined, { message: 'Please try again with a clearer location.' })
+  @Min(-180, { message: 'Please try again with a clearer location.' })
+  @Max(180, { message: 'Please try again with a clearer location.' })
   longitude!: number;
 
   @ApiProperty({ description: 'GPS accuracy in metres', minimum: 0 })
-  @IsNumber()
-  @Min(0)
+  @IsNumber(undefined, { message: 'Please try again with a clearer location.' })
+  @Min(0, { message: 'Please try again with a clearer location.' })
   accuracyM!: number;
 
   @ApiPropertyOptional({
@@ -44,7 +44,7 @@ export class CheckInOutDto {
     nullable: true,
   })
   @IsOptional()
-  @IsBoolean()
+  @IsBoolean({ message: 'Something went wrong. Please try once more.' })
   mocked?: boolean | null = null;
 
   @ApiPropertyOptional({
@@ -52,8 +52,8 @@ export class CheckInOutDto {
     nullable: true,
   })
   @IsOptional()
-  @IsString()
-  @MaxLength(40)
+  @IsString({ message: 'Please try again with a clearer location.' })
+  @MaxLength(40, { message: 'Please try again with a clearer location.' })
   provider?: string | null = null;
 
   @ApiProperty({
@@ -63,11 +63,11 @@ export class CheckInOutDto {
     maximum: 86_400_000,
   })
   @Transform(({ value }) => (typeof value === 'string' ? Number(value) : value))
-  @IsInt()
-  @Min(0)
+  @IsInt({ message: 'Please try again with a clearer location.' })
+  @Min(0, { message: 'Please try again with a clearer location.' })
   // anything past a day is nonsense (the int4 column would also 22003 on
   // larger values); validation rejects before the DB is touched.
-  @Max(86_400_000)
+  @Max(86_400_000, { message: 'Please try again with a clearer location.' })
   fixAgeMs!: number;
 
   @ApiPropertyOptional({
@@ -75,6 +75,6 @@ export class CheckInOutDto {
       'Confirms cancelling a full-day active leave for today (FR-9); without it the check-in answers leave_confirmation_required',
   })
   @IsOptional()
-  @IsBoolean()
+  @IsBoolean({ message: 'Something went wrong. Please try once more.' })
   confirmLeaveCancel?: boolean;
 }

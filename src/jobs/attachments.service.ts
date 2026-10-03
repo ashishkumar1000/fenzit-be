@@ -206,7 +206,7 @@ export class AttachmentsService {
     if (dto.sizeBytes > this.maxAttachmentSizeBytes) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: `File size exceeds the maximum of ${this.maxAttachmentSizeBytes} bytes`,
+        message: 'That photo is too large. Please choose one under 10 MB.',
       });
     }
 
@@ -269,7 +269,7 @@ export class AttachmentsService {
         throw new HttpException(
           {
             error_code: 'UPLOAD_EXPIRED',
-            message: 'Upload session expired — request a new presigned URL',
+            message: 'That photo took too long to upload. Please add it again.',
           },
           HttpStatus.GONE,
         );

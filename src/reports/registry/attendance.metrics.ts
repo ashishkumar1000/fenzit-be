@@ -119,7 +119,11 @@ function finalise(
   nine: MonthlyEmployeeSummary,
   extra: Omit<
     AttendanceSummary,
-    keyof MonthlyEmployeeSummary | 'expectedDays' | 'attendanceRate' | 'workedHours' | 'avgHoursPerDay'
+    | keyof MonthlyEmployeeSummary
+    | 'expectedDays'
+    | 'attendanceRate'
+    | 'workedHours'
+    | 'avgHoursPerDay'
   > & {
     /** Internal counter: tracked days carrying a real worked span. */
     daysWithHours: number;
@@ -136,9 +140,7 @@ function finalise(
     ...extra,
     expectedDays,
     attendanceRate:
-      expectedDays > 0
-        ? round1((nine.daysWorked / expectedDays) * 100)
-        : null,
+      expectedDays > 0 ? round1((nine.daysWorked / expectedDays) * 100) : null,
     workedHours,
     avgHoursPerDay:
       extra.daysWithHours > 0
@@ -231,7 +233,7 @@ export function computeAttendanceExceptions(
         severity: 'alarm',
         employeeName: name,
         title: 'Fake-location attempt',
-        detail: `${fakeDates.length} day${fakeDates.length === 1 ? '' : 's'} with unacknowledged fake-location punches — ${dateList(fakeDates)}`,
+        detail: `${fakeDates.length} day${fakeDates.length === 1 ? '' : 's'} with fake-location attempts — ${dateList(fakeDates)}`,
       });
     }
 

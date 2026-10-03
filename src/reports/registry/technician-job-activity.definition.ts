@@ -20,7 +20,7 @@ export const TECHNICIAN_JOB_ACTIVITY_TYPE = 'technician_job_activity';
  */
 export const technicianJobActivityDefinition: ReportDefinition = {
   type: TECHNICIAN_JOB_ACTIVITY_TYPE,
-  label: 'Technician Job Report',
+  label: 'Technician job report',
 
   validateParams(raw: RawReportParams): ReportParams {
     // Strict shape: this report scopes by people only — an officeIds value

@@ -59,7 +59,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       throw new HttpException(
         {
           error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'X-Idempotency-Key must be a UUID v4',
+          message: 'Something went wrong. Please try once more.',
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

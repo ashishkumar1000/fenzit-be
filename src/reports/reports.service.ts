@@ -380,7 +380,7 @@ export class ReportsService {
     if (requested.length > maxIds) {
       throw new BadRequestException({
         error_code: ErrorCode.REPORT_TOO_MANY_TECHNICIANS,
-        message: `A report can be scoped to at most ${maxIds} technicians`,
+        message: `You can include at most ${maxIds} technicians in one report.`,
       });
     }
 

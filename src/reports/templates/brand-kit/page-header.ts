@@ -20,6 +20,38 @@ export interface HeaderRange {
 
 const LOGO_SIZE = 30;
 
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/** "27 Sep 2026" from a YYYY-MM-DD IST calendar date (pure, no locale). */
+export function humanDate(isoDate: string): string {
+  return `${Number(isoDate.slice(8, 10))} ${MONTHS[Number(isoDate.slice(5, 7)) - 1]} ${isoDate.slice(0, 4)}`;
+}
+
+/**
+ * The human range line: "27 Sep – 3 Oct 2026" when both dates share the
+ * year, else "27 Sep 2026 – 3 Oct 2027". En dash between the dates.
+ */
+export function formatReportRange(startDate: string, endDate: string): string {
+  if (startDate.slice(0, 4) === endDate.slice(0, 4)) {
+    const startDay = `${Number(startDate.slice(8, 10))} ${MONTHS[Number(startDate.slice(5, 7)) - 1]}`;
+    return `${startDay} – ${humanDate(endDate)}`;
+  }
+  return `${humanDate(startDate)} – ${humanDate(endDate)}`;
+}
+
 /** Branded header: logo + tenant identity, then the report title + range,
  *  closed by a short accent bar (not a full-width rule — calmer, and the bar
  *  reads as a designed edge rather than a divider). */
@@ -78,7 +110,7 @@ export function pageHeader(
         margin: [0, 10, 0, 2],
       },
       {
-        text: `${range.startDate} → ${range.endDate} (IST)`,
+        text: `${formatReportRange(range.startDate, range.endDate)} (IST)`,
         fontSize: 10,
         font: FONT_FAMILY,
         color: brand.textMuted,

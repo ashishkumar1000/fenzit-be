@@ -182,7 +182,7 @@ export function leaveTransitionViolation(): HttpException {
   return new HttpException(
     {
       error_code: ErrorCode.LEAVE_INVALID_TRANSITION,
-      message: 'Leave state transition is not allowed',
+      message: 'This request was already handled.',
     },
     HttpStatus.CONFLICT,
   );

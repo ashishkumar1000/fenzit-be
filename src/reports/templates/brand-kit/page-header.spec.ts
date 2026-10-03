@@ -1,7 +1,13 @@
 import type { Content } from 'pdfmake/interfaces';
 import { brand, FONT_FAMILY, CONTENT_WIDTH, PAGE_MARGINS } from './brand-theme';
 import { logoDataUri, FONT_SEMIBOLD } from './brand-assets';
-import { pageHeader, pageFooter, HeaderTenant } from './page-header';
+import {
+  pageHeader,
+  pageFooter,
+  humanDate,
+  formatReportRange,
+  HeaderTenant,
+} from './page-header';
 
 /**
  * The page header is the tenant identity block and the footer is the page
@@ -10,7 +16,10 @@ import { pageHeader, pageFooter, HeaderTenant } from './page-header';
  * address/subtitle paths (present and absent).
  */
 
-const TENANT: HeaderTenant = { companyName: 'Acme Facilities', address: 'MG Road, Bengaluru' };
+const TENANT: HeaderTenant = {
+  companyName: 'Acme Facilities',
+  address: 'MG Road, Bengaluru',
+};
 const RANGE = { startDate: '2026-09-01', endDate: '2026-09-07' };
 
 describe('page-header — pageHeader', () => {
@@ -60,7 +69,7 @@ describe('page-header — pageHeader', () => {
       font: FONT_SEMIBOLD,
     });
     expect(node.stack[2]).toMatchObject({
-      text: '2026-09-01 → 2026-09-07 (IST)',
+      text: '1 Sep – 7 Sep 2026 (IST)',
       color: brand.textMuted,
     });
 
@@ -84,9 +93,32 @@ describe('page-header — pageHeader', () => {
   });
 });
 
+describe('page-header — date formatting', () => {
+  it('humanDate renders "27 Sep 2026" style from YYYY-MM-DD', () => {
+    expect(humanDate('2026-09-27')).toBe('27 Sep 2026');
+    expect(humanDate('2026-10-03')).toBe('3 Oct 2026');
+    expect(humanDate('2027-01-11')).toBe('11 Jan 2027');
+  });
+
+  it('formatReportRange drops the shared year from the start date', () => {
+    expect(formatReportRange('2026-09-27', '2026-10-03')).toBe(
+      '27 Sep – 3 Oct 2026',
+    );
+    expect(formatReportRange('2026-09-01', '2026-09-07')).toBe(
+      '1 Sep – 7 Sep 2026',
+    );
+  });
+
+  it('formatReportRange keeps both years when the range crosses a year boundary', () => {
+    expect(formatReportRange('2026-09-27', '2027-10-03')).toBe(
+      '27 Sep 2026 – 3 Oct 2027',
+    );
+  });
+});
+
 describe('page-header — pageFooter', () => {
   it('formats the creation timestamp on the IST clock (no seconds, no T)', () => {
-    const footer = pageFooter() as (page: number, total: number) => Content;
+    const footer = pageFooter();
 
     const strip = footer(2, 3) as {
       margin: number[];
@@ -100,12 +132,11 @@ describe('page-header — pageFooter', () => {
   });
 
   it('carries the caller’s privacy note — the attendance report holds employee data, not customers (bug bash 2026-10-03)', () => {
-    const footer = pageFooter('Private — contains employee details') as (
-      page: number,
-      total: number,
-    ) => Content;
+    const footer = pageFooter('Private — contains employee details');
 
-    const strip = footer(2, 3) as { stack: [{ columns: [{ text: string }, unknown] }] };
+    const strip = footer(2, 3) as {
+      stack: [{ columns: [{ text: string }, unknown] }];
+    };
     const [left] = strip.stack[1].columns;
 
     expect(left.text).toContain('Private — contains employee details');
@@ -113,7 +144,7 @@ describe('page-header — pageFooter', () => {
   });
 
   it('uses the page margins so the footer rule lines up with the content', () => {
-    const footer = pageFooter() as (page: number, total: number) => Content;
+    const footer = pageFooter();
 
     const strip = footer(1, 1) as { margin: number[] };
     expect(strip.margin).toEqual([

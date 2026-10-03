@@ -174,7 +174,7 @@ export class MeAttendanceController {
       throw new HttpException(
         {
           error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'X-Idempotency-Key header is required and must be a UUID v4',
+          message: 'Something went wrong. Please try once more.',
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

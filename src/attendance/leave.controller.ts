@@ -75,7 +75,10 @@ export class LeaveController {
     status: 200,
     description: '{ action, actionDates, keepDates, request }',
   })
-  previewRevoke(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+  previewRevoke(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.leaveReadService.previewRevoke(user, id);
   }
 
@@ -93,7 +96,10 @@ export class LeaveController {
     status: 409,
     description: 'LEAVE_NOT_PENDING (own retry answers 200)',
   })
-  approve(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+  approve(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.leaveService.approve(user, id);
   }
 
@@ -178,7 +184,7 @@ export class LeaveController {
       throw new HttpException(
         {
           error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'X-Idempotency-Key header is required and must be a UUID v4',
+          message: 'Something went wrong. Please try once more.',
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

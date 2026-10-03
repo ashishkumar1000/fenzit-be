@@ -138,7 +138,10 @@ export class MeLeaveController {
     status: 200,
     description: '{ action, actionDates, keepDates, request }',
   })
-  previewCancel(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+  previewCancel(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.leaveReadService.previewCancel(user, id);
   }
 
@@ -159,7 +162,10 @@ export class MeLeaveController {
     description:
       'LEAVE_NOT_CANCELLABLE (nothing actionable; own retry answers 200)',
   })
-  cancel(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+  cancel(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.leaveService.cancel(user, id);
   }
 
@@ -169,7 +175,7 @@ export class MeLeaveController {
       throw new HttpException(
         {
           error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'X-Idempotency-Key header is required and must be a UUID v4',
+          message: 'Something went wrong. Please try once more.',
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

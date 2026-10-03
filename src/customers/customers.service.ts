@@ -184,7 +184,8 @@ export class CustomersService {
     if (hasInvalidCoordinates(latitude, longitude)) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: `Invalid customer coordinates (latitude=${latitude}, longitude=${longitude})`,
+        message:
+          "That address doesn't have a valid location. Please pick it from the map.",
       });
     }
   }

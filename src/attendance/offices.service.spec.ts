@@ -34,12 +34,22 @@ function resultQueue(fallback: RpcResult, ...queued: RpcResult[]) {
 function flexQb(defaultResult: RpcResult) {
   const queue = resultQueue(defaultResult);
   const qb: Record<string, jest.Mock> = {};
-  for (const m of ['select', 'eq', 'is', 'order', 'in', 'update', 'maybeSingle', 'single']) {
+  for (const m of [
+    'select',
+    'eq',
+    'is',
+    'order',
+    'in',
+    'update',
+    'maybeSingle',
+    'single',
+  ]) {
     qb[m] = jest.fn().mockReturnValue(qb);
   }
   // Awaiting the chain consumes exactly one queued result.
   (qb as unknown as { then: unknown }).then = jest.fn(
-    (resolve: (v: RpcResult) => unknown) => Promise.resolve(resolve(queue.next())),
+    (resolve: (v: RpcResult) => unknown) =>
+      Promise.resolve(resolve(queue.next())),
   );
   return { qb, queue };
 }
@@ -118,11 +128,13 @@ describe('OfficesService (story 15-3)', () => {
    * records) and per-name RPC queues. Unqueued results default to success
    * with null data, so tests queue only what they assert on.
    */
-  function mockAdmin(opts: {
-    offices?: RpcResult[];
-    rules?: RpcResult[];
-    rpc?: Record<string, RpcResult[]>;
-  } = {}) {
+  function mockAdmin(
+    opts: {
+      offices?: RpcResult[];
+      rules?: RpcResult[];
+      rpc?: Record<string, RpcResult[]>;
+    } = {},
+  ) {
     const officesQb = flexQb({ data: [], error: null });
     for (const r of opts.offices ?? []) officesQb.queue.push(r);
     const rulesQb = flexQb({ data: [], error: null });
@@ -182,10 +194,12 @@ describe('OfficesService (story 15-3)', () => {
 
   describe('listOffices', () => {
     it('maps rows to the API shape — the rule covering today, HH:mm times, numeric hours', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: [officeRow], error: null }],
-        rules: [seededRules()],
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: [officeRow], error: null }],
+          rules: [seededRules()],
+        }),
+      );
 
       await expect(service.listOffices(ownerUser)).resolves.toEqual([
         {
@@ -208,14 +222,18 @@ describe('OfficesService (story 15-3)', () => {
           nextRule: null,
         },
       ]);
-      expect(q.rpc).toHaveBeenCalledWith('attendance_today', { p_tenant_id: TENANT_ID });
+      expect(q.rpc).toHaveBeenCalledWith('attendance_today', {
+        p_tenant_id: TENANT_ID,
+      });
     });
 
     it('scopes the read to the tenant and hides archived offices by default', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: [officeRow], error: null }],
-        rules: [seededRules()],
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: [officeRow], error: null }],
+          rules: [seededRules()],
+        }),
+      );
 
       await service.listOffices(ownerUser);
 
@@ -238,7 +256,8 @@ describe('OfficesService (story 15-3)', () => {
 
       await expect(service.listOffices(ownerUser)).resolves.toEqual([]);
       expect(
-        (supabaseClientFactory.createAdmin() as unknown as { from: jest.Mock }).from,
+        (supabaseClientFactory.createAdmin() as unknown as { from: jest.Mock })
+          .from,
       ).not.toHaveBeenCalledWith('attendance_office_rules');
     });
 
@@ -250,10 +269,12 @@ describe('OfficesService (story 15-3)', () => {
         start_time: '09:00:00',
         late_cutoff_minutes: 20,
       };
-      seeded(mockAdmin({
-        offices: [{ data: [officeRow], error: null }],
-        rules: [{ data: [ruleRow, nextRule], error: null }],
-      }));
+      seeded(
+        mockAdmin({
+          offices: [{ data: [officeRow], error: null }],
+          rules: [{ data: [ruleRow, nextRule], error: null }],
+        }),
+      );
 
       const result = await service.listOffices(ownerUser);
       expect(result[0].rule?.validFrom).toBe('2026-09-26');
@@ -268,10 +289,12 @@ describe('OfficesService (story 15-3)', () => {
     });
 
     it('returns rule=null when the office row carries no covering rule', async () => {
-      seeded(mockAdmin({
-        offices: [{ data: [officeRow], error: null }],
-        rules: [{ data: [], error: null }],
-      }));
+      seeded(
+        mockAdmin({
+          offices: [{ data: [officeRow], error: null }],
+          rules: [{ data: [], error: null }],
+        }),
+      );
 
       const [office] = await service.listOffices(ownerUser);
       expect(office.rule).toBeNull();
@@ -290,7 +313,9 @@ describe('OfficesService (story 15-3)', () => {
     });
 
     it('maps a read failure to 500 INTERNAL_SERVER_ERROR', async () => {
-      seeded(mockAdmin({ offices: [{ data: null, error: { code: 'XX000' } }] }));
+      seeded(
+        mockAdmin({ offices: [{ data: null, error: { code: 'XX000' } }] }),
+      );
 
       await expectErrorCode(
         service.listOffices(ownerUser),
@@ -314,13 +339,18 @@ describe('OfficesService (story 15-3)', () => {
     };
 
     it('calls attendance_create_office with the tenant, actor and full dto, then returns the office with its seeded rule', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-        rules: [seededRules()],
-      }));
-      q.rpcs.set('attendance_create_office', rpcQueue({ data: OFFICE_ID, error: null }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+          rules: [seededRules()],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({ data: OFFICE_ID, error: null }),
+      );
 
-      const result = await service.createOffice(ownerUser, dto as never);
+      const result = await service.createOffice(ownerUser, dto);
 
       expect(q.rpc).toHaveBeenCalledWith('attendance_create_office', {
         p_tenant_id: TENANT_ID,
@@ -340,7 +370,10 @@ describe('OfficesService (story 15-3)', () => {
           id: OFFICE_ID,
           name: 'Andheri West',
           radiusM: 100,
-          rule: expect.objectContaining({ validFrom: '2026-09-26', validTo: null }),
+          rule: expect.objectContaining({
+            validFrom: '2026-09-26',
+            validTo: null,
+          }),
           // A just-created office cannot have a pending rule yet.
           nextRule: null,
         }),
@@ -349,13 +382,20 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps the duplicate-name PT409 to 409 ATTENDANCE_OFFICE_NAME_TAKEN', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_create_office', rpcQueue({
-        data: null,
-        error: { code: 'PT409', hint: 'ATTENDANCE_OFFICE_NAME_TAKEN', message: 'taken' },
-      }));
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT409',
+            hint: 'ATTENDANCE_OFFICE_NAME_TAKEN',
+            message: 'taken',
+          },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         409,
         ErrorCode.ATTENDANCE_OFFICE_NAME_TAKEN,
       );
@@ -363,13 +403,16 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps a CHECK-violation (23514) to 422 VALIDATION_ERROR', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_create_office', rpcQueue({
-        data: null,
-        error: { code: '23514', message: 'check violation' },
-      }));
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({
+          data: null,
+          error: { code: '23514', message: 'check violation' },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         422,
         ErrorCode.VALIDATION_ERROR,
       );
@@ -377,13 +420,16 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps a numeric-precision overflow (22003) to 422 VALIDATION_ERROR', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_create_office', rpcQueue({
-        data: null,
-        error: { code: '22003', message: 'numeric field overflow' },
-      }));
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({
+          data: null,
+          error: { code: '22003', message: 'numeric field overflow' },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         422,
         ErrorCode.VALIDATION_ERROR,
       );
@@ -391,13 +437,20 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps the unknown-tenant PT404 (ATTENDANCE_TENANT_NOT_FOUND hint) to 404', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_today', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_TENANT_NOT_FOUND', message: 'no tenant' },
-      }));
+      q.rpcs.set(
+        'attendance_today',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_TENANT_NOT_FOUND',
+            message: 'no tenant',
+          },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         404,
         ErrorCode.ATTENDANCE_TENANT_NOT_FOUND,
       );
@@ -405,13 +458,16 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps an attendance_today failure to 500 (AD-7 fail loud)', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_today', rpcQueue({
-        data: null,
-        error: { code: 'XX000', message: 'clock exploded' },
-      }));
+      q.rpcs.set(
+        'attendance_today',
+        rpcQueue({
+          data: null,
+          error: { code: 'XX000', message: 'clock exploded' },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         500,
         ErrorCode.INTERNAL_SERVER_ERROR,
       );
@@ -420,13 +476,16 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps any other RPC failure to 500', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_create_office', rpcQueue({
-        data: null,
-        error: { code: 'XX000', message: 'boom' },
-      }));
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({
+          data: null,
+          error: { code: 'XX000', message: 'boom' },
+        }),
+      );
 
       await expectErrorCode(
-        service.createOffice(ownerUser, dto as never),
+        service.createOffice(ownerUser, dto),
         500,
         ErrorCode.INTERNAL_SERVER_ERROR,
       );
@@ -436,7 +495,7 @@ describe('OfficesService (story 15-3)', () => {
       const q = seeded(mockAdmin());
 
       await expectErrorCode(
-        service.createOffice(noTenantUser, dto as never),
+        service.createOffice(noTenantUser, dto),
         400,
         ErrorCode.VALIDATION_ERROR,
       );
@@ -446,11 +505,13 @@ describe('OfficesService (story 15-3)', () => {
   });
 
   describe('getOffice', () => {
-    it('returns the full history ascending (the edit screen\'s source)', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-        rules: [seededRules()],
-      }));
+    it("returns the full history ascending (the edit screen's source)", async () => {
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+          rules: [seededRules()],
+        }),
+      );
 
       await expect(service.getOffice(ownerUser, OFFICE_ID)).resolves.toEqual({
         id: OFFICE_ID,
@@ -490,29 +551,41 @@ describe('OfficesService (story 15-3)', () => {
 
   describe('updateOffice', () => {
     it('routes profile-only fields to the guarded UPDATE and never calls the rules RPC', async () => {
-      const q = seeded(mockAdmin({
-        offices: [
-          { data: [OFFICE_ID], error: null }, // guarded UPDATE hit
-          { data: officeRow, error: null }, // re-read
-        ],
-        rules: [seededRules()],
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [
+            { data: [OFFICE_ID], error: null }, // guarded UPDATE hit
+            { data: officeRow, error: null }, // re-read
+          ],
+          rules: [seededRules()],
+        }),
+      );
 
-      await service.updateOffice(ownerUser, OFFICE_ID, { radiusM: 200 } as never);
+      await service.updateOffice(ownerUser, OFFICE_ID, {
+        radiusM: 200,
+      });
 
       expect(q.officesQb.qb.update).toHaveBeenCalledWith({ radius_m: 200 });
       expect(q.officesQb.qb.eq).toHaveBeenCalledWith('id', OFFICE_ID);
       expect(q.officesQb.qb.eq).toHaveBeenCalledWith('tenant_id', TENANT_ID);
       expect(q.officesQb.qb.is).toHaveBeenCalledWith('archived_at', null);
-      expect(q.rpc).not.toHaveBeenCalledWith('attendance_update_office_rules', expect.anything());
+      expect(q.rpc).not.toHaveBeenCalledWith(
+        'attendance_update_office_rules',
+        expect.anything(),
+      );
     });
 
     it('routes a complete rules set to the RPC and never touches the profile UPDATE', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-        rules: [seededRules()],
-      }));
-      q.rpcs.set('attendance_update_office_rules', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+          rules: [seededRules()],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_update_office_rules',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await service.updateOffice(ownerUser, OFFICE_ID, {
         startTime: '09:00',
@@ -520,7 +593,7 @@ describe('OfficesService (story 15-3)', () => {
         lateCutoffMinutes: 20,
         fullDayHours: 8,
         halfDayHours: 4,
-      } as never);
+      });
 
       expect(q.officesQb.qb.update).not.toHaveBeenCalled();
       expect(q.rpc).toHaveBeenCalledWith('attendance_update_office_rules', {
@@ -536,11 +609,16 @@ describe('OfficesService (story 15-3)', () => {
     });
 
     it('routes a mixed body through BOTH mechanics — guarded UPDATE then rules RPC', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: [{ ...officeRow, name: 'Renamed' }], error: null }],
-        rules: [seededRules()],
-      }));
-      q.rpcs.set('attendance_update_office_rules', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: [{ ...officeRow, name: 'Renamed' }], error: null }],
+          rules: [seededRules()],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_update_office_rules',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await service.updateOffice(ownerUser, OFFICE_ID, {
         name: 'Renamed',
@@ -549,7 +627,7 @@ describe('OfficesService (story 15-3)', () => {
         lateCutoffMinutes: 20,
         fullDayHours: 8,
         halfDayHours: 4,
-      } as never);
+      });
 
       // Profile group went through the UPDATE chain, rules group through the
       // RPC — the one-route/two-mechanics split must not drop either half.
@@ -566,10 +644,12 @@ describe('OfficesService (story 15-3)', () => {
       const q = seeded(mockAdmin());
 
       await expectErrorCode(
-        service.updateOffice(ownerUser, OFFICE_ID, { startTime: '08:00' } as never),
+        service.updateOffice(ownerUser, OFFICE_ID, {
+          startTime: '08:00',
+        }),
         400,
         ErrorCode.VALIDATION_ERROR,
-        { message: expect.stringContaining('complete set') },
+        { message: expect.stringContaining('timing fields') },
       );
       expect(q.officesQb.qb.update).not.toHaveBeenCalled();
       expect(q.rpc).not.toHaveBeenCalled();
@@ -579,7 +659,7 @@ describe('OfficesService (story 15-3)', () => {
       const q = seeded(mockAdmin());
 
       await expectErrorCode(
-        service.updateOffice(ownerUser, OFFICE_ID, {} as never),
+        service.updateOffice(ownerUser, OFFICE_ID, {}),
         400,
         ErrorCode.VALIDATION_ERROR,
         { message: 'Nothing to update' },
@@ -592,33 +672,46 @@ describe('OfficesService (story 15-3)', () => {
       const q = seeded(mockAdmin({ offices: [{ data: [], error: null }] }));
 
       await expectErrorCode(
-        service.updateOffice(ownerUser, OFFICE_ID, { radiusM: 200 } as never),
+        service.updateOffice(ownerUser, OFFICE_ID, { radiusM: 200 }),
         404,
         ErrorCode.ATTENDANCE_OFFICE_NOT_FOUND,
       );
     });
 
     it('maps a rename hitting the unique index (23505) to 409 ATTENDANCE_OFFICE_NAME_TAKEN', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: null, error: { code: '23505', message: 'unique' } }],
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [
+            { data: null, error: { code: '23505', message: 'unique' } },
+          ],
+        }),
+      );
 
       await expectErrorCode(
-        service.updateOffice(ownerUser, OFFICE_ID, { name: 'Taken' } as never),
+        service.updateOffice(ownerUser, OFFICE_ID, { name: 'Taken' }),
         409,
         ErrorCode.ATTENDANCE_OFFICE_NAME_TAKEN,
       );
     });
 
     it('maps the rules RPC PT404 (unknown/archived office) to 404', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-        rules: [seededRules()],
-      }));
-      q.rpcs.set('attendance_update_office_rules', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_OFFICE_NOT_FOUND', message: 'missing' },
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+          rules: [seededRules()],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_update_office_rules',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_OFFICE_NOT_FOUND',
+            message: 'missing',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.updateOffice(ownerUser, OFFICE_ID, {
@@ -627,7 +720,7 @@ describe('OfficesService (story 15-3)', () => {
           lateCutoffMinutes: 20,
           fullDayHours: 8,
           halfDayHours: 4,
-        } as never),
+        }),
         404,
         ErrorCode.ATTENDANCE_OFFICE_NOT_FOUND,
       );
@@ -637,7 +730,9 @@ describe('OfficesService (story 15-3)', () => {
       const q = seeded(mockAdmin());
 
       await expectErrorCode(
-        service.updateOffice(noTenantUser, OFFICE_ID, { radiusM: 200 } as never),
+        service.updateOffice(noTenantUser, OFFICE_ID, {
+          radiusM: 200,
+        }),
         400,
         ErrorCode.VALIDATION_ERROR,
       );
@@ -648,9 +743,14 @@ describe('OfficesService (story 15-3)', () => {
   describe('archiveOffice', () => {
     it('calls attendance_archive_office and resolves null on success (204 at the route)', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_archive_office', rpcQueue({ data: null, error: null }));
+      q.rpcs.set(
+        'attendance_archive_office',
+        rpcQueue({ data: null, error: null }),
+      );
 
-      await expect(service.archiveOffice(ownerUser, OFFICE_ID)).resolves.toBeNull();
+      await expect(
+        service.archiveOffice(ownerUser, OFFICE_ID),
+      ).resolves.toBeNull();
       expect(q.rpc).toHaveBeenCalledWith('attendance_archive_office', {
         p_tenant_id: TENANT_ID,
         p_actor_id: 'owner-uuid',
@@ -660,19 +760,31 @@ describe('OfficesService (story 15-3)', () => {
 
     it('on the blockers PT409, assembles the 409 body from the preview function', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_archive_office', rpcQueue({
-        data: null,
-        error: { code: 'PT409', hint: 'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED', message: 'blocked' },
-      }));
-      q.rpcs.set('attendance_office_archive_blockers', rpcQueue({
-        data: [
-          { employee_id: 'emp-1', employee_name: 'Ravi Kumar' },
-          { employee_id: 'emp-2', employee_name: 'Priya Sharma' },
-        ],
-        error: null,
-      }));
+      q.rpcs.set(
+        'attendance_archive_office',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT409',
+            hint: 'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED',
+            message: 'blocked',
+          },
+        }),
+      );
+      q.rpcs.set(
+        'attendance_office_archive_blockers',
+        rpcQueue({
+          data: [
+            { employee_id: 'emp-1', employee_name: 'Ravi Kumar' },
+            { employee_id: 'emp-2', employee_name: 'Priya Sharma' },
+          ],
+          error: null,
+        }),
+      );
 
-      const err = await service.archiveOffice(ownerUser, OFFICE_ID).catch((e) => e);
+      const err = await service
+        .archiveOffice(ownerUser, OFFICE_ID)
+        .catch((e) => e);
       expect(err).toBeInstanceOf(HttpException);
       expect(err.getStatus()).toBe(409);
       expect(err.getResponse()).toMatchObject({
@@ -691,16 +803,28 @@ describe('OfficesService (story 15-3)', () => {
 
     it('keeps the 409 with empty blockers when the preview read itself fails', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_archive_office', rpcQueue({
-        data: null,
-        error: { code: 'PT409', hint: 'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED', message: 'blocked' },
-      }));
-      q.rpcs.set('attendance_office_archive_blockers', rpcQueue({
-        data: null,
-        error: { code: '42P01', message: 'relation missing' },
-      }));
+      q.rpcs.set(
+        'attendance_archive_office',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT409',
+            hint: 'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED',
+            message: 'blocked',
+          },
+        }),
+      );
+      q.rpcs.set(
+        'attendance_office_archive_blockers',
+        rpcQueue({
+          data: null,
+          error: { code: '42P01', message: 'relation missing' },
+        }),
+      );
 
-      const err = await service.archiveOffice(ownerUser, OFFICE_ID).catch((e) => e);
+      const err = await service
+        .archiveOffice(ownerUser, OFFICE_ID)
+        .catch((e) => e);
       expect(err.getStatus()).toBe(409);
       expect(err.getResponse()).toMatchObject({
         error_code: ErrorCode.ATTENDANCE_OFFICE_ARCHIVE_BLOCKED,
@@ -710,10 +834,17 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps a PT404 (unknown office) to 404', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_archive_office', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_OFFICE_NOT_FOUND', message: 'missing' },
-      }));
+      q.rpcs.set(
+        'attendance_archive_office',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_OFFICE_NOT_FOUND',
+            message: 'missing',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.archiveOffice(ownerUser, OFFICE_ID),
@@ -724,10 +855,13 @@ describe('OfficesService (story 15-3)', () => {
 
     it('maps a lazy-compile failure (42P01, pre-15-7) to 500 — fail loud', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_archive_office', rpcQueue({
-        data: null,
-        error: { code: '42P01', message: 'relation does not exist' },
-      }));
+      q.rpcs.set(
+        'attendance_archive_office',
+        rpcQueue({
+          data: null,
+          error: { code: '42P01', message: 'relation does not exist' },
+        }),
+      );
 
       await expectErrorCode(
         service.archiveOffice(ownerUser, OFFICE_ID),
@@ -739,15 +873,22 @@ describe('OfficesService (story 15-3)', () => {
 
   describe('getArchiveBlockers', () => {
     it('returns the office id with the blockers mapped to camelCase', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-      }));
-      q.rpcs.set('attendance_office_archive_blockers', rpcQueue({
-        data: [{ employee_id: 'emp-1', employee_name: 'Ravi Kumar' }],
-        error: null,
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_office_archive_blockers',
+        rpcQueue({
+          data: [{ employee_id: 'emp-1', employee_name: 'Ravi Kumar' }],
+          error: null,
+        }),
+      );
 
-      await expect(service.getArchiveBlockers(ownerUser, OFFICE_ID)).resolves.toEqual({
+      await expect(
+        service.getArchiveBlockers(ownerUser, OFFICE_ID),
+      ).resolves.toEqual({
         officeId: OFFICE_ID,
         blockers: [{ employeeId: 'emp-1', employeeName: 'Ravi Kumar' }],
       });
@@ -764,13 +905,18 @@ describe('OfficesService (story 15-3)', () => {
     });
 
     it('maps the preview-function lazy-compile failure (pre-15-7) to 500', async () => {
-      const q = seeded(mockAdmin({
-        offices: [{ data: officeRow, error: null }],
-      }));
-      q.rpcs.set('attendance_office_archive_blockers', rpcQueue({
-        data: null,
-        error: { code: '42P01', message: 'relation does not exist' },
-      }));
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_office_archive_blockers',
+        rpcQueue({
+          data: null,
+          error: { code: '42P01', message: 'relation does not exist' },
+        }),
+      );
 
       await expectErrorCode(
         service.getArchiveBlockers(ownerUser, OFFICE_ID),

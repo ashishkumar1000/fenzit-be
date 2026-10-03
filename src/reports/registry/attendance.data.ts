@@ -109,8 +109,18 @@ export const EXCEPTIONS_RENDER_CAP = 200;
 const IST_OFFSET_SUFFIX = '+05:30';
 
 const MONTHS = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /** IST day bounds for the inclusive [start_date, end_date] window. */
@@ -122,14 +132,15 @@ function istDayBounds(
   const endExclusive = new Date(
     new Date(`${endDate}T00:00:00${IST_OFFSET_SUFFIX}`).getTime() + 86_400_000,
   );
-  return { startIso: start.toISOString(), endExclusiveIso: endExclusive.toISOString() };
+  return {
+    startIso: start.toISOString(),
+    endExclusiveIso: endExclusive.toISOString(),
+  };
 }
 
 /** Inclusive day count of a validated range. */
 function daysInclusive(startDate: string, endDate: string): number {
-  return (
-    (Date.parse(endDate) - Date.parse(startDate)) / 86_400_000 + 1
-  );
+  return (Date.parse(endDate) - Date.parse(startDate)) / 86_400_000 + 1;
 }
 
 /** "1 Sep" from YYYY-MM-DD. */
@@ -145,7 +156,7 @@ function weekLabel(start: string, end: string): string {
 function tooLarge(): BadRequestException {
   return new BadRequestException({
     error_code: ErrorCode.REPORT_TOO_LARGE,
-    message: 'Report range contains too many employee-days',
+    message: 'That date range is too large. Please choose a shorter range.',
   });
 }
 
@@ -170,7 +181,9 @@ async function fetchInChunks<T>(
         .order('id')
         .range(pageFrom, pageFrom + PAGE_SIZE - 1);
       if (error) {
-        throw new Error(`Failed to fetch ${table} for report: ${error.message}`);
+        throw new Error(
+          `Failed to fetch ${table} for report: ${error.message}`,
+        );
       }
       out.push(...((data ?? []) as T[]));
       if (!data || data.length < PAGE_SIZE) break;
@@ -214,7 +227,9 @@ async function fetchEnrolledEmployeeIds(
       .order('id')
       .range(pageFrom, pageFrom + PAGE_SIZE - 1);
     if (error) {
-      throw new Error(`Failed to fetch enrolments for report: ${error.message}`);
+      throw new Error(
+        `Failed to fetch enrolments for report: ${error.message}`,
+      );
     }
     for (const row of data ?? []) ids.add(row.employee_id);
     if (!data || data.length < PAGE_SIZE) break;
@@ -243,9 +258,7 @@ async function fetchEmployeeNames(
  *  before an assignment (or the module) began — they carry no office
  *  truth, and printing them as "(no office) · N employees · all zeros"
  *  read like broken data (bug bash 2026-10-03, owner-persona round). */
-function buildOfficeRows(
-  rows: DayGridRow[],
-): AttendanceOfficeRow[] {
+function buildOfficeRows(rows: DayGridRow[]): AttendanceOfficeRow[] {
   const byOffice = new Map<string | null, DayGridRow[]>();
   for (const row of rows) {
     const key = row.ctx.officeId;
@@ -277,7 +290,10 @@ function buildOfficeRows(
 /** 7-day MONDAY-start chunks (the Indian business week — chunking from the
  *  range's own first day made a Sunday-start range read Sun–Sat weeks);
  *  the first and last chunks keep their partial remainders. */
-function enumerateWeeks(startDate: string, endDate: string): {
+function enumerateWeeks(
+  startDate: string,
+  endDate: string,
+): {
   label: string;
   start: string;
   end: string;
@@ -313,7 +329,13 @@ async function fetchRejections(
 ): Promise<AttendanceRejectionRow[]> {
   const buckets = new Map<
     string,
-    { tooFar: number; lowAccuracy: number; mocked: number; rateLimited: number; other: number }
+    {
+      tooFar: number;
+      lowAccuracy: number;
+      mocked: number;
+      rateLimited: number;
+      other: number;
+    }
   >();
   for (let i = 0; i < employeeIds.length; i += IN_CHUNK_SIZE) {
     const chunk = employeeIds.slice(i, i + IN_CHUNK_SIZE);
@@ -330,12 +352,18 @@ async function fetchRejections(
         .order('id')
         .range(pageFrom, pageFrom + PAGE_SIZE - 1);
       if (error) {
-        throw new Error(`Failed to fetch attempts for report: ${error.message}`);
+        throw new Error(
+          `Failed to fetch attempts for report: ${error.message}`,
+        );
       }
       for (const row of data ?? []) {
-        const b =
-          buckets.get(row.employee_id) ??
-          { tooFar: 0, lowAccuracy: 0, mocked: 0, rateLimited: 0, other: 0 };
+        const b = buckets.get(row.employee_id) ?? {
+          tooFar: 0,
+          lowAccuracy: 0,
+          mocked: 0,
+          rateLimited: 0,
+          other: 0,
+        };
         if (row.outcome === 'too_far') b.tooFar += 1;
         else if (row.outcome === 'low_accuracy') b.lowAccuracy += 1;
         else if (row.outcome === 'mocked') b.mocked += 1;
@@ -394,7 +422,9 @@ export async function fetchAttendanceReportData(
   const officeSet = new Set(params.office_ids);
   const rows =
     officeSet.size > 0
-      ? grid.filter((r) => r.ctx.officeId !== null && officeSet.has(r.ctx.officeId))
+      ? grid.filter(
+          (r) => r.ctx.officeId !== null && officeSet.has(r.ctx.officeId),
+        )
       : grid;
 
   // Explicitly selected employees with zero in-scope days still get a row

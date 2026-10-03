@@ -93,7 +93,8 @@ function istDayBounds(
 function tooLarge(): BadRequestException {
   return new BadRequestException({
     error_code: ErrorCode.REPORT_TOO_LARGE,
-    message: 'Report range contains too many jobs',
+    message:
+      'That date range has too many jobs. Please choose a shorter range.',
   });
 }
 

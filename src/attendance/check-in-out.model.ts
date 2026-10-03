@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { workedMinutesBetween } from '../common/day-status/day-context';
-import type { AttemptKind, AttemptLocation, AttemptRow } from './check-in-out.repository';
+import type {
+  AttemptKind,
+  AttemptLocation,
+  AttemptRow,
+} from './check-in-out.repository';
 import type { RecordRow } from './check-in-out.records.repository';
 import type { CheckInOutDto } from './dto/check-in-out.dto';
 
@@ -84,6 +88,13 @@ export interface OutcomeExtras {
   retryAfterSeconds?: number;
 }
 
+/** "600 m" below a km, "1.2 km" from there on. */
+function formatDistance(distanceM: number): string {
+  return distanceM < 1000
+    ? `${distanceM} m`
+    : `${(distanceM / 1000).toFixed(1)} km`;
+}
+
 /** The user-facing copy per outcome (PRD wording where it specifies one). */
 export function outcomeMessage(
   outcome: string,
@@ -91,14 +102,17 @@ export function outcomeMessage(
   extras: OutcomeExtras,
 ): string {
   switch (outcome) {
-    case 'too_far':
-      return `You are ${Math.round(extras.distanceM ?? 0)} m from ${extras.officeName ?? 'your office'}. Move within ${extras.radiusM ?? 0} m.`;
+    case 'too_far': {
+      const distanceM = Math.round(extras.distanceM ?? 0);
+      const action = kind === 'check_in' ? 'check in' : 'check out';
+      return `You are ${formatDistance(distanceM)} from ${extras.officeName ?? 'your office'}. Go closer (within ${extras.radiusM ?? 0} m) and ${action}.`;
+    }
     case 'low_accuracy':
-      return 'Location not accurate enough, try again in the open';
+      return 'Location not accurate. Go to an open area and try again.';
     case 'mocked':
       return `Turn off fake location apps to ${kind === 'check_in' ? 'check in' : 'check out'}`;
     case 'stale_fix':
-      return 'Your location seems outdated. Refresh GPS and try again';
+      return 'Your location seems outdated. Please try again.';
     case 'rate_limited':
       return `Too many attempts. Try again in ${Math.ceil((extras.retryAfterSeconds ?? 0) / 60)} min`;
     case 'not_tracked':
@@ -150,7 +164,8 @@ export function outcomeErrorCode(outcome: string): ErrorCode {
     already_checked_in: ErrorCode.ATTENDANCE_ALREADY_CHECKED_IN,
     already_checked_out: ErrorCode.ATTENDANCE_ALREADY_CHECKED_OUT,
     not_checked_in: ErrorCode.ATTENDANCE_NOT_CHECKED_IN,
-    leave_confirmation_required: ErrorCode.ATTENDANCE_LEAVE_CONFIRMATION_REQUIRED,
+    leave_confirmation_required:
+      ErrorCode.ATTENDANCE_LEAVE_CONFIRMATION_REQUIRED,
   };
   return map[outcome] ?? ErrorCode.INTERNAL_SERVER_ERROR;
 }
@@ -171,7 +186,10 @@ export function outcomeToException(
     body['radiusM'] = extras.radiusM ?? 0;
   }
   if (outcome === 'rate_limited') {
-    body['retryAfterSeconds'] = Math.max(1, Math.ceil(extras.retryAfterSeconds ?? 1));
+    body['retryAfterSeconds'] = Math.max(
+      1,
+      Math.ceil(extras.retryAfterSeconds ?? 1),
+    );
   }
   return new HttpException(body, status);
 }

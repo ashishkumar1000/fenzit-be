@@ -1,6 +1,4 @@
-import {
-  buildAttendanceReportDocument,
-} from './attendance.template';
+import { buildAttendanceReportDocument } from './attendance.template';
 import type { AttendanceReportData } from './attendance.data';
 import type { AttendanceSummary } from './attendance.metrics';
 
@@ -48,7 +46,9 @@ const summary = (over: Partial<AttendanceSummary> = {}): AttendanceSummary => ({
   ...over,
 });
 
-function fixtureData(over: Partial<AttendanceReportData> = {}): AttendanceReportData {
+function fixtureData(
+  over: Partial<AttendanceReportData> = {},
+): AttendanceReportData {
   return {
     tenant: { companyName: 'Acme Services' },
     range: { startDate: '2026-09-01', endDate: '2026-09-25', days: 25 },
@@ -82,7 +82,13 @@ function fixtureData(over: Partial<AttendanceReportData> = {}): AttendanceReport
         name: 'Bimal',
         offices: 'HQ, Branch',
         enrolledFrom: '2026-09-10',
-        summary: summary({ leave: 0, corrections: 0, fakeLocationDays: 0, lateCount: 0, lateMinutes: 0 }),
+        summary: summary({
+          leave: 0,
+          corrections: 0,
+          fakeLocationDays: 0,
+          lateCount: 0,
+          lateMinutes: 0,
+        }),
       },
     ],
     exceptions: [
@@ -91,7 +97,7 @@ function fixtureData(over: Partial<AttendanceReportData> = {}): AttendanceReport
         severity: 'alarm',
         employeeName: 'Asha',
         title: 'Fake-location attempt',
-        detail: '1 day with unacknowledged fake-location punches — 2026-09-10',
+        detail: '1 day with fake-location attempts — 2026-09-10',
       },
     ],
     weeks: [
@@ -102,7 +108,9 @@ function fixtureData(over: Partial<AttendanceReportData> = {}): AttendanceReport
     ],
     register: {
       dates: Array.from({ length: 25 }, (_, i) =>
-        new Date(Date.parse('2026-09-01') + i * 86_400_000).toISOString().slice(0, 10),
+        new Date(Date.parse('2026-09-01') + i * 86_400_000)
+          .toISOString()
+          .slice(0, 10),
       ),
       rows: [
         { name: 'Asha', codes: Array.from({ length: 25 }, () => 'P') },
@@ -110,7 +118,15 @@ function fixtureData(over: Partial<AttendanceReportData> = {}): AttendanceReport
       ],
     },
     rejections: [
-      { employeeId: 'e1', employeeName: 'Asha', tooFar: 1, lowAccuracy: 0, mocked: 2, rateLimited: 0, other: 0 },
+      {
+        employeeId: 'e1',
+        employeeName: 'Asha',
+        tooFar: 1,
+        lowAccuracy: 0,
+        mocked: 2,
+        rateLimited: 0,
+        other: 0,
+      },
     ],
     ...over,
   };
@@ -131,7 +147,7 @@ function allTexts(doc: ReportDocumentLike): string[] {
       walk(o.content);
     }
   };
-  walk((doc as { content: unknown }).content);
+  walk(doc.content);
   return out;
 }
 
@@ -160,7 +176,16 @@ describe('buildAttendanceReportDocument (21-3)', () => {
 
   it('renders the normative section order for a full scope', () => {
     const texts = allTexts(buildAttendanceReportDocument(fixtureData()));
-    const order = ['Overall', 'Offices', 'Employees — attendance', 'Employees — discipline & hours', 'Needs attention', 'Weekly trend', 'Leave summary', 'Rejected punches'];
+    const order = [
+      'Overall',
+      'Offices',
+      'Employees — attendance',
+      'Employees — discipline & hours',
+      'Needs attention',
+      'Weekly trend',
+      'Leave summary',
+      'Blocked check-ins',
+    ];
     const positions = order.map((section) =>
       texts.findIndex((t) => t === section),
     );
@@ -172,7 +197,7 @@ describe('buildAttendanceReportDocument (21-3)', () => {
     const texts = allTexts(buildAttendanceReportDocument(fixtureData()));
     expect(has(texts, '50%')).toBe(true); // attendanceRate straight from the summary
     expect(has(texts, '15.0 h')).toBe(true); // workedHours
-    expect(has(texts, 'Employees in scope')).toBe(true);
+    expect(has(texts, 'Employees included')).toBe(true);
     expect(has(texts, 'Fake-location attempts')).toBe(true);
   });
 
@@ -194,14 +219,18 @@ describe('buildAttendanceReportDocument (21-3)', () => {
             name: 'Asha',
             offices: 'HQ',
             enrolledFrom: null,
-            summary: summary({ leave: 0, pendingLeaveDays: 0, halfDayLeaves: 0 }),
+            summary: summary({
+              leave: 0,
+              pendingLeaveDays: 0,
+              halfDayLeaves: 0,
+            }),
           },
         ],
       }),
     );
     const texts = allTexts(doc);
     expect(has(texts, 'Leave summary')).toBe(false);
-    expect(has(texts, 'Rejected punches')).toBe(false);
+    expect(has(texts, 'Blocked check-ins')).toBe(false);
     expect(has(texts, 'Offices')).toBe(false);
     expect(has(texts, 'Needs attention')).toBe(false);
   });
@@ -236,8 +265,10 @@ describe('buildAttendanceReportDocument (21-3)', () => {
       title: 'Repeatedly late',
       detail: `Late on 3 days — 2026-09-${String((i % 25) + 1).padStart(2, '0')}`,
     }));
-    const texts = allTexts(buildAttendanceReportDocument(fixtureData({ exceptions: many })));
-    expect(has(texts, '+10 more — narrow the filters')).toBe(true);
+    const texts = allTexts(
+      buildAttendanceReportDocument(fixtureData({ exceptions: many })),
+    );
+    expect(has(texts, '+10 more — use a shorter date range')).toBe(true);
     // The cap: only the first 200 render.
     expect(has(texts, 'Employee 199')).toBe(true);
     expect(has(texts, 'Employee 200')).toBe(false);
@@ -339,7 +370,7 @@ describe('no table ever rides inside an unbreakable stack (bug bash 2026-10-03)'
     // re-wrapping just the offices/trend/rejections tables (or loosening
     // the exceptions ≤6 kept-gate) shipped green. Grow all four axes past
     // 6 so the >6 filter bites on every site the unwrap freed.
-    const eight = <T,>(make: (i: number) => T): T[] =>
+    const eight = <T>(make: (i: number) => T): T[] =>
       Array.from({ length: 8 }, (_, i) => make(i));
     const doc = buildAttendanceReportDocument(
       fixtureData({
@@ -367,7 +398,7 @@ describe('no table ever rides inside an unbreakable stack (bug bash 2026-10-03)'
           severity: 'alarm' as const,
           employeeName: `Rej ${i + 1}`,
           title: 'Fake-location attempt',
-          detail: '1 day with unacknowledged fake-location punches',
+          detail: '1 day with fake-location attempts',
         })),
         register: null,
       }),

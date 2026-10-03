@@ -85,7 +85,7 @@ function makeSupabase(plan: ClientPlan): MockSupabase {
     chains.get(table)!.push(mock);
     return mock.chain;
   });
-  return { supabase: { from } as unknown, from, chains };
+  return { supabase: { from }, from, chains };
 }
 
 interface CtxOpts {
@@ -137,9 +137,7 @@ function rawJob(overrides: {
         ? { name: `Customer ${overrides.id}` }
         : overrides.customers,
     skills:
-      overrides.skills === undefined
-        ? { name: 'Plumbing' }
-        : overrides.skills,
+      overrides.skills === undefined ? { name: 'Plumbing' } : overrides.skills,
   };
 }
 
@@ -523,7 +521,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
           ErrorCode.REPORT_TOO_LARGE,
         );
         expect((e.getResponse() as Record<string, unknown>).message).toBe(
-          'Report range contains too many jobs',
+          'That date range has too many jobs. Please choose a shorter range.',
         );
       });
       // The guard fires on the first page — nothing else is ever queried.

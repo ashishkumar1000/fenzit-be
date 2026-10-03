@@ -1,6 +1,4 @@
-import {
-  buildTechnicianJobActivityDocument,
-} from './technician-job-activity.template';
+import { buildTechnicianJobActivityDocument } from './technician-job-activity.template';
 import {
   FetchedJob,
   TechnicianJobActivityData,
@@ -123,8 +121,7 @@ function jobsTableBody(root: unknown): Record<string, unknown>[][] {
   let body: Record<string, unknown>[][] | undefined;
   walk(root, (o) => {
     const table = o.table as
-      | { headerRows?: number; body?: unknown }
-      | undefined;
+      { headerRows?: number; body?: unknown } | undefined;
     if (table && table.headerRows === 1 && !body) {
       body = table.body as Record<string, unknown>[][];
     }
@@ -169,15 +166,16 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
     });
 
     it('embeds the tenant identity, title, IST range and scope in the header', () => {
-      const doc = buildTechnicianJobActivityDocument(
-        fixtureData(),
-      ) as Record<string, unknown>;
+      const doc = buildTechnicianJobActivityDocument(fixtureData()) as Record<
+        string,
+        unknown
+      >;
       const texts = collectTexts(doc.content);
 
       expect(texts).toContain('Technician Job Report');
       expect(texts).toContain('Acme Services');
       expect(texts).toContain('12 MG Road');
-      expect(texts).toContain('2026-09-01 → 2026-09-07 (IST)');
+      expect(texts).toContain('1 Sep – 7 Sep 2026 (IST)');
       expect(texts).toContain('2 technicians selected · 3 jobs in this period');
     });
   });
@@ -212,9 +210,10 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
 
   describe('populated dataset', () => {
     it('opens with the Overall section as two metric-card rows', () => {
-      const doc = buildTechnicianJobActivityDocument(
-        fixtureData(),
-      ) as Record<string, unknown>;
+      const doc = buildTechnicianJobActivityDocument(fixtureData()) as Record<
+        string,
+        unknown
+      >;
       const texts = collectTexts(doc.content);
 
       for (const label of [
@@ -247,9 +246,10 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
     });
 
     it('keeps the Overall title glued to its first card row (unbreakable)', () => {
-      const doc = buildTechnicianJobActivityDocument(
-        fixtureData(),
-      ) as Record<string, unknown>;
+      const doc = buildTechnicianJobActivityDocument(fixtureData()) as Record<
+        string,
+        unknown
+      >;
 
       const keptBlocks: Record<string, unknown>[] = [];
       walk(doc.content, (o) => {
@@ -284,7 +284,15 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
       const rowTexts = body.slice(1).map((row) => row.map((c) => c.text));
       expect(rowTexts).toEqual([
         // IST times: 03:30Z → 09:00 on 1 Sep; finish 05:45Z → 11:15 on 2 Sep.
-        ['J-j1', 'Customer', 'Plumbing', 'Completed', '1 Sep 09:00', '2 Sep 11:15', '2'],
+        [
+          'J-j1',
+          'Customer',
+          'Plumbing',
+          'Completed',
+          '1 Sep 09:00',
+          '2 Sep 11:15',
+          '2',
+        ],
         // In-progress job: no finish time, no proofs — em-dashes.
         ['J-j2', 'Customer', '—', 'In progress', '1 Sep 09:00', '—', '—'],
         ['J-j3', 'Customer', '—', 'Cancelled', '1 Sep 09:00', '—', '—'],
@@ -326,7 +334,10 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
 
       // Order inside the list is severity order (overdue before cancelled).
       const flagTitles = texts.filter((t) => t.includes(' · J-'));
-      expect(flagTitles).toEqual(['Not done on time · J-j2', 'Cancelled · J-j3']);
+      expect(flagTitles).toEqual([
+        'Not done on time · J-j2',
+        'Cancelled · J-j3',
+      ]);
     });
 
     it('omits the Needs attention section when nothing needs attention', () => {

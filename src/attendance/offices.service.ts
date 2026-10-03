@@ -44,9 +44,7 @@ type Admin = ReturnType<SupabaseClientFactory['createAdmin']>;
 export class OfficesService {
   private readonly logger = new Logger(OfficesService.name);
 
-  constructor(
-    private readonly supabaseClientFactory: SupabaseClientFactory,
-  ) {}
+  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
 
   /**
    * FR-5 list. The rule valid on today is picked from the office's few
@@ -95,7 +93,10 @@ export class OfficesService {
   }
 
   /** Full effective-dated history for one office (the edit screen's source). */
-  async getOffice(user: RequestUser, officeId: string): Promise<OfficeDetailResponse> {
+  async getOffice(
+    user: RequestUser,
+    officeId: string,
+  ): Promise<OfficeDetailResponse> {
     this.requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
     const office = await this.readOffice(admin, user, officeId);
@@ -107,7 +108,10 @@ export class OfficesService {
    * FR-5 create: two row-sets (office + initial rule valid [today, ∞)) —
    * one RPC (AD-3). Re-reads the seeded rule so the response carries it.
    */
-  async createOffice(user: RequestUser, dto: CreateOfficeDto): Promise<OfficeResponse> {
+  async createOffice(
+    user: RequestUser,
+    dto: CreateOfficeDto,
+  ): Promise<OfficeResponse> {
     const tenantId = this.requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
     const today = await this.today(admin, tenantId);
@@ -135,7 +139,9 @@ export class OfficesService {
 
     const office = await this.readOffice(admin, user, data as string);
     const rules =
-      (await this.readRulesForOffices(admin, user, [office.id])).get(office.id) ?? [];
+      (await this.readRulesForOffices(admin, user, [office.id])).get(
+        office.id,
+      ) ?? [];
     return {
       id: office.id,
       name: office.name,
@@ -174,15 +180,19 @@ export class OfficesService {
       ...(dto.lateCutoffMinutes !== undefined
         ? { p_late_cutoff_minutes: dto.lateCutoffMinutes }
         : {}),
-      ...(dto.fullDayHours !== undefined ? { p_full_day_hours: dto.fullDayHours } : {}),
-      ...(dto.halfDayHours !== undefined ? { p_half_day_hours: dto.halfDayHours } : {}),
+      ...(dto.fullDayHours !== undefined
+        ? { p_full_day_hours: dto.fullDayHours }
+        : {}),
+      ...(dto.halfDayHours !== undefined
+        ? { p_half_day_hours: dto.halfDayHours }
+        : {}),
     };
 
     if (Object.keys(rules).length > 0 && Object.keys(rules).length !== 5) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
         message:
-          'Rules must be sent as a complete set: startTime, endTime, lateCutoffMinutes, fullDayHours, halfDayHours',
+          'Please fill in all the timing fields: start time, end time, late cut-off, full-day hours and half-day hours.',
       });
     }
     if (Object.keys(profile).length === 0 && Object.keys(rules).length === 0) {
@@ -280,7 +290,10 @@ export class OfficesService {
   }
 
   /** AD-24 preview: who blocks archiving this office. */
-  async getArchiveBlockers(user: RequestUser, officeId: string): Promise<ArchiveBlockersResponse> {
+  async getArchiveBlockers(
+    user: RequestUser,
+    officeId: string,
+  ): Promise<ArchiveBlockersResponse> {
     this.requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
     await this.readOffice(admin, user, officeId);
@@ -295,10 +308,13 @@ export class OfficesService {
     user: RequestUser,
     officeId: string,
   ): Promise<ArchiveBlockersResponse['blockers']> {
-    const { data, error } = await admin.rpc('attendance_office_archive_blockers', {
-      p_tenant_id: user.tenantId as string,
-      p_office_id: officeId,
-    });
+    const { data, error } = await admin.rpc(
+      'attendance_office_archive_blockers',
+      {
+        p_tenant_id: user.tenantId as string,
+        p_office_id: officeId,
+      },
+    );
     if (error) {
       this.throwRpcError(error, 'Failed to read archive blockers');
     }
@@ -350,7 +366,7 @@ export class OfficesService {
       .from('attendance_office_rules')
       .select('*')
       .eq('office_id', officeId)
-      .eq('tenant_id', user.tenantId as string);
+      .eq('tenant_id', user.tenantId);
     if (error) {
       this.logger.error('Failed to read attendance office rules:', { error });
       throw this.internalError('Failed to read office rules');
@@ -367,7 +383,7 @@ export class OfficesService {
       .from('attendance_offices')
       .select('*')
       .eq('id', officeId)
-      .eq('tenant_id', user.tenantId as string)
+      .eq('tenant_id', user.tenantId)
       .maybeSingle<AttendanceOfficeRow>();
     if (error) {
       this.logger.error('Failed to read attendance office:', { error });
@@ -430,7 +446,10 @@ export class OfficesService {
         'An office with this name already exists',
       );
     }
-    if (error.code === PG_CHECK_VIOLATION || error.code === PG_NUMERIC_OUT_OF_RANGE) {
+    if (
+      error.code === PG_CHECK_VIOLATION ||
+      error.code === PG_NUMERIC_OUT_OF_RANGE
+    ) {
       // Range violations are 422 VALIDATION_ERROR per the I/O matrix — the
       // DTO mirrors reject early, this catches what slips past the pipe.
       throw new HttpException(
@@ -460,6 +479,8 @@ export class OfficesService {
   }
 }
 
-function toRuleOrNull(row: AttendanceOfficeRuleRow | null): OfficeRuleResponse | null {
+function toRuleOrNull(
+  row: AttendanceOfficeRuleRow | null,
+): OfficeRuleResponse | null {
   return row ? toOfficeRuleResponse(row) : null;
 }

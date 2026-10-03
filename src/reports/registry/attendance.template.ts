@@ -18,7 +18,10 @@ import {
 import type { BrandIcon } from '../templates/brand-kit/brand-icons';
 import type { ReportDocument } from './report-definition';
 import type { AttendanceReportData } from './attendance.data';
-import type { AttendanceException, AttendanceSummary } from './attendance.metrics';
+import type {
+  AttendanceException,
+  AttendanceSummary,
+} from './attendance.metrics';
 
 /**
  * Attendance Report template (21-3). Composes ONLY structure from the
@@ -33,7 +36,20 @@ import type { AttendanceException, AttendanceSummary } from './attendance.metric
 
 const MUTED = brand.textMuted;
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
 
 /** "20 Sep" from YYYY-MM-DD (the header + register labels). */
 function shortDate(isoDate: string): string {
@@ -79,7 +95,7 @@ function metricCardRows(data: AttendanceReportData): Content[] {
   return [
     summaryCardRow([
       {
-        label: 'Employees in scope',
+        label: 'Employees included',
         value: String(data.scope.employeesInScope),
         icon: 'users',
         iconColor: brand.primary,
@@ -93,9 +109,12 @@ function metricCardRows(data: AttendanceReportData): Content[] {
       {
         label: 'Attendance rate',
         value: o.attendanceRate === null ? '—' : `${o.attendanceRate}%`,
-        accent: o.attendanceRate !== null && o.attendanceRate >= 90 ? GREEN : undefined,
+        accent:
+          o.attendanceRate !== null && o.attendanceRate >= 90
+            ? GREEN
+            : undefined,
         icon: 'circle-check',
-        caption: 'Worked days ÷ expected days',
+        caption: 'Worked days out of expected days',
       },
       {
         label: 'Total worked hours',
@@ -110,7 +129,12 @@ function metricCardRows(data: AttendanceReportData): Content[] {
         value: String(o.lateCount),
         accent: o.lateCount > 0 ? AMBER : undefined,
         icon: 'timer',
-        caption: o.lateMinutes > 0 ? `${o.lateMinutes} min late in total` : undefined,
+        caption:
+          o.lateMinutes > 0
+            ? o.lateMinutes < 90
+              ? `${o.lateMinutes} min late in total`
+              : `≈${Math.round(o.lateMinutes / 60)} hrs late in total`
+            : undefined,
       },
       {
         label: 'Absent days',
@@ -128,7 +152,10 @@ function metricCardRows(data: AttendanceReportData): Content[] {
         value: String(o.checkoutMissing),
         accent: o.checkoutMissing > 0 ? AMBER : undefined,
         icon: 'clock',
-        caption: o.checkoutMissing > 0 ? 'Hours under-counted on these days' : undefined,
+        caption:
+          o.checkoutMissing > 0
+            ? 'Hours under-counted on these days'
+            : undefined,
       },
     ]),
     summaryCardRow([
@@ -152,7 +179,7 @@ function metricCardRows(data: AttendanceReportData): Content[] {
         icon: 'camera-off',
         caption:
           o.fakeLocationDays > 0
-            ? `${o.fakeLocationDays} unacknowledged day flag${o.fakeLocationDays === 1 ? '' : 's'}`
+            ? `${o.fakeLocationDays} day${o.fakeLocationDays === 1 ? '' : 's'} not yet reviewed`
             : undefined,
       },
     ]),
@@ -218,7 +245,7 @@ function employeeTables(data: AttendanceReportData): Content[] {
         { header: 'Avg hrs/day', width: 48, align: 'center' },
         { header: 'Attendance', width: 50, align: 'center' },
         { header: 'Corrections', width: 46, align: 'center' },
-        { header: 'Fake GPS', width: 36, align: 'center' },
+        { header: 'Fake location', width: 36, align: 'center' },
       ],
       disciplineRows,
     ),
@@ -234,7 +261,10 @@ function registerSection(data: AttendanceReportData): Content[] {
     const prev = i > 0 ? data.register!.dates[i - 1].slice(5, 7) : null;
     return {
       header: `${day}\n${month !== prev ? monthName(month) : ''}`,
-      width: Math.min(14, Math.floor((515 - 100) / data.register!.dates.length)),
+      width: Math.min(
+        14,
+        Math.floor((515 - 100) / data.register!.dates.length),
+      ),
       noWrap: true,
       align: 'center' as const,
     };
@@ -245,19 +275,17 @@ function registerSection(data: AttendanceReportData): Content[] {
       text: code,
       fontSize: 7,
       alignment: 'center' as const,
-      color: code === 'A' || code === 'M' ? RED : code === 'H' ? AMBER : undefined,
+      color:
+        code === 'A' || code === 'M' ? RED : code === 'H' ? AMBER : undefined,
     })),
   ]);
   return [
-    dataTable(
-      [{ header: 'Employee', width: 100 }, ...dayColumns],
-      rows,
-    ),
+    dataTable([{ header: 'Employee', width: 100 }, ...dayColumns], rows),
     {
       text:
         'P present · H half day · A absent · L leave · Hl half-day leave · ' +
-        'W worked on holiday · O weekly off · ★ holiday · M checkout missing · ' +
-        '· not tracked / not yet',
+        'W worked on holiday · O weekly off · ★ holiday · M check-out missing · ' +
+        '· not tracked',
       fontSize: 7.5,
       color: MUTED,
       margin: [0, 0, 0, 12],
@@ -345,10 +373,7 @@ export function buildAttendanceReportDocument(
 
   const [attendanceTable, disciplineTable] = employeeTables(data);
   content.push(sectionTitle('Employees — attendance'), attendanceTable);
-  content.push(
-    sectionTitle('Employees — discipline & hours'),
-    disciplineTable,
-  );
+  content.push(sectionTitle('Employees — discipline & hours'), disciplineTable);
 
   if (data.exceptions.length > 0) {
     const title = sectionTitle('Needs attention', 'triangle-alert');
@@ -363,16 +388,12 @@ export function buildAttendanceReportDocument(
     });
     const list = flagList(items);
     if (data.exceptions.length > 200) {
-      content.push(
-        title,
-        list,
-        {
-          text: `+${data.exceptions.length - 200} more — narrow the filters`,
-          fontSize: 8.5,
-          color: MUTED,
-          margin: [0, 0, 0, 12],
-        },
-      );
+      content.push(title, list, {
+        text: `+${data.exceptions.length - 200} more — use a shorter date range`,
+        fontSize: 8.5,
+        color: MUTED,
+        margin: [0, 0, 0, 12],
+      });
     } else if (data.exceptions.length <= 6) {
       content.push(kept(title, list));
     } else {
@@ -405,7 +426,10 @@ export function buildAttendanceReportDocument(
   content.push(...registerSection(data));
 
   const leaveRows = data.employees.filter(
-    (e) => e.summary.leave > 0 || e.summary.pendingLeaveDays > 0 || e.summary.halfDayLeaves > 0,
+    (e) =>
+      e.summary.leave > 0 ||
+      e.summary.pendingLeaveDays > 0 ||
+      e.summary.halfDayLeaves > 0,
   );
   if (leaveRows.length > 0) {
     const leaveTable = dataTable(
@@ -441,15 +465,13 @@ export function buildAttendanceReportDocument(
         { text: r.employeeName, bold: true },
         String(r.tooFar),
         String(r.lowAccuracy),
-        r.mocked > 0
-          ? { text: String(r.mocked), color: RED, bold: true }
-          : '0',
+        r.mocked > 0 ? { text: String(r.mocked), color: RED, bold: true } : '0',
         String(r.rateLimited),
         String(r.other),
       ]),
     );
     content.push(
-      sectionTitle('Rejected punches', 'camera-off'),
+      sectionTitle('Blocked check-ins', 'camera-off'),
       rejectionTable,
     );
     content.push(rejectionsNote());

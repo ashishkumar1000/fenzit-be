@@ -129,17 +129,14 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
   // today, member/office lookups, empty range reads, view row). Per-test
   // tweaks go through txBehaviour.
   let txBehaviour:
-    | ((sql: string, params?: unknown[]) => { rows: unknown[] })
-    | null = null;
+    ((sql: string, params?: unknown[]) => { rows: unknown[] }) | null = null;
 
   function pgTxOverride() {
     return {
       withTransaction: (work: (client: unknown) => Promise<unknown>) =>
         work({
           query: (sql: string, params?: unknown[]) =>
-            txBehaviour
-              ? txBehaviour(sql, params)
-              : { rows: [] },
+            txBehaviour ? txBehaviour(sql, params) : { rows: [] },
         }),
       onModuleDestroy: async () => undefined,
     };
@@ -497,7 +494,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
 
       expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).message).toContain('complete set');
+      expect(JSON.parse(res.body).message).toContain('timing fields');
     });
 
     it('PATCH /attendance/offices/:id routes a complete rules set to the RPC', async () => {
@@ -1288,9 +1285,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         }
         if (sql.includes('attendance_offices')) {
           return {
-            rows: [
-              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
-            ],
+            rows: [{ id: OFFICE_ID, name: 'Andheri West', archived_at: null }],
           };
         }
         if (
@@ -1400,9 +1395,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         }
         if (sql.includes('attendance_offices')) {
           return {
-            rows: [
-              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
-            ],
+            rows: [{ id: OFFICE_ID, name: 'Andheri West', archived_at: null }],
           };
         }
         if (
@@ -1525,9 +1518,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         }
         if (sql.includes('attendance_offices')) {
           return {
-            rows: [
-              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
-            ],
+            rows: [{ id: OFFICE_ID, name: 'Andheri West', archived_at: null }],
           };
         }
         if (sql.includes('from public.attendance_enrolments where')) {
@@ -1563,9 +1554,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         }
         if (sql.includes('attendance_offices')) {
           return {
-            rows: [
-              { id: OFFICE_ID, name: 'Andheri West', archived_at: null },
-            ],
+            rows: [{ id: OFFICE_ID, name: 'Andheri West', archived_at: null }],
           };
         }
         if (sql.includes('from public.attendance_enrolments where')) {
