@@ -8,6 +8,7 @@ import {
   listLeaveRequests,
   readEnrolmentFloor,
   readPageSpanFacts,
+  readSpanFacts,
 } from './leave.repository';
 import { pickWeeklyOffDays } from '../common/day-status/office-rules';
 import { isoWeekdayOf } from '../common/day-status/day-context';
@@ -148,11 +149,6 @@ describe('readPageSpanFacts (the list page batch)', () => {
     } as unknown as PoolClient & { query: jest.Mock };
   }
 
-  const REAL_PICKERS = {
-    pickWeeklyOffDays,
-    isoWeekdayOf,
-  };
-
   it('fetches the whole page in exactly 3 statements: overrides by any-array, tenant defaults, tenant holidays — union range, fully parameterised', async () => {
     const tx = fakeTx();
     const emp2 = '33333333-3333-4333-8333-333333333333';
@@ -193,6 +189,8 @@ describe('readPageSpanFacts (the list page batch)', () => {
 
     for (const [sql, params] of tx.query.mock.calls) {
       expect(String(sql)).not.toContain(TENANT);
+      expect(String(sql)).not.toContain(EMPLOYEE);
+      expect(String(sql)).not.toContain(emp2);
       expect(String(sql)).not.toContain('2026-10-0');
       expect(params.length).toBeGreaterThan(0);
     }
@@ -216,8 +214,8 @@ describe('readPageSpanFacts (the list page batch)', () => {
           dates: ['2026-10-02', '2026-10-03', '2026-10-04'],
         },
       ],
-      REAL_PICKERS.pickWeeklyOffDays,
-      REAL_PICKERS.isoWeekdayOf,
+      pickWeeklyOffDays,
+      isoWeekdayOf,
     );
     const byDate = facts.get(EMPLOYEE)!;
     expect(byDate.get('2026-10-02')).toEqual({
@@ -234,6 +232,59 @@ describe('readPageSpanFacts (the list page batch)', () => {
       date: '2026-10-04',
       isWorkingDay: false,
       kind: 'holiday',
+    });
+  });
+
+  it('is the DIFFERENTIAL twin of readSpanFacts — identical scripted rows yield identical fact maps (the parity claim, tested)', async () => {
+    const responses = [
+      [{ employee_id: EMPLOYEE, valid: '[2026-01-01,)', days: [7] }],
+      [{ valid: '[2026-01-01,)', days: [6, 7] }],
+      [{ holiday_date: '2026-10-04' }],
+    ];
+    const dates = ['2026-10-02', '2026-10-03', '2026-10-04'];
+    const single = await readSpanFacts(
+      txWithRows(responses),
+      TENANT,
+      EMPLOYEE,
+      dates,
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    const batched = await readPageSpanFacts(
+      txWithRows(responses),
+      TENANT,
+      [{ employeeId: EMPLOYEE, dates }],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(batched.get(EMPLOYEE)).toEqual(single);
+  });
+
+  it('an override row whose validity EXCLUDES a span date is ignored for that date (the superset-is-harmless claim)', async () => {
+    // The override ended in February — it must not reach October's facts,
+    // which fall through to the tenant default instead.
+    const tx = txWithRows([
+      [
+        {
+          employee_id: EMPLOYEE,
+          valid: '[2026-01-01,2026-02-01)',
+          days: [7],
+        },
+      ],
+      [{ valid: '[2026-01-01,)', days: [6, 7] }],
+      [],
+    ]);
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [{ employeeId: EMPLOYEE, dates: ['2026-10-03'] }], // Saturday
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(facts.get(EMPLOYEE)!.get('2026-10-03')).toEqual({
+      date: '2026-10-03',
+      isWorkingDay: false,
+      kind: 'weekly_off',
     });
   });
 
@@ -264,24 +315,60 @@ describe('readPageSpanFacts (the list page batch)', () => {
     });
   });
 
-  it('several requests of the SAME employee land in ONE fact map (the per-date merge)', async () => {
+  it('several requests of the SAME employee land in ONE fact map, duplicate dates included once (the per-date merge)', async () => {
     const tx = txWithRows([[], [], []]);
     const facts = await readPageSpanFacts(
       tx,
       TENANT,
       [
         { employeeId: EMPLOYEE, dates: ['2026-10-02'] },
-        { employeeId: EMPLOYEE, dates: ['2026-10-05', '2026-10-06'] },
+        // Overlapping requests on one page share the 2nd — it must not
+        // double up in the fact map.
+        { employeeId: EMPLOYEE, dates: ['2026-10-02', '2026-10-05'] },
       ],
       pickWeeklyOffDays,
       isoWeekdayOf,
     );
     const byDate = facts.get(EMPLOYEE)!;
-    expect([...byDate.keys()].sort()).toEqual([
-      '2026-10-02',
-      '2026-10-05',
-      '2026-10-06',
-    ]);
+    expect([...byDate.keys()].sort()).toEqual(['2026-10-02', '2026-10-05']);
+  });
+
+  it('a span with EMPTY dates is skipped — no undefined reaches a daterange param, no employee key is invented', async () => {
+    const tx = fakeTx();
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [
+        { employeeId: EMPLOYEE, dates: [] },
+        {
+          employeeId: '45444444-4444-4444-8444-444444444444',
+          dates: ['2026-10-03'],
+        },
+      ],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(facts.size).toBe(1); // only the dated employee
+    expect(facts.has(EMPLOYEE)).toBe(false);
+    expect(tx.query.mock.calls).toHaveLength(3); // still one batched page
+    const [, ovParams] = tx.query.mock.calls[0];
+    expect(ovParams[0]).toEqual(['45444444-4444-4444-8444-444444444444']);
+  });
+
+  it('every span empty answers an empty map and issues NO statements', async () => {
+    const tx = fakeTx();
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [
+        { employeeId: EMPLOYEE, dates: [] },
+        { employeeId: '45444444-4444-4444-8444-444444444444', dates: [] },
+      ],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(facts.size).toBe(0);
+    expect(tx.query.mock.calls).toHaveLength(0);
   });
 
   it('an empty page answers an empty map and issues NO statements', async () => {

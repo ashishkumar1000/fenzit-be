@@ -37,7 +37,6 @@ import {
   readSettingsGate,
   readSpanFacts,
   type LeaveListRow,
-  type SpanDayFacts,
 } from './leave.repository';
 import { findActiveOverrideDates } from './corrections.repository';
 import {
@@ -373,8 +372,13 @@ export class LeaveReadService {
     const data: LeaveRequestView[] = [];
     for (const row of pageRows) {
       const days: LeaveDayRow[] = daysByRequest.get(row.id) ?? [];
-      const spanFacts =
-        factsByEmployee.get(row.employee_id) ?? new Map<string, SpanDayFacts>();
+      // The facts map is keyed by the same employee_ids as pageRows, so a
+      // miss can only be a wiring bug — fail loudly instead of silently
+      // answering an empty-facts workingDays of 0 on every row.
+      const spanFacts = factsByEmployee.get(row.employee_id);
+      if (!spanFacts) {
+        throw new Error(`span facts missing for employee ${row.employee_id}`);
+      }
       data.push({
         ...toRequestView(
           row,

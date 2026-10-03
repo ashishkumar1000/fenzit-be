@@ -273,7 +273,8 @@ export interface PageSpan {
  * 20-row page on the pooler — past the client's 15s timeout. Batching
  * bounds the page at 3 round trips regardless of row count; the facts are
  * computed in JS with the SAME pickers, so results are identical.
- * Returns employeeId → (date → facts).
+ * Returns employeeId → (date → facts). The per-employee maps are SHARED
+ * across every request row of that employee — treat them as read-only.
  */
 export async function readPageSpanFacts(
   tx: PoolClient,
@@ -287,11 +288,14 @@ export async function readPageSpanFacts(
   isoWeekdayOf: (date: string) => number,
 ): Promise<Map<string, Map<string, SpanDayFacts>>> {
   if (spans.length === 0) return new Map();
-  const employeeIds = [...new Set(spans.map((s) => s.employeeId))].sort();
-  const starts = spans.map((s) => s.dates[0]).sort();
-  const ends = spans.map((s) => s.dates[s.dates.length - 1]).sort();
-  const rangeStart = starts[0];
-  const rangeEnd = ends[ends.length - 1];
+  const dated = spans.filter((s) => s.dates.length > 0);
+  if (dated.length === 0) return new Map();
+  const employeeIds = [...new Set(dated.map((s) => s.employeeId))].sort();
+  // The union range comes from a flat sort — no assumption that any
+  // caller's per-span dates arrive ascending.
+  const allDates = dated.flatMap((s) => s.dates).sort();
+  const rangeStart = allDates[0];
+  const rangeEnd = allDates[allDates.length - 1];
   const range = `[${rangeStart},${rangeEnd}]`;
   const [overrides, defaults, holidays] = await Promise.all([
     tx.query<WeeklyOffRow & { employee_id: string }>(
@@ -318,7 +322,7 @@ export async function readPageSpanFacts(
   }
   // Several requests of one employee merge into one ascending date list.
   const datesByEmployee = new Map<string, string[]>();
-  for (const span of spans) {
+  for (const span of dated) {
     const dates = datesByEmployee.get(span.employeeId);
     if (dates) {
       for (const date of span.dates) {
