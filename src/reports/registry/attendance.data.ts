@@ -6,6 +6,7 @@ import {
   readDayStatusGrid,
   type DayGridRow,
 } from '../../common/day-status/grid-reader';
+import { isoWeekdayOf } from '../../common/day-status/day-context';
 import {
   attendanceOutcome,
   computeAttendanceExceptions,
@@ -237,7 +238,11 @@ async function fetchEmployeeNames(
   return names;
 }
 
-/** One office row per distinct snapshot office in the filtered grid. */
+/** One office row per distinct snapshot office in the filtered grid.
+ *  Buckets whose rows are ALL untracked are dropped: those are the days
+ *  before an assignment (or the module) began — they carry no office
+ *  truth, and printing them as "(no office) · N employees · all zeros"
+ *  read like broken data (bug bash 2026-10-03, owner-persona round). */
 function buildOfficeRows(
   rows: DayGridRow[],
 ): AttendanceOfficeRow[] {
@@ -250,10 +255,15 @@ function buildOfficeRows(
   }
   const out: AttendanceOfficeRow[] = [];
   for (const [officeId, officeRows] of byOffice) {
+    if (!officeRows.some((r) => r.ctx.tracked)) continue;
     out.push({
       id: officeId,
       name: officeRows[0]?.ctx.officeName ?? '(no office)',
-      employees: new Set(officeRows.map((r) => r.employeeId)).size,
+      // Headcount from TRACKED rows only — a mixed bucket must not
+      // inflate with pre-enrolment people who have no tracked day there.
+      employees: new Set(
+        officeRows.filter((r) => r.ctx.tracked).map((r) => r.employeeId),
+      ).size,
       summary: summariseAttendanceRange(officeRows),
     });
   }
@@ -264,7 +274,9 @@ function buildOfficeRows(
   });
 }
 
-/** 7-day chunks from the range start; the tail keeps its remainder. */
+/** 7-day MONDAY-start chunks (the Indian business week — chunking from the
+ *  range's own first day made a Sunday-start range read Sun–Sat weeks);
+ *  the first and last chunks keep their partial remainders. */
 function enumerateWeeks(startDate: string, endDate: string): {
   label: string;
   start: string;
@@ -273,8 +285,10 @@ function enumerateWeeks(startDate: string, endDate: string): {
   const weeks: { label: string; start: string; end: string }[] = [];
   let cursor = startDate;
   while (cursor <= endDate) {
+    // Days until the coming Sunday (isoWeekday 7) — the chunk's end.
+    const daysToSunday = 7 - isoWeekdayOf(cursor);
     const endMs = Math.min(
-      Date.parse(cursor) + 6 * 86_400_000,
+      Date.parse(cursor) + daysToSunday * 86_400_000,
       Date.parse(endDate),
     );
     const end = new Date(endMs).toISOString().slice(0, 10);

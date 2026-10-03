@@ -99,6 +99,19 @@ describe('page-header — pageFooter', () => {
     expect(left.text).toContain('Private — contains customer details');
   });
 
+  it('carries the caller’s privacy note — the attendance report holds employee data, not customers (bug bash 2026-10-03)', () => {
+    const footer = pageFooter('Private — contains employee details') as (
+      page: number,
+      total: number,
+    ) => Content;
+
+    const strip = footer(2, 3) as { stack: [{ columns: [{ text: string }, unknown] }] };
+    const [left] = strip.stack[1].columns;
+
+    expect(left.text).toContain('Private — contains employee details');
+    expect(left.text).not.toContain('customer');
+  });
+
   it('uses the page margins so the footer rule lines up with the content', () => {
     const footer = pageFooter() as (page: number, total: number) => Content;
 

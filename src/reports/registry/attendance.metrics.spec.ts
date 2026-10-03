@@ -162,7 +162,7 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
     expect(summary.attendanceRate).toBeNull();
   });
 
-  it('hours come from non-null workedMinutes only; avg divides by worked credit', () => {
+  it('hours come from non-null workedMinutes only; avg divides by DAYS WITH HOURS (not credit)', () => {
     const rows = [
       fullDay('2026-09-25'), // 9h → 1.0 credit
       row({ workDate: '2026-09-26', record: record('2026-09-26', '09:30', '13:30') }), // 4h → 0.5 credit
@@ -170,7 +170,24 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
     ];
     const summary = summariseAttendanceRange(rows);
     expect(summary.workedHours).toBe(13); // 540+240 = 780min
-    expect(summary.avgHoursPerDay).toBe(8.7); // 780 / 1.5 credits
+    // 13h across the 2 days that carry a span — the credit divisor made a
+    // half-day read DOUBLE its hours (5.1h total, "10.2h avg" on prod).
+    expect(summary.avgHoursPerDay).toBe(6.5);
+  });
+
+  it('a present day with NO worked span leaves avgHoursPerDay null (0-credit override-present employee)', () => {
+    // Status-only override-present: daysWorked 1, workedMinutes null — the
+    // old daysWorked>0 gate rendered 0 h here; the span gate renders '—'.
+    const summary = summariseAttendanceRange([
+      row({
+        workDate: '2026-09-25',
+        override: override({ status: 'present' }),
+      }),
+      row({ workDate: '2026-09-26' }), // absent: no minutes
+    ]);
+    expect(summary.daysWorked).toBe(1);
+    expect(summary.workedHours).toBe(0);
+    expect(summary.avgHoursPerDay).toBeNull();
   });
 
   it('late minutes sum over late days with the grace applied by the engine', () => {

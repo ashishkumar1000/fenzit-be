@@ -55,7 +55,10 @@ export interface AttendanceSummary extends MonthlyEmployeeSummary {
   attendanceRate: number | null;
   /** workedMinutesTotal ÷ 60, 1 decimal (0 stays 0 — an honest zero). */
   workedHours: number;
-  /** workedHours ÷ daysWorked, 1 decimal; null when nothing was worked. */
+  /** workedHours ÷ days WITH a worked span (a half-day credit is 0.5 of a
+   *  day but a full day of hours — dividing by credit made the average
+   *  read DOUBLE the total; bug bash 2026-10-03, owner-persona round).
+   *  Null when no day carries a span. */
   avgHoursPerDay: number | null;
 }
 
@@ -82,6 +85,7 @@ export function summariseAttendanceRange(
     lateMinutes: 0,
     earlyOuts: 0,
     workedMinutesTotal: 0,
+    daysWithHours: 0,
     corrections: 0,
     fakeLocationDays: 0,
     pendingLeaveDays: 0,
@@ -94,7 +98,12 @@ export function summariseAttendanceRange(
     if (outcome.status === 'present') extra.fullDays += 1;
     extra.lateMinutes += outcome.lateMinutes ?? 0;
     if (outcome.earlyCheckout) extra.earlyOuts += 1;
-    extra.workedMinutesTotal += outcome.workedMinutes ?? 0;
+    // A same-instant punch yields workedMinutes 0 — it is not a day
+    // "with hours" and must not dilute the average (review 2026-10-03).
+    if (outcome.workedMinutes != null && outcome.workedMinutes > 0) {
+      extra.workedMinutesTotal += outcome.workedMinutes;
+      extra.daysWithHours += 1;
+    }
     if (row.override) extra.corrections += 1;
     if (outcome.markers.includes('fake_location_attempt')) {
       extra.fakeLocationDays += 1;
@@ -111,7 +120,10 @@ function finalise(
   extra: Omit<
     AttendanceSummary,
     keyof MonthlyEmployeeSummary | 'expectedDays' | 'attendanceRate' | 'workedHours' | 'avgHoursPerDay'
-  >,
+  > & {
+    /** Internal counter: tracked days carrying a real worked span. */
+    daysWithHours: number;
+  },
 ): AttendanceSummary {
   // Leave credits stay OUT of the expected-day denominator (owner ruling).
   const expectedDays = Math.max(
@@ -129,7 +141,9 @@ function finalise(
         : null,
     workedHours,
     avgHoursPerDay:
-      nine.daysWorked > 0 ? round1(workedHours / nine.daysWorked) : null,
+      extra.daysWithHours > 0
+        ? round1(extra.workedMinutesTotal / 60 / extra.daysWithHours)
+        : null,
   };
 }
 

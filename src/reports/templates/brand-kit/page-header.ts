@@ -115,12 +115,13 @@ export function pageHeader(
  * Footer callback (page numbers + creation timestamp + privacy note +
  * Fenzit wordmark). Timestamp is captured when the template builds the doc —
  * render time — formatted on the IST clock (no date library). Templates
- * assign this to the doc definition's `footer` field.
+ * assign this to the doc definition's `footer` field. The privacy note is
+ * the caller's: the job report carries customer data, the attendance
+ * report carries employee data (bug bash 2026-10-03, user-persona round).
  */
-export function pageFooter(): (
-  currentPage: number,
-  pageCount: number,
-) => Content {
+export function pageFooter(
+  confidentiality = 'Private — contains customer details',
+): (currentPage: number, pageCount: number) => Content {
   const generatedAt = new Date(Date.now() + 5.5 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 16)
@@ -145,7 +146,7 @@ export function pageFooter(): (
       {
         columns: [
           {
-            text: `Created ${generatedAt} IST · Private — contains customer details`,
+            text: `Created ${generatedAt} IST · ${confidentiality}`,
             fontSize: 7,
             font: FONT_FAMILY,
             color: brand.textMuted,

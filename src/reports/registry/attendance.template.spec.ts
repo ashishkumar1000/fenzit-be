@@ -146,6 +146,16 @@ describe('buildAttendanceReportDocument (21-3)', () => {
     expect(doc.pageSize).toBe('A4');
     expect(Array.isArray(doc.pageMargins)).toBe(true);
     expect(doc.footer).toBeDefined();
+    // The CALL SITE must pass the employee-data privacy note — reverting
+    // it to pageFooter() (customer wording) shipped the suite green, so
+    // the built doc's footer callback is invoked and pinned (bug bash
+    // 2026-10-03, verification-gap review).
+    const strip = (doc.footer as (p: number, t: number) => unknown)(1, 9) as {
+      stack: [{ columns: [{ text: string }, unknown] }];
+    };
+    expect(strip.stack[1].columns[0].text).toContain(
+      'Private — contains employee details',
+    );
   });
 
   it('renders the normative section order for a full scope', () => {
@@ -256,5 +266,112 @@ describe('buildAttendanceReportDocument (21-3)', () => {
     );
     expect(has(texts, 'No attendance data for these dates')).toBe(true);
     expect(has(texts, 'Overall')).toBe(false);
+  });
+});
+
+describe('no table ever rides inside an unbreakable stack (bug bash 2026-10-03)', () => {
+  /**
+   * kept() glues a section title to its first block with `unbreakable:
+   * true` — pdfmake has no keep-with-next. An unbreakable block taller
+   * than one page is silently clipped by the layout, so per the brand-kit
+   * rule (job report: "never wrap a table") a TABLE must never sit inside
+   * one: the 103-employee production report lost BOTH employee tables and
+   * rendered a blank page 3 this way, while the template specs (2-employee
+   * fixtures) stayed green.
+   */
+
+  const unbreakableTableSizes = (node: unknown): number[] => {
+    const found: number[] = [];
+    const walkTables = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) {
+        n.forEach(walkTables);
+        return;
+      }
+      const obj = n as Record<string, unknown>;
+      const table = obj.table as { body?: unknown[] } | undefined;
+      if (Array.isArray(table?.body)) found.push(table.body.length);
+      for (const v of Object.values(obj)) walkTables(v);
+    };
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) {
+        n.forEach(walk);
+        return;
+      }
+      const obj = n as Record<string, unknown>;
+      const bareTable = obj.table as { body?: unknown[] } | undefined;
+      if (obj.unbreakable === true && Array.isArray(obj.stack)) {
+        for (const part of obj.stack) walkTables(part);
+      } else if (obj.unbreakable === true && Array.isArray(bareTable?.body)) {
+        // unbreakable set directly on the table node, no stack wrapper
+        found.push(bareTable.body.length);
+      }
+      for (const v of Object.values(obj)) walk(v);
+    };
+    walk(node);
+    return found;
+  };
+
+  it('the employee-table axis (the production failure): 103 employees never wrap unbreakable', () => {
+    // 1-row tables (summary-card rows, icon chips, per-item flag rows) are
+    // safe — a single row cannot overflow a page. The clipping failure
+    // mode needs dozens of rows, so the guard is: any unbreakable stack
+    // carrying a table of more than 6 body rows is a defect.
+    const employees = Array.from({ length: 103 }, (_, i) => ({
+      id: `e${i + 1}`,
+      name: `Loadtest H${String(i + 1).padStart(2, '0')}`,
+      offices: 'HQ',
+      enrolledFrom: null,
+      summary: summary(),
+    }));
+    const doc = buildAttendanceReportDocument(
+      fixtureData({
+        employees,
+        scope: { ...fixtureData().scope, employeesInScope: 103 },
+      }),
+    );
+    expect(unbreakableTableSizes(doc).filter((n) => n > 6)).toEqual([]);
+  });
+
+  it('every OTHER table axis past 6 rows too: offices, weekly trend, rejected punches, exceptions gate', () => {
+    // Review gap: the first guard fixture only grew the EMPLOYEE axis, so
+    // re-wrapping just the offices/trend/rejections tables (or loosening
+    // the exceptions ≤6 kept-gate) shipped green. Grow all four axes past
+    // 6 so the >6 filter bites on every site the unwrap freed.
+    const eight = <T,>(make: (i: number) => T): T[] =>
+      Array.from({ length: 8 }, (_, i) => make(i));
+    const doc = buildAttendanceReportDocument(
+      fixtureData({
+        offices: eight((i) => ({
+          id: `o${i + 1}`,
+          name: `Office ${i + 1}`,
+          employees: 2,
+          summary: summary(),
+        })),
+        weeks: eight((i) => ({
+          label: `Week ${i + 1}`,
+          summary: summary(),
+        })),
+        rejections: eight((i) => ({
+          employeeId: `e${i + 1}`,
+          employeeName: `Rej ${i + 1}`,
+          tooFar: 1,
+          lowAccuracy: 0,
+          mocked: 0,
+          rateLimited: 0,
+          other: 0,
+        })),
+        exceptions: eight((i) => ({
+          kind: 'fake_location' as const,
+          severity: 'alarm' as const,
+          employeeName: `Rej ${i + 1}`,
+          title: 'Fake-location attempt',
+          detail: '1 day with unacknowledged fake-location punches',
+        })),
+        register: null,
+      }),
+    );
+    expect(unbreakableTableSizes(doc).filter((n) => n > 6)).toEqual([]);
   });
 });

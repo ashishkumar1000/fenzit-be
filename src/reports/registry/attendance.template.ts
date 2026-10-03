@@ -304,7 +304,7 @@ export function buildAttendanceReportDocument(
         PAGE_MARGINS.bottom,
       ],
       defaultStyle: { font: FONT_FAMILY, fontSize: 9.5, color: brand.textBody },
-      footer: pageFooter(),
+      footer: pageFooter('Private — contains employee details'),
       content,
     };
   }
@@ -336,13 +336,18 @@ export function buildAttendanceReportDocument(
         fmtHours(o.summary),
       ]),
     );
-    content.push(kept(sectionTitle('Offices'), officeTable));
+    // Title and table are SIBLINGS — never kept(): an unbreakable stack
+    // taller than one page is silently clipped by pdfmake, and these
+    // tables grow with the tenant (the 103-employee production report
+    // lost both employee tables this way; bug bash 2026-10-03).
+    content.push(sectionTitle('Offices'), officeTable);
   }
 
   const [attendanceTable, disciplineTable] = employeeTables(data);
-  content.push(kept(sectionTitle('Employees — attendance'), attendanceTable));
+  content.push(sectionTitle('Employees — attendance'), attendanceTable);
   content.push(
-    kept(sectionTitle('Employees — discipline & hours'), disciplineTable),
+    sectionTitle('Employees — discipline & hours'),
+    disciplineTable,
   );
 
   if (data.exceptions.length > 0) {
@@ -394,7 +399,7 @@ export function buildAttendanceReportDocument(
         String(w.summary.leave),
       ]),
     );
-    content.push(kept(sectionTitle('Weekly trend'), trendTable));
+    content.push(sectionTitle('Weekly trend'), trendTable);
   }
 
   content.push(...registerSection(data));
@@ -419,7 +424,7 @@ export function buildAttendanceReportDocument(
         String(e.summary.halfDayLeaves),
       ]),
     );
-    content.push(kept(sectionTitle('Leave summary'), leaveTable));
+    content.push(sectionTitle('Leave summary'), leaveTable);
   }
 
   if (data.rejections.length > 0) {
@@ -444,10 +449,8 @@ export function buildAttendanceReportDocument(
       ]),
     );
     content.push(
-      kept(
-        sectionTitle('Rejected punches', 'camera-off'),
-        rejectionTable,
-      ),
+      sectionTitle('Rejected punches', 'camera-off'),
+      rejectionTable,
     );
     content.push(rejectionsNote());
   }
@@ -465,7 +468,7 @@ export function buildAttendanceReportDocument(
       fontSize: 9.5,
       color: brand.textBody,
     },
-    footer: pageFooter(),
+    footer: pageFooter('Private — contains employee details'),
     content,
   };
 }

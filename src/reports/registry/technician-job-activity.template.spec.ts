@@ -348,3 +348,61 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
     });
   });
 });
+describe('no table ever rides inside an unbreakable stack (bug bash 2026-10-03)', () => {
+  /**
+   * Mirror of the attendance template's guard. kept()'s `unbreakable`
+   * stack silently clips anything taller than one page, so per this
+   * template's own rule ("never wrap a table") the per-technician
+   * jobsTable and the >6-item flag list must stay breakable siblings of
+   * their titles. The existing structural test only checks the Overall
+   * card row — a reintroduced kept() around jobsTable shipped green.
+   */
+  const unbreakableTableSizes = (node: unknown): number[] => {
+    const found: number[] = [];
+    const walkSizes = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) {
+        n.forEach(walkSizes);
+        return;
+      }
+      const obj = n as Record<string, unknown>;
+      const table = obj.table as { body?: unknown[] } | undefined;
+      if (Array.isArray(table?.body)) found.push(table.body.length);
+      for (const v of Object.values(obj)) walkSizes(v);
+    };
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) {
+        n.forEach(walk);
+        return;
+      }
+      const obj = n as Record<string, unknown>;
+      const bareTable = obj.table as { body?: unknown[] } | undefined;
+      if (obj.unbreakable === true && Array.isArray(obj.stack)) {
+        for (const part of obj.stack) walkSizes(part);
+      } else if (obj.unbreakable === true && Array.isArray(bareTable?.body)) {
+        // unbreakable set directly on the table node, no stack wrapper
+        found.push(bareTable.body.length);
+      }
+      for (const v of Object.values(obj)) walk(v);
+    };
+    walk(node);
+    return found;
+  };
+
+  it('a 12-job technician keeps jobsTable breakable and an 8-flag list out of kept()', () => {
+    const base = fixtureData();
+    const jobs = Array.from({ length: 12 }, (_, i) =>
+      job({
+        id: `jx${i + 1}`,
+        skillName: `Skill ${i + 1}`,
+        // 4 completed + 8 cancelled → the flag list passes the ≤6 kept
+        // gate into the breakable sibling branch (8 rows would clip).
+        status: i < 4 ? 'completed' : 'cancelled',
+        completedAt: i < 4 ? '2026-09-02T05:45:00Z' : null,
+      }),
+    );
+    const doc = buildTechnicianJobActivityDocument({ ...base, jobs });
+    expect(unbreakableTableSizes(doc).filter((n) => n > 6)).toEqual([]);
+  });
+});

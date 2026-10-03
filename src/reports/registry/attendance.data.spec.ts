@@ -560,6 +560,64 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     );
   });
 
+  it('weekly trend chunks run MONDAY-start, not from the range’s own weekday', async () => {
+    // 1 Sep 2026 is a TUESDAY — the first chunk must close on Sunday 6 Sep
+    // (the Indian business week), not run Tue–Mon.
+    const pg = pgStub({ ...baseFixtures(), records: [] });
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
+      attendance_attempts: [],
+    });
+
+    const data = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        params: { start_date: '2026-09-01', end_date: '2026-09-30' },
+      }),
+    );
+
+    // The label is the user-visible surface: Tue-start range closes its
+    // first chunk on Sunday.
+    expect(data.weeks[0].label).toBe('1 Sep – 6 Sep');
+    expect(data.weeks[1].label).toBe('7 Sep – 13 Sep');
+    expect(data.weeks[data.weeks.length - 1].label).toBe('28 Sep – 30 Sep');
+  });
+
+  it('an office bucket whose rows are ALL untracked is dropped (no "(no office) · N employees · all zeros" row)', async () => {
+    // Assignments exist, but every grid row is pre-enrolment/untracked:
+    // the bucket carries no office truth and read like broken data.
+    const fixtures = baseFixtures();
+    fixtures.enrolments = [
+      { employee_id: E1, valid: '[2026-09-27,)', enabled_at: new Date('2026-09-27T05:00:00Z') },
+      { employee_id: E2, valid: '[2026-09-27,)', enabled_at: new Date('2026-09-27T05:00:00Z') },
+    ];
+    fixtures.records = [];
+    const pg = pgStub(fixtures);
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
+      attendance_attempts: [],
+    });
+
+    const data = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        params: { start_date: '2026-09-25', end_date: '2026-09-26' }, // both days untracked
+      }),
+    );
+
+    // The OFFICES section drops the all-untracked bucket; the employee
+    // table honestly keeps the zero rows (the "N tracked" scope count).
+    expect(data.offices).toEqual([]);
+    expect(data.employees.map((e) => e.name)).toEqual(['Asha', 'Bimal']);
+    expect(data.employees.every((e) => e.summary.daysWorked === 0)).toBe(true);
+  });
+
   it('an office filter matching nobody audits NOBODY (fallback to the roster is a defect)', async () => {
     // Both employees only ever sat at HQ; the filter asks for Branch.
     const fixtures = baseFixtures();
