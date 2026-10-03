@@ -3,12 +3,17 @@ import { of, throwError } from 'rxjs';
 import { LoggingInterceptor } from './logging.interceptor';
 
 const makeContext = (
-  extras: { user?: unknown; correlationId?: string; sessionId?: string | null } = {},
+  extras: {
+    user?: unknown;
+    correlationId?: string;
+    sessionId?: string | null;
+    headers?: Record<string, string>;
+  } = {},
 ) => {
   const request = {
     method: 'GET',
     url: '/health',
-    headers: {},
+    headers: extras.headers ?? {},
     user: extras.user ?? null,
     correlationId: extras.correlationId,
     sessionId: extras.sessionId,
@@ -47,7 +52,37 @@ describe('LoggingInterceptor', () => {
         route: 'GET /health',
         http_status: 200,
         duration_ms: expect.any(Number),
+        app_version: null,
+        platform: null,
+        os_version: null,
+        device_model: null,
       });
+      done();
+    });
+  });
+
+  it('logs the client metadata headers when the app sends them', (done) => {
+    const interceptor = new LoggingInterceptor();
+    const logSpy = jest.spyOn(interceptor['logger'], 'log');
+
+    const { ctx } = makeContext({
+      headers: {
+        'x-app-version': '1.0.0',
+        'x-platform': 'android',
+        'x-os-version': '34',
+        'x-device-model': 'Pixel 6',
+      },
+    });
+    const next = { handle: () => of('ok') };
+
+    interceptor.intercept(ctx, next).subscribe(() => {
+      const parsed = JSON.parse(
+        (logSpy.mock.calls[0] as string[])[0],
+      ) as Record<string, unknown>;
+      expect(parsed.app_version).toBe('1.0.0');
+      expect(parsed.platform).toBe('android');
+      expect(parsed.os_version).toBe('34');
+      expect(parsed.device_model).toBe('Pixel 6');
       done();
     });
   });

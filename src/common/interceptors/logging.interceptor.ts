@@ -53,7 +53,23 @@ export class LoggingInterceptor implements NestInterceptor {
         route: `${request.method} ${request.url}`,
         http_status: httpStatus,
         duration_ms: durationMs,
+        // Client metadata headers (server-driven-config spec, CAP-3): which
+        // app build/platform made this request. Absent on old clients and
+        // non-app callers — always optional, never required.
+        app_version: headerOrNull(request, 'x-app-version'),
+        platform: headerOrNull(request, 'x-platform'),
+        os_version: headerOrNull(request, 'x-os-version'),
+        device_model: headerOrNull(request, 'x-device-model'),
       }),
     );
   }
+}
+
+function headerOrNull(
+  request: { headers: Record<string, unknown> },
+  name: string,
+): string | null {
+  const value = request.headers[name];
+  if (Array.isArray(value)) return (value[0] as string) ?? null;
+  return (value as string) ?? null;
 }

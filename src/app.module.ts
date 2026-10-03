@@ -5,6 +5,7 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { JwtModule } from '@nestjs/jwt';
 import * as Joi from 'joi';
 import { HealthController } from './health/health.controller';
+import { AppConfigModule } from './app-config/app-config.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -27,6 +28,7 @@ import { TelemetryShutdown } from './telemetry';
 
 @Module({
   imports: [
+    AppConfigModule,
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: Joi.object({
