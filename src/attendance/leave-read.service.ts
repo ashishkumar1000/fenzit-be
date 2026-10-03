@@ -33,9 +33,11 @@ import {
   findRequestWithDays,
   listLeaveRequests,
   readEnrolmentFloor,
+  readPageSpanFacts,
   readSettingsGate,
   readSpanFacts,
   type LeaveListRow,
+  type SpanDayFacts,
 } from './leave.repository';
 import { findActiveOverrideDates } from './corrections.repository';
 import {
@@ -176,40 +178,46 @@ export class LeaveReadService {
     }
     const dates = enumerateDates(dto.startDate, dto.endDate ?? dto.startDate);
     const today = await tenantToday(tx, tenantId);
-    const [enrolment, settings, spanFacts, overlapping, checkedIn, overrideDates] =
-      await Promise.all([
-        readEnrolmentFloor(tx, employeeId, today),
-        readSettingsGate(tx, tenantId),
-        readSpanFacts(
-          tx,
-          tenantId,
-          employeeId,
-          dates,
-          pickWeeklyOffDays,
-          isoWeekdayOf,
-        ),
-        findOverlappingDays(
-          tx,
-          tenantId,
-          employeeId,
-          dates[0],
-          dates[dates.length - 1],
-        ),
-        findCheckedInDates(
-          tx,
-          tenantId,
-          employeeId,
-          dates[0],
-          dates[dates.length - 1],
-          today,
-        ),
-        findActiveOverrideDates(tx, {
-          tenantId,
-          employeeId,
-          start: dates[0],
-          end: dates[dates.length - 1],
-        }),
-      ]);
+    const [
+      enrolment,
+      settings,
+      spanFacts,
+      overlapping,
+      checkedIn,
+      overrideDates,
+    ] = await Promise.all([
+      readEnrolmentFloor(tx, employeeId, today),
+      readSettingsGate(tx, tenantId),
+      readSpanFacts(
+        tx,
+        tenantId,
+        employeeId,
+        dates,
+        pickWeeklyOffDays,
+        isoWeekdayOf,
+      ),
+      findOverlappingDays(
+        tx,
+        tenantId,
+        employeeId,
+        dates[0],
+        dates[dates.length - 1],
+      ),
+      findCheckedInDates(
+        tx,
+        tenantId,
+        employeeId,
+        dates[0],
+        dates[dates.length - 1],
+        today,
+      ),
+      findActiveOverrideDates(tx, {
+        tenantId,
+        employeeId,
+        start: dates[0],
+        end: dates[dates.length - 1],
+      }),
+    ]);
     const rejection = validateApplyFacts(dates, {
       today,
       enrolment,
@@ -348,17 +356,25 @@ export class LeaveReadService {
       tx,
       pageRows.map((r) => r.id),
     );
+    // The page's span facts in ONE batched read. The per-row readSpanFacts
+    // loop cost 3 strictly-sequential round trips per row (one tx
+    // connection cannot pipeline) — ~17s for a 20-row page on the pooler,
+    // past the client's 15s timeout; the batch is 3 round trips per page.
+    const factsByEmployee = await readPageSpanFacts(
+      tx,
+      tenantId,
+      pageRows.map((row) => ({
+        employeeId: row.employee_id,
+        dates: enumerateDates(row.start_date, row.end_date),
+      })),
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
     const data: LeaveRequestView[] = [];
     for (const row of pageRows) {
       const days: LeaveDayRow[] = daysByRequest.get(row.id) ?? [];
-      const spanFacts = await readSpanFacts(
-        tx,
-        tenantId,
-        row.employee_id,
-        enumerateDates(row.start_date, row.end_date),
-        pickWeeklyOffDays,
-        isoWeekdayOf,
-      );
+      const spanFacts =
+        factsByEmployee.get(row.employee_id) ?? new Map<string, SpanDayFacts>();
       data.push({
         ...toRequestView(
           row,

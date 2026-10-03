@@ -183,6 +183,38 @@ export interface SpanDayFacts {
 }
 
 /**
+ * Pure span-fact computation shared by the single-employee read and the
+ * page batch — one implementation, no drift. The pickers validity-check
+ * each row per date, so a superset of override/default rows is harmless.
+ */
+function computeSpanFacts(
+  dates: string[],
+  overrides: WeeklyOffRow[],
+  defaults: WeeklyOffRow[],
+  holidayDates: string[],
+  pickWeeklyOffDays: (
+    overrides: WeeklyOffRow[],
+    defaults: WeeklyOffRow[],
+    anchor: string,
+  ) => number[],
+  isoWeekdayOf: (date: string) => number,
+): Map<string, SpanDayFacts> {
+  const holidaySet = new Set(holidayDates);
+  const facts = new Map<string, SpanDayFacts>();
+  for (const date of dates) {
+    const isHoliday = holidaySet.has(date);
+    const weeklyOffDays = pickWeeklyOffDays(overrides, defaults, date);
+    const isWeeklyOff = weeklyOffDays.includes(isoWeekdayOf(date));
+    facts.set(date, {
+      date,
+      isWorkingDay: !isWeeklyOff && !isHoliday,
+      kind: isHoliday ? 'holiday' : isWeeklyOff ? 'weekly_off' : 'working',
+    });
+  }
+  return facts;
+}
+
+/**
  * Per-date working/off facts across a span: the weekly-off override
  * REPLACES the default and holidays win over weekly offs (FR-10 rule 4
  * order, the same pickers me/summary and the day context use — one
@@ -217,23 +249,102 @@ export async function readSpanFacts(
       [tenantId, dates[0], dates[dates.length - 1]],
     ),
   ]);
-  const holidaySet = new Set(holidays.rows.map((r) => r.holiday_date));
-  const facts = new Map<string, SpanDayFacts>();
-  for (const date of dates) {
-    const isHoliday = holidaySet.has(date);
-    const weeklyOffDays = pickWeeklyOffDays(
-      overrides.rows,
-      defaults.rows,
-      date,
-    );
-    const isWeeklyOff = weeklyOffDays.includes(isoWeekdayOf(date));
-    facts.set(date, {
-      date,
-      isWorkingDay: !isWeeklyOff && !isHoliday,
-      kind: isHoliday ? 'holiday' : isWeeklyOff ? 'weekly_off' : 'working',
-    });
+  return computeSpanFacts(
+    dates,
+    overrides.rows,
+    defaults.rows,
+    holidays.rows.map((r) => r.holiday_date),
+    pickWeeklyOffDays,
+    isoWeekdayOf,
+  );
+}
+
+/** One request span on a list page: whose calendar, which dates. */
+export interface PageSpan {
+  employeeId: string;
+  dates: string[];
+}
+
+/**
+ * The whole LIST PAGE's span facts in 3 statements (overrides for every
+ * page employee, tenant defaults, tenant holidays — union date range).
+ * The list loop once awaited readSpanFacts per row: 3 round trips × rows,
+ * strictly sequential (one tx connection cannot pipeline) ≈ 17s for a
+ * 20-row page on the pooler — past the client's 15s timeout. Batching
+ * bounds the page at 3 round trips regardless of row count; the facts are
+ * computed in JS with the SAME pickers, so results are identical.
+ * Returns employeeId → (date → facts).
+ */
+export async function readPageSpanFacts(
+  tx: PoolClient,
+  tenantId: string,
+  spans: PageSpan[],
+  pickWeeklyOffDays: (
+    overrides: WeeklyOffRow[],
+    defaults: WeeklyOffRow[],
+    anchor: string,
+  ) => number[],
+  isoWeekdayOf: (date: string) => number,
+): Promise<Map<string, Map<string, SpanDayFacts>>> {
+  if (spans.length === 0) return new Map();
+  const employeeIds = [...new Set(spans.map((s) => s.employeeId))].sort();
+  const starts = spans.map((s) => s.dates[0]).sort();
+  const ends = spans.map((s) => s.dates[s.dates.length - 1]).sort();
+  const rangeStart = starts[0];
+  const rangeEnd = ends[ends.length - 1];
+  const range = `[${rangeStart},${rangeEnd}]`;
+  const [overrides, defaults, holidays] = await Promise.all([
+    tx.query<WeeklyOffRow & { employee_id: string }>(
+      `select employee_id, valid::text, days from public.attendance_weekly_off_overrides
+       where employee_id = any($1::uuid[]) and valid && $2::daterange`,
+      [employeeIds, range],
+    ),
+    tx.query<WeeklyOffRow>(
+      `select valid::text, days from public.attendance_weekly_off_defaults
+       where tenant_id = $1::uuid and valid && $2::daterange`,
+      [tenantId, range],
+    ),
+    tx.query<{ holiday_date: string }>(
+      `select holiday_date::text from public.holidays
+       where tenant_id = $1::uuid and holiday_date between $2::date and $3::date`,
+      [tenantId, rangeStart, rangeEnd],
+    ),
+  ]);
+  const overridesByEmployee = new Map<string, WeeklyOffRow[]>();
+  for (const { employee_id, ...rest } of overrides.rows) {
+    const list = overridesByEmployee.get(employee_id) ?? [];
+    list.push(rest);
+    overridesByEmployee.set(employee_id, list);
   }
-  return facts;
+  // Several requests of one employee merge into one ascending date list.
+  const datesByEmployee = new Map<string, string[]>();
+  for (const span of spans) {
+    const dates = datesByEmployee.get(span.employeeId);
+    if (dates) {
+      for (const date of span.dates) {
+        if (!dates.includes(date)) dates.push(date);
+      }
+    } else {
+      datesByEmployee.set(span.employeeId, [...span.dates]);
+    }
+  }
+  const holidayDates = holidays.rows.map((r) => r.holiday_date);
+  const factsByEmployee = new Map<string, Map<string, SpanDayFacts>>();
+  for (const [employeeId, dates] of datesByEmployee) {
+    dates.sort();
+    factsByEmployee.set(
+      employeeId,
+      computeSpanFacts(
+        dates,
+        overridesByEmployee.get(employeeId) ?? [],
+        defaults.rows,
+        holidayDates,
+        pickWeeklyOffDays,
+        isoWeekdayOf,
+      ),
+    );
+  }
+  return factsByEmployee;
 }
 
 /**

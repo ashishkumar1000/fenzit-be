@@ -2,12 +2,15 @@ import type { PoolClient } from 'pg';
 import { DERIVED_STATUS_ORDER, PG_OVERLAP_CONSTRAINT } from './leave.constants';
 import {
   derivedStatusSql,
+  insertLeaveRequest,
   findCheckedInDates,
   findOverlappingDays,
-  insertLeaveRequest,
   listLeaveRequests,
   readEnrolmentFloor,
+  readPageSpanFacts,
 } from './leave.repository';
+import { pickWeeklyOffDays } from '../common/day-status/office-rules';
+import { isoWeekdayOf } from '../common/day-status/day-context';
 
 /**
  * SQL-text contracts for the leave repository (the 16-1 review pattern):
@@ -61,7 +64,14 @@ describe('statement contracts', () => {
 
   it('findCheckedInDates caps at the TENANT today parameter, never the UTC current_date (review fix)', async () => {
     const tx = fakeTx();
-    await findCheckedInDates(tx, TENANT, EMPLOYEE, '2026-09-01', '2026-10-30', '2026-09-29');
+    await findCheckedInDates(
+      tx,
+      TENANT,
+      EMPLOYEE,
+      '2026-09-01',
+      '2026-10-30',
+      '2026-09-29',
+    );
     const sql = tx.query.mock.calls[0][0] as string;
     expect(sql).toContain('least($4::date, $5::date)');
     expect(sql).not.toContain('current_date');
@@ -127,6 +137,167 @@ describe('derivedStatusSql (D5 parity)', () => {
   });
 });
 
+describe('readPageSpanFacts (the list page batch)', () => {
+  /** Rows returned per query call, in call order (overrides, defaults, holidays). */
+  function txWithRows(responses: unknown[][]) {
+    let call = 0;
+    return {
+      query: jest.fn(() =>
+        Promise.resolve({ rows: responses[call++] ?? [], rowCount: 0 }),
+      ),
+    } as unknown as PoolClient & { query: jest.Mock };
+  }
+
+  const REAL_PICKERS = {
+    pickWeeklyOffDays,
+    isoWeekdayOf,
+  };
+
+  it('fetches the whole page in exactly 3 statements: overrides by any-array, tenant defaults, tenant holidays — union range, fully parameterised', async () => {
+    const tx = fakeTx();
+    const emp2 = '33333333-3333-4333-8333-333333333333';
+    await readPageSpanFacts(
+      tx,
+      TENANT,
+      [
+        { employeeId: EMPLOYEE, dates: ['2026-10-02', '2026-10-04'] },
+        { employeeId: emp2, dates: ['2026-10-01', '2026-10-02'] },
+        { employeeId: EMPLOYEE, dates: ['2026-10-03'] }, // same employee again
+      ],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(tx.query.mock.calls).toHaveLength(3);
+
+    const [ovSql, ovParams] = tx.query.mock.calls[0];
+    expect(ovSql).toContain('attendance_weekly_off_overrides');
+    expect(ovSql).toContain('employee_id = any($1::uuid[])');
+    expect(ovSql).toContain('valid && $2::daterange');
+    expect(ovParams[0]).toEqual([EMPLOYEE, emp2].sort()); // deduped
+    expect(ovParams[1]).toBe('[2026-10-01,2026-10-04]'); // union range
+
+    const [defSql, defParams] = tx.query.mock.calls[1];
+    expect(defSql).toContain('attendance_weekly_off_defaults');
+    expect(defSql).toContain('tenant_id = $1::uuid');
+    expect(defSql).toContain('valid && $2::daterange');
+    expect(defParams[0]).toBe(TENANT);
+    expect(defParams[1]).toBe('[2026-10-01,2026-10-04]');
+
+    const [holSql, holParams] = tx.query.mock.calls[2];
+    expect(holSql).toContain('from public.holidays');
+    expect(holSql).toContain('tenant_id = $1::uuid');
+    expect(holSql).toContain('holiday_date between $2::date and $3::date');
+    expect(holParams[0]).toBe(TENANT);
+    expect(holParams[1]).toBe('2026-10-01');
+    expect(holParams[2]).toBe('2026-10-04');
+
+    for (const [sql, params] of tx.query.mock.calls) {
+      expect(String(sql)).not.toContain(TENANT);
+      expect(String(sql)).not.toContain('2026-10-0');
+      expect(params.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('computes the same facts readSpanFacts would: the covering override REPLACES the default and the holiday WINS over the weekly off', async () => {
+    // Fri 02 Oct, Sat 03 Oct, Sun 04 Oct 2026. The override cuts the
+    // tenant's Sat+Sun default down to Sunday only; the Sunday is ALSO a
+    // holiday, and the holiday must win the kind.
+    const tx = txWithRows([
+      [{ employee_id: EMPLOYEE, valid: '[2026-01-01,)', days: [7] }],
+      [{ valid: '[2026-01-01,)', days: [6, 7] }],
+      [{ holiday_date: '2026-10-04' }],
+    ]);
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [
+        {
+          employeeId: EMPLOYEE,
+          dates: ['2026-10-02', '2026-10-03', '2026-10-04'],
+        },
+      ],
+      REAL_PICKERS.pickWeeklyOffDays,
+      REAL_PICKERS.isoWeekdayOf,
+    );
+    const byDate = facts.get(EMPLOYEE)!;
+    expect(byDate.get('2026-10-02')).toEqual({
+      date: '2026-10-02',
+      isWorkingDay: true,
+      kind: 'working',
+    });
+    expect(byDate.get('2026-10-03')).toEqual({
+      date: '2026-10-03',
+      isWorkingDay: true,
+      kind: 'working',
+    });
+    expect(byDate.get('2026-10-04')).toEqual({
+      date: '2026-10-04',
+      isWorkingDay: false,
+      kind: 'holiday',
+    });
+  });
+
+  it('an employee with NO covering override falls through to the tenant defaults; rows of OTHER employees never leak in', async () => {
+    const tx = txWithRows([
+      // override belongs to a DIFFERENT employee on the page
+      [
+        {
+          employee_id: '44444444-4444-4444-8444-444444444444',
+          valid: '[2026-01-01,)',
+          days: [],
+        },
+      ],
+      [{ valid: '[2026-01-01,)', days: [6, 7] }],
+      [],
+    ]);
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [{ employeeId: EMPLOYEE, dates: ['2026-10-03'] }], // Saturday
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(facts.get(EMPLOYEE)!.get('2026-10-03')).toEqual({
+      date: '2026-10-03',
+      isWorkingDay: false,
+      kind: 'weekly_off',
+    });
+  });
+
+  it('several requests of the SAME employee land in ONE fact map (the per-date merge)', async () => {
+    const tx = txWithRows([[], [], []]);
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [
+        { employeeId: EMPLOYEE, dates: ['2026-10-02'] },
+        { employeeId: EMPLOYEE, dates: ['2026-10-05', '2026-10-06'] },
+      ],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    const byDate = facts.get(EMPLOYEE)!;
+    expect([...byDate.keys()].sort()).toEqual([
+      '2026-10-02',
+      '2026-10-05',
+      '2026-10-06',
+    ]);
+  });
+
+  it('an empty page answers an empty map and issues NO statements', async () => {
+    const tx = fakeTx();
+    const facts = await readPageSpanFacts(
+      tx,
+      TENANT,
+      [],
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    expect(facts.size).toBe(0);
+    expect(tx.query.mock.calls).toHaveLength(0);
+  });
+});
+
 describe('constraint-name mapping (D7)', () => {
   it('names the partial index the overlap backstop races on', () => {
     expect(PG_OVERLAP_CONSTRAINT).toBe('leave_request_days_active_uq');
@@ -146,7 +317,11 @@ describe('readEnrolmentFloor (D9 floor preference)', () => {
       { start: '2026-05-01', covers: true },
     ]);
     const floor = await readEnrolmentFloor(tx, EMPLOYEE, '2026-09-29');
-    expect(floor).toEqual({ exists: true, floor: '2026-05-01', coversToday: true });
+    expect(floor).toEqual({
+      exists: true,
+      floor: '2026-05-01',
+      coversToday: true,
+    });
   });
 
   it('with NO covering row, the floor is the earliest FUTURE start — an ended past enrolment neither gates nor lowers it (review fix)', async () => {
@@ -155,12 +330,20 @@ describe('readEnrolmentFloor (D9 floor preference)', () => {
       { start: '2026-10-05', covers: false }, // the re-enable
     ]);
     const floor = await readEnrolmentFloor(tx, EMPLOYEE, '2026-09-29');
-    expect(floor).toEqual({ exists: true, floor: '2026-10-05', coversToday: false });
+    expect(floor).toEqual({
+      exists: true,
+      floor: '2026-10-05',
+      coversToday: false,
+    });
   });
 
   it('an employee with only past, ended enrolments floors at the earliest start (history-only — the gate rejects)', async () => {
     const tx = txWithRows([{ start: '2026-01-01', covers: false }]);
     const floor = await readEnrolmentFloor(tx, EMPLOYEE, '2026-09-29');
-    expect(floor).toEqual({ exists: true, floor: '2026-01-01', coversToday: false });
+    expect(floor).toEqual({
+      exists: true,
+      floor: '2026-01-01',
+      coversToday: false,
+    });
   });
 });
