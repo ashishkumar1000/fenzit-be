@@ -4,8 +4,8 @@ import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { requireTenant } from './attendance-rpc.helpers';
 import { tenantToday } from './enrolments.repository';
-import { readDayStatusGrid } from './day-status.read';
-import { computeDayStatus } from './day-status.model';
+import { readDayStatusGrid } from '../common/day-status/grid-reader';
+import { computeDayStatus } from '../common/day-status/day-status.model';
 import { DashboardFlagReads } from './dashboard-flags';
 import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response.model';
 

@@ -49,4 +49,14 @@ export class CreateReportRequestDto {
   @IsArray()
   @IsString({ each: true })
   technicianIds?: string[] | null;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Office ids to scope office-capable reports (attendance) to. Absent or empty = all offices. Membership is validated per definition.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  officeIds?: string[] | null;
 }

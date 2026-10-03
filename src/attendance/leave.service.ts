@@ -7,7 +7,7 @@ import { internalError, requireTenant } from './attendance-rpc.helpers';
 import { dbNow } from './check-in-out.repository';
 import { lockTenantShared, tenantToday } from './enrolments.repository';
 import { buildDayContext } from './day-context.read';
-import { isoWeekdayOf } from './day-context';
+import { isoWeekdayOf } from '../common/day-status/day-context';
 import { pickWeeklyOffDays } from './me-summary.model';
 import {
   CANCEL_SOURCE_STATES,

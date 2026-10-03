@@ -15,6 +15,7 @@ import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ReportRequestStatus } from './enums/report-status.enum';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
+import { ATTENDANCE_REPORT_TYPE } from './registry/attendance.definition';
 import { MAX_TECHNICIANS_PER_REPORT } from './reports.service';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 // Real SDK class (not mocked in this spec) — presignOrThrow maps an SDK
@@ -385,6 +386,20 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
    * The technician-membership probe of resolveTechnicianIds:
    * select('id').eq('tenant_id', ...).eq('role', 'technician').in('id', ...).
    */
+  /** settings probe: select('...').eq(...).maybeSingle() → resolved. */
+  function maybeSingleChain(result: { data: unknown; error: unknown }) {
+    const maybeSingle = jest.fn().mockResolvedValue(result);
+    const eq = jest.fn().mockReturnValue({ maybeSingle });
+    return { select: jest.fn().mockReturnValue({ eq }) };
+  }
+
+  /** enrolment membership probe: select('...').eq(...).in(...) → resolved. */
+  function inChain(result: { data: unknown; error: unknown }) {
+    const inFn = jest.fn().mockResolvedValue(result);
+    const eq = jest.fn().mockReturnValue({ in: inFn });
+    return { select: jest.fn().mockReturnValue({ eq }) };
+  }
+
   function usersChain(result: { data: unknown; error: unknown }) {
     const inFn = jest.fn().mockResolvedValue(result);
     const roleEq = jest.fn().mockReturnValue({ in: inFn });
@@ -470,15 +485,34 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
     function mockCreateAdmin(opts: {
       insert?: { data: unknown; error: unknown };
       users?: { data: unknown; error: unknown } | null;
+      /** 21-1: validateAccess probes for the attendance definition. */
+      settings?: { data: unknown; error: unknown };
+      enrolments?: { data: unknown; error: unknown };
+      offices?: { data: unknown; error: unknown };
     } = {}) {
       const insertQb = insertChain(
         opts.insert ?? { data: createdRow, error: null },
       );
       const usersQb = opts.users ? usersChain(opts.users) : null;
+      const settingsQb = opts.settings ? maybeSingleChain(opts.settings) : null;
+      const enrolmentsQb = opts.enrolments ? inChain(opts.enrolments) : null;
+      const officesQb = opts.offices ? inChain(opts.offices) : null;
       const from = jest.fn((table: string) => {
         if (table === 'users') {
           if (!usersQb) throw new Error('unexpected users query');
           return { select: usersQb.select };
+        }
+        if (table === 'attendance_settings') {
+          if (!settingsQb) throw new Error('unexpected settings query');
+          return { select: settingsQb.select };
+        }
+        if (table === 'attendance_enrolments') {
+          if (!enrolmentsQb) throw new Error('unexpected enrolments query');
+          return { select: enrolmentsQb.select };
+        }
+        if (table === 'attendance_offices') {
+          if (!officesQb) throw new Error('unexpected offices query');
+          return { select: officesQb.select };
         }
         if (table !== 'report_requests') {
           throw new Error(`unexpected table ${table}`);
@@ -486,7 +520,7 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
         return { insert: insertQb.insert };
       });
       supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
-      return { from, insertQb, usersQb };
+      return { from, insertQb, usersQb, settingsQb, enrolmentsQb };
     }
 
     it('inserts a queued report_requests row and returns the camelCase response', async () => {
@@ -510,6 +544,7 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
           start_date: '2026-08-01',
           end_date: '2026-08-07',
           technician_ids: [],
+          office_ids: [],
         },
       });
       expect(insertQb.select).toHaveBeenCalledWith('*');
@@ -655,6 +690,94 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       expect(insertQb.insert).not.toHaveBeenCalled();
     });
 
+    it('runs the attendance definition validateAccess before insert and maps ATTENDANCE_NOT_ENABLED to 400 (21-1)', async () => {
+      const { from, insertQb } = mockCreateAdmin({
+        settings: { data: { enabled: false, setup_completed_at: null }, error: null },
+      });
+
+      await expectErrorCode(
+        service.createReport(ownerUser, {
+          ...RANGE,
+          reportType: ATTENDANCE_REPORT_TYPE,
+        }),
+        400,
+        ErrorCode.ATTENDANCE_NOT_ENABLED,
+      );
+      expect(from).toHaveBeenCalledWith('attendance_settings');
+      expect(insertQb.insert).not.toHaveBeenCalled();
+    });
+
+    it('queues an attendance report when the module is enabled and set up (21-1)', async () => {
+      const { insertQb } = mockCreateAdmin({
+        settings: {
+          data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
+          error: null,
+        },
+        offices: { data: [{ id: 'o-1' }], error: null },
+      });
+
+      const result = await service.createReport(ownerUser, {
+        ...RANGE,
+        reportType: ATTENDANCE_REPORT_TYPE,
+        officeIds: ['o-1'],
+      });
+      // (offices probe routed via the `offices` opt above)
+
+      expect(result.status).toBe(ReportRequestStatus.QUEUED);
+      expect(insertQb.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          report_type: ATTENDANCE_REPORT_TYPE,
+          params: expect.objectContaining({ office_ids: ['o-1'] }),
+        }),
+      );
+    });
+
+    it('rejects a non-enrolled employee for the attendance report before insert (21-1)', async () => {
+      const { insertQb } = mockCreateAdmin({
+        users: { data: [{ id: 'e-1' }, { id: 'e-2' }], error: null },
+        settings: {
+          data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
+          error: null,
+        },
+        enrolments: { data: [{ employee_id: 'e-1' }], error: null },
+      });
+
+      await expectErrorCode(
+        service.createReport(ownerUser, {
+          ...RANGE,
+          reportType: ATTENDANCE_REPORT_TYPE,
+          technicianIds: ['e-1', 'e-2'],
+        }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+      expect(insertQb.insert).not.toHaveBeenCalled();
+    });
+
+    it('honours the attendance definition 200-person cap: 26 selected employees queue (21-1)', async () => {
+      const ids = Array.from({ length: 26 }, (_, i) => `e-${i}`);
+      const { insertQb } = mockCreateAdmin({
+        users: { data: ids.map((id) => ({ id })), error: null },
+        settings: {
+          data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
+          error: null,
+        },
+        enrolments: { data: ids.map((employee_id) => ({ employee_id })), error: null },
+      });
+
+      await service.createReport(ownerUser, {
+        ...RANGE,
+        reportType: ATTENDANCE_REPORT_TYPE,
+        technicianIds: ids,
+      });
+
+      expect(insertQb.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({ technician_ids: ids }),
+        }),
+      );
+    });
+
     it('maps a users-table query error to 500 INTERNAL_SERVER_ERROR', async () => {
       mockCreateAdmin({
         users: { data: null, error: { code: 'XX000', message: 'conn' } },
@@ -754,11 +877,31 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
         reportType: TECHNICIAN_JOB_ACTIVITY_TYPE,
         range: { startDate: '2026-08-01', endDate: '2026-08-07' },
         technicianCount: 1,
+        officeCount: null,
         status: ReportRequestStatus.READY,
         errorCode: null,
         createdAt: rows[0].created_at,
         completedAt: null,
       });
+    });
+
+    it('maps a stored office list to an officeCount (21-1 review gap)', async () => {
+      const rows = [
+        listRow(0, {
+          params: {
+            start_date: '2026-09-01',
+            end_date: '2026-09-30',
+            technician_ids: ['e-1', 'e-2'],
+            office_ids: ['o-1', 'o-2'],
+          },
+        }),
+      ];
+      mockListAdmin({ data: rows, error: null });
+
+      const result = await service.listReports(ownerUser, {});
+
+      expect(result.data[0].officeCount).toBe(2);
+      expect(result.data[0].technicianCount).toBe(2);
     });
 
     it('maps an empty technician list to a null technicianCount (all technicians)', async () => {
@@ -853,6 +996,7 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
         startDate: '2026-08-01',
         endDate: '2026-08-07',
         technicianIds: ['t-1'],
+        officeIds: [],
       });
     });
 

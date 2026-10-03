@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import { ReportDefinition } from './report-definition';
 import { technicianJobActivityDefinition } from './technician-job-activity.definition';
+import { attendanceReportDefinition } from './attendance.definition';
 
 /**
  * The report-type registry (FR9). Definitions register here; the API layer
@@ -16,6 +17,7 @@ export class ReportRegistry {
 
   constructor() {
     this.register(technicianJobActivityDefinition);
+    this.register(attendanceReportDefinition);
   }
 
   register(definition: ReportDefinition): void {

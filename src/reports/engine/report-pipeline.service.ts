@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../../common/pg/pg-pool.factory';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import { StorageService } from '../../storage/storage.service';
 import { ReportRegistry } from '../registry/report-registry';
@@ -36,6 +37,7 @@ export class ReportPipelineService {
     private readonly storageService: StorageService,
     private readonly registry: ReportRegistry,
     private readonly configService: ConfigService,
+    private readonly pg: PgPoolFactory,
     @Inject(PDF_RENDERER) private readonly renderer: PdfRenderer,
   ) {}
 
@@ -67,19 +69,31 @@ export class ReportPipelineService {
     row: ReportRequestRow,
     admin: SupabaseClient,
   ): Promise<unknown> {
-    if (!definition.fetchData) {
+    const fetchData = definition.fetchData;
+    if (!fetchData) {
       throw new Error(
         `Report type '${definition.type}' has no data fetcher yet (story 12-5)`,
       );
     }
-    const ctx: ReportFetchContext = {
-      supabase: admin,
-      tenantId: row.tenant_id,
-      requestId: row.id,
-      params: row.params,
-      maxJobs: this.configService.get<number>('REPORT_MAX_JOBS') ?? 5000,
-    };
-    return definition.fetchData(ctx);
+    const maxJobs = this.configService.get<number>('REPORT_MAX_JOBS') ?? 5000;
+    const maxRows =
+      this.configService.get<number>('REPORT_MAX_ATTENDANCE_ROWS') ?? 25_000;
+    // The fetch runs inside one pg transaction so definitions reading the
+    // shared day-status grid (common/day-status/grid-reader) get the same
+    // snapshot + statement-timeout discipline as the attendance reads.
+    // Supabase-only fetchers (the job report) ignore ctx.pg.
+    return this.pg.withTransaction((tx) => {
+      const ctx: ReportFetchContext = {
+        supabase: admin,
+        pg: tx,
+        tenantId: row.tenant_id,
+        requestId: row.id,
+        params: row.params,
+        maxJobs,
+        maxRows,
+      };
+      return fetchData(ctx);
+    });
   }
 
   private buildDocument(

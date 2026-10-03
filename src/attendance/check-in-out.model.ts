@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
-import { workedMinutesBetween } from './day-context';
+import { workedMinutesBetween } from '../common/day-status/day-context';
 import type { AttemptKind, AttemptLocation, AttemptRow } from './check-in-out.repository';
 import type { RecordRow } from './check-in-out.records.repository';
 import type { CheckInOutDto } from './dto/check-in-out.dto';

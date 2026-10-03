@@ -76,16 +76,23 @@ export class ReportsService {
       startDate: dto.startDate,
       endDate: dto.endDate,
       technicianIds: dto.technicianIds,
+      officeIds: dto.officeIds,
     });
     params.technician_ids = await this.resolveTechnicianIds(
       user.tenantId,
       dto.technicianIds,
+      definition.maxTechnicianIds ?? MAX_TECHNICIANS_PER_REPORT,
     );
-
     // Plain INSERT — the in-flight cap is enforced declaratively by the
     // report_requests guard trigger (PT429), so a plain write cannot race
     // past the cap no matter how many submissions run concurrently.
     const admin = this.supabaseClientFactory.createAdmin();
+    // Definition-owned create-time DB checks (21-1): module gating and
+    // membership of the selected offices/people. The job report does not
+    // implement one — its role check above is its whole access story.
+    if (definition.validateAccess) {
+      await definition.validateAccess(admin, user.tenantId, params);
+    }
     const { data, error } = await admin
       .from('report_requests')
       .insert({
@@ -282,6 +289,9 @@ export class ReportsService {
       technicianCount: row.params.technician_ids?.length
         ? row.params.technician_ids.length
         : null,
+      officeCount: row.params.office_ids?.length
+        ? row.params.office_ids.length
+        : null,
       status: row.status,
       errorCode: row.error_code,
       createdAt: row.created_at,
@@ -353,20 +363,23 @@ export class ReportsService {
   /**
    * Validates the requested technician ids against the tenant's technicians.
    * Empty/absent → [] (all technicians, stored canonically as an empty array).
+   * The cap is the definition's maxTechnicianIds (21-1) — the job report
+   * keeps the 25-person FR1 cap; bigger-roster reports raise their own.
    */
   private async resolveTechnicianIds(
     tenantId: string,
     technicianIds: string[] | null | undefined,
+    maxIds: number,
   ): Promise<string[]> {
     const requested = [...new Set(technicianIds ?? [])];
     if (requested.length === 0) {
       return [];
     }
 
-    if (requested.length > MAX_TECHNICIANS_PER_REPORT) {
+    if (requested.length > maxIds) {
       throw new BadRequestException({
         error_code: ErrorCode.REPORT_TOO_MANY_TECHNICIANS,
-        message: `A report can be scoped to at most ${MAX_TECHNICIANS_PER_REPORT} technicians`,
+        message: `A report can be scoped to at most ${maxIds} technicians`,
       });
     }
 

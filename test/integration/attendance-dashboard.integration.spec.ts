@@ -26,8 +26,8 @@ import { SupabaseClientFactory } from '../../src/common/factories/supabase-clien
 import { DashboardService } from '../../src/attendance/dashboard';
 import { DashboardFlagReads } from '../../src/attendance/dashboard-flags';
 import { MonthlyService } from '../../src/attendance/monthly';
-import { readDayStatusGrid } from '../../src/attendance/day-status.read';
-import { computeDayStatus } from '../../src/attendance/day-status.model';
+import { readDayStatusGrid } from '../../src/common/day-status/grid-reader';
+import { computeDayStatus } from '../../src/common/day-status/day-status.model';
 import type { RequestUser } from '../../src/common/interfaces/request-user.interface';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? '';

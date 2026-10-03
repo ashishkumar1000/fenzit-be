@@ -13,7 +13,7 @@ import {
   DayContext,
   DayFacts,
   OfficeJoinRow,
-} from './day-context';
+} from '../common/day-status/day-context';
 
 /**
  * The SQL half of the AD-22 day context (16-1) — the reads behind

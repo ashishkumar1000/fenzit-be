@@ -12,31 +12,16 @@
 import { toTenantOffsetIso } from './check-in-out.model';
 import type { LatestCorrectionView } from './correction.model';
 
-const STATUS_KEYS = [
-  'not_tracked',
-  'not_checked_in_yet',
-  'in_progress',
-  'weekly_off',
-  'holiday',
-  'worked_on_holiday',
-  'leave',
-  'half_day_leave',
-  'present',
-  'half_day',
-  'absent',
-  'checkout_missing',
-] as const;
+import {
+  STATUS_KEYS_READONLY,
+  MARKER_KEYS_READONLY,
+  type DayStatusKey,
+  type DayMarkerKey,
+  type AttendanceSource,
+} from '../common/day-status/keys';
 
-const MARKER_KEYS = [
-  'corrected',
-  'leave_pending',
-  'checkout_missing',
-  'fake_location_attempt',
-] as const;
-
-export type DayStatusKey = (typeof STATUS_KEYS)[number];
-export type DayMarkerKey = (typeof MARKER_KEYS)[number];
-export type AttendanceSource = 'gps' | 'manual' | null;
+export { STATUS_KEYS_READONLY, MARKER_KEYS_READONLY };
+export type { DayStatusKey, DayMarkerKey, AttendanceSource };
 
 /** One employee-day of the FR-10 grid (a `me` or owner range read row). */
 export interface DayStatusRow {
@@ -102,8 +87,6 @@ export interface MeDayStatusesResponse {
   days: DayStatusRow[];
 }
 
-export const STATUS_KEYS_READONLY: readonly DayStatusKey[] = STATUS_KEYS;
-export const MARKER_KEYS_READONLY: readonly DayMarkerKey[] = MARKER_KEYS;
 
 /**
  * Wire mapper for one engine outcome: the ctx labels plus the instants as
@@ -120,7 +103,7 @@ export function toDayStatusRow(input: {
   officeId: string | null;
   officeName: string | null;
   timezone: string;
-  outcome: import('./day-status.model').DayStatusOutcome;
+  outcome: import('../common/day-status/day-status.model').DayStatusOutcome;
   checkin: Date | null;
   checkout: Date | null;
   checkinDistanceM: number | null;

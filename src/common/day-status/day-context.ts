@@ -3,7 +3,7 @@ import {
   WeeklyOffRow,
   pickRuleForDate,
   pickWeeklyOffDays,
-} from './me-summary.model';
+} from './office-rules';
 
 /**
  * The AD-22 day context (16-1) — THE single place the per-employee-date

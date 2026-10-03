@@ -31,15 +31,15 @@ import type {
   AttendanceSource,
   DayMarkerKey,
   DayStatusKey,
-} from './day-status-response.model';
+} from './keys';
 
-export { STATUS_KEYS_READONLY as STATUS_KEYS } from './day-status-response.model';
-export { MARKER_KEYS_READONLY as MARKER_KEYS } from './day-status-response.model';
+export { STATUS_KEYS_READONLY as STATUS_KEYS } from './keys';
+export { MARKER_KEYS_READONLY as MARKER_KEYS } from './keys';
 export type {
   AttendanceSource,
   DayMarkerKey,
   DayStatusKey,
-} from './day-status-response.model';
+} from './keys';
 
 /** The day's `attendance_records` row (the subset the engine reads). */
 export interface EngineRecordRow {

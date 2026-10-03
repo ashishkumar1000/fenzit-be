@@ -6,6 +6,8 @@ import { ReportRegistry } from '../registry/report-registry';
 import { ReportDefinition } from '../registry/report-definition';
 import { ConfigService } from '@nestjs/config';
 import { ErrorCode } from '../../common/enums/error-code.enum';
+import type { PoolClient } from 'pg';
+import { PgPoolFactory } from '../../common/pg/pg-pool.factory';
 import { ReportRequestStatus } from '../enums/report-status.enum';
 import { ReportRequestRow } from '../report-response.model';
 import { PDF_RENDERER } from './pdf-renderer.port';
@@ -37,6 +39,7 @@ const queuedRow: ReportRequestRow = {
     start_date: '2026-09-01',
     end_date: '2026-09-07',
     technician_ids: [],
+      office_ids: [],
   },
   status: ReportRequestStatus.GENERATING,
   attempt_count: 1,
@@ -63,6 +66,9 @@ function makeDefinition(): ReportDefinition & {
     buildDocument: jest.fn().mockReturnValue({ content: [{ text: 'hi' }] }),
   } as never;
 }
+
+/** Sentinel pg transaction client handed to definitions as ctx.pg. */
+const PG_TX_SENTINEL = { __pgTx: true } as unknown as PoolClient;
 
 describe('ReportPipelineService (story 12-3)', () => {
   let service: ReportPipelineService;
@@ -100,6 +106,16 @@ describe('ReportPipelineService (story 12-3)', () => {
         { provide: SupabaseClientFactory, useValue: mockFactory },
         { provide: StorageService, useValue: { putObject: jest.fn() } },
         { provide: ReportRegistry, useValue: { get: jest.fn() } },
+        {
+          // The fetch's pg transaction client — the sentinel object is what
+          // definitions receive as ctx.pg.
+          provide: PgPoolFactory,
+          useValue: {
+            withTransaction: jest.fn((work: (tx: unknown) => unknown) =>
+              work(PG_TX_SENTINEL),
+            ),
+          },
+        },
         {
           provide: ConfigService,
           useValue: {
@@ -155,10 +171,12 @@ describe('ReportPipelineService (story 12-3)', () => {
 
       expect(definition.fetchData).toHaveBeenCalledWith({
         supabase: expect.objectContaining({ from }),
+        pg: PG_TX_SENTINEL,
         tenantId: TENANT_ID,
         requestId: REQUEST_ID,
         params: queuedRow.params,
         maxJobs: 4321,
+        maxRows: 25_000,
       });
     });
 
@@ -191,7 +209,21 @@ describe('ReportPipelineService (story 12-3)', () => {
       await service.run(queuedRow);
 
       expect(definition.fetchData).toHaveBeenCalledWith(
-        expect.objectContaining({ maxJobs: 5000 }),
+        expect.objectContaining({ maxJobs: 5000, maxRows: 25_000 }),
+      );
+    });
+
+    it('flows a configured REPORT_MAX_ATTENDANCE_ROWS into ctx.maxRows (21-1 review gap)', async () => {
+      config.get.mockImplementation(
+        (key: string) =>
+          (({ REPORT_MAX_ATTENDANCE_ROWS: 7777 }) as Record<string, unknown>)[key],
+      );
+      mockAdmin();
+
+      await service.run(queuedRow);
+
+      expect(definition.fetchData).toHaveBeenCalledWith(
+        expect.objectContaining({ maxRows: 7777 }),
       );
     });
   });

@@ -6,7 +6,7 @@ import {
   type LeaveDayState,
 } from './leave.constants';
 import type { LeaveRejection } from './leave.model';
-import { isPastOfficeStart, minuteOfDayInTz } from './day-context';
+import { isPastOfficeStart, minuteOfDayInTz } from '../common/day-status/day-context';
 import { addDays } from './enrolments-response.model';
 import type { SpanDayFacts } from './leave.repository';
 

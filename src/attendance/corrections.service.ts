@@ -7,14 +7,16 @@ import { CursorScope, decodeCursor, encodeCursor } from '../common/utils/cursor.
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { dbNow } from './check-in-out.repository';
 import { toTenantOffsetIso } from './check-in-out.model';
-import { dateInTz } from './day-context';
+import { dateInTz } from '../common/day-status/day-context';
 import {
   attendanceEmployeeNotFound,
-  readDayStatusGrid,
   requireAttendanceReadAccess,
-  type DayGridRow,
 } from './day-status.read';
-import { computeDayStatus } from './day-status.model';
+import {
+  readDayStatusGrid,
+  type DayGridRow,
+} from '../common/day-status/grid-reader';
+import { computeDayStatus } from '../common/day-status/day-status.model';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import { employeeExistsInTenant } from './leave.repository';
 import { AttendanceCalendarDateConstraint } from './dto/attendance-date.validator';

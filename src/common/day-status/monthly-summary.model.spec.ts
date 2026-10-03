@@ -1,5 +1,5 @@
 import type { DayContext } from './day-context';
-import type { DayGridRow, RecordRow, OverrideRow } from './day-status.read';
+import type { DayGridRow, RecordRow, OverrideRow } from './grid-reader';
 import { summariseEmployeeMonth } from './monthly-summary.model';
 import type { MonthlyEmployeeSummary } from './monthly-summary.model';
 

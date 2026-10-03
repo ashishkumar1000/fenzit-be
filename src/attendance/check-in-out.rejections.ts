@@ -7,7 +7,7 @@ import {
   RATE_MAX_COUNTED,
 } from './constants';
 import { dbNow, countCountedInWindow, countMonthlyMocked, insertAttempt, insertFakeLocationAlert, readOwnerId, AttemptKind, AttemptLocation } from './check-in-out.repository';
-import { DayContext } from './day-context';
+import { DayContext } from '../common/day-status/day-context';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ATTENDANCE_NOTIFICATION_EVENT } from './notification-events';
 import { readEmployee } from './enrolments.repository';

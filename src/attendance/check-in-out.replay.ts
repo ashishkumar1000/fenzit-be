@@ -10,7 +10,7 @@ import {
   expectedEndMinute,
   expectedStartMinute,
   minuteOfDayInTz,
-} from './day-context';
+} from '../common/day-status/day-context';
 import {
   findAttemptByIdempotencyKey,
   readActiveBlockedUntil,

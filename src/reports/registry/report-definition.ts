@@ -11,6 +11,7 @@
  * complete here already, because the create endpoint validates on submit.
  */
 
+import type { PoolClient } from 'pg';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
@@ -28,8 +29,14 @@ export interface ReportParams {
   start_date: string;
   /** Calendar date (YYYY-MM-DD), inclusive. */
   end_date: string;
-  /** Selected technicians; empty array = all technicians of the tenant. */
+  /** Selected technicians; empty array = all technicians of the tenant.
+   *  For people-scoped reports (attendance) the same array carries the
+   *  selected EMPLOYEES — the FE labels the field per report type. */
   technician_ids: string[];
+  /** Selected offices; empty array = all offices. Only office-scoped
+   *  reports (attendance) read it; definitions that do not scope by office
+   *  must reject a non-empty value in validateParams. */
+  office_ids: string[];
 }
 
 /** Raw params exactly as they arrive on the create-request body. */
@@ -37,6 +44,7 @@ export interface RawReportParams {
   startDate: string;
   endDate: string;
   technicianIds?: string[] | null;
+  officeIds?: string[] | null;
 }
 
 /**
@@ -53,6 +61,15 @@ export interface ReportFetchContext {
   params: ReportParams;
   /** Oversize guard for the fetcher (FR2): exceeding fails report_too_large. */
   maxJobs: number;
+  /**
+   * A transaction-scoped raw-pg client (21-1): the pipeline opens one
+   * `withTransaction` around every fetch. Definitions that read the shared
+   * day-status grid use it; Supabase-only fetchers ignore it.
+   */
+  pg: PoolClient;
+  /** Per-definition oversize guard in the definition's own row unit
+   *  (REPORT_MAX_ATTENDANCE_ROWS for attendance; unused by job reports). */
+  maxRows: number;
 }
 
 export interface ReportDefinition {
@@ -77,4 +94,23 @@ export interface ReportDefinition {
   fetchData?(ctx: ReportFetchContext): Promise<unknown>;
   /** Builds the renderer document from the fetched data (story 12-5). */
   buildDocument?(data: unknown): ReportDocument;
+  /**
+   * Cap on explicitly selected people (21-1). Defaults to the service's
+   * 25-technician cap; people-scoped reports with bigger rosters (the
+   * attendance report's ~100-employee tenants) raise it — the row-unit
+   * oversize guard stays the real scale protection.
+   */
+  readonly maxTechnicianIds?: number;
+  /**
+   * Definition-owned create-time DB checks that need the admin client
+   * (21-1): module gating, membership of the selected offices/people.
+   * Runs after validateParams and the service's technician-role check,
+   * before the request row is inserted. Throws BadRequestException with a
+   * mapped error_code.
+   */
+  validateAccess?(
+    supabase: SupabaseClient,
+    tenantId: string,
+    params: ReportParams,
+  ): Promise<void>;
 }

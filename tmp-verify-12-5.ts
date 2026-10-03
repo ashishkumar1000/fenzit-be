@@ -28,8 +28,10 @@ const ctx = {
   supabase,
   tenantId: 'd82d0e0d-f88b-4134-a55a-79d0f9a065dc',
   requestId: 'local-verify',
-  params: { start_date: '2026-09-20', end_date: '2026-09-20', technician_ids: [] },
+  params: { start_date: '2026-09-20', end_date: '2026-09-20', technician_ids: [], office_ids: [] },
   maxJobs: 5000,
+  maxRows: 25000,
+  pg: null as never,
 };
 
 async function main(): Promise<void> {

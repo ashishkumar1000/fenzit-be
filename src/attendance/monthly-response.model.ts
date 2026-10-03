@@ -1,4 +1,4 @@
-import type { MonthlyEmployeeSummary } from './monthly-summary.model';
+import type { MonthlyEmployeeSummary } from '../common/day-status/monthly-summary.model';
 
 /**
  * 19-3's wire shapes (spec D6). All summary numbers are derived from the

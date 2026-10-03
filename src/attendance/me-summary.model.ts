@@ -17,28 +17,18 @@
 import type { AccessStateRow } from './enrolments-response.model';
 import { parseDateRange } from './enrolments-response.model';
 
-/** One `attendance_office_rules` row as the admin client returns it. */
-export interface OfficeRuleRow {
-  id: string;
-  /** Postgres daterange literal, e.g. `[2026-09-27,)`. */
-  valid: string;
-  /** pg `time`, e.g. "10:00:00". */
-  start_time: string;
-  end_time: string;
-  late_cutoff_minutes: number;
-  /** Owner-configured grading thresholds, hours (G2-D1 ruling: these two
-   *  columns ARE the full/half-day thresholds — window minutes only drive
-   *  the late/early metrics). float8 from the SQL reads. */
-  full_day_hours: number;
-  half_day_hours: number;
-}
+// The rule rows + the daterange pickers live in common/day-status
+// (21-1 extraction) — re-exported so this model's consumers keep one
+// import surface while the engine shares ONE implementation (NFR5).
+import {
+  rangeCovers as rangeCoversShared,
+  pickRuleForDate as pickRuleForDateShared,
+  pickWeeklyOffDays as pickWeeklyOffDaysShared,
+  type OfficeRuleRow,
+  type WeeklyOffRow,
+} from '../common/day-status/office-rules';
 
-/** One weekly-off defaults/overrides row (15-5 tables). */
-export interface WeeklyOffRow {
-  valid: string;
-  /** ISO weekday numbers (1=Mon .. 7=Sun); [] = works all 7 days. */
-  days: number[];
-}
+export type { OfficeRuleRow, WeeklyOffRow };
 
 export interface MeSummaryResponse {
   officeId: string | null;
@@ -110,47 +100,9 @@ function toHhmm(value: string): string {
   return value.slice(0, 5);
 }
 
-/** True when the daterange literal contains the `YYYY-MM-DD` anchor. */
-export function rangeCovers(valid: string, anchor: string): boolean {
-  const { start, end } = parseDateRange(valid);
-  return start <= anchor && (end === null || anchor < end);
-}
-
-/**
- * The rule effective on the anchor date (FR-5: rule changes apply from
- * tomorrow, so the covering rule is the display truth). The DB exclusion
- * constraint guarantees at most one rule covers any date — if none does,
- * the fields surface as nulls rather than a wrong rule.
- */
-export function pickRuleForDate(
-  rules: OfficeRuleRow[],
-  anchor: string,
-): OfficeRuleRow | null {
-  return rules.find((rule) => rangeCovers(rule.valid, anchor)) ?? null;
-}
-
-/**
- * The employee's weekly offs on the anchor date: the override REPLACES the
- * tenant default while it covers the date (AD-22; an override with an
- * empty days array = works all 7 days). No covering override falls through
- * to the tenant defaults; NO defaults row at all means all 7 days work —
- * so [] in every "no weekly offs" case.
- */
-export function pickWeeklyOffDays(
-  overrides: WeeklyOffRow[],
-  defaults: WeeklyOffRow[],
-  anchor: string,
-): number[] {
-  const override = overrides.find((row) => rangeCovers(row.valid, anchor));
-  if (override) {
-    return [...override.days].sort((a, b) => a - b);
-  }
-  const def = defaults.find((row) => rangeCovers(row.valid, anchor));
-  if (def) {
-    return [...def.days].sort((a, b) => a - b);
-  }
-  return [];
-}
+export const rangeCovers = rangeCoversShared;
+export const pickRuleForDate = pickRuleForDateShared;
+export const pickWeeklyOffDays = pickWeeklyOffDaysShared;
 
 export function toMeSummaryResponse(input: {
   row: Pick<AccessStateRow, 'office_id' | 'office_name'>;

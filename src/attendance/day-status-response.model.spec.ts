@@ -1,5 +1,5 @@
 import { toDayStatusRow } from './day-status-response.model';
-import { computeDayStatus } from './day-status.model';
+import { computeDayStatus } from '../common/day-status/day-status.model';
 import type { LatestCorrectionView } from './correction.model';
 
 /**

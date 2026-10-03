@@ -43,6 +43,7 @@ describe('TechnicianJobActivityDefinition (story 12-5)', () => {
         start_date: '2026-09-01',
         end_date: '2026-09-07',
         technician_ids: ['t1', 't2'],
+        office_ids: [],
       });
     });
 
@@ -59,6 +60,26 @@ describe('TechnicianJobActivityDefinition (story 12-5)', () => {
           endDate: '2026-09-07',
           technicianIds: null,
         }).technician_ids,
+      ).toEqual([]);
+    });
+
+    it('rejects a non-empty officeIds with VALIDATION_ERROR (people-scoped only, 21-1)', () => {
+      expect(() =>
+        technicianJobActivityDefinition.validateParams({
+          startDate: '2026-09-01',
+          endDate: '2026-09-07',
+          officeIds: ['o-1'],
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('accepts an absent or empty officeIds (canonical all-offices is meaningless here)', () => {
+      expect(
+        technicianJobActivityDefinition.validateParams({
+          startDate: '2026-09-01',
+          endDate: '2026-09-07',
+          officeIds: [],
+        }).office_ids,
       ).toEqual([]);
     });
 

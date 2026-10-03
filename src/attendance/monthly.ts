@@ -6,13 +6,13 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { requireTenant } from './attendance-rpc.helpers';
 import { tenantToday } from './enrolments.repository';
+import { requireAttendanceReadAccess } from './day-status.read';
 import {
   readDayStatusGrid,
-  requireAttendanceReadAccess,
   type DayGridRow,
-} from './day-status.read';
+} from '../common/day-status/grid-reader';
 import { pickWeeklyOffDays, type WeeklyOffRow } from './me-summary.model';
-import { summariseEmployeeMonth } from './monthly-summary.model';
+import { summariseEmployeeMonth } from '../common/day-status/monthly-summary.model';
 import type {
   EmployeeMonthlyRow,
   HolidayRow,

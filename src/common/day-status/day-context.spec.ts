@@ -14,7 +14,7 @@ import {
   isWeeklyOffDay,
   DayFacts,
 } from './day-context';
-import { OfficeRuleRow } from './me-summary.model';
+import type { OfficeRuleRow } from './office-rules';
 
 /**
  * The AD-22 day context's pure half (16-1). The SQL reads live behind

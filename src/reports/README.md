@@ -17,6 +17,10 @@ src/reports/
     report-registry.ts         the registry map (FR9/NFR6)
     report-params.util.ts      IST date-range validation (no date library)
     technician-job-activity.definition.ts   first report (wired end to end, 12-5)
+    attendance.definition.ts                second report (21-1): params + access validation
+    attendance.data.ts                      attendance fetcher (21-2): shared grid reader + roster
+    attendance.metrics.ts                   attendance aggregations (21-2, pure; parity-locked)
+    attendance.template.ts                  attendance template (21-3)
     technician-job-activity.data.ts         fetcher: IST bounds, paged queries, attachment counts
     technician-job-activity.metrics.ts      PRD §4 metrics (pure fn over fetched jobs)
     technician-job-activity.flags.ts        "needs attention" flags (pure fn)
@@ -160,6 +164,7 @@ data URIs; the footer is a `(currentPage, pageCount) => Content` callback.
 | `REPORT_LEASE_SECONDS` | 300 | Claim lease (crash recovery window) |
 | `REPORT_WORKER_CONCURRENCY` | 1 | Renders processed per tick (NFR-1: sequential) |
 | `REPORT_MAX_JOBS` | 5000 | Oversize guard for the fetcher (12-5) |
+| `REPORT_MAX_ATTENDANCE_ROWS` | 25000 | Employee-day oversize guard for the attendance report (21-2) |
 | `REPORT_MAX_ATTEMPTS` | 3 | Recovery re-run cap |
 
 ## Status machine

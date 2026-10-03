@@ -38,6 +38,8 @@ export interface ReportParamsResponse {
   startDate: string;
   endDate: string;
   technicianIds: string[];
+  /** Office ids for office-scoped reports (attendance); [] = all offices. */
+  officeIds: string[];
 }
 
 export interface ReportStatusResponse {
@@ -59,6 +61,9 @@ export interface ReportListItemResponse {
   range: { startDate: string; endDate: string };
   /** Selected technician count; null = all technicians of the tenant. */
   technicianCount: number | null;
+  /** Selected office count (office-scoped reports); null when the report
+   *  type does not scope by office, [] params = all offices → null too. */
+  officeCount: number | null;
   status: ReportRequestStatus;
   errorCode: string | null;
   createdAt: string;
@@ -75,5 +80,6 @@ export function toParamsResponse(params: ReportParams): ReportParamsResponse {
     startDate: params.start_date,
     endDate: params.end_date,
     technicianIds: params.technician_ids ?? [],
+    officeIds: params.office_ids ?? [],
   };
 }

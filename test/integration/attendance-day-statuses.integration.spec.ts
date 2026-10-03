@@ -17,11 +17,11 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { PgPoolFactory } from '../../src/common/pg/pg-pool.factory';
 import { SupabaseClientFactory } from '../../src/common/factories/supabase-client.factory';
-import { readDayStatusGrid } from '../../src/attendance/day-status.read';
+import { readDayStatusGrid } from '../../src/common/day-status/grid-reader';
 import {
   computeDayStatus,
   type DayStatusOutcome,
-} from '../../src/attendance/day-status.model';
+} from '../../src/common/day-status/day-status.model';
 import { CorrectionsService } from '../../src/attendance/corrections.service';
 import { buildDayContext } from '../../src/attendance/day-context.read';
 import {

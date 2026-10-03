@@ -10,7 +10,7 @@
  * honest for dates outside the tracker too).
  */
 
-import type { DayGridRow } from './day-status.read';
+import type { DayGridRow } from './grid-reader';
 import {
   computeDayStatus,
   type DayStatusOutcome,

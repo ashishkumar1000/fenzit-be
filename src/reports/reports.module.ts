@@ -4,6 +4,7 @@ import { ReportsController } from './reports.controller';
 import { ReportRegistry } from './registry/report-registry';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { StorageModule } from '../storage/storage.module';
+import { PgModule } from '../common/pg/pg.module';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { PDF_RENDERER } from './engine/pdf-renderer.port';
 import { PdfmakeRenderer } from './engine/pdfmake-renderer';
@@ -12,16 +13,18 @@ import { ReportWorker } from './engine/report-worker';
 
 /**
  * Report module (Epic 12) — self-contained per NFR5: the only cross-module
- * dependencies are common/ (auth, errors, cursor, idempotency) and storage
- * (R2 presign + the engine's putObject upload path). Data access goes through
- * the Supabase client directly — no imports from jobs/, customers/, etc.
+ * dependencies are common/ (auth, errors, cursor, idempotency, the pg pool
+ * and the shared day-status engine) and storage (R2 presign + the engine's
+ * putObject upload path). Feature data access goes through the Supabase
+ * client / the grid reader's transaction client — no imports from jobs/,
+ * customers/, attendance/, etc.
  *
  * The PDF_RENDERER token binds the pdfmake implementation (brand kit + Inter
  * fonts register once at construction); templates (story 12-5) emit
  * ReportDocuments through the brand kit, never touching fonts/colours/logo.
  */
 @Module({
-  imports: [SupabaseModule, StorageModule],
+  imports: [SupabaseModule, StorageModule, PgModule],
   controllers: [ReportsController],
   providers: [
     ReportsService,

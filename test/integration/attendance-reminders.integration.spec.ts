@@ -52,8 +52,8 @@
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 import { PgPoolFactory } from '../../src/common/pg/pg-pool.factory';
-import { readDayStatusGrid } from '../../src/attendance/day-status.read';
-import { computeDayStatus } from '../../src/attendance/day-status.model';
+import { readDayStatusGrid } from '../../src/common/day-status/grid-reader';
+import { computeDayStatus } from '../../src/common/day-status/day-status.model';
 
 jest.setTimeout(120_000);
 

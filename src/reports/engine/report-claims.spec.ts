@@ -33,7 +33,7 @@ const claimedRow: ReportRequestRow = {
   tenant_id: TENANT_ID,
   requested_by: 'owner-uuid',
   report_type: 'technician_job_activity',
-  params: { start_date: '2026-09-01', end_date: '2026-09-07', technician_ids: [] },
+  params: { start_date: '2026-09-01', end_date: '2026-09-07', technician_ids: [] , office_ids: [] },
   status: ReportRequestStatus.GENERATING,
   attempt_count: 1,
   locked_until: '2026-09-20T10:05:00.000Z',

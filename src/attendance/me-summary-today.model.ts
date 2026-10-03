@@ -26,7 +26,7 @@ import {
   minuteOfDayInTz,
   timeStringToMinutes,
   workedMinutesBetween,
-} from './day-context';
+} from '../common/day-status/day-context';
 import { toTenantOffsetIso } from './check-in-out.model';
 
 /** The summary read's attendance_records row (subset). */

@@ -20,12 +20,14 @@ export interface EnrolmentRow {
   enabled_at?: string;
 }
 
-export interface DateRange {
-  /** Inclusive lower bound, `YYYY-MM-DD`. */
-  start: string;
-  /** Exclusive upper bound, `YYYY-MM-DD`; `null` = unbounded (∞). */
-  end: string | null;
-}
+// The daterange literal type + parser live in common/day-status (21-1
+// extraction) — re-exported so the enrolment surfaces keep one import.
+import {
+  parseDateRange as parseDateRangeShared,
+  type DateRange,
+} from '../common/day-status/office-rules';
+
+export type { DateRange };
 
 /** The plan the repository executes for one AD-8 change. */
 export interface Ad8Plan {
@@ -37,16 +39,7 @@ export interface Ad8Plan {
   insertStart: string | null;
 }
 
-/** Parses `[a,b)` / `[a,)` — the daterange text format pg returns. */
-export function parseDateRange(valid: string): DateRange {
-  const match = /^[(\[]([^,]*),([^)\]]*)[)\]]$/.exec(valid);
-  if (!match || match[1] === '') {
-    // An empty lower bound would silently poison the string-date
-    // comparisons downstream (review finding).
-    throw new Error(`Unparseable daterange literal: ${valid}`);
-  }
-  return { start: match[1], end: match[2] === '' ? null : match[2] };
-}
+export const parseDateRange = parseDateRangeShared;
 
 export function serializeDateRange(range: DateRange): string {
   return `[${range.start},${range.end ?? ''})`;

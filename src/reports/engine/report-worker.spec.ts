@@ -54,6 +54,7 @@ function reportRow(overrides: Partial<ReportRequestRow> = {}): ReportRequestRow 
       start_date: '2026-09-01',
       end_date: '2026-09-07',
       technician_ids: [],
+      office_ids: [],
     },
     status: ReportRequestStatus.READY,
     attempt_count: 1,

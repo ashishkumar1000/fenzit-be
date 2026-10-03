@@ -96,13 +96,18 @@ interface CtxOpts {
 function makeCtx(supabase: unknown, opts: CtxOpts = {}): ReportFetchContext {
   return {
     supabase: supabase as ReportFetchContext['supabase'],
+    // The job fetcher never touches the pg client — a null stand-in keeps
+    // the fixture honest about that.
+    pg: null as unknown as ReportFetchContext['pg'],
     tenantId: 'tenant-uuid',
     requestId: 'req-uuid',
     maxJobs: opts.maxJobs ?? 5000,
+    maxRows: 25_000,
     params: {
       start_date: '2026-09-01',
       end_date: '2026-09-07',
       technician_ids: [],
+      office_ids: [],
       ...opts.params,
     },
   };

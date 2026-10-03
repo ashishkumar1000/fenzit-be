@@ -21,6 +21,9 @@ export enum ErrorCode {
   REPORT_GENERATION_FAILED = 'REPORT_GENERATION_FAILED',
   REPORT_PRESIGN_FAILED = 'REPORT_PRESIGN_FAILED',
   REPORT_NOT_RETRYABLE = 'REPORT_NOT_RETRYABLE',
+  /** 21-1: an attendance report was requested for a tenant whose
+   *  attendance module is not enabled (settings.enabled AND setup done). */
+  ATTENDANCE_NOT_ENABLED = 'ATTENDANCE_NOT_ENABLED',
   // Attendance (Epic 15)
   ATTENDANCE_INVALID_TIMEZONE = 'ATTENDANCE_INVALID_TIMEZONE',
   ATTENDANCE_TENANT_NOT_FOUND = 'ATTENDANCE_TENANT_NOT_FOUND',

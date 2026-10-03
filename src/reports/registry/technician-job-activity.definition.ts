@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+import { ErrorCode } from '../../common/enums/error-code.enum';
 import {
   ReportDefinition,
   ReportParams,
@@ -21,6 +23,14 @@ export const technicianJobActivityDefinition: ReportDefinition = {
   label: 'Technician Job Report',
 
   validateParams(raw: RawReportParams): ReportParams {
+    // Strict shape: this report scopes by people only — an officeIds value
+    // is a client bug (the FE never sends it here), not a silent no-op.
+    if (raw.officeIds != null && raw.officeIds.length > 0) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'officeIds is not a valid filter for this report',
+      });
+    }
     const { startDate, endDate } = validateReportDateRange(
       raw.startDate,
       raw.endDate,
@@ -31,6 +41,7 @@ export const technicianJobActivityDefinition: ReportDefinition = {
       // Pass-through: the service validates the ids against the tenant's
       // technicians (DB check) and normalizes them before insert.
       technician_ids: raw.technicianIds ?? [],
+      office_ids: [],
     };
   },
 

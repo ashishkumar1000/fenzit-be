@@ -6,4 +6,5 @@
 export * from './page-header';
 export * from './summary-cards';
 export * from './job-table';
+export * from './data-table';
 export * from './sections';
