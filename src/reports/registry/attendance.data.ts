@@ -471,11 +471,14 @@ export async function fetchAttendanceReportData(
   );
 
   // The audit covers the report's IN-SCOPE employees only — an
-  // office-filtered report must not surface out-of-office rejections.
+  // office-filtered report must not surface out-of-office rejections, and
+  // it never widens back to the roster when nobody matches the filter
+  // (the template renders the honest empty page then). Audit ⊆ shown
+  // employees, always. (QA bug bash 2026-10-03.)
   const rejections = await fetchRejections(
     supabase,
     ctx.tenantId,
-    summaryIds.length > 0 ? summaryIds : employeeIds,
+    summaryIds,
     istDayBounds(startDate, endDate),
     employeeNames,
   );

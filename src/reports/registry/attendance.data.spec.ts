@@ -42,8 +42,29 @@ function pgStub(fixtures: {
   return {
     queries,
     client: {
-      query: jest.fn(async (text: string) => {
+      query: jest.fn(async (text: string, values?: unknown[]) => {
         queries.push(text);
+        // Real Postgres returns nothing for `= ANY('{}')` — honour the
+        // employee-ids array param so fixtures never leak across a scope.
+        // Prophylactic, not load-bearing: the grid reader already
+        // materialises rows only for the requested employees. (QA bug
+        // bash 2026-10-03.)
+        const scopeIds = new Set<string>();
+        let scoped = false;
+        for (const v of values ?? []) {
+          if (Array.isArray(v)) {
+            scoped = true;
+            for (const id of v) scopeIds.add(String(id));
+          }
+        }
+        const inScope = (rows: PgRow[]): PgRow[] =>
+          scoped
+            ? rows.filter(
+                (r) =>
+                  typeof r.employee_id !== 'string' ||
+                  scopeIds.has(r.employee_id),
+              )
+            : rows;
         const rows: PgRow[] = (() => {
           if (text.includes('attendance_today')) return [{ today: '2026-09-29' }];
           if (text.includes('from public.tenants')) return [{ timezone: 'Asia/Kolkata' }];
@@ -76,7 +97,8 @@ function pgStub(fixtures: {
           if (text.includes('attendance_corrections')) return [];
           throw new Error(`pg stub: unhandled statement: ${text.slice(0, 60)}`);
         })();
-        return { rows, rowCount: rows.length };
+        const visible = inScope(rows);
+        return { rows: visible, rowCount: visible.length };
       }),
     } as unknown as PoolClient,
   };
@@ -450,5 +472,121 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
       'in', 'employee_id', [E2],
     ]);
     expect(data.rejections.map((r) => r.employeeName)).toEqual(['Bimal']);
+  });
+});
+
+describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
+  it('an empty roster renders the honest empty shape end-to-end', async () => {
+    // The real grid reader runs with employeeIds = [] — PostgREST would
+    // return nothing for `= ANY('{}')`, and the stub now honours that.
+    const pg = pgStub(baseFixtures());
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: [],
+      attendance_enrolments: [],
+      attendance_attempts: [],
+    });
+
+    const data = await fetchAttendanceReportData(
+      makeCtx({ supabase: supa.client, pg: pg.client }),
+    );
+
+    expect(data.employees).toEqual([]);
+    expect(data.offices).toEqual([]);
+    expect(data.exceptions).toEqual([]);
+    expect(data.rejections).toEqual([]);
+    expect(data.scope.employeesInScope).toBe(0);
+    expect(data.overall.expectedDays).toBe(0);
+    expect(data.overall.attendanceRate).toBeNull();
+    expect(data.register?.rows).toEqual([]);
+    expect(data.register?.dates).toHaveLength(3);
+  });
+
+  it('the oversize guard admits exactly maxRows employee-days (boundary)', async () => {
+    // 125 days × 200 employees = 25,000 == maxRows → the read proceeds.
+    const twoHundred = Array.from(
+      { length: 200 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
+    const pg = pgStub(baseFixtures());
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: [],
+      attendance_enrolments: [],
+      attendance_attempts: [],
+    });
+
+    const data = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        maxRows: 25_000,
+        params: {
+          start_date: '2026-01-01',
+          end_date: '2026-05-05',
+          technician_ids: twoHundred,
+        },
+      }),
+    );
+    expect(pg.queries.some((q) => q.includes('attendance_records'))).toBe(true);
+    expect(data.employees).toHaveLength(200); // explicit zero-day rows
+
+    // One employee-day over the boundary → refused BEFORE any grid read.
+    const pg2 = pgStub(baseFixtures());
+    const supa2 = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: [],
+      attendance_enrolments: [],
+      attendance_attempts: [],
+    });
+    await expect(
+      fetchAttendanceReportData(
+        makeCtx({
+          supabase: supa2.client,
+          pg: pg2.client,
+          maxRows: 24_999,
+          params: {
+            start_date: '2026-01-01',
+            end_date: '2026-05-05',
+            technician_ids: twoHundred,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: { error_code: ErrorCode.REPORT_TOO_LARGE },
+    });
+    expect(pg2.queries.some((q) => q.includes('attendance_records'))).toBe(
+      false,
+    );
+  });
+
+  it('an office filter matching nobody audits NOBODY (fallback to the roster is a defect)', async () => {
+    // Both employees only ever sat at HQ; the filter asks for Branch.
+    const fixtures = baseFixtures();
+    fixtures.assignments = [
+      { employee_id: E1, office_id: OFFICE_1, valid: '[2026-09-01,)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
+      { employee_id: E2, office_id: OFFICE_1, valid: '[2026-09-01,)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
+    ];
+    const pg = pgStub(fixtures);
+    const supa = supabaseStub({
+      tenants: [{ company_name: 'Acme' }],
+      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
+      attendance_attempts: [{ employee_id: E1, outcome: 'mocked' }],
+    });
+
+    const data = await fetchAttendanceReportData(
+      makeCtx({
+        supabase: supa.client,
+        pg: pg.client,
+        params: { office_ids: [OFFICE_2] },
+      }),
+    );
+
+    // The employee table is empty (the template's early-return empty page)
+    // — so the audit MUST NOT quietly cover the whole roster.
+    expect(data.employees).toEqual([]);
+    expect(supa.calls['attendance_attempts']).toBeUndefined();
+    expect(data.rejections).toEqual([]);
   });
 });

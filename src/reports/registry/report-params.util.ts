@@ -8,6 +8,16 @@ export const MAX_REPORT_RANGE_DAYS = 92;
 
 const CALENDAR_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
+/** Any-version UUID shape — the gate BEFORE an id reaches PostgREST (a
+ *  malformed uuid in an `.in()` is a PostgREST 22P02, which would surface
+ *  as a 500; QA bug bash 2026-10-03). */
+const UUID_SHAPE_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuidShape(value: string): boolean {
+  return UUID_SHAPE_RE.test(value);
+}
+
 /** Today's calendar date on the IST clock — the PRD evaluates "not in the future" on IST. */
 export function istTodayIso(): string {
   return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);

@@ -6,9 +6,10 @@ import { TECHNICIAN_JOB_ACTIVITY_TYPE } from '../registry/technician-job-activit
 
 /**
  * Create a report request. Deep validation (calendar dates, 92-day cap, IST
- * future check, technician membership) lives in the report definition +
- * service — the DTO only pins shape, so every failure maps to a 400 carrying
- * the specific error code rather than a generic 422.
+ * future check, technician membership, id shapes) lives in the report
+ * definition + service — the DTO only pins shape. DTO-level type/length
+ * violations surface as the ValidationPipe's 422 with field messages;
+ * value-level failures map to 400s carrying the specific error code.
  */
 export class CreateReportRequestDto {
   @ApiPropertyOptional({

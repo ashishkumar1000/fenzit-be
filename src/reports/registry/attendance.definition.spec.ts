@@ -50,14 +50,20 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
         attendanceReportDefinition.validateParams({
           startDate: '2026-09-01',
           endDate: '2026-09-07',
-          technicianIds: ['e1', 'e2'],
-          officeIds: ['o1'],
+          technicianIds: [
+            '00000000-0000-4000-8000-0000000000e1',
+            '00000000-0000-4000-8000-0000000000e2',
+          ],
+          officeIds: ['00000000-0000-4000-8000-00000000ff01'],
         }),
       ).toEqual({
         start_date: '2026-09-01',
         end_date: '2026-09-07',
-        technician_ids: ['e1', 'e2'],
-        office_ids: ['o1'],
+        technician_ids: [
+          '00000000-0000-4000-8000-0000000000e1',
+          '00000000-0000-4000-8000-0000000000e2',
+        ],
+        office_ids: ['00000000-0000-4000-8000-00000000ff01'],
       });
     });
 
@@ -79,9 +85,26 @@ describe('AttendanceReportDefinition (story 21-1)', () => {
       const params = attendanceReportDefinition.validateParams({
         startDate: '2026-09-01',
         endDate: '2026-09-07',
-        officeIds: ['o1', 'o1', 'o2'],
+        officeIds: [
+          '00000000-0000-4000-8000-00000000ff01',
+          '00000000-0000-4000-8000-00000000ff01',
+          '00000000-0000-4000-8000-00000000ff02',
+        ],
       });
-      expect(params.office_ids).toEqual(['o1', 'o2']);
+      expect(params.office_ids).toEqual([
+        '00000000-0000-4000-8000-00000000ff01',
+        '00000000-0000-4000-8000-00000000ff02',
+      ]);
+    });
+
+    it('rejects a MALFORMED (non-uuid) office id before any membership read (bug bash 2026-10-03: was a PostgREST 22P02 → misleading 400)', () => {
+      expect(() =>
+        attendanceReportDefinition.validateParams({
+          startDate: '2026-09-01',
+          endDate: '2026-09-07',
+          officeIds: ['not-a-uuid'],
+        }),
+      ).toThrow(BadRequestException);
     });
 
     it('rejects a range over the shared 92-day cap', () => {

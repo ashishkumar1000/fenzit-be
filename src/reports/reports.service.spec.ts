@@ -652,23 +652,39 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('validates technicianIds against the tenant technicians, deduped, and stores the resolved ids', async () => {
       const { from, usersQb, insertQb } = mockCreateAdmin({
-        users: { data: [{ id: 't-1' }, { id: 't-2' }], error: null },
+        users: {
+          data: [
+            { id: '00000000-0000-4000-8000-0000000000a1' },
+            { id: '00000000-0000-4000-8000-0000000000a2' },
+          ],
+          error: null,
+        },
       });
 
       await service.createReport(ownerUser, {
         ...RANGE,
-        technicianIds: ['t-2', 't-1', 't-2'],
+        technicianIds: [
+          '00000000-0000-4000-8000-0000000000a2',
+          '00000000-0000-4000-8000-0000000000a1',
+          '00000000-0000-4000-8000-0000000000a2',
+        ],
       });
 
       expect(from).toHaveBeenCalledWith('users');
       expect(usersQb.select).toHaveBeenCalledWith('id');
       expect(usersQb.tenantEq).toHaveBeenCalledWith('tenant_id', TENANT);
       expect(usersQb.roleEq).toHaveBeenCalledWith('role', Role.TECHNICIAN);
-      expect(usersQb.in).toHaveBeenCalledWith('id', ['t-2', 't-1']);
+      expect(usersQb.in).toHaveBeenCalledWith('id', [
+        '00000000-0000-4000-8000-0000000000a2',
+        '00000000-0000-4000-8000-0000000000a1',
+      ]);
       expect(insertQb.insert).toHaveBeenCalledWith(
         expect.objectContaining({
           params: expect.objectContaining({
-            technician_ids: ['t-2', 't-1'],
+            technician_ids: [
+              '00000000-0000-4000-8000-0000000000a2',
+              '00000000-0000-4000-8000-0000000000a1',
+            ],
           }),
         }),
       );
@@ -676,17 +692,43 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('rejects an id that is not a technician of the tenant with 400 VALIDATION_ERROR', async () => {
       const { insertQb } = mockCreateAdmin({
-        users: { data: [{ id: 't-1' }], error: null },
+        users: { data: [{ id: '00000000-0000-4000-8000-0000000000a1' }], error: null },
       });
 
       await expectErrorCode(
         service.createReport(ownerUser, {
           ...RANGE,
-          technicianIds: ['t-1', 't-unknown'],
+          technicianIds: [
+            '00000000-0000-4000-8000-0000000000a1',
+            '00000000-0000-4000-8000-0000000000beef',
+          ],
         }),
         400,
         ErrorCode.VALIDATION_ERROR,
       );
+      expect(insertQb.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a MALFORMED (non-uuid) technician id with 400 before any DB call (bug bash 2026-10-03: was a PostgREST 22P02 → 500)', async () => {
+      const { from, insertQb } = mockCreateAdmin({});
+
+      await expectErrorCode(
+        service.createReport(ownerUser, {
+          ...RANGE,
+          technicianIds: ['not-a-uuid'],
+        }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+      await expectErrorCode(
+        service.createReport(ownerUser, {
+          ...RANGE,
+          technicianIds: ['', '   '],
+        }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+      expect(from).not.toHaveBeenCalled();
       expect(insertQb.insert).not.toHaveBeenCalled();
     });
 
@@ -713,13 +755,16 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
           data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
           error: null,
         },
-        offices: { data: [{ id: 'o-1' }], error: null },
+        offices: {
+          data: [{ id: '00000000-0000-4000-8000-00000000ff01' }],
+          error: null,
+        },
       });
 
       const result = await service.createReport(ownerUser, {
         ...RANGE,
         reportType: ATTENDANCE_REPORT_TYPE,
-        officeIds: ['o-1'],
+        officeIds: ['00000000-0000-4000-8000-00000000ff01'],
       });
       // (offices probe routed via the `offices` opt above)
 
@@ -727,26 +772,40 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       expect(insertQb.insert).toHaveBeenCalledWith(
         expect.objectContaining({
           report_type: ATTENDANCE_REPORT_TYPE,
-          params: expect.objectContaining({ office_ids: ['o-1'] }),
+          params: expect.objectContaining({
+            office_ids: ['00000000-0000-4000-8000-00000000ff01'],
+          }),
         }),
       );
     });
 
     it('rejects a non-enrolled employee for the attendance report before insert (21-1)', async () => {
       const { insertQb } = mockCreateAdmin({
-        users: { data: [{ id: 'e-1' }, { id: 'e-2' }], error: null },
+        users: {
+          data: [
+            { id: '00000000-0000-4000-8000-0000000000e1' },
+            { id: '00000000-0000-4000-8000-0000000000e2' },
+          ],
+          error: null,
+        },
         settings: {
           data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
           error: null,
         },
-        enrolments: { data: [{ employee_id: 'e-1' }], error: null },
+        enrolments: {
+          data: [{ employee_id: '00000000-0000-4000-8000-0000000000e1' }],
+          error: null,
+        },
       });
 
       await expectErrorCode(
         service.createReport(ownerUser, {
           ...RANGE,
           reportType: ATTENDANCE_REPORT_TYPE,
-          technicianIds: ['e-1', 'e-2'],
+          technicianIds: [
+            '00000000-0000-4000-8000-0000000000e1',
+            '00000000-0000-4000-8000-0000000000e2',
+          ],
         }),
         400,
         ErrorCode.VALIDATION_ERROR,
@@ -755,7 +814,10 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
     });
 
     it('honours the attendance definition 200-person cap: 26 selected employees queue (21-1)', async () => {
-      const ids = Array.from({ length: 26 }, (_, i) => `e-${i}`);
+      const ids = Array.from(
+        { length: 26 },
+        (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      );
       const { insertQb } = mockCreateAdmin({
         users: { data: ids.map((id) => ({ id })), error: null },
         settings: {
@@ -784,7 +846,10 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       });
 
       await expectErrorCode(
-        service.createReport(ownerUser, { ...RANGE, technicianIds: ['t-1'] }),
+        service.createReport(ownerUser, {
+          ...RANGE,
+          technicianIds: ['00000000-0000-4000-8000-0000000000a1'],
+        }),
         500,
         ErrorCode.INTERNAL_SERVER_ERROR,
       );

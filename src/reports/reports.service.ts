@@ -17,6 +17,7 @@ import { Role } from '../common/enums/role.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
+import { isUuidShape } from './registry/report-params.util';
 import { StorageService } from '../storage/storage.service';
 import { ReportRegistry } from './registry/report-registry';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
@@ -380,6 +381,17 @@ export class ReportsService {
       throw new BadRequestException({
         error_code: ErrorCode.REPORT_TOO_MANY_TECHNICIANS,
         message: `A report can be scoped to at most ${maxIds} technicians`,
+      });
+    }
+
+    // Shape gate before membership: a malformed uuid inside `.in()` is a
+    // PostgREST 22P02 that would otherwise surface as a 500 (QA bug bash
+    // 2026-10-03). Sits after the cap so an oversized list always gets the
+    // cap message.
+    if (requested.some((id) => !isUuidShape(id))) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'technicianIds must all be valid technician ids',
       });
     }
 

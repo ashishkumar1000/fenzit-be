@@ -6,7 +6,7 @@ import {
   ReportParams,
   RawReportParams,
 } from './report-definition';
-import { validateReportDateRange } from './report-params.util';
+import { validateReportDateRange, isUuidShape } from './report-params.util';
 import { fetchAttendanceReportData } from './attendance.data';
 import { buildAttendanceReportDocument } from './attendance.template';
 
@@ -68,6 +68,12 @@ export const attendanceReportDefinition: ReportDefinition = {
       throw invalid(
         `A report can be scoped to at most ${MAX_OFFICES_PER_REPORT} offices`,
       );
+    }
+    // Shape gate before membership: a malformed uuid inside `.in()` is a
+    // PostgREST 22P02 that would otherwise surface as a server error (QA
+    // bug bash 2026-10-03).
+    if (officeIds.some((id) => !isUuidShape(id))) {
+      throw invalid('officeIds must all be valid office ids');
     }
     return {
       start_date: startDate,
