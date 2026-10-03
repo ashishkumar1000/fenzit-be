@@ -22,5 +22,9 @@ on conflict (key) do nothing;
 
 -- BE cache invalidation: the backend keeps app_config in memory (TTL as the
 -- safety net) and subscribes to Postgres changes so an edit invalidates the
--- cache immediately instead of waiting out the TTL.
-alter publication supabase_realtime add table public.app_config;
+-- cache immediately instead of waiting out the TTL. DO-block wrapped so a
+-- re-run on a database that already has the table in the publication is a
+-- no-op instead of a duplicate_object error (BMAD review P3).
+do $$ begin
+  alter publication supabase_realtime add table public.app_config;
+exception when duplicate_object then null; end $$;
