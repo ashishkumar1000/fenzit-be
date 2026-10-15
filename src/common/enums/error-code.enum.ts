@@ -8,6 +8,10 @@ export enum ErrorCode {
   INVALID_OTP = 'INVALID_OTP',
   OTP_EXPIRED = 'OTP_EXPIRED',
   OTP_SESSION_LOCKED = 'OTP_SESSION_LOCKED',
+  /** The SMS gateway rejected/failed the send (PRD FR-BE4). Answers 502 —
+   *  upstream failure, retryable; the OTP session was deleted unless the
+   *  outcome was a timeout (the SMS may still arrive). */
+  OTP_SEND_FAILED = 'OTP_SEND_FAILED',
   JOB_NOT_MODIFIABLE = 'JOB_NOT_MODIFIABLE',
   INVALID_WORKFLOW_STEP = 'INVALID_WORKFLOW_STEP',
   INTERNAL_SERVER_ERROR = 'INTERNAL_SERVER_ERROR',

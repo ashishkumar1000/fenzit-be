@@ -55,13 +55,16 @@ Rules:
   Cache keys: `otp:session:{sessionId}` (5-min TTL), `otp:rate:{phone}` (10-min
   TTL). OTP stored as bcrypt hash. **Phase 1 single-instance constraint**
   — multi-instance needs Redis swap.
-- **Phase 1 mock OTP** — `verifyOtp` accepts any 6-digit code; the
-  `isValid = true` comparison is hardcoded. Real verification with
-  `bcrypt.compare` is a **pre-launch blocker** (deferred-work.md W1).
+- **Phase 1 mock OTP — CLOSED 2026-10-02**: real verification
+  (`bcrypt.compare` against the session hash) shipped; the W1 blocker is
+  closed in deferred-work.md. Delivery went real 2026-10-15 (MSG91, below).
 - **AR-7** — JWT signed with `@nestjs/jwt` using `SUPABASE_JWT_SECRET`,
   expiry **7 days**, shape `{ sub, tenantId, role, iat, exp }`.
-- **AR-19** — `OtpDeliveryProvider` abstract class. Phase 1 uses
-  `MockOtpDeliveryProvider` (console log). Phase 2 swaps to a WhatsApp BSP.
+- **AR-19** — `SmsDeliveryProvider` abstract port (template ID + named
+  variables, shaped per CHANNEL). Dev/test uses `MockSmsDeliveryProvider`
+  (logs the code); production rides `Msg91SmsDeliveryProvider` (MSG91 v5
+  flow endpoint, DLT-approved template). WhatsApp BSP dropped from this
+  phase's scope (PRD non-goal — SMS only).
 - OTP session lifecycle: `pending` → `verified` → `consumed`; locked after
   5 failed attempts.
 - Token refresh: re-mint on company setup (returns fresh JWT with `tenantId`).
@@ -290,7 +293,7 @@ rules:
 | AR-16 | IST day range utility (`src/common/utils/ist-day-range.util.ts`) | ✅ |
 | AR-17 | `@nestjs/config` + Joi schema validation | ✅ |
 | AR-18 | Dockerfile + GitHub Actions CI + DigitalOcean App Platform | ❌ **Not in repo** — planned for pre-launch |
-| AR-19 | `OtpDeliveryProvider` abstract, `MockOtpDeliveryProvider` Phase 1 | ✅ |
+| AR-19 | `SmsDeliveryProvider` port; `MockSmsDeliveryProvider` dev/test, `Msg91SmsDeliveryProvider` production | ✅ |
 | AR-20 | RLS cross-tenant isolation test (mandatory, blocks launch) | ⚠️ **Test exists, always skipped in CI** — needs DB infra |
 | AR-21 | `@fastify/multipart` for file upload handling | ❌ **Not used** — code uses presigned PUT only |
 | AR-22 | Trailing-slash Fastify vulnerability mitigation | ✅ (`ignoreTrailingSlash: true` on adapter) |

@@ -9,10 +9,15 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { randomInt } from 'crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
-import { OtpDeliveryProvider } from './otp-delivery.provider';
+import {
+  SmsDeliveryProvider,
+  SmsDeliveryError,
+} from './sms-delivery.provider';
+import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { SetupCompanyDto } from './dto/setup-company.dto';
@@ -38,12 +43,13 @@ const OTP_RATE_LIMIT_WINDOW = 600;
 const OTP_RATE_LIMIT_MAX = 5;
 const OTP_MAX_ATTEMPTS = 5;
 
-// PRE-RELEASE MASTER OTP (user-directed, 2026-10-02): while the pre-DLT dev
-// flag is on, 816001 verifies ANY live session — the release build has no
+// PRE-RELEASE MASTER OTP (user-directed: 816001 on 2026-10-02, re-keyed to
+// 1039 on 2026-10-15 so it fits the 4-digit input): while the pre-SMS-cutover
+// dev flag is on, it verifies ANY live session — the release build has no
 // __DEV__ chip and DLT SMS is not live, so this is the only way to log in.
 // REMOVE AT GO-LIVE: it is gated on OTP_DEV_ECHO, so unsetting that flag for
 // the SMS cutover also kills the master code even if this line is missed.
-const PRE_RELEASE_MASTER_OTP = '816001';
+const PRE_RELEASE_MASTER_OTP = '1039';
 
 /**
  * Supabase Realtime tokens are short-lived on purpose — the login JWT is
@@ -60,14 +66,14 @@ export class AuthService {
 
   constructor(
     private readonly otpSessionStore: OtpSessionStore,
-    private readonly otpDeliveryProvider: OtpDeliveryProvider,
+    private readonly smsDeliveryProvider: SmsDeliveryProvider,
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly jwtService: JwtService,
   ) {}
 
   async sendOtp(
     dto: SendOtpDto,
-  ): Promise<{ otp_session_id: string; expires_at: string; otp?: string }> {
+  ): Promise<{ otp_session_id: string; expires_at: string }> {
     const { countryCode, phoneNumber } = dto;
     const e164 = `${countryCode}${phoneNumber}`;
 
@@ -88,7 +94,12 @@ export class AuthService {
       );
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // CSPRNG, not Math.random() — real verification deserves an
+    // unpredictable code (PRD FR-BE6a). 4 digits per the user's product
+    // call (2026-10-15); online guessing is bounded by the per-session
+    // 5-attempt lockout below, the 5-minute TTL, and the 5-sends/10-min
+    // send cap — not by the code space.
+    const otp = randomInt(1000, 10000).toString();
     const otpHash = await bcrypt.hash(otp, 10);
 
     const sessionId = this.generateUuid();
@@ -103,39 +114,123 @@ export class AuthService {
     };
 
     await this.otpSessionStore.set(sessionId, session, OTP_TTL_SECONDS);
-    await this.otpDeliveryProvider.send(e164, otp);
+    await this.deliverOtp(sessionId, e164, otp);
 
-    this.logger.log(`OTP for ${e164}: ${otp}`);
-
-    const payload: {
-      otp_session_id: string;
-      expires_at: string;
-      otp?: string;
-    } = {
+    // SECURITY: the response NEVER carries the code. The old OTP_DEV_ECHO
+    // echo (bug-bash 2026-10-02 F2: an echo on a public endpoint is
+    // equivalent to having no OTP factor) is gone — testing rides the
+    // flag-gated master code below instead (user call, 2026-10-15).
+    return {
       otp_session_id: sessionId,
       expires_at: new Date(expiresAt).toISOString(),
     };
-    // SECURITY: the code is echoed back ONLY when OTP_DEV_ECHO=true — a
-    // pre-DLT convenience so the app's __DEV__ chip can fill it. The send
-    // endpoint is public, so an echo that is on in a reachable environment
-    // is equivalent to having no OTP factor at all (bug-bash 2026-10-02,
-    // finding F2). Default OFF; Render must not set this once DLT lands.
-    if (this.otpDevEchoEnabled()) {
-      payload.otp = otp;
-    }
-    return payload;
   }
 
-  private otpDevEchoEnabled(): boolean {
+  /**
+   * The delivery leg (PRD FR-BE4/FR-BE8). Failure semantics are
+   * outcome-specific: a definitive pre-dispatch failure deletes the
+   * just-created session (nobody received anything); a TIMEOUT keeps it —
+   * MSG91 may already have dispatched and the SMS can still arrive. Either
+   * way the endpoint answers 502 OTP_SEND_FAILED, and the rate-limit
+   * counter having incremented is accepted (it must not be bypassable via
+   * a failing provider). One structured line per attempt feeds the
+   * delivery metrics; the plaintext code is NEVER logged here — the mock
+   * provider logs it in the environments where that is the fallback.
+   */
+  private async deliverOtp(
+    sessionId: string,
+    e164: string,
+    otp: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      // `number` is the approved template's single variable slot — the
+      // copy reads "Your FENZIT Login OTP is ##number## …" (see
+      // SMS_TEMPLATES.OTP_LOGIN).
+      await this.smsDeliveryProvider.send(
+        e164,
+        SMS_TEMPLATES.OTP_LOGIN,
+        { number: otp },
+      );
+      this.logger.log(
+        JSON.stringify({
+          event: 'otp_delivery',
+          phone: e164,
+          provider: this.smsDeliveryProvider.constructor.name,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+    } catch (err) {
+      if (!(err instanceof SmsDeliveryError)) {
+        // An unexpected provider crash (a bug, not a gateway answer) still
+        // gets its structured line — one otp_delivery event per attempt,
+        // every outcome. Rethrown as-is on purpose: it is a 500, and folding
+        // it into the retryable 502 contract would misreport who failed.
+        this.logger.error(
+          JSON.stringify({
+            event: 'otp_delivery',
+            phone: e164,
+            provider: this.smsDeliveryProvider.constructor.name,
+            outcome: 'crash',
+            durationMs: Date.now() - startedAt,
+            detail: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        throw err;
+      }
+      this.logger.error(
+        JSON.stringify({
+          event: 'otp_delivery',
+          phone: e164,
+          provider: this.smsDeliveryProvider.constructor.name,
+          outcome: err.outcome,
+          durationMs: Date.now() - startedAt,
+          vendorType: err.vendorType,
+          detail: err.message,
+        }),
+      );
+      if (err.outcome !== 'timeout') {
+        // The 502 must reach the client even if the store hiccups — a
+        // failing delete is logged, never allowed to mask the delivery
+        // failure with a less-specific 500.
+        try {
+          await this.otpSessionStore.delete(sessionId);
+        } catch (deleteErr) {
+          this.logger.error(
+            JSON.stringify({
+              event: 'otp_session_delete_failed',
+              sessionId,
+              detail:
+                deleteErr instanceof Error
+                  ? deleteErr.message
+                  : String(deleteErr),
+            }),
+          );
+        }
+      }
+      throw new HttpException(
+        {
+          error_code: ErrorCode.OTP_SEND_FAILED,
+          message:
+            'We couldn’t send the code right now. Please try again in a moment.',
+        },
+        502,
+      );
+    }
+  }
+
+  /** The pre-release master code rides the SAME env flag the old response
+   *  echo used (OTP_DEV_ECHO — flipping it for the SMS cutover disables the
+   *  master with no code change, see the constant's note). That flag's only
+   *  remaining job is this gate. */
+  private preReleaseMasterEnabled(): boolean {
     return process.env['OTP_DEV_ECHO']?.trim() === 'true';
   }
 
-  /** The pre-release master code rides the SAME dev flag as the response
-   *  echo: on in this pre-DLT window, and flipping the flag for the SMS
-   *  cutover disables it with no code change (see the constant's note). */
   private acceptsPreReleaseMasterOtp(otpCode: string): boolean {
     return (
-      this.otpDevEchoEnabled() && otpCode === PRE_RELEASE_MASTER_OTP
+      this.preReleaseMasterEnabled() && otpCode === PRE_RELEASE_MASTER_OTP
     );
   }
 

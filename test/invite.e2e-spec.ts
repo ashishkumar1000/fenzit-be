@@ -381,13 +381,14 @@ describe('Technician Invitation (e2e)', () => {
       });
       expect(sendResponse.statusCode).toBe(200);
       const sendBody = JSON.parse(sendResponse.body);
-      // OTP_DEV_ECHO is on in the test env — read the code like a dev client.
-      expect(sendBody.otp).toMatch(/^\d{6}$/);
+      // The response never carries the code (the dev echo is gone) — the
+      // flag-gated master code is the testing channel.
+      expect(sendBody).not.toHaveProperty('otp');
 
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: sendBody.otp_session_id, otpCode: sendBody.otp },
+        payload: { otpSessionId: sendBody.otp_session_id, otpCode: '1039' },
       });
 
       expect(verifyResponse.statusCode).toBe(200);

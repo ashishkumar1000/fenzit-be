@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
   ConflictException,
@@ -9,7 +10,12 @@ import {
 } from '@nestjs/common';
 import { AuthService, REALTIME_TOKEN_TTL_SECONDS } from './auth.service';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
-import { OtpDeliveryProvider } from './otp-delivery.provider';
+import {
+  SmsDeliveryProvider,
+  SmsDeliveryError,
+} from './sms-delivery.provider';
+import { SMS_TEMPLATES } from '../common/constants/sms-templates';
+import { ErrorCode } from '../common/enums/error-code.enum';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
@@ -22,7 +28,7 @@ import * as bcrypt from 'bcrypt';
 describe('AuthService', () => {
   let service: AuthService;
   let otpSessionStore: jest.Mocked<OtpSessionStore>;
-  let otpDeliveryProvider: jest.Mocked<OtpDeliveryProvider>;
+  let smsDeliveryProvider: jest.Mocked<SmsDeliveryProvider>;
   let supabaseClientFactory: jest.Mocked<SupabaseClientFactory>;
   let jwtService: jest.Mocked<JwtService>;
 
@@ -34,7 +40,7 @@ describe('AuthService', () => {
       increment: jest.fn(),
     };
 
-    const mockOtpDeliveryProvider = {
+    const mockSmsDeliveryProvider = {
       send: jest.fn(),
     };
 
@@ -51,7 +57,7 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: OtpSessionStore, useValue: mockOtpSessionStore },
-        { provide: OtpDeliveryProvider, useValue: mockOtpDeliveryProvider },
+        { provide: SmsDeliveryProvider, useValue: mockSmsDeliveryProvider },
         { provide: SupabaseClientFactory, useValue: mockSupabaseClientFactory },
         { provide: JwtService, useValue: mockJwtService },
       ],
@@ -59,7 +65,7 @@ describe('AuthService', () => {
 
     service = module.get<AuthService>(AuthService);
     otpSessionStore = module.get(OtpSessionStore);
-    otpDeliveryProvider = module.get(OtpDeliveryProvider);
+    smsDeliveryProvider = module.get(SmsDeliveryProvider);
     supabaseClientFactory = module.get(SupabaseClientFactory);
     jwtService = module.get(JwtService);
   });
@@ -71,7 +77,7 @@ describe('AuthService', () => {
         count: 1,
         windowRemainingSeconds: 600,
       });
-      otpDeliveryProvider.send.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockResolvedValue(undefined);
       otpSessionStore.set.mockResolvedValue(undefined);
 
       const result = await service.sendOtp(dto);
@@ -82,9 +88,10 @@ describe('AuthService', () => {
         '+911234567890',
         600,
       );
-      expect(otpDeliveryProvider.send).toHaveBeenCalledWith(
+      expect(smsDeliveryProvider.send).toHaveBeenCalledWith(
         '+911234567890',
-        expect.stringMatching(/^\d{6}$/),
+        SMS_TEMPLATES.OTP_LOGIN,
+        { number: expect.stringMatching(/^\d{4}$/) },
       );
     });
 
@@ -94,7 +101,7 @@ describe('AuthService', () => {
         count: 1,
         windowRemainingSeconds: 600,
       });
-      otpDeliveryProvider.send.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockResolvedValue(undefined);
       otpSessionStore.set.mockResolvedValue(undefined);
 
       await service.sendOtp(dto);
@@ -124,53 +131,147 @@ describe('AuthService', () => {
       });
     });
 
-    it('should NOT echo the code in the response by default (OTP_DEV_ECHO unset)', async () => {
+    it('NEVER echoes the code in the response — flag on or off (the master code is the only testing channel)', async () => {
       const prevEcho = process.env['OTP_DEV_ECHO'];
-      delete process.env['OTP_DEV_ECHO'];
+      process.env['OTP_DEV_ECHO'] = 'true';
+      try {
+        const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+        otpSessionStore.increment.mockResolvedValue({
+          count: 1,
+          windowRemainingSeconds: 600,
+        });
+        smsDeliveryProvider.send.mockResolvedValue(undefined);
+        otpSessionStore.set.mockResolvedValue(undefined);
+
+        const result = await service.sendOtp(dto);
+
+        // The send endpoint is public — an echoed code in its response is
+        // equivalent to having no OTP factor (bug-bash 2026-10-02 F2). The
+        // old OTP_DEV_ECHO echo is gone entirely; asserting under the flag
+        // ON (the test env's default) pins the strongest case.
+        expect(result).not.toHaveProperty('otp');
+        expect(result.otp_session_id).toBeDefined();
+      } finally {
+        if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+        else process.env['OTP_DEV_ECHO'] = prevEcho;
+      }
+    });
+
+    // --- Delivery failure semantics (PRD FR-BE4) --------------------------
+
+    it('a definitive provider failure answers 502 OTP_SEND_FAILED and deletes the just-created session', async () => {
       const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
       otpSessionStore.increment.mockResolvedValue({
         count: 1,
         windowRemainingSeconds: 600,
       });
-      otpDeliveryProvider.send.mockResolvedValue(undefined);
       otpSessionStore.set.mockResolvedValue(undefined);
+      otpSessionStore.delete.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockRejectedValue(
+        new SmsDeliveryError('MSG91 send rejected (HTTP 402)', 'error'),
+      );
 
-      const result = await service.sendOtp(dto);
-
-      // The send endpoint is public — an echoed code in its response is
-      // equivalent to having no OTP factor (bug-bash 2026-10-02 F2).
-      expect(result).not.toHaveProperty('otp');
-      if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
-      else process.env['OTP_DEV_ECHO'] = prevEcho;
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.OTP_SEND_FAILED,
+        }),
+      });
+      // Nobody received anything — the session must not linger verifyable.
+      expect(otpSessionStore.delete).toHaveBeenCalledWith(
+        expect.any(String),
+      );
     });
 
-    it('should echo the code only when OTP_DEV_ECHO=true (pre-DLT dev convenience)', async () => {
-      const prevEcho = process.env['OTP_DEV_ECHO'];
-      process.env['OTP_DEV_ECHO'] = 'true';
-      try {
-        const dto: SendOtpDto = {
-          countryCode: '+91',
-          phoneNumber: '1234567890',
-        };
-        otpSessionStore.increment.mockResolvedValue({
-          count: 1,
-          windowRemainingSeconds: 600,
-        });
-        otpDeliveryProvider.send.mockResolvedValue(undefined);
-        otpSessionStore.set.mockResolvedValue(undefined);
+    it('a provider TIMEOUT answers 502 OTP_SEND_FAILED but KEEPS the session (the SMS may still arrive)', async () => {
+      const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
+      otpSessionStore.set.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockRejectedValue(
+        new SmsDeliveryError('MSG91 send timed out after 4000ms', 'timeout'),
+      );
 
-        const result = await service.sendOtp(dto);
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.OTP_SEND_FAILED,
+        }),
+      });
+      expect(otpSessionStore.delete).not.toHaveBeenCalled();
+    });
 
-        expect(result.otp).toMatch(/^\d{6}$/);
-        // The delivered code and the echoed code are the same one.
-        expect(otpDeliveryProvider.send).toHaveBeenCalledWith(
-          '+911234567890',
-          result.otp,
-        );
-      } finally {
-        if (prevEcho === undefined) delete process.env['OTP_DEV_ECHO'];
-        else process.env['OTP_DEV_ECHO'] = prevEcho;
-      }
+    it('a rate-limited retry after a failed send is ACCEPTED (the counter stays incremented — the limit is not bypassable via a failing provider)', async () => {
+      // The 5th send fails (the cap allows 5); the 6th must still hit the
+      // 429, not bypass it.
+      const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+      otpSessionStore.increment
+        .mockResolvedValueOnce({ count: 5, windowRemainingSeconds: 500 })
+        .mockResolvedValueOnce({ count: 6, windowRemainingSeconds: 480 });
+      otpSessionStore.set.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockRejectedValue(
+        new SmsDeliveryError('MSG91 send rejected', 'error'),
+      );
+      otpSessionStore.delete.mockResolvedValue(undefined);
+
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 502,
+      });
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 429,
+      });
+    });
+
+    it('an unexpected (non-SmsDeliveryError) provider crash propagates as-is, not as a 502', async () => {
+      const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
+      otpSessionStore.set.mockResolvedValue(undefined);
+      smsDeliveryProvider.send.mockRejectedValue(
+        new Error('TypeError: Cannot read properties of undefined'),
+      );
+      const errorSpy = jest
+        .spyOn(service['logger'], 'error')
+        .mockImplementation(() => undefined);
+
+      await expect(service.sendOtp(dto)).rejects.toThrow(
+        'TypeError: Cannot read properties of undefined',
+      );
+      expect(otpSessionStore.delete).not.toHaveBeenCalled();
+      // One otp_delivery line per attempt, EVERY outcome — a crash is a
+      // structured 'crash' event, not silence (the metrics consume these).
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"outcome":"crash"'),
+      );
+      errorSpy.mockRestore();
+    });
+
+    it('a failing session delete during a definitive delivery failure cannot mask the 502', async () => {
+      const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+      otpSessionStore.increment.mockResolvedValue({
+        count: 1,
+        windowRemainingSeconds: 600,
+      });
+      otpSessionStore.set.mockResolvedValue(undefined);
+      otpSessionStore.delete.mockRejectedValue(
+        new Error('store temporarily unavailable'),
+      );
+      smsDeliveryProvider.send.mockRejectedValue(
+        new SmsDeliveryError('MSG91 send rejected (HTTP 402)', 'error'),
+      );
+
+      // The client must see the delivery failure (502 OTP_SEND_FAILED), not
+      // the store's 500.
+      await expect(service.sendOtp(dto)).rejects.toMatchObject({
+        status: 502,
+        response: expect.objectContaining({
+          error_code: ErrorCode.OTP_SEND_FAILED,
+        }),
+      });
     });
   });
 
@@ -223,14 +324,14 @@ describe('AuthService', () => {
       );
     }
 
-    it('PRE-RELEASE MASTER OTP: 816001 verifies ANY live session while OTP_DEV_ECHO=true (user-directed, remove at go-live)', async () => {
+    it('PRE-RELEASE MASTER OTP: 1039 verifies ANY live session while OTP_DEV_ECHO=true (user-directed, remove at go-live)', async () => {
       const prevEcho = process.env['OTP_DEV_ECHO'];
       process.env['OTP_DEV_ECHO'] = 'true';
       try {
         mockLiveSession();
         const result = await service.verifyOtp({
           otpSessionId: 'session-id',
-          otpCode: '816001',
+          otpCode: '1039',
         });
         expect(result).toHaveProperty('token', 'master-jwt');
         expect(otpSessionStore.delete).toHaveBeenCalled();
@@ -246,7 +347,7 @@ describe('AuthService', () => {
       try {
         mockLiveSession();
         await expect(
-          service.verifyOtp({ otpSessionId: 'session-id', otpCode: '816001' }),
+          service.verifyOtp({ otpSessionId: 'session-id', otpCode: '1039' }),
         ).rejects.toMatchObject({
           status: 401,
           response: expect.objectContaining({ error_code: 'INVALID_OTP' }),

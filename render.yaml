@@ -43,3 +43,15 @@ services:
         sync: false
       - key: GOOGLE_PLACES_API_KEY
         sync: false
+      # SMS delivery (PRD prd-otp-sms-msg91-2026-09-18 FR-BE2/FR-BE3).
+      # Cutover: set MSG91_AUTH_KEY, then flip SMS_DELIVERY_PROVIDER to
+      # msg91 (and unset OTP_DEV_ECHO in the dashboard if present — that
+      # flip kills the pre-release master OTP; the response echo is already
+      # gone from the code). Until then keep 'mock' explicit: production's
+      # factory default is msg91, which refuses to boot without
+      # MSG91_AUTH_KEY. DLT template IDs are code constants
+      # (src/common/constants/sms-templates.ts).
+      - key: SMS_DELIVERY_PROVIDER
+        value: mock
+      - key: MSG91_AUTH_KEY
+        sync: false

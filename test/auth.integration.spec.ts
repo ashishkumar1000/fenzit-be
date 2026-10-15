@@ -7,6 +7,11 @@ import {
 } from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import {
+  SmsDeliveryError,
+  SmsDeliveryProvider,
+} from '../src/auth/sms-delivery.provider';
+import { OtpSessionStore } from '../src/auth/otp-session-store';
 
 const mockUser = {
   id: 'test-user-id-otp',
@@ -133,6 +138,112 @@ describe('Auth Integration Tests (e2e)', () => {
     });
   });
 
+  // The 502 contract (PRD FR-BE4) over real HTTP — the unit specs mock the
+  // port at the service boundary; this boots the full app with a failing
+  // gateway and asserts the GlobalExceptionFilter envelope AND the
+  // outcome-specific session semantics through the public endpoints.
+  describe('POST /api/v1/auth/otp/send — delivery failure (502 OTP_SEND_FAILED)', () => {
+    let app: NestFastifyApplication;
+    const failingSend = jest.fn();
+
+    beforeAll(async () => {
+      const moduleFixture: TestingModule = await Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({
+          create: jest.fn(),
+          createAdmin: jest.fn().mockReturnValue(mockAdminClient),
+        })
+        .overrideProvider(SmsDeliveryProvider)
+        .useValue({ send: failingSend })
+        .compile();
+
+      app = moduleFixture.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter(),
+      );
+      app.setGlobalPrefix('api/v1', { exclude: ['internal/webhooks/storage'] });
+      app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+      await app.init();
+      await app.getHttpAdapter().getInstance().ready();
+    });
+
+    afterAll(async () => {
+      await app.close();
+    });
+
+    // The 502 body carries no session id (by design), so the id is captured
+    // from a pass-through spy on the store's set() and the deletion/retention
+    // is proven over the verify endpoint — exactly what a real client can
+    // observe.
+    async function sendAndCaptureSession(phone: string): Promise<{
+      sendStatus: number;
+      sendBody: { error_code?: string };
+      sessionId: string;
+    }> {
+      const store = app.get(OtpSessionStore);
+      const setSpy = jest.spyOn(store, 'set');
+      const sendResponse = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/send',
+        payload: { countryCode: '+91', phoneNumber: phone },
+      });
+      const sessionId = String(setSpy.mock.calls[0]?.[0] ?? '');
+      setSpy.mockRestore();
+      expect(sessionId).not.toBe('');
+      return {
+        sendStatus: sendResponse.statusCode,
+        sendBody: JSON.parse(sendResponse.body),
+        sessionId,
+      };
+    }
+
+    it('a definitive gateway failure answers 502 OTP_SEND_FAILED and the session is gone (verify answers OTP_EXPIRED)', async () => {
+      failingSend.mockRejectedValueOnce(
+        new SmsDeliveryError('MSG91 send rejected (HTTP 402)', 'error'),
+      );
+
+      const { sendStatus, sendBody, sessionId } =
+        await sendAndCaptureSession('5550001111');
+
+      // 404 is not part of this API's vocabulary — 502 marks the upstream
+      // gateway as the failing party, retryable.
+      expect(sendStatus).toBe(502);
+      expect(sendBody.error_code).toBe('OTP_SEND_FAILED');
+
+      const verifyResponse = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/verify',
+        payload: { otpSessionId: sessionId, otpCode: '0000' },
+      });
+      expect(verifyResponse.statusCode).toBe(401);
+      expect(JSON.parse(verifyResponse.body).error_code).toBe('OTP_EXPIRED');
+    });
+
+    it('a gateway TIMEOUT answers 502 but KEEPS the session (verify with the master code succeeds)', async () => {
+      failingSend.mockRejectedValueOnce(
+        new SmsDeliveryError('MSG91 send timed out after 4000ms', 'timeout'),
+      );
+      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
+      mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
+
+      const { sendStatus, sessionId } =
+        await sendAndCaptureSession('5550002222');
+
+      expect(sendStatus).toBe(502);
+
+      // OTP_DEV_ECHO is on in the test env, so the flag-gated master code
+      // verifies any live session — proof the timeout did NOT delete it.
+      const verifyResponse = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/verify',
+        payload: { otpSessionId: sessionId, otpCode: '1039' },
+      });
+      expect(verifyResponse.statusCode).toBe(200);
+      expect(JSON.parse(verifyResponse.body)).toHaveProperty('token');
+    });
+  });
+
   describe('POST /api/v1/auth/otp/verify', () => {
     beforeEach(() => {
       mockSelectOrdered.mockResolvedValue({ data: [], error: null });
@@ -149,15 +260,14 @@ describe('Auth Integration Tests (e2e)', () => {
       expect(sendResponse.statusCode).toBe(200);
       const sendBody = JSON.parse(sendResponse.body);
       const sessionId = sendBody.otp_session_id;
-      // OTP_DEV_ECHO is on in the test env (jest.env.setup.ts) — the same
-      // contract the app's __DEV__ chip consumes; the test reads the code
-      // exactly like a dev client does.
-      expect(sendBody.otp).toMatch(/^\d{6}$/);
+      // The response never carries the code (the dev echo is gone) — the
+      // flag-gated master code is the testing channel.
+      expect(sendBody).not.toHaveProperty('otp');
 
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: sessionId, otpCode: sendBody.otp },
+        payload: { otpSessionId: sessionId, otpCode: '1039' },
       });
 
       expect(verifyResponse.statusCode).toBe(200);
@@ -185,7 +295,7 @@ describe('Auth Integration Tests (e2e)', () => {
       const verifyResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/verify',
-        payload: { otpSessionId: sessionId, otpCode: '000000' },
+        payload: { otpSessionId: sessionId, otpCode: '0000' },
       });
 
       // The Phase-1 accept-any-code behavior is gone (bug-bash 2026-10-02
@@ -207,7 +317,7 @@ describe('Auth Integration Tests (e2e)', () => {
         const wrong = await app.inject({
           method: 'POST',
           url: '/api/v1/auth/otp/verify',
-          payload: { otpSessionId: sendBody.otp_session_id, otpCode: '000000' },
+          payload: { otpSessionId: sendBody.otp_session_id, otpCode: '0000' },
         });
         expect(wrong.statusCode).toBe(401);
         expect(JSON.parse(wrong.body).error_code).toBe('INVALID_OTP');
@@ -218,7 +328,7 @@ describe('Auth Integration Tests (e2e)', () => {
         url: '/api/v1/auth/otp/verify',
         payload: {
           otpSessionId: sendBody.otp_session_id,
-          otpCode: sendBody.otp as string,
+          otpCode: '1039', // flag-gated master — the echo is gone
         },
       });
       expect(locked.statusCode).toBe(401);
@@ -231,7 +341,7 @@ describe('Auth Integration Tests (e2e)', () => {
         url: '/api/v1/auth/otp/verify',
         payload: {
           otpSessionId: '550e8400-e29b-41d4-a716-446655440099',
-          otpCode: '123456',
+          otpCode: '1234',
         },
       });
 
@@ -276,7 +386,7 @@ describe('Auth Integration Tests (e2e)', () => {
         url: '/api/v1/auth/otp/verify',
         payload: {
           otpSessionId: sendBody.otp_session_id,
-          otpCode: sendBody.otp as string,
+          otpCode: '1039', // flag-gated master — the echo is gone
         },
       });
 

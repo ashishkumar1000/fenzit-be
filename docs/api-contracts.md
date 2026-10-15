@@ -29,11 +29,37 @@ tokens minted by `GET /api/v1/auth/realtime-token` are socket-only).
 `POST /api/v1/auth/otp/verify` compares the submitted code against the
 session's bcrypt hash (`bcrypt.compare`) — wrong codes answer `401 INVALID_OTP`
 and count toward the 5-attempt session lockout; locked sessions answer
-`401 OTP_SESSION_LOCKED` until they expire. `POST /api/v1/auth/otp/send`
-echoes the code in its response **only** when the server runs with
-`OTP_DEV_ECHO=true` (pre-DLT dev convenience for the app's `__DEV__` chip) —
-the field must be absent in production (bug-bash 2026-10-02, findings F1/F2;
-closed the deferred-work.md W1 blocker).
+`401 OTP_SESSION_LOCKED` until they expire. `POST /api/v1/auth/otp/send` NEVER
+echoes the code in its response (the old `OTP_DEV_ECHO` echo is gone — on a
+public endpoint it was equivalent to having no OTP factor at all; bug-bash
+2026-10-02, findings F1/F2, closed the deferred-work.md W1 blocker). Testing
+rides the flag-gated pre-release master code (verifies any live session while
+`OTP_DEV_ECHO=true`; dies at the SMS cutover).
+
+### OTP delivery
+
+The OTP is a **4-digit** code (user product call, 2026-10-15), generated with
+a CSPRNG; online guessing is bounded by the 5-attempt session lockout, the
+5-minute TTL, and the 5-sends/10-min send cap.
+
+`POST /api/v1/auth/otp/send` hands the generated code to the configured
+`SmsDeliveryProvider` (pluggable port, PRD prd-otp-sms-msg91-2026-09-18 §11):
+`mock` logs the code (dev/test, and the pre-cutover production window);
+`msg91` POSTs it to MSG91's v5 **flow** endpoint (`/api/v5/flow/`) with the
+DLT-approved template
+(`SMS_TEMPLATES.OTP_LOGIN` in `src/common/constants/sms-templates.ts` —
+template IDs are code constants, only `MSG91_AUTH_KEY` is env config), which
+renders and sends the SMS. The flow endpoint is required: the v5 `/otp`
+endpoint answers `type:success` but the message silently dies in DLT
+scrubbing for a `##number##` template — flow maps variable values by name.
+Provider
+selection: `NODE_ENV=test` → mock; else `SMS_DELIVERY_PROVIDER`; default
+msg91 in production, mock in development. When the resolved provider is
+msg91, `MSG91_AUTH_KEY` is required (boot error
+otherwise). Gateway failure answers `502 OTP_SEND_FAILED`: the just-created
+session is deleted unless the outcome was a timeout (MSG91 may already have
+dispatched — the SMS can still arrive, so the session is kept); either way
+the response is retryable and the rate-limit counter stays incremented.
 
 ## Auth Roles
 
@@ -62,21 +88,25 @@ Liveness probe. No JWT required. Not under `/api/v1` prefix.
 #### `POST /api/v1/auth/otp/send` `[Public]`
 
 Request an OTP for a phone number. Returns an `otp_session_id` used to verify.
-OTP itself is sent via the configured SMS provider (out of scope of this API).
+The OTP is delivered over SMS by the configured provider (see "OTP delivery"
+above).
 
-**Body:** `{ phone: string (E.164), countryCode: string (2 letters) }`
+**Body:** `{ countryCode: string (dial code, e.g. "+91"), phoneNumber: string (6–15 digits) }`
 
 **Responses:**
-- `200` — `{ otp_session_id: UUID, expires_at: ISO8601 }`
+- `200` — `{ otp_session_id: UUID, expires_at: ISO8601 }` (the code itself is never in the response)
 - `422` — Invalid phone format
-- `429` — Rate limit exceeded
+- `429` — Rate limit exceeded (`Retry-After` header carries the window remainder)
+- `502` — `OTP_SEND_FAILED` — the SMS gateway failed the send; safe to retry
 
 #### `POST /api/v1/auth/otp/verify` `[Public]`
 
 Verify an OTP and mint a JWT. Idempotent at the OTP level (consumed OTPs are
-invalid; locked sessions return 401).
+invalid; locked sessions return 401). The code is **4 digits** (6 also
+accepted only while the flag-gated pre-release master code exists — that arm
+dies at the SMS cutover).
 
-**Body:** `{ otp_session_id: UUID, code: string, countryCode: string }`
+**Body:** `{ otpSessionId: UUID, otpCode: string }`
 
 **Responses:**
 - `200` — `{ token: JWT, user: { userId, tenantId | null, role, name | null } }`

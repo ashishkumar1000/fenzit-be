@@ -38,7 +38,7 @@ export class AuthController {
   @ApiResponse({
     status: 200,
     description:
-      'OTP sent successfully. The response carries otp ONLY when the server runs with OTP_DEV_ECHO=true (pre-DLT dev convenience for the app\'s __DEV__ chip) — it must be absent in production.',
+      'OTP handed to the SMS provider. The response never carries the code — testing uses the flag-gated master code.',
     schema: {
       example: {
         otp_session_id: '550e8400-e29b-41d4-a716-446655440000',
@@ -47,7 +47,22 @@ export class AuthController {
     },
   })
   @ApiResponse({ status: 422, description: 'Invalid phone number' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiResponse({
+    status: 429,
+    description: 'Rate limit exceeded',
+    headers: {
+      'Retry-After': {
+        description:
+          'Seconds remaining in the rate-limit window — wait at least this long before retrying.',
+        schema: { type: 'integer' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 502,
+    description:
+      'OTP_SEND_FAILED — the SMS gateway rejected or failed the send. Retryable. The session was deleted unless the outcome was a timeout (the SMS may still arrive).',
+  })
   async sendOtp(@Body() dto: SendOtpDto) {
     return this.authService.sendOtp(dto);
   }
@@ -58,12 +73,12 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify OTP and get JWT' })
   @ApiBody({
     type: VerifyOtpDto,
-    description: 'OTP session ID and 6-digit OTP code',
+    description: 'OTP session ID and 4-digit OTP code',
     examples: {
       verification: {
         value: {
           otpSessionId: '550e8400-e29b-41d4-a716-446655440000',
-          otpCode: '123456',
+          otpCode: '1234',
         },
       },
     },

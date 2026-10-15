@@ -10,14 +10,17 @@ export class VerifyOtpDto {
   })
   otpSessionId: string;
 
+  // 4 digits — the real OTP (user-directed, 2026-10-15) AND the pre-release
+  // master code (re-keyed to 1039 the same day), so the regex has a single
+  // arm. The old 6-digit arm died with the 816001 master code.
   @IsString()
-  @Matches(/^\d{6}$/, {
-    message: 'OTP code must be exactly 6 digits',
+  @Matches(/^\d{4}$/, {
+    message: 'OTP code must be 4 digits',
   })
   @ApiProperty({
-    description: '6-digit OTP code sent to the phone number',
-    example: '123456',
-    pattern: '^\\d{6}$',
+    description: '4-digit OTP code sent to the phone number',
+    example: '1234',
+    pattern: '^\\d{4}$',
   })
   otpCode: string;
 }

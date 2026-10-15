@@ -45,6 +45,18 @@ import { TelemetryShutdown } from './telemetry';
         CLOUDFLARE_R2_SECRET_KEY: Joi.string().required(),
         CLOUDFLARE_R2_BUCKET: Joi.string().required(),
         WORKER_WEBHOOK_SECRET: Joi.string().required(),
+        // SMS delivery (PRD FR-BE3). Defaults per-environment in
+        // auth.module's factory (msg91 in production, mock elsewhere); an
+        // explicit msg91 REQUIRES the auth key at boot — a bad config flip
+        // is a boot error, not a runtime login outage. DLT template IDs are
+        // code constants (src/common/constants/sms-templates.ts), not env.
+        SMS_DELIVERY_PROVIDER: Joi.string().valid('mock', 'msg91').optional(),
+        MSG91_AUTH_KEY: Joi.string()
+          .when('SMS_DELIVERY_PROVIDER', {
+            is: 'msg91',
+            then: Joi.string().required(),
+          })
+          .optional(),
         // Unused by MockPlacesProvider today — required now so boot-time
         // validation and the env contract are already in place for the
         // deferred GooglePlacesProvider (see places module).
