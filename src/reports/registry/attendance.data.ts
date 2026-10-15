@@ -58,6 +58,8 @@ export interface AttendanceOfficeRow {
 export interface AttendanceEmployeeRow {
   id: string;
   name: string;
+  /** Per-tenant human reference (EMP-001); absent for tenant-less rows. */
+  employeeCode?: string | null;
   /** Distinct office names over the tracked days (effective-dated). */
   offices: string;
   /** First tracked date when it sits inside the range (mid-period join). */
@@ -82,7 +84,7 @@ export interface AttendanceRejectionRow {
 
 export interface AttendanceRegister {
   dates: string[];
-  rows: { name: string; codes: string[] }[];
+  rows: { name: string; code?: string | null; codes: string[] }[];
 }
 
 /** Everything the template needs — pre-aggregated; the template does zero math. */
@@ -238,19 +240,24 @@ async function fetchEnrolledEmployeeIds(
   return [...ids];
 }
 
+/** Roster display refs (name + EMP code), tenant-scoped, chunked IN queries. */
+type UserRef = { name: string; code: string | null };
+
 async function fetchEmployeeNames(
   supabase: SupabaseClient,
   employeeIds: string[],
-): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
-  const rows = await fetchInChunks<{ id: string; name: string }>(
+): Promise<Map<string, UserRef>> {
+  const refs = new Map<string, UserRef>();
+  const rows = await fetchInChunks<{ id: string; name: string; employee_code: string | null }>(
     supabase,
     'users',
-    'id, name',
+    'id, name, employee_code',
     employeeIds,
   );
-  for (const row of rows) names.set(row.id, row.name);
-  return names;
+  for (const row of rows) {
+    refs.set(row.id, { name: row.name, code: row.employee_code });
+  }
+  return refs;
 }
 
 /** One office row per distinct snapshot office in the filtered grid.
@@ -325,7 +332,7 @@ async function fetchRejections(
   tenantId: string,
   employeeIds: string[],
   bounds: { startIso: string; endExclusiveIso: string },
-  names: Map<string, string>,
+  names: Map<string, UserRef>,
 ): Promise<AttendanceRejectionRow[]> {
   const buckets = new Map<
     string,
@@ -378,7 +385,7 @@ async function fetchRejections(
   return [...buckets.entries()]
     .map(([employeeId, b]) => ({
       employeeId,
-      employeeName: names.get(employeeId) ?? employeeId,
+      employeeName: names.get(employeeId)?.name ?? employeeId,
       ...b,
     }))
     .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
@@ -467,7 +474,8 @@ export async function fetchAttendanceReportData(
       ];
       return {
         id,
-        name: employeeNames.get(id) ?? id,
+        name: employeeNames.get(id)?.name ?? id,
+        employeeCode: employeeNames.get(id)?.code ?? null,
         offices: officeNames.join(', ') || '—',
         enrolledFrom:
           tracked.length > 0 && tracked[0] > startDate ? tracked[0] : null,
@@ -502,6 +510,7 @@ export async function fetchAttendanceReportData(
             );
             return {
               name: e.name,
+              code: e.employeeCode ?? null,
               codes: Array.from({ length: days }, (_, i) => {
                 const date = new Date(Date.parse(startDate) + i * 86_400_000)
                   .toISOString()

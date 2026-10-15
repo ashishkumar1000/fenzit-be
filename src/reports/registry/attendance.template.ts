@@ -17,7 +17,10 @@ import {
 } from '../templates/brand-kit/page-chrome';
 import type { BrandIcon } from '../templates/brand-kit/brand-icons';
 import type { ReportDocument } from './report-definition';
-import type { AttendanceReportData } from './attendance.data';
+import type {
+  AttendanceEmployeeRow,
+  AttendanceReportData,
+} from './attendance.data';
 import type {
   AttendanceException,
   AttendanceSummary,
@@ -188,8 +191,10 @@ function metricCardRows(data: AttendanceReportData): Content[] {
 
 /** Employee summary, split into two readable tables (spec report-content.md). */
 function employeeTables(data: AttendanceReportData): Content[] {
+  const labelled = (e: AttendanceEmployeeRow) =>
+    e.employeeCode ? `${e.name} · ${e.employeeCode}` : e.name;
   const attendanceRows: DataTableCell[][] = data.employees.map((e) => [
-    { text: e.name, bold: true },
+    { text: labelled(e), bold: true },
     e.offices,
     e.enrolledFrom
       ? { text: `from ${shortDate(e.enrolledFrom)}`, color: MUTED }
@@ -204,7 +209,7 @@ function employeeTables(data: AttendanceReportData): Content[] {
     String(e.summary.workedOnHoliday),
   ]);
   const disciplineRows: DataTableCell[][] = data.employees.map((e) => [
-    { text: e.name, bold: true },
+    { text: labelled(e), bold: true },
     String(e.summary.lateCount),
     e.summary.lateMinutes > 0 ? `${e.summary.lateMinutes} min` : '—',
     String(e.summary.earlyOuts),
@@ -270,7 +275,11 @@ function registerSection(data: AttendanceReportData): Content[] {
     };
   });
   const rows: DataTableCell[][] = data.register.rows.map((r) => [
-    { text: r.name, bold: true, fontSize: 7.5 },
+    {
+      text: r.code ? `${r.name}\n${r.code}` : r.name,
+      bold: true,
+      fontSize: 7.5,
+    },
     ...r.codes.map((code) => ({
       text: code,
       fontSize: 7,

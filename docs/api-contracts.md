@@ -191,7 +191,13 @@ screen.
 
 Role-branched profile payload — the app's primary boot call.
 
-- **Owner:** tenant/company info, technician roster (with skills), customers
+- **Both roles carry `employeeCode: string | null`** (2026-10-15,
+  SPEC-human-readable-ids): the caller's per-tenant human reference
+  (`'EMP-004'`), allocated by a DB trigger at creation and never reused.
+  Display-only — never an authz input; null for tenant-less rows
+  (pre-onboarding owners).
+- **Owner:** tenant/company info, technician roster (with skills; each
+  `TechnicianSummary` also carries its `employeeCode`), customers
   page, jobs page, and jobCounts (`today/upcoming/overdue/completed/cancelled`)
   — plus the same `attendance` mirror the technician branch carries
   (2026-09-30): `attendanceEnabled` is the TENANT flag

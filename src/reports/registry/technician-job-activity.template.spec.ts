@@ -316,6 +316,22 @@ describe('TechnicianJobActivityTemplate — buildTechnicianJobActivityDocument (
       expect(rowEmpty.found).toBe(true);
     });
 
+    it('labels the technician section with the EMP code (SPEC-human-readable-ids) and stays name-only without one', () => {
+      const data = fixtureData();
+      data.technicians = [
+        { id: 't1', name: 'Ravi', employeeCode: 'EMP-002' },
+        { id: 't2', name: 'Amit' },
+      ];
+      const texts = collectTexts(
+        buildTechnicianJobActivityDocument(data).content,
+      );
+
+      expect(texts).toContain('Ravi · EMP-002');
+      // No code → plain name (fail-hidden, no placeholder).
+      expect(texts).toContain('Amit');
+      expect(texts.some((t) => t.startsWith('Amit ·'))).toBe(false);
+    });
+
     it('renders the Needs attention section with severity-sorted flag rows', () => {
       const doc = buildTechnicianJobActivityDocument(fixtureData());
       const texts = collectTexts(doc.content);

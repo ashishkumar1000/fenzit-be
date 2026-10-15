@@ -47,6 +47,7 @@ function listRow(overrides: Partial<LeaveListRow> = {}): LeaveListRow {
     created_by: EMP,
     created_at: '2026-10-01T10:00:00.000Z',
     employee_name: 'Ravi Kumar',
+    employee_code: 'EMP-007',
     derived_status: 'approved',
     ...overrides,
   };
@@ -125,6 +126,7 @@ describe('LeaveReadService listTransact wiring', () => {
     expect(result.data[0].totalDays).toBe(2);
     expect(result.data[0].status).toBe('approved');
     expect(result.data[0].employeeName).toBe('Ravi Kumar');
+    expect(result.data[0].employeeCode).toBe('EMP-007');
     expect(result.hasMore).toBe(false);
     expect(result.nextCursor).toBeNull();
 

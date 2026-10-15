@@ -50,7 +50,10 @@ export function deriveLeaveStatus(states: LeaveDayState[]): DerivedLeaveStatus {
 export interface LeaveRequestView {
   id: string;
   employeeId: string;
+  /** Owner list reads only (mirrors employeeName; write/preview responses omit it). */
   employeeName?: string;
+  /** Per-tenant human reference (EMP-001) — owner list reads only, display only. */
+  employeeCode?: string;
   startDate: string;
   endDate: string;
   part: LeavePart;

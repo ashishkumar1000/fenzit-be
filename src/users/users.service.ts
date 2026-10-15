@@ -67,6 +67,8 @@ export interface JobCounts {
 
 export interface TechnicianSummary {
   id: string;
+  /** Per-tenant human reference (EMP-001) — display only, never an authz key. */
+  employeeCode: string | null;
   name: string | null;
   countryCode: string;
   phoneNumber: string;
@@ -78,6 +80,7 @@ export interface TechnicianSummary {
 
 interface UserProfileBase {
   id: string;
+  employeeCode: string | null;
   name: string | null;
   countryCode: string;
   phoneNumber: string;
@@ -177,6 +180,7 @@ interface OwnUserRow {
   role: Role;
   status: string;
   tenant_id: string | null;
+  employee_code: string | null;
 }
 
 interface TenantRow {
@@ -201,6 +205,7 @@ interface UserSkillsEmbedRow {
 
 interface TechnicianListRow {
   id: string;
+  employee_code: string | null;
   name: string | null;
   country_code: string;
   phone_number: string;
@@ -252,7 +257,7 @@ export class UsersService {
 
     const { data: ownRow, error: ownError } = await admin
       .from('users')
-      .select('id, name, country_code, phone_number, role, status, tenant_id')
+      .select('id, employee_code, name, country_code, phone_number, role, status, tenant_id')
       .eq('id', user.userId)
       .single<OwnUserRow>();
 
@@ -269,6 +274,7 @@ export class UsersService {
 
     const base: UserProfileBase = {
       id: ownRow.id,
+      employeeCode: ownRow.employee_code,
       name: ownRow.name,
       countryCode: ownRow.country_code,
       phoneNumber: ownRow.phone_number,
@@ -429,7 +435,7 @@ export class UsersService {
     const { data, error } = await admin
       .from('users')
       .select(
-        'id, name, country_code, phone_number, status, created_at, user_skills(skills(id, name))',
+        'id, employee_code, name, country_code, phone_number, status, created_at, user_skills(skills(id, name))',
       )
       .eq('tenant_id', tenantId)
       .eq('role', Role.TECHNICIAN)
@@ -448,6 +454,7 @@ export class UsersService {
       const skills = this.flattenSkills(row.user_skills ?? []);
       return {
         id: row.id,
+        employeeCode: row.employee_code,
         name: row.name,
         countryCode: row.country_code,
         phoneNumber: row.phone_number,

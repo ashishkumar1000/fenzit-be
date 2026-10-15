@@ -310,8 +310,8 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       );
 
       expect(result.technicians).toEqual([
-        { id: 't1', name: 'Ravi' },
-        { id: 't2', name: 'Amit' },
+        { id: 't1', name: 'Ravi', employeeCode: null },
+        { id: 't2', name: 'Amit', employeeCode: null },
       ]);
       // Names come from one tenant-scoped chunked users query.
       const users = client.chains.get('users')![0];
@@ -375,7 +375,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       );
 
       expect(result.technicians).toEqual([
-        { id: 't1', name: 'Unknown technician' },
+        { id: 't1', name: 'Unknown technician', employeeCode: null },
       ]);
       expect(result.jobs[0].customerName).toBe('Customer j1');
     });
@@ -655,7 +655,9 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        users: [
+          { data: [{ id: 't1', name: 'Ravi', employee_code: 'EMP-002' }], error: null },
+        ],
         attachments: [{ data: [], error: null }],
       });
 
@@ -671,6 +673,10 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
         startDate: '2026-09-01',
         endDate: '2026-09-07',
       });
+      // The EMP reference rides the section list for the template titles.
+      expect(result.technicians).toEqual([
+        { id: 't1', name: 'Ravi', employeeCode: 'EMP-002' },
+      ]);
       const expected: FetchedJob = {
         id: 'j1',
         jobNumber: 'J-j1',

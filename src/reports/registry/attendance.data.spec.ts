@@ -232,9 +232,14 @@ describe('fetchAttendanceReportData (21-2)', () => {
     expect(branch.summary.daysWorked).toBe(0);
 
     // Register: 3 days ≤ 31 → rendered, codes from the engine outcomes.
+    // code: the row's EMP reference (null here — the stub users have none).
     expect(data.scope.registerDays).toBe(3);
     expect(data.register?.dates).toHaveLength(3);
-    expect(data.register?.rows[0]).toEqual({ name: 'Asha', codes: ['P', 'A', 'H'] });
+    expect(data.register?.rows[0]).toEqual({
+      name: 'Asha',
+      code: null,
+      codes: ['P', 'A', 'H'],
+    });
 
     // Rejections bucketed per employee; 'ok' never appears, unknown outcomes
     // land in "other".

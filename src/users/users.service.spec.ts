@@ -51,6 +51,7 @@ describe('UsersService', () => {
 
   const ownOwnerRow = {
     id: 'owner-uuid',
+    employee_code: 'EMP-001',
     name: 'Ashish',
     country_code: '+91',
     phone_number: '9000000000',
@@ -61,6 +62,7 @@ describe('UsersService', () => {
 
   const ownTechnicianRow = {
     id: 'tech-uuid',
+    employee_code: 'EMP-004',
     name: 'Ravi',
     country_code: '+91',
     phone_number: '9111111111',
@@ -81,6 +83,7 @@ describe('UsersService', () => {
   const technicianListRows = [
     {
       id: 'tech-uuid',
+      employee_code: 'EMP-004',
       name: 'Ravi',
       country_code: '+91',
       phone_number: '9111111111',
@@ -359,7 +362,7 @@ describe('UsersService', () => {
 
   describe('getMyProfile — owner', () => {
     it('returns the full owner profile: tenant, technicians, technicianCount, customers, jobs, jobCounts', async () => {
-      const { listBuilders } = mockAdmin({
+      const { listBuilders, usersHandler } = mockAdmin({
         technicians: { data: technicianListRows, error: null },
         jobsList: {
           data: [jobRow('j1', 'scheduled', '2026-06-21T00:00:00Z')],
@@ -381,6 +384,20 @@ describe('UsersService', () => {
       expect(result.role).toBe(Role.OWNER);
       expect(result.id).toBe('owner-uuid');
       expect(result.name).toBe('Ashish');
+      // Human-readable per-tenant reference (SPEC-human-readable-ids).
+      expect(result.employeeCode).toBe('EMP-001');
+      expect(result.technicians[0].employeeCode).toBe('EMP-004');
+      // Both users selects (own row + roster) actually REQUEST the column —
+      // reverting the select widening would otherwise stay suite-green.
+      const userSelects = usersHandler.select.mock.calls.map(
+        (c: unknown[]) => c[0] as string,
+      );
+      expect(userSelects.find((s) => s.includes('tenant_id'))).toContain(
+        'employee_code',
+      );
+      expect(userSelects.find((s) => s.includes('user_skills'))).toContain(
+        'employee_code',
+      );
       expect(result.tenant).toEqual({
         id: 'tenant-uuid',
         companyName: 'Acme Services',

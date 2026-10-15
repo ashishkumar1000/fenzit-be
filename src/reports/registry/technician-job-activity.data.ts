@@ -41,6 +41,8 @@ export interface FetchedJob {
 export interface ActivityTechnician {
   id: string;
   name: string;
+  /** Per-tenant human reference (EMP-001); absent for tenant-less rows. */
+  employeeCode?: string | null;
 }
 
 /** Everything the template needs — the range rides along for the header. */
@@ -202,18 +204,18 @@ async function fetchAttachmentCounts(
   return counts;
 }
 
-/** Technician display names, tenant-scoped (chunked IN queries). */
+/** Technician display refs (name + EMP code), tenant-scoped (chunked IN queries). */
 async function fetchTechnicianNames(
   supabase: SupabaseClient,
   tenantId: string,
   technicianIds: string[],
-): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
+): Promise<Map<string, { name: string; code: string | null }>> {
+  const refs = new Map<string, { name: string; code: string | null }>();
   for (let i = 0; i < technicianIds.length; i += IN_CHUNK_SIZE) {
     const chunk = technicianIds.slice(i, i + IN_CHUNK_SIZE);
     const { data, error } = await supabase
       .from('users')
-      .select('id, name')
+      .select('id, name, employee_code')
       .eq('tenant_id', tenantId)
       .in('id', chunk);
     if (error || !data) {
@@ -221,11 +223,15 @@ async function fetchTechnicianNames(
         `Failed to fetch technicians for report: ${error?.message}`,
       );
     }
-    for (const row of data as { id: string; name: string }[]) {
-      names.set(row.id, row.name);
+    for (const row of data as {
+      id: string;
+      name: string;
+      employee_code: string | null;
+    }[]) {
+      refs.set(row.id, { name: row.name, code: row.employee_code });
     }
   }
-  return names;
+  return refs;
 }
 
 /**
@@ -264,7 +270,8 @@ export async function fetchTechnicianJobActivityData(
     id,
     // Service-validated ids always resolve; a missing row is a display fault,
     // not a generation failure.
-    name: technicianNames.get(id) ?? 'Unknown technician',
+    name: technicianNames.get(id)?.name ?? 'Unknown technician',
+    employeeCode: technicianNames.get(id)?.code ?? null,
   }));
 
   const jobs: FetchedJob[] = rawJobs.map((j) => {

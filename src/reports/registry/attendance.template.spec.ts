@@ -298,6 +298,46 @@ describe('buildAttendanceReportDocument (21-3)', () => {
     expect(has(texts, 'No attendance data for these dates')).toBe(true);
     expect(has(texts, 'Overall')).toBe(false);
   });
+
+  it('labels employees with their EMP code — summary tables inline, register two-line — and stays name-only without one', () => {
+    const texts = allTexts(
+      buildAttendanceReportDocument(
+        fixtureData({
+          employees: [
+            {
+              id: 'e1',
+              name: 'Asha',
+              employeeCode: 'EMP-004',
+              offices: 'HQ',
+              enrolledFrom: null,
+              summary: summary(),
+            },
+            {
+              id: 'e2',
+              name: 'Bimal',
+              offices: 'HQ, Branch',
+              enrolledFrom: null,
+              summary: summary(),
+            },
+          ],
+          register: {
+            dates: ['2026-09-01'],
+            rows: [
+              { name: 'Asha', code: 'EMP-004', codes: ['P'] },
+              { name: 'Bimal', codes: ['A'] },
+            ],
+          },
+        }),
+      ),
+    );
+    // Summary tables: name · code on one line.
+    expect(has(texts, 'Asha · EMP-004')).toBe(true);
+    // No code → plain name (fail-hidden, no placeholder).
+    expect(has(texts, 'Bimal ·')).toBe(false);
+    // Register: two-line name + code.
+    expect(has(texts, 'Asha\nEMP-004')).toBe(true);
+    expect(has(texts, 'Bimal\n')).toBe(false);
+  });
 });
 
 describe('no table ever rides inside an unbreakable stack (bug bash 2026-10-03)', () => {

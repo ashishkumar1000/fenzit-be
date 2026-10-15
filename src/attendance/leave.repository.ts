@@ -495,6 +495,7 @@ export function derivedStatusSql(): string {
 
 export interface LeaveListRow extends LeaveRequestRow {
   employee_name: string | null;
+  employee_code: string | null;
   derived_status: DerivedLeaveStatus;
 }
 
@@ -535,7 +536,7 @@ export async function listLeaveRequests(
   const result = await tx.query<LeaveListRow>(
     `select r.id, r.tenant_id, r.employee_id, r.request_id, r.start_date::text,
             r.end_date::text, r.part, r.reason, r.created_by, r.created_at,
-            u.name as employee_name,
+            u.name as employee_name, u.employee_code,
             s.derived_status
      from public.leave_requests r
      join (

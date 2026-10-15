@@ -390,6 +390,7 @@ export class LeaveReadService {
         ),
         status: row.derived_status,
         employeeName: row.employee_name ?? undefined,
+        employeeCode: row.employee_code ?? undefined,
       });
     }
     return { data, nextCursor, hasMore };

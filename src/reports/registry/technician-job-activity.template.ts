@@ -222,7 +222,10 @@ export function buildTechnicianJobActivityDocument(
         (j) => j.technicianId === technician.id,
       );
       const cards = metricCardRows(computeMetrics(technicianJobs));
-      content.push(kept(sectionTitle(technician.name, 'user'), cards[0]));
+      const technicianTitle = technician.employeeCode
+        ? `${technician.name} · ${technician.employeeCode}`
+        : technician.name;
+      content.push(kept(sectionTitle(technicianTitle, 'user'), cards[0]));
       content.push(cards[1]);
       content.push(
         technicianJobs.length > 0
