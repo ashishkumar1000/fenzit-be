@@ -427,10 +427,12 @@ assume every row is scheduled for today.
 
 Full job detail: technician & customer profiles, activity log, attachments. The
 embedded customer profile is
-`{ id, name, countryCode, phoneNumber, address, city, latitude, longitude, addressDetails }`
+`{ id, name, countryCode, phoneNumber, address, city, latitude, longitude, addressDetails, formattedAddress }`
 (`latitude`/`longitude` are `number | null` — null when the customer was saved
 without coordinates; Story 2.1; `addressDetails` is the user-entered
-flat/building/floor/landmark detail or null — CAP-5).
+flat/building/floor/landmark detail or null — CAP-5; `formattedAddress` is the
+resolved Places line or null, carried so clients can show it separately from
+the user's own street text — design v2).
 
 **Responses:**
 - `200` — Full job detail payload
