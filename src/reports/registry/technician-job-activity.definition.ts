@@ -9,7 +9,7 @@ import { validateReportDateRange } from './report-params.util';
 import { fetchTechnicianJobActivityData } from './technician-job-activity.data';
 import { buildTechnicianJobActivityDocument } from './technician-job-activity.template';
 
-/** Stable registry id — the value fenzo-app sends as `reportType`. */
+/** Stable registry id — the value fenzit-app sends as `reportType`. */
 export const TECHNICIAN_JOB_ACTIVITY_TYPE = 'technician_job_activity';
 
 /**

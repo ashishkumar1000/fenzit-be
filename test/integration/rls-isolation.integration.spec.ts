@@ -1111,7 +1111,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // Story 14.2's three real-DB probes in one seeded scenario (each probe
       // alone would re-seed the same users/tenant three times):
       //   (a) the technician's private channel receives the INSERT broadcast
-      //       for their own topic — delivery works exactly as fenzo-app's
+      //       for their own topic — delivery works exactly as fenzit-app's
       //       client drives it (accessToken callback + private channel; NOT an
       //       Authorization header — the live probe showed only this
       //       combination delivers),
@@ -1196,7 +1196,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         SUPABASE_JWT_SECRET,
         { algorithm: 'HS256' },
       );
-      // fenzo-app's client shape: the token rides the accessToken callback —
+      // fenzit-app's client shape: the token rides the accessToken callback —
       // realtime reads it per-subscribe; an Authorization header does NOT
       // authorize private channels (verified live 2026-09-25).
       const realtimeClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {

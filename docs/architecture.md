@@ -135,7 +135,7 @@ id; every log line carries it.
 
 - **Headers:** the app sends `X-Correlation-ID` (UUID v4, one per request,
   stable across retries) and `X-Session-ID` (UUID, one per app sitting) on
-  every request (fenzo-app, story 13.2). The backend accepts any UUID
+  every request (fenzit-app, story 13.2). The backend accepts any UUID
   version (8-4-4-4-12 hex) — v4 is the app's convention, not a validation
   requirement.
 - **CorrelationInterceptor** (first `APP_INTERCEPTOR`, before
@@ -270,7 +270,7 @@ NOT used). This keeps the API horizontally scalable without sticky sessions.
 
 ## Decision Records (Architectural Choices — AR-1 through AR-23)
 
-Per `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` lines 71-115. The high-impact
+Per `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` lines 71-115. The high-impact
 rules:
 
 | AR | Title | Status |
@@ -299,7 +299,7 @@ rules:
 | AR-22 | Trailing-slash Fastify vulnerability mitigation | ✅ (`ignoreTrailingSlash: true` on adapter) |
 | AR-23 | `OtpSessionStore` abstract + `InMemoryOtpSessionStore` | ✅ |
 
-> Source: `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` lines 71-115.
+> Source: `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` lines 71-115.
 
 ## Epic Coverage Map
 
@@ -351,8 +351,8 @@ retro yet for the original Epic 3 (job lifecycle), the original Epic 4
 
 ## Known Gaps / Drift (pre-launch blockers)
 
-These are tracked in `fenzo-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md`
-and `fenzo-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/epic-2-retro-2026-06-21.md`.
+These are tracked in `fenzit-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md`
+and `fenzit-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/epic-2-retro-2026-06-21.md`.
 
 ### Pre-launch blockers (must fix before production)
 

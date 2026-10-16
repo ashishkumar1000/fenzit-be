@@ -1,4 +1,4 @@
-name = "fenzo-r2-worker"
+name = "fenzit-r2-worker"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 

@@ -39,11 +39,11 @@ backend. Read this first.
 
 Source of truth — these docs cite the artifacts but defer to them for full context:
 
-- `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md` — full architecture doc (sections 1.1–4.5)
-- `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` — Epic/Story breakdown + **AR-1 through AR-23** + FR-1 through FR-18 + NFR-1 through NFR-6
-- `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/prds/prd-fenzo-be-2026-06-17/` — original PRD + addendum + decision log
-- `fenzo-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md` — known issues, drift, pre-launch blockers
-- `fenzo-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/epic-{1,2}-retro-*.md` — retrospectives
+- `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md` — full architecture doc (sections 1.1–4.5)
+- `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` — Epic/Story breakdown + **AR-1 through AR-23** + FR-1 through FR-18 + NFR-1 through NFR-6
+- `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/prds/prd-fenzo-be-2026-06-17/` — original PRD + addendum + decision log
+- `fenzit-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md` — known issues, drift, pre-launch blockers
+- `fenzit-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/epic-{1,2}-retro-*.md` — retrospectives
 
 ## Getting Started
 

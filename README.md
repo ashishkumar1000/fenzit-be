@@ -38,7 +38,7 @@ Start here: **[docs/index.md](./docs/index.md)**
 - [Data Models](./docs/data-models.md) — 13 tables + 6 atomic RPCs
 - [Development Guide](./docs/development-guide.md) — setup, scripts, testing
 
-Planning artifacts (BMAD, moved to the fenzo-meta repo): `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/`
+Planning artifacts (BMAD, moved to the fenzit-meta repo): `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/`
 
 ## Quickstart
 
@@ -108,7 +108,7 @@ annotated tree.
 
 ## Hard Rules (non-obvious — read before contributing)
 
-These come from `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` (AR-* lines 71-115):
+These come from `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md` (AR-* lines 71-115):
 
 - **AR-7** — Custom JWT signed with `SUPABASE_JWT_SECRET`, 7-day expiry.
 - **AR-8** — OTP sessions live in `cache-manager` (in-memory), **not** a DB table.
@@ -131,8 +131,8 @@ These come from `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts
 - **No service-role-bypass in tests** — always use a real JWT.
 - **No raw SQL outside migrations** — apply via Supabase MCP only.
 
-Full rationale: `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md` and
-`fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md`.
+Full rationale: `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md` and
+`fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md`.
 
 ## Environment Variables
 

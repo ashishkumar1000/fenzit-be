@@ -32,7 +32,7 @@ import { buildAttendanceReportDocument } from './attendance.template';
  *    2026-10-03).
  */
 
-/** Stable registry id — the value fenzo-app sends as `reportType`. */
+/** Stable registry id — the value fenzit-app sends as `reportType`. */
 export const ATTENDANCE_REPORT_TYPE = 'attendance_report';
 
 /**

@@ -49,5 +49,5 @@ Field-service management backend for Indian HVAC/pest-control technician dispatc
 | JWT library | `@nestjs/jwt` — do not use `jose` or `jsonwebtoken` directly |
 | File uploads | `@fastify/multipart` NOT used — presigned PUT URLs only |
 
-Full architecture: `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md`
-Full epic/story breakdown: `fenzo-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md`
+Full architecture: `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/architecture.md`
+Full epic/story breakdown: `fenzit-meta/docs/repos/fenzit-be/bmad-history/planning-artifacts/epics.md`

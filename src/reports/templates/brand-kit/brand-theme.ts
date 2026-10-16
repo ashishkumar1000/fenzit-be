@@ -1,6 +1,6 @@
 /**
  * Brand theme tokens (FR-T1) — the single source of brand styling for every
- * report PDF. Mirrors the Fenzit design system (fenzo-app/src/theme/colors.ts).
+ * report PDF. Mirrors the Fenzit design system (fenzit-app/src/theme/colors.ts).
  * No template hard-codes a colour, font, or size — everything flows from here.
  */
 

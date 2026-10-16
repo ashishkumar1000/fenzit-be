@@ -274,7 +274,7 @@ wrote the now-dropped `tenant_skills` table) were removed in Story 4.2 and
 return 404.
 `GET /skills` replaced the old per-tenant list in Story 4.1: the response
 dropped the old GET's `tenantId`/`createdAt` fields and widened access from
-owner-only to owner+technician (pre-launch, fenzo-app consumes the new shape
+owner-only to owner+technician (pre-launch, fenzit-app consumes the new shape
 from Epic 5 — fenzit-be ships first, NFR5).
 
 #### `GET /api/v1/skills` `[Bearer JWT, Role: owner or technician]`

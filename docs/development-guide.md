@@ -187,7 +187,7 @@ bun run test:e2e -- rls-isolation
 ## Phase 1 vs Production Status
 
 The codebase is **Phase 1 only** — do not deploy as-is. Pre-launch blockers
-(from `fenzo-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md`):
+(from `fenzit-meta/docs/repos/fenzit-be/bmad-history/implementation-artifacts/deferred-work.md`):
 
 | ID | Issue | File |
 |---|---|---|
