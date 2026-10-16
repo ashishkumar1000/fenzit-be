@@ -299,7 +299,12 @@ display-name field).
 
 Create a customer for the owner's tenant. Uniqueness: `(tenant_id, phone, country_code)`.
 
-**Body:** `{ name, phone, countryCode, address?, notes? }`
+**Body:** `{ name, phone, countryCode }` plus the optional structured-address
+fields — `{ address?, city?, formattedAddress?, pincode?, latitude?,
+longitude?, placeId?, addressDetails? }` (`addressDetails` is user-entered
+extra location detail — flat / building / floor / landmark — stored in its own
+column, never merged into the geocoded text; SPEC-customer-map-pin-picker
+CAP-5). All optional fields are stored null when absent.
 
 **Responses:**
 - `201` — Customer created
@@ -422,9 +427,10 @@ assume every row is scheduled for today.
 
 Full job detail: technician & customer profiles, activity log, attachments. The
 embedded customer profile is
-`{ id, name, countryCode, phoneNumber, address, city, latitude, longitude }`
+`{ id, name, countryCode, phoneNumber, address, city, latitude, longitude, addressDetails }`
 (`latitude`/`longitude` are `number | null` — null when the customer was saved
-without coordinates; Story 2.1).
+without coordinates; Story 2.1; `addressDetails` is the user-entered
+flat/building/floor/landmark detail or null — CAP-5).
 
 **Responses:**
 - `200` — Full job detail payload

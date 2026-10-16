@@ -64,6 +64,7 @@ appended (never edit history) and **must** be applied via the Supabase MCP
 | 50  | `20260920000006_rpc_create_report_request.sql` | `create_report_request` — atomic in-flight-cap insert RPC (superseded by 51, kept as history) |
 | 51  | `20260920000007_reports_drop_rpcs_in_flight_trigger.sql` | Drops both report RPCs (de-stored-procedure pass) + `report_requests_in_flight_guard` BEFORE INSERT trigger — advisory xact lock per tenant, caps queued+generating at 3 (PT429) (Epic 12 Story 12-2) |
 | 52  | `20260920000008_notifications_job_id_nullable.sql` | `notifications.job_id` NOT NULL → nullable — report terminal notifications point at a report, not a job (Epic 12 Story 12-3) |
+| 53  | `20261016000002_add_customer_address_details.sql` | `customers.address_details VARCHAR(255)` nullable — user-entered flat/building/floor/landmark detail, its own column (SPEC-customer-map-pin-picker CAP-5) |
 
 ## Tables
 

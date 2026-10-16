@@ -50,6 +50,7 @@ describe('CustomersService', () => {
     latitude: null,
     longitude: null,
     place_id: null,
+    address_details: null,
     created_via: 'manual' as const,
     created_at: '2026-06-21T00:00:00Z',
     tenant_id: 'tenant-uuid',
@@ -96,6 +97,7 @@ describe('CustomersService', () => {
         latitude: null,
         longitude: null,
         placeId: null,
+        addressDetails: null,
         createdVia: 'manual',
         createdAt: '2026-06-21T00:00:00Z',
         tenantId: 'tenant-uuid',
@@ -153,7 +155,7 @@ describe('CustomersService', () => {
       );
     });
 
-    it('should persist and read back the 5 structured-address fields when all are present', async () => {
+    it('should persist and read back the 6 structured-address fields when all are present', async () => {
       const structuredDbRow = {
         ...dbRow,
         formatted_address: '12 MG Road, Bengaluru, Karnataka 560001, India',
@@ -161,6 +163,7 @@ describe('CustomersService', () => {
         latitude: 12.9716,
         longitude: 77.5946,
         place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        address_details: 'Flat 302, Tower B, near the main lift',
       };
       const { insert } = mockInsert({ data: structuredDbRow, error: null });
 
@@ -171,6 +174,7 @@ describe('CustomersService', () => {
         latitude: 12.9716,
         longitude: 77.5946,
         placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        addressDetails: 'Flat 302, Tower B, near the main lift',
       });
 
       expect(insert).toHaveBeenCalledWith(
@@ -180,6 +184,7 @@ describe('CustomersService', () => {
           latitude: 12.9716,
           longitude: 77.5946,
           place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+          address_details: 'Flat 302, Tower B, near the main lift',
         }),
       );
       expect(result).toMatchObject({
@@ -188,6 +193,7 @@ describe('CustomersService', () => {
         latitude: 12.9716,
         longitude: 77.5946,
         placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        addressDetails: 'Flat 302, Tower B, near the main lift',
       });
     });
 
@@ -214,6 +220,7 @@ describe('CustomersService', () => {
           latitude: 12.9716,
           longitude: 77.5946,
           place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+          address_details: null,
         }),
       );
       expect(result).toMatchObject({

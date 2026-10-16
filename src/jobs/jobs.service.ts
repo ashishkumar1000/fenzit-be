@@ -104,6 +104,9 @@ interface CustomerProfile {
   // the customer was created without them or predates Story 1.3).
   latitude: number | null;
   longitude: number | null;
+  // CAP-5 — user-entered extra location detail (flat/building/floor/landmark)
+  // for the final handoff; null when the customer has none.
+  addressDetails: string | null;
 }
 
 /** One activity-log entry as returned by the job-detail endpoint. */
@@ -180,6 +183,7 @@ interface CustomerProfileRow {
   city: string | null;
   latitude: number | null;
   longitude: number | null;
+  address_details: string | null;
 }
 
 interface ActivityLogRow {
@@ -782,7 +786,7 @@ export class JobsService {
       admin
         .from('customers')
         .select(
-          'id, name, country_code, phone_number, address, city, latitude, longitude',
+          'id, name, country_code, phone_number, address, city, latitude, longitude, address_details',
         )
         .eq('id', row.customer_id)
         .eq('tenant_id', user.tenantId)
@@ -917,6 +921,7 @@ export class JobsService {
         city: customer.city,
         latitude: customer.latitude,
         longitude: customer.longitude,
+        addressDetails: customer.address_details,
       },
       activityLog,
       attachments,

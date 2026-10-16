@@ -1242,7 +1242,7 @@ describe('JobsService', () => {
         from.mock.calls.filter(([table]) => table === 'customers'),
       ).toHaveLength(1);
       expect(chains.customers.select).toHaveBeenCalledWith(
-        'id, name, country_code, phone_number, address, city, latitude, longitude',
+        'id, name, country_code, phone_number, address, city, latitude, longitude, address_details',
       );
       expect(result.customer.latitude).toBe(18.5204);
       expect(result.customer.longitude).toBe(73.8567);

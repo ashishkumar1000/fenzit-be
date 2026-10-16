@@ -12,12 +12,17 @@ import { Transform } from 'class-transformer';
 import { trim } from '../../common/utils/trim.transformer';
 
 /**
- * The 7 optional structured-address fields shared by every customer-creation
+ * The 8 optional structured-address fields shared by every customer-creation
  * entry point (manual create + find-or-create on the jobs path). Declared once
  * as a base class — class-validator validates inherited decorated properties,
  * and @nestjs/swagger includes them in the model schema — so the validators,
  * examples and max-lengths can never drift between the two DTOs (they were
  * previously copy-pasted in both).
+ *
+ * Seven of them carry the Places-resolve/map-pin snapshot; `addressDetails`
+ * is the exception — user-entered free text (flat / building / floor /
+ * landmark) that no provider resolves, stored in its own column and never
+ * merged into the geocoded address text (SPEC-customer-map-pin-picker CAP-5).
  */
 export class StructuredAddressDto {
   @ApiPropertyOptional({ example: '12 MG Road', description: 'Street address' })
@@ -77,4 +82,15 @@ export class StructuredAddressDto {
   @IsString()
   @MaxLength(255)
   placeId?: string;
+
+  @ApiPropertyOptional({
+    example: 'Flat 302, Tower B, near the main lift',
+    description:
+      'User-entered extra location detail (flat / building / floor / landmark) the resolved address lacks',
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(255)
+  addressDetails?: string;
 }

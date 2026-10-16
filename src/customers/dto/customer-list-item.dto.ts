@@ -45,6 +45,14 @@ export class CustomerListItemDto {
   })
   placeId: string | null;
 
+  @ApiPropertyOptional({
+    example: 'Flat 302, Tower B, near the main lift',
+    description:
+      'User-entered extra location detail (flat / building / floor / landmark)',
+    nullable: true,
+  })
+  addressDetails: string | null;
+
   @ApiProperty({
     example: 3,
     description: 'Jobs of any status for this customer',

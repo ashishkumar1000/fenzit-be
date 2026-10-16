@@ -33,6 +33,9 @@ export interface CustomerResponse {
   latitude: number | null;
   longitude: number | null;
   placeId: string | null;
+  // CAP-5 — user-entered extra location detail (flat/building/floor/
+  // landmark); its own column, never merged into the geocoded text.
+  addressDetails: string | null;
   createdVia: 'manual' | 'job_creation';
   createdAt: string;
   tenantId: string;
@@ -51,6 +54,7 @@ export interface StructuredAddressFields {
   latitude?: number;
   longitude?: number;
   placeId?: string;
+  addressDetails?: string;
 }
 
 /**
@@ -79,6 +83,7 @@ function structuredAddressColumns(input: StructuredAddressFields) {
     latitude: input.latitude ?? null,
     longitude: input.longitude ?? null,
     place_id: input.placeId ?? null,
+    address_details: input.addressDetails ?? null,
   };
 }
 
@@ -94,6 +99,7 @@ export interface CustomerListItem {
   latitude: number | null;
   longitude: number | null;
   placeId: string | null;
+  addressDetails: string | null;
   jobCount: number;
   lastJobDate: string | null;
 }
@@ -110,6 +116,7 @@ interface CustomerListRow {
   latitude: number | null;
   longitude: number | null;
   place_id: string | null;
+  address_details: string | null;
   created_at: string;
 }
 
@@ -149,13 +156,14 @@ interface CustomerRow {
   latitude: number | null;
   longitude: number | null;
   place_id: string | null;
+  address_details: string | null;
   created_via: 'manual' | 'job_creation';
   created_at: string;
   tenant_id: string;
 }
 
 const CUSTOMER_COLUMNS =
-  'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, created_via, created_at, tenant_id';
+  'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_via, created_at, tenant_id';
 
 const PAGE_SIZE = 50;
 const JOB_HISTORY_PAGE_SIZE = 20;
@@ -358,7 +366,7 @@ export class CustomersService {
     let qb = admin
       .from('customers')
       .select(
-        'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, created_at',
+        'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_at',
       )
       .eq('tenant_id', owner.tenantId);
 
@@ -419,6 +427,7 @@ export class CustomersService {
         latitude: row.latitude,
         longitude: row.longitude,
         placeId: row.place_id,
+        addressDetails: row.address_details,
         jobCount: stats?.jobCount ?? 0,
         lastJobDate: stats?.lastJobDate ?? null,
       };
@@ -662,6 +671,7 @@ export class CustomersService {
     latitude: number | null;
     longitude: number | null;
     place_id: string | null;
+    address_details: string | null;
     created_via: 'manual' | 'job_creation';
     created_at: string;
     tenant_id: string;
@@ -678,6 +688,7 @@ export class CustomersService {
       latitude: row.latitude,
       longitude: row.longitude,
       placeId: row.place_id,
+      addressDetails: row.address_details,
       createdVia: row.created_via,
       createdAt: row.created_at,
       tenantId: row.tenant_id,

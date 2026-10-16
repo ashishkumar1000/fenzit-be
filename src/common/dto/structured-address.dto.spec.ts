@@ -43,6 +43,21 @@ describe('StructuredAddressDto (inherited-validator pin)', () => {
     expect(errors[0].property).toBe('address');
   });
 
+  it('accepts user-entered addressDetails (optional free text) through inheritance', async () => {
+    const dto = new StructuredAddressDtoSubclass();
+    dto.addressDetails = 'Flat 302, Tower B, near the main lift';
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects an over-MaxLength addressDetails through inheritance', async () => {
+    const dto = new StructuredAddressDtoSubclass();
+    dto.addressDetails = 'x'.repeat(256);
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].property).toBe('addressDetails');
+  });
+
   it('rejects a non-Indian pincode format through inheritance', async () => {
     const dto = new StructuredAddressDtoSubclass();
     dto.pincode = '12345'; // 5 digits — the regex wants 6, starting 1-9
