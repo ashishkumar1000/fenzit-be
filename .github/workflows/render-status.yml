@@ -40,7 +40,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          SERVICE_NAME: fenzit-be
+          # The live Render service is fenzit-be-1 (Singapore recreate, 2026-10-16;
+          # the original fenzit-be service was deleted at cutover — the CF worker
+          # fenzit-api-proxy likewise targets fenzit-be-1.onrender.com now).
+          SERVICE_NAME: fenzit-be-1
           POLL_SECONDS: "5"
           DEPLOY_APPEAR_TIMEOUT: "300" # wait for Render to register the commit's deploy
           WATCH_TIMEOUT: "1200"        # max time watching a deploy in progress
