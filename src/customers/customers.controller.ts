@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   Query,
   Param,
@@ -19,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
 import { GetCustomerDetailQueryDto } from './dto/get-customer-detail-query.dto';
 import { CustomerDetailResponseDto } from './dto/customer-detail-response.dto';
@@ -123,5 +125,33 @@ export class CustomersController {
     @Query() query: GetCustomerDetailQueryDto,
   ) {
     return this.customersService.getCustomerDetail(user, id, query.cursor);
+  }
+
+  // Mirrors the GET ':id' shape above (ParseUUIDPipe at the edge, owner-gated).
+  @Patch(':id')
+  @Roles(Role.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Update the mutable fields of a customer (phone/country code immutable)",
+  })
+  @ApiResponse({ status: 200, description: 'Customer updated' })
+  @ApiResponse({
+    status: 400,
+    description: 'Company not set up, malformed id, or nothing to update',
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({
+    status: 404,
+    description: 'Customer not found (or other tenant)',
+  })
+  @ApiResponse({ status: 422, description: 'Validation error' })
+  updateCustomer(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCustomerDto,
+  ) {
+    return this.customersService.updateCustomer(user, id, dto);
   }
 }

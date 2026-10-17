@@ -334,6 +334,39 @@ Customer profile + paginated job history.
 - `403` — Technician JWT
 - `404` — Customer not found (or in another tenant)
 
+#### `PATCH /api/v1/customers/:id` `[Bearer JWT, Role: owner]`
+
+Update the mutable fields of a customer (SPEC-edit-customer CAP-4). Phone and
+country code are immutable in v1 — the keys are not in the update DTO, and the
+global ValidationPipe (`whitelist: true`) silently strips them if a client
+sends them (never a rejection). Writes only the targeted `customers` row — no
+job-side rows change (past jobs keep their `service_location` snapshot; the
+customer fields they display live-join and therefore reflect the edit).
+
+**Body (all optional):** `{ name?, address?, city?, formattedAddress?,
+pincode?, latitude?, longitude?, placeId?, addressDetails? }` — a key that is
+present with `null` (or a trimmed-empty string, except `pincode`, whose `''`
+fails validation) clears the column; an absent key leaves it unchanged.
+`name` is the exception: it is non-nullable, so `name: null` counts as absent
+(a body of only `{"name": null}` → 400 "Nothing to update").
+`addressDetails` is cleared only by an explicit `null`/empty — a re-pin never
+clears it. Coordinate values are range-checked as in create, which likewise
+accepts a single coordinate. An empty body, or one whose keys all strip away,
+→ 400 "Nothing to update".
+
+**Response 200:** the full updated customer (same shape as the create
+response — `phoneNumber`/`countryCode` unchanged).
+
+**Responses:**
+- `200` — Customer updated
+- `400` — Company not set up / malformed id / nothing to update (a malformed
+  UUID is 400; an unknown or foreign-tenant UUID is 404)
+- `401` — Missing/invalid JWT
+- `403` — Technician JWT
+- `404` — Customer not found (or in another tenant)
+- `422` — Validation error (e.g. out-of-range latitude, malformed pincode,
+  whitespace-only name)
+
 ---
 
 ### Jobs

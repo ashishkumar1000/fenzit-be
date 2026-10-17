@@ -18,6 +18,7 @@ import {
 import { hasInvalidCoordinates } from '../common/utils/validate-coordinates';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
 import { normalizeSkillEmbed } from '../jobs/workflow-template.model';
 
@@ -85,6 +86,18 @@ function structuredAddressColumns(input: StructuredAddressFields) {
     place_id: input.placeId ?? null,
     address_details: input.addressDetails ?? null,
   };
+}
+
+/**
+ * Normalizer for the clearable free-text fields on PATCH: a trimmed-empty
+ * string is the natural client "clear" idiom, so it is stored as null (the
+ * table-wide convention) instead of ''. `pincode` is excluded — '' already
+ * fails its @Matches at the DTO layer — as are latitude/longitude (numbers)
+ * and `name` (non-nullable).
+ */
+function clearableText(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  return value.trim() === '' ? null : value;
 }
 
 export interface CustomerListItem {
@@ -249,6 +262,103 @@ export class CustomersService {
     }
 
     return this.toResponse(data);
+  }
+
+  /**
+   * Owner-only partial update (SPEC-edit-customer CAP-4), modelled on the
+   * offices updateOffice precedent. Only the mutable subset is writable — the
+   * update DTO structurally excludes countryCode/phoneNumber, so the stored
+   * phone can never change here (and no unique column is mutable, so no 23505
+   * mapping is needed on this path).
+   */
+  async updateCustomer(
+    owner: RequestUser,
+    customerId: string,
+    dto: UpdateCustomerDto,
+  ): Promise<CustomerResponse> {
+    if (!owner.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing customers',
+      });
+    }
+
+    // Patch-level coordinate guard: validated only when the location pair is
+    // being touched, on the values present in the DTO — the same guard create
+    // runs on its DTO. Explicit nulls mean "clear the column", so they are
+    // normalized to undefined here; only real numbers are range-checked.
+    if ('latitude' in dto || 'longitude' in dto) {
+      this.assertValidCoordinates(
+        dto.latitude ?? undefined,
+        dto.longitude ?? undefined,
+      );
+    }
+
+    // Build the patch only from keys present in the body: "present with null"
+    // (or a trimmed-empty string — clearableText) clears the column, "absent"
+    // leaves it untouched. `name` is the one non-nullable field, so a null
+    // there counts as absent (it can never clear the column) — an
+    // otherwise-empty body then 400s below.
+    const patch: Record<string, unknown> = {};
+    if (dto.name != null) {
+      patch.name = dto.name;
+    }
+    if ('address' in dto) patch.address = clearableText(dto.address);
+    if ('city' in dto) patch.city = clearableText(dto.city);
+    if ('formattedAddress' in dto) {
+      patch.formatted_address = clearableText(dto.formattedAddress);
+    }
+    if ('pincode' in dto) patch.pincode = dto.pincode ?? null;
+    if ('latitude' in dto) patch.latitude = dto.latitude ?? null;
+    if ('longitude' in dto) patch.longitude = dto.longitude ?? null;
+    if ('placeId' in dto) patch.place_id = clearableText(dto.placeId);
+    if ('addressDetails' in dto) {
+      // CAP-5: cleared only by an explicit null/empty — a re-pin never clears
+      // it (a re-pin PATCH simply omits this key).
+      patch.address_details = clearableText(dto.addressDetails);
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Nothing to update',
+      });
+    }
+
+    const admin = this.supabaseClientFactory.createAdmin();
+
+    // Guarded single-row UPDATE: id + tenant filter (createAdmin() bypasses
+    // RLS, so the explicit tenant_id filter is the isolation boundary). An
+    // empty result is a 404 — a missing customer and a foreign-tenant one are
+    // indistinguishable, never 403.
+    const { data, error } = await admin
+      .from('customers')
+      .update(patch)
+      .eq('id', customerId)
+      .eq('tenant_id', owner.tenantId)
+      .select(CUSTOMER_COLUMNS);
+
+    if (error) {
+      this.logger.error('Failed to update customer:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to update customer',
+      });
+    }
+
+    const rows = (data ?? []) as CustomerRow[];
+    // Empty result → 404: a missing customer and a foreign-tenant one are
+    // indistinguishable on purpose (the tenant filter is in the UPDATE
+    // itself), never 403.
+    if (rows.length === 0) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Customer not found',
+      });
+    }
+
+    // Writes ONLY the targeted customers row — no job-side writes, no backfill.
+    return this.toResponse(rows[0]);
   }
 
   /**
