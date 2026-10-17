@@ -11,6 +11,7 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
 
 describe('CustomersService', () => {
   let service: CustomersService;
@@ -1210,6 +1211,258 @@ describe('CustomersService', () => {
         service.findOrCreateByPhone(ownerNoTenant, input),
       ).rejects.toThrow(BadRequestException);
       expect(supabaseClientFactory.createAdmin).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateCustomer', () => {
+    const CUSTOMER_ID = '00000000-0000-4000-8000-000000000002';
+
+    const updatedRow = {
+      ...dbRow,
+      id: CUSTOMER_ID,
+      name: 'Priya Reddy',
+      address: '9 Church Street',
+      city: 'Bengaluru',
+    };
+
+    // The PATCH builder is awaited at .select(CUSTOMER_COLUMNS) after two
+    // .eq() calls (id, tenant_id) — the guarded single-row UPDATE.
+    function mockUpdate(result: { data: unknown; error: unknown }) {
+      const select = jest.fn().mockResolvedValue(result);
+      const tenantEq = jest.fn().mockReturnValue({ select });
+      const idEq = jest.fn().mockReturnValue({ eq: tenantEq });
+      const update = jest.fn().mockReturnValue({ eq: idEq });
+      const from = jest.fn().mockReturnValue({ update });
+      supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
+      return { from, update, idEq, tenantEq, select };
+    }
+
+    it('should return the camelCase updated customer on success', async () => {
+      mockUpdate({ data: [updatedRow], error: null });
+
+      const result = await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        name: 'Priya Reddy',
+        address: '9 Church Street',
+        city: 'Bengaluru',
+      });
+
+      expect(result).toEqual({
+        id: CUSTOMER_ID,
+        name: 'Priya Reddy',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+        address: '9 Church Street',
+        city: 'Bengaluru',
+        formattedAddress: null,
+        pincode: null,
+        latitude: null,
+        longitude: null,
+        placeId: null,
+        addressDetails: null,
+        createdVia: 'manual',
+        createdAt: '2026-06-21T00:00:00Z',
+        tenantId: 'tenant-uuid',
+      });
+    });
+
+    it('routes every present key to its snake_case column and asserts both guard filters', async () => {
+      const { update, idEq, tenantEq, select } = mockUpdate({
+        data: [updatedRow],
+        error: null,
+      });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        name: 'Priya Reddy',
+        address: '9 Church Street',
+        city: 'Bengaluru',
+        formattedAddress: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        addressDetails: 'Flat 302, Tower B',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        name: 'Priya Reddy',
+        address: '9 Church Street',
+        city: 'Bengaluru',
+        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        address_details: 'Flat 302, Tower B',
+      });
+      // createAdmin() bypasses RLS — the two .eq() filters ARE the isolation
+      // boundary; dropping either leaks writes across tenants.
+      expect(idEq).toHaveBeenCalledWith('id', CUSTOMER_ID);
+      expect(tenantEq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
+      expect(select).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats a null name as absent — an otherwise-empty body is a 400, not a name clear', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await expect(
+        service.updateCustomer(ownerUser, CUSTOMER_ID, {
+          name: null,
+        } as unknown as UpdateCustomerDto),
+      ).rejects.toThrow(BadRequestException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('clears a column on present-with-null and leaves absent keys out of the patch', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        address: null,
+        city: 'Bengaluru',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        address: null,
+        city: 'Bengaluru',
+      });
+    });
+
+    it('clears each remaining nullable column independently — city, formattedAddress, pincode, longitude', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        city: null,
+        formattedAddress: null,
+        pincode: null,
+        longitude: null,
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        city: null,
+        formatted_address: null,
+        pincode: null,
+        longitude: null,
+      });
+    });
+
+    it('clears trimmed-empty strings to null (the manual-clear path)', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        address: '   ',
+        city: '',
+        placeId: null,
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        address: null,
+        city: null,
+        place_id: null,
+      });
+    });
+
+    it('CAP-5 — a re-pin writes only the location block; only an explicit null clears addressDetails', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        formattedAddress: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        addressDetails: null,
+      });
+      expect(update).toHaveBeenLastCalledWith({ address_details: null });
+    });
+
+    it('never writes the immutable phone/country code even when a raw caller supplies them', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        name: 'Priya Reddy',
+        phoneNumber: '9999999999',
+        countryCode: '+1',
+      } as unknown as UpdateCustomerDto);
+
+      // The patch builder reads only the mutable keys — exact-equality pin.
+      expect(update).toHaveBeenCalledWith({ name: 'Priya Reddy' });
+    });
+
+    it.each([
+      ['a latitude above 90', { latitude: 91 }],
+      ['a NaN latitude', { latitude: Number.NaN }],
+      ['a longitude above 180', { longitude: 181 }],
+      ['an Infinity longitude', { longitude: Number.POSITIVE_INFINITY }],
+    ])(
+      'should throw 400 before any DB call when the patch has %s',
+      async (_label, badField) => {
+        const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+        await expect(
+          service.updateCustomer(ownerUser, CUSTOMER_ID, { ...badField }),
+        ).rejects.toThrow(BadRequestException);
+        expect(update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('normalizes explicit-null coordinates to undefined before the guard — clears and one-sided coords stay legal', async () => {
+      const { update } = mockUpdate({ data: [updatedRow], error: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        latitude: null,
+      } as unknown as UpdateCustomerDto);
+      expect(update).toHaveBeenCalledWith({ latitude: null });
+
+      await service.updateCustomer(ownerUser, CUSTOMER_ID, {
+        latitude: 12.9716,
+      });
+      expect(update).toHaveBeenLastCalledWith({ latitude: 12.9716 });
+    });
+
+    it('should throw 400 Nothing to update for an empty patch — before any client call', async () => {
+      const { from } = mockUpdate({ data: [updatedRow], error: null });
+
+      await expect(
+        service.updateCustomer(ownerUser, CUSTOMER_ID, {}),
+      ).rejects.toThrow('Nothing to update');
+      expect(from).not.toHaveBeenCalled();
+    });
+
+    it('should throw 400 with the create-path company-setup wording when owner has no tenantId — before any client call', async () => {
+      const { from } = mockUpdate({ data: [updatedRow], error: null });
+
+      await expect(
+        service.updateCustomer(ownerNoTenant, CUSTOMER_ID, {
+          name: 'Priya Reddy',
+        }),
+      ).rejects.toThrow('Company setup required before managing customers');
+      expect(from).not.toHaveBeenCalled();
+    });
+
+    it('should throw 404 when the guarded UPDATE matches no row (missing or foreign-tenant id)', async () => {
+      mockUpdate({ data: [], error: null });
+
+      await expect(
+        service.updateCustomer(ownerUser, CUSTOMER_ID, { name: 'Priya Reddy' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw 500 on a DB error', async () => {
+      mockUpdate({ data: null, error: { code: 'XX000', message: 'boom' } });
+
+      await expect(
+        service.updateCustomer(ownerUser, CUSTOMER_ID, { name: 'Priya Reddy' }),
+      ).rejects.toThrow(InternalServerErrorException);
     });
   });
 });

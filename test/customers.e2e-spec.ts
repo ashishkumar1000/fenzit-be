@@ -905,4 +905,406 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
     });
   });
+
+  describe('PATCH /api/v1/customers/:id', () => {
+    const PATCH_ID = '00000000-0000-4000-8000-000000000002';
+
+    const patchedRow = {
+      ...customerRow,
+      id: PATCH_ID,
+      name: 'Priya Reddy',
+      address: '9 Church Street',
+      city: 'Bengaluru',
+      address_details: null,
+    };
+
+    // The PATCH builder is awaited at .select() after two .eq() calls (id,
+    // tenant_id) — the guarded single-row UPDATE. Captures the patch payload
+    // so tests can pin exactly which columns a given body writes.
+    function mockUpdate(result: { data: unknown; error: unknown }) {
+      let capturedPatch: Record<string, unknown> | undefined;
+      const builder: Record<string, jest.Mock> = {};
+      builder.update = jest.fn((patch: Record<string, unknown>) => {
+        capturedPatch = patch;
+        return builder;
+      });
+      builder.eq = jest.fn(() => builder);
+      builder.select = jest.fn().mockResolvedValue(result);
+      mockCreateAdmin.mockReturnValue({
+        from: jest.fn().mockReturnValue(builder),
+      });
+      return { builder, patch: () => capturedPatch };
+    }
+
+    it('AC2/matrix-1 — should return 200 with the updated customer (camelCase, phone unchanged)', async () => {
+      mockUpdate({ data: [patchedRow], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'Priya Reddy', address: '9 Church Street' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.id).toBe(PATCH_ID);
+      expect(body.name).toBe('Priya Reddy');
+      expect(body.address).toBe('9 Church Street');
+      expect(body.countryCode).toBe('+91');
+      expect(body.phoneNumber).toBe('9876543210');
+    });
+
+    it('CAP-4 — the guarded UPDATE filters by id AND tenant_id', async () => {
+      const { builder } = mockUpdate({ data: [patchedRow], error: null });
+
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(builder.update).toHaveBeenCalled();
+      expect(builder.eq).toHaveBeenCalledWith('id', PATCH_ID);
+      expect(builder.eq).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+    });
+
+    it('matrix-2/CAP-2/3 — a location pick writes the location block and never touches addressDetails (CAP-5)', async () => {
+      const row = {
+        ...patchedRow,
+        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      };
+      const { patch } = mockUpdate({ data: [row], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          formattedAddress: '9 Church Street, Bengaluru, Karnataka 560001, India',
+          pincode: '560001',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          placeId: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({
+        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        pincode: '560001',
+        latitude: 12.9716,
+        longitude: 77.5946,
+        place_id: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
+      });
+      const body = JSON.parse(response.body);
+      expect(body.pincode).toBe('560001');
+      expect(body.latitude).toBe(12.9716);
+      expect(body.placeId).toBe('ChIJbU60yXAWrjsR4E9-UejD3_g');
+    });
+
+    it('patch semantics — present-with-null clears, absent keys stay out of the patch', async () => {
+      const { patch } = mockUpdate({
+        data: [{ ...patchedRow, address: null }],
+        error: null,
+      });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { address: null, city: 'Bengaluru' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({ address: null, city: 'Bengaluru' });
+      expect(JSON.parse(response.body).address).toBeNull();
+    });
+
+    it('patch semantics — a trimmed-empty string clears the column (manual clear)', async () => {
+      const { patch } = mockUpdate({
+        data: [{ ...patchedRow, address: null }],
+        error: null,
+      });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { address: '   ' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({ address: null });
+      expect(JSON.parse(response.body).address).toBeNull();
+    });
+
+    it('CAP-5 — an explicit null clears addressDetails', async () => {
+      const { patch } = mockUpdate({ data: [patchedRow], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { addressDetails: null },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({ address_details: null });
+    });
+
+    it('matrix-3 — Manual-entry clear: the whole location block nulls in one body, addressDetails untouched', async () => {
+      const { patch } = mockUpdate({ data: [patchedRow], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          latitude: null,
+          longitude: null,
+          formattedAddress: null,
+          pincode: null,
+          placeId: null,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The patch carries exactly the five nulled keys — `address_details`
+      // stays absent, so the column is untouched (CAP-5).
+      expect(patch()).toEqual({
+        latitude: null,
+        longitude: null,
+        formatted_address: null,
+        pincode: null,
+        place_id: null,
+      });
+    });
+
+    it('matrix-9 — phone keys stripped silently alongside a mutable key (200, phone unchanged)', async () => {
+      const { patch } = mockUpdate({ data: [patchedRow], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          name: 'Priya Reddy',
+          phoneNumber: '9999999999',
+          countryCode: '+1',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({ name: 'Priya Reddy' });
+      expect(JSON.parse(response.body).phoneNumber).toBe('9876543210');
+    });
+
+    it('whitelist — unknown keys are stripped silently, never rejected or written', async () => {
+      const { patch } = mockUpdate({ data: [patchedRow], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          name: 'Priya Reddy',
+          tenantId: 'attacker-tenant',
+          createdVia: 'job_creation',
+          id: 'attacker-chosen-id',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(patch()).toEqual({ name: 'Priya Reddy' });
+    });
+
+    it('AC5/matrix-9 — a body with ONLY stripped keys (lone phone) is 400 "Nothing to update"', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { phoneNumber: '9999999999' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).message).toBe('Nothing to update');
+    });
+
+    it('should return 422 for a whitespace-only name', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: '   ' },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 422 for a name longer than 120 chars', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'x'.repeat(121) },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 422 for a malformed pincode', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { pincode: 'abc123' },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('AC6/matrix-8 — should return 422 for an out-of-range latitude (same class as create)', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { latitude: 999, longitude: 77.5946 },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('AC5/matrix-4 — should return 400 "Nothing to update" for an empty body', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.error_code).toBe('VALIDATION_ERROR');
+      expect(body.message).toBe('Nothing to update');
+    });
+
+    it('AC5 — should return 400 when the body carries only a null name (it can never clear)', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: null },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).message).toBe('Nothing to update');
+    });
+
+    it('should return 400 for a non-UUID id (ParseUUIDPipe)', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/customers/not-a-uuid',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('AC4/matrix-6 — should return 404 when the guarded UPDATE matches no row (unknown or foreign-tenant id)', async () => {
+      mockUpdate({ data: [], error: null });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      const body = JSON.parse(response.body);
+      expect(body.error_code).toBe('RESOURCE_NOT_FOUND');
+      expect(body.message).toBe('Customer not found');
+    });
+
+    it('should return 500 when the DB update errors', async () => {
+      mockUpdate({
+        data: null,
+        error: { code: 'XX000', message: 'boom' },
+      });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(JSON.parse(response.body).error_code).toBe(
+        'INTERNAL_SERVER_ERROR',
+      );
+    });
+
+    it('AC3/matrix-5 — should return 403 for Technician JWT', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${techJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('guard-order — Technician + non-UUID id is 403 (RolesGuard runs before ParseUUIDPipe)', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/customers/not-a-uuid',
+        headers: { authorization: `Bearer ${techJwt()}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('matrix-7 — should return 400 with the create-path company-setup wording when owner has no tenantId', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.error_code).toBe('VALIDATION_ERROR');
+      expect(body.message).toBe(
+        'Company setup required before managing customers',
+      );
+    });
+
+    it('should return 401 with no JWT', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${PATCH_ID}`,
+        payload: { name: 'Priya Reddy' },
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
+    });
+  });
 });
