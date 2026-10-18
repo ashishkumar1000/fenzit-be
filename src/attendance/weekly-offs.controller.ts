@@ -152,7 +152,11 @@ export class WeeklyOffsController {
     description:
       'ATTENDANCE_EMPLOYEE_NOT_FOUND (employee not a tenant member) or ATTENDANCE_TENANT_NOT_FOUND (stale/unknown tenant)',
   })
-  @ApiResponse({ status: 422, description: 'ATTENDANCE_NO_WORKING_DAYS' })
+  @ApiResponse({
+    status: 422,
+    description:
+      'ATTENDANCE_NO_WORKING_DAYS or ATTENDANCE_EMPLOYEE_NOT_ACTIVE (invited employee)',
+  })
   setOverride(
     @CurrentUser() user: RequestUser,
     @Param('employeeId') employeeId: string,

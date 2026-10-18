@@ -1035,7 +1035,7 @@ Sets one employee's override via `attendance_set_weekly_off_override`
 - `200` — `{ employeeId, employeeName, current, next }`
 - `400` — `VALIDATION_ERROR` (malformed employee id / no tenant)
 - `404` — `ATTENDANCE_EMPLOYEE_NOT_FOUND` (employee not a tenant member) or `ATTENDANCE_TENANT_NOT_FOUND`
-- `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
+- `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection), `ATTENDANCE_EMPLOYEE_NOT_ACTIVE` (employee is invited, not active) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
 
 #### `DELETE /api/v1/attendance/weekly-offs/overrides/:employeeId?effectiveFrom=` `[Bearer JWT, Role: owner]`
 

@@ -24,6 +24,7 @@ import {
 } from './weekly-offs-response.model';
 import {
   Admin,
+  HINT_EMPLOYEE_NOT_ACTIVE,
   HINT_EMPLOYEE_NOT_FOUND,
   HINT_NO_WORKING_DAYS,
   HINT_TENANT_NOT_FOUND,
@@ -214,8 +215,8 @@ export class WeeklyOffsService {
 
   /**
    * Maps a supabase-js rpc error by its HINT (which names the ErrorCode):
-   * PT404 variants → 404, the zero-working-days PT422 and the days-CHECK
-   * backstop → 422, anything else → 500.
+   * PT404 variants → 404, the zero-working-days PT422, the not-active PT422
+   * and the days-CHECK backstop → 422, anything else → 500.
    */
   private throwRpcError(error: RpcError, fallback: string): never {
     if (error.hint === HINT_TENANT_NOT_FOUND) {
@@ -227,7 +228,20 @@ export class WeeklyOffsService {
         message: 'Employee not found',
       });
     }
-    if (error.hint === HINT_NO_WORKING_DAYS || error.code === PG_CHECK_VIOLATION) {
+    if (error.hint === HINT_EMPLOYEE_NOT_ACTIVE) {
+      // Invited (not yet joined) employees cannot have a weekly-off override.
+      throw new HttpException(
+        {
+          error_code: ErrorCode.ATTENDANCE_EMPLOYEE_NOT_ACTIVE,
+          message: 'Employee is not active',
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (
+      error.hint === HINT_NO_WORKING_DAYS ||
+      error.code === PG_CHECK_VIOLATION
+    ) {
       // FR-18: a 7-day selection leaves zero working days. The service's
       // pre-DB guard rejects these with the same code; this is the
       // RPC/DB backstop.

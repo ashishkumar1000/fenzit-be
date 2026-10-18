@@ -78,13 +78,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           ...(request.sessionId ? { session_id: request.sessionId } : {}),
         })}`;
       }
+      // Stack traces are logged server-side only — never sent in the body
+      // (NODE_ENV is 'development' on Render, so env-gating is not safe).
       this.logger.error(
         `Unhandled exception${ids}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
-
-    const isProduction = process.env.NODE_ENV === 'production';
 
     if (retryAfterSeconds !== undefined) {
       void reply.header('Retry-After', String(retryAfterSeconds));
@@ -95,9 +95,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       error_code: errorCode,
       message,
       ...extra,
-      ...(!isProduction && exception instanceof Error
-        ? { stack: exception.stack }
-        : {}),
     });
   }
 
