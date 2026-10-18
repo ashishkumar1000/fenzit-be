@@ -634,6 +634,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
     it('GET /attendance/weekly-offs is mounted and reports the empty default state (no rows is a 200, not a 404)', async () => {
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
       tableQueues.set('attendance_weekly_off_defaults', []);
+      tableQueues.set('tenants', [
+        { data: { weekly_off_configured_at: null }, error: null },
+      ]);
 
       const res = await app.inject({
         method: 'GET',
@@ -643,6 +646,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({
+        configured: false,
         default: null,
         next: null,
         history: [],
@@ -689,6 +693,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
       tableQueues.set('attendance_weekly_off_defaults', []);
+      tableQueues.set('tenants', [
+        { data: { weekly_off_configured_at: null }, error: null },
+      ]);
 
       const res = await app.inject({
         method: 'PUT',
@@ -728,6 +735,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
       tableQueues.set('attendance_weekly_off_defaults', []);
+      tableQueues.set('tenants', [
+        { data: { weekly_off_configured_at: null }, error: null },
+      ]);
 
       const res = await app.inject({
         method: 'PUT',

@@ -29,9 +29,12 @@ export interface WeeklyOffView {
  * GET /attendance/weekly-offs and the PUT response — the tenant default:
  * `default` is the selection valid on today (null = all 7 days working,
  * including the never-configured case), `next` the earliest future edit,
- * `history` the full effective-dated past, ascending.
+ * `history` the full effective-dated past, ascending. `configured` is true
+ * once the owner has saved the everyone rule at least once — including
+ * "no day off", which leaves no row (R-11).
  */
 export interface WeeklyOffDefaultResponse {
+  configured: boolean;
   default: WeeklyOffView | null;
   next: WeeklyOffView | null;
   history: WeeklyOffView[];

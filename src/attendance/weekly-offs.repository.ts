@@ -1,6 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { WeeklyOffRow } from './weekly-offs-response.model';
-import { Admin, internalError } from './attendance-rpc.helpers';
+import {
+  Admin,
+  internalError,
+  tenantNotFoundError,
+} from './attendance-rpc.helpers';
 
 const logger = new Logger('WeeklyOffsRepository');
 
@@ -32,6 +36,29 @@ export async function readDefaults(
     throw internalError('Failed to read weekly offs');
   }
   return data ?? [];
+}
+
+/**
+ * Whether the owner has ever saved the everyone rule (empty days included).
+ * Stamped by attendance_set_weekly_off_default; lets the app tell "cleared on
+ * purpose" from "never set up" when no default row exists (R-11).
+ */
+export async function readWeeklyOffConfigured(
+  admin: Admin,
+  tenantId: string,
+): Promise<boolean> {
+  const { data, error } = await admin
+    .from('tenants')
+    .select('weekly_off_configured_at')
+    .eq('id', tenantId)
+    .maybeSingle();
+  if (error) {
+    throw internalError('Failed to read weekly-off configured flag');
+  }
+  if (!data) {
+    throw tenantNotFoundError();
+  }
+  return data.weekly_off_configured_at != null;
 }
 
 /** The tenant's override ranges, optionally narrowed to one employee. */

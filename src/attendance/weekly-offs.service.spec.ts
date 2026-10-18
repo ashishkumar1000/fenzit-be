@@ -113,6 +113,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
     defaults?: RpcResult[];
     overrides?: RpcResult[];
     users?: RpcResult[];
+    tenants?: RpcResult[];
     rpc?: Record<string, RpcResult[]>;
   } = {}) {
     const defaultsQb = flexQb({ data: [], error: null });
@@ -121,6 +122,10 @@ describe('WeeklyOffsService (story 15-5)', () => {
     for (const r of opts.overrides ?? []) overridesQb.queue.push(r);
     const usersQb = flexQb({ data: [], error: null });
     for (const r of opts.users ?? []) usersQb.queue.push(r);
+
+    // Unqueued tenants read = a tenant that never saved the everyone rule.
+    const tenantsQb = flexQb({ data: { weekly_off_configured_at: null }, error: null });
+    for (const r of opts.tenants ?? []) tenantsQb.queue.push(r);
 
     const rpcs = new Map<string, ReturnType<typeof rpcQueue>>();
     for (const [name, results] of Object.entries(opts.rpc ?? {})) {
@@ -135,6 +140,8 @@ describe('WeeklyOffsService (story 15-5)', () => {
           return overridesQb.qb;
         case 'users':
           return usersQb.qb;
+        case 'tenants':
+          return tenantsQb.qb;
         default:
           throw new Error(`unexpected table ${table}`);
       }
@@ -151,7 +158,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       rpc,
     } as never);
 
-    return { from, rpc, defaultsQb, overridesQb, usersQb, rpcs };
+    return { from, rpc, defaultsQb, overridesQb, usersQb, tenantsQb, rpcs };
   }
 
   /** Every read starts from attendance_today (AD-7). */
@@ -179,6 +186,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       const q = seeded(mockAdmin());
 
       await expect(service.getWeeklyOffs(ownerUser)).resolves.toEqual({
+        configured: false,
         default: null,
         next: null,
         history: [],
@@ -201,6 +209,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       }));
 
       await expect(service.getWeeklyOffs(ownerUser)).resolves.toEqual({
+        configured: true,
         default: { days: [6, 7], validFrom: '2026-09-20', validTo: null },
         next: { days: [7], validFrom: '2026-10-05', validTo: null },
         history: [
@@ -252,6 +261,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       await expect(
         service.setWeeklyOffDefault(ownerUser, { days: [6, 7] }),
       ).resolves.toEqual({
+        configured: true,
         default: { days: [6, 7], validFrom: '2026-09-20', validTo: null },
         next: null,
         history: [{ days: [6, 7], validFrom: '2026-09-20', validTo: null }],

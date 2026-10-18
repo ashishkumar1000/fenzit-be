@@ -39,6 +39,7 @@ import {
   readDefaults,
   readEmployeeNames,
   readOverrides,
+  readWeeklyOffConfigured,
 } from './weekly-offs.repository';
 
 /**
@@ -63,7 +64,10 @@ export class WeeklyOffsService {
     const admin = this.supabaseClientFactory.createAdmin();
     const today = await resolveTenantToday(admin, tenantId);
     const rows = await readDefaults(admin, tenantId);
+    const configured =
+      rows.length > 0 || (await readWeeklyOffConfigured(admin, tenantId));
     return {
+      configured,
       default: toViewOrNull(pickCurrentWeeklyOff(rows, today)),
       next: toViewOrNull(pickNextWeeklyOff(rows, today)),
       history: toWeeklyOffHistory(rows),

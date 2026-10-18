@@ -989,10 +989,10 @@ The tenant default: the selection valid on today (`default: null` = all
 edit (`next`), and the full effective-dated `history` (ascending). Range
 picks are made on the fetched rows against `attendance_today`.
 
-**Response 200:** `{ default: { days, validFrom, validTo } | null, next: … | null, history: […] }`
+**Response 200:** `{ configured: boolean, default: { days, validFrom, validTo } | null, next: … | null, history: […] }` — `configured` is true once the owner has saved the everyone rule at least once, including "no day off" (which leaves no row); false only for a company that never saved (R-11). The stored timestamp `tenants.weekly_off_configured_at` is internal; only the boolean is exposed.
 
 **Responses:**
-- `200` — empty state is `{ default: null, next: null, history: [] }` (never-configured is a 200, not a 404)
+- `200` — empty state is `{ configured: false, default: null, next: null, history: [] }` (never-configured is a 200, not a 404)
 - `400` — `VALIDATION_ERROR` (owner without a company)
 - `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — `attendance_today` fails loud)
 - `401` / `403` — as above
@@ -1007,7 +1007,7 @@ clipped at `effectiveFrom`, the new range is `[effectiveFrom, ∞)`.
 **Body:** `{ days: number[] (1–7, unique, ≤6, empty allowed), effectiveFrom?: 'YYYY-MM-DD' }`
 
 **Responses:**
-- `200` — resolved default: `{ default, next, history }` (same shape as GET)
+- `200` — resolved default: `{ configured, default, next, history }` (same shape as GET)
 - `400` — `VALIDATION_ERROR` (no tenant)
 - `404` — `ATTENDANCE_TENANT_NOT_FOUND`
 - `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection, pre-DB) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
