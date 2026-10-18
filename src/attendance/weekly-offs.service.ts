@@ -17,6 +17,7 @@ import {
   pickCurrentWeeklyOff,
   pickNextWeeklyOff,
   toWeeklyOffHistory,
+  withQueuedClears,
   toWeeklyOffView,
   WeeklyOffDefaultResponse,
   WeeklyOffOverrideResponse,
@@ -66,11 +67,12 @@ export class WeeklyOffsService {
     const rows = await readDefaults(admin, tenantId);
     const configured =
       rows.length > 0 || (await readWeeklyOffConfigured(admin, tenantId));
+    const withClears = withQueuedClears(rows, today);
     return {
       configured,
       default: toViewOrNull(pickCurrentWeeklyOff(rows, today)),
-      next: toViewOrNull(pickNextWeeklyOff(rows, today)),
-      history: toWeeklyOffHistory(rows),
+      next: toViewOrNull(pickNextWeeklyOff(withClears, today)),
+      history: toWeeklyOffHistory(withClears),
     };
   }
 

@@ -101,3 +101,31 @@ export function pickNextWeeklyOff(
 export function toWeeklyOffHistory(rows: WeeklyOffRow[]): WeeklyOffView[] {
   return sortWeeklyOffRows(rows).map(toWeeklyOffView);
 }
+
+/**
+ * A queued "clear" (no weekly off from a future date) leaves NO row: the rule
+ * in force is only clipped (valid = [from, X)) and nothing starts at X. Add a
+ * stand-in row `{ days: [], validFrom: X }` for each such gap so `next` and
+ * `history` show the change to every client (R-21). `days: []` is the
+ * everyone-works-all-7-days selection. Stand-ins are for display only — never
+ * pass the result to `pickCurrentWeeklyOff`.
+ */
+export function withQueuedClears(
+  rows: WeeklyOffRow[],
+  today: string,
+): WeeklyOffRow[] {
+  const starts = new Set(rows.map((r) => parseRuleRange(r.valid).from));
+  const clears: WeeklyOffRow[] = [];
+  for (const row of rows) {
+    const { to } = parseRuleRange(row.valid);
+    if (to !== null && to > today && !starts.has(to)) {
+      clears.push({
+        ...row,
+        id: `queued-clear-${to}`,
+        valid: `[${to},)`,
+        days: [],
+      });
+    }
+  }
+  return [...rows, ...clears];
+}

@@ -989,7 +989,7 @@ The tenant default: the selection valid on today (`default: null` = all
 edit (`next`), and the full effective-dated `history` (ascending). Range
 picks are made on the fetched rows against `attendance_today`.
 
-**Response 200:** `{ configured: boolean, default: { days, validFrom, validTo } | null, next: … | null, history: […] }` — `configured` is true once the owner has saved the everyone rule at least once, including "no day off" (which leaves no row); false only for a company that never saved (R-11). The stored timestamp `tenants.weekly_off_configured_at` is internal; only the boolean is exposed.
+**Response 200:** `{ configured: boolean, default: { days, validFrom, validTo } | null, next: … | null, history: […] }` — `configured` is true once the owner has saved the everyone rule at least once, including "no day off" (which leaves no row); false only for a company that never saved (R-11). `next` and `history` also carry a queued "clear" (no weekly off from a future date) as an entry with `days: []` and `validFrom` = the clear date (R-21); the DB stores no row for it. The stored timestamp `tenants.weekly_off_configured_at` is internal; only the boolean is exposed.
 
 **Responses:**
 - `200` — empty state is `{ configured: false, default: null, next: null, history: [] }` (never-configured is a 200, not a 404)
