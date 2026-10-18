@@ -1,6 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayUnique, IsArray, IsIn, IsOptional, Validate } from 'class-validator';
+import { IsOptional, Validate } from 'class-validator';
 import { AttendanceCalendarDateConstraint } from './attendance-date.validator';
+import {
+  WEEKLY_OFF_DAYS,
+  WeeklyOffDaysConstraint,
+} from './weekly-off-days.validator';
 
 /**
  * ISO weekday numbers, 1 = Monday .. 7 = Sunday — the DB CHECK's vocabulary
@@ -15,7 +19,7 @@ import { AttendanceCalendarDateConstraint } from './attendance-date.validator';
  * working" (no covering row); for an override it means "this employee works
  * all 7 days" (the override replaces the default, AD-22).
  */
-export const WEEKLY_OFF_DAYS = [1, 2, 3, 4, 5, 6, 7] as const;
+export { WEEKLY_OFF_DAYS };
 
 /** Shared `days` array validation — element range and uniqueness, empty allowed. */
 abstract class WeeklyOffDaysDto {
@@ -24,10 +28,11 @@ abstract class WeeklyOffDaysDto {
       'Weekly-off days, ISO weekday numbers (1=Mon .. 7=Sun). Empty array = works all 7 days.',
     example: [6, 7],
     type: [Number],
+    minimum: 1,
+    maximum: 7,
+    uniqueItems: true,
   })
-  @IsArray()
-  @IsIn(WEEKLY_OFF_DAYS, { each: true })
-  @ArrayUnique()
+  @Validate(WeeklyOffDaysConstraint)
   days: number[];
 
   @ApiPropertyOptional({
