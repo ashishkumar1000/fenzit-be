@@ -6,6 +6,8 @@ export interface AttendanceOfficeRow {
   latitude: number;
   longitude: number;
   radius_m: number;
+  /** Display address of the pin; null for offices saved without one. */
+  formatted_address: string | null;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -53,6 +55,8 @@ export interface OfficeResponse {
   latitude: number;
   longitude: number;
   radiusM: number;
+  /** Address of the pin, or null when none was saved (show coordinates). */
+  formattedAddress: string | null;
   archivedAt: string | null;
   rule: OfficeRuleResponse | null;
   nextRule: OfficeRuleResponse | null;
@@ -65,6 +69,7 @@ export interface OfficeDetailResponse {
   latitude: number;
   longitude: number;
   radiusM: number;
+  formattedAddress: string | null;
   archivedAt: string | null;
   rules: OfficeRuleResponse[];
 }
@@ -111,6 +116,7 @@ export function toOfficeDetailResponse(
     latitude: office.latitude,
     longitude: office.longitude,
     radiusM: office.radius_m,
+    formattedAddress: office.formatted_address ?? null,
     archivedAt: office.archived_at,
     rules: [...rules]
       .sort((a, b) => parseRuleRange(a.valid).from.localeCompare(parseRuleRange(b.valid).from))

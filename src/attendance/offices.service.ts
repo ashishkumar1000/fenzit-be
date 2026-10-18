@@ -85,6 +85,7 @@ export class OfficesService {
         latitude: office.latitude,
         longitude: office.longitude,
         radiusM: office.radius_m,
+        formattedAddress: office.formatted_address ?? null,
         archivedAt: office.archived_at,
         rule: toRuleOrNull(pickCurrentRule(rules, today)),
         nextRule: toRuleOrNull(pickNextRule(rules, today)),
@@ -137,7 +138,12 @@ export class OfficesService {
       throw this.internalError('Failed to create office');
     }
 
-    const office = await this.readOffice(admin, user, data as string);
+    const officeId = data as string;
+    if (dto.formattedAddress) {
+      await this.saveCreateAddress(admin, tenantId, officeId, dto);
+    }
+
+    const office = await this.readOffice(admin, user, officeId);
     const rules =
       (await this.readRulesForOffices(admin, user, [office.id])).get(
         office.id,
@@ -148,6 +154,7 @@ export class OfficesService {
       latitude: office.latitude,
       longitude: office.longitude,
       radiusM: office.radius_m,
+      formattedAddress: office.formatted_address ?? null,
       archivedAt: office.archived_at,
       rule: toRuleOrNull(pickCurrentRule(rules, today)),
       nextRule: null,
@@ -166,6 +173,22 @@ export class OfficesService {
     dto: UpdateOfficeDto,
   ): Promise<OfficeDetailResponse> {
     const tenantId = this.requireTenant(user);
+
+    // A pin is a pair, and an address describes a pin: checked before any
+    // database work so a rejected request never half-applies.
+    if ((dto.latitude === undefined) !== (dto.longitude === undefined)) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Send the latitude and longitude together.',
+      });
+    }
+    if (dto.formattedAddress !== undefined && dto.latitude === undefined) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'An address can only be saved together with the pin location.',
+      });
+    }
+
     const admin = this.supabaseClientFactory.createAdmin();
 
     const profile = {
@@ -173,6 +196,11 @@ export class OfficesService {
       ...(dto.latitude !== undefined ? { latitude: dto.latitude } : {}),
       ...(dto.longitude !== undefined ? { longitude: dto.longitude } : {}),
       ...(dto.radiusM !== undefined ? { radius_m: dto.radiusM } : {}),
+      // The address describes the pin. A pin that moves without a new address
+      // clears the old one, so it can never name a different place.
+      ...(dto.latitude !== undefined
+        ? { formatted_address: dto.formattedAddress ?? null }
+        : {}),
     };
     const rules = {
       ...(dto.startTime !== undefined ? { p_start_time: dto.startTime } : {}),
@@ -372,6 +400,37 @@ export class OfficesService {
       throw this.internalError('Failed to read office rules');
     }
     return data ?? [];
+  }
+
+  /**
+   * The pin's display address, written right after the create RPC (which is
+   * left untouched — AD-3: no new RPC for a single column). Display text only,
+   * so a failed write must never fail the create: the office exists and works,
+   * the app just shows coordinates until the pin is re-picked.
+   */
+  private async saveCreateAddress(
+    admin: Admin,
+    tenantId: string,
+    officeId: string,
+    dto: CreateOfficeDto,
+  ): Promise<void> {
+    // Guarded like the profile UPDATE: this tenant's live office, still on the
+    // pin the address was resolved for — a pin moved by a concurrent edit must
+    // not end up with an address for the old spot.
+    const { error } = await admin
+      .from('attendance_offices')
+      .update({ formatted_address: dto.formattedAddress })
+      .eq('id', officeId)
+      .eq('tenant_id', tenantId)
+      .eq('latitude', dto.latitude)
+      .eq('longitude', dto.longitude)
+      .is('archived_at', null);
+    if (error) {
+      this.logger.warn('Office created but its address was not saved:', {
+        officeId,
+        error,
+      });
+    }
   }
 
   private async readOffice(

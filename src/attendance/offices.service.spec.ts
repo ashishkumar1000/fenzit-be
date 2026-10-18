@@ -209,6 +209,7 @@ describe('OfficesService (story 15-3)', () => {
           longitude: 72.8296,
           radiusM: 100,
           archivedAt: null,
+          formattedAddress: null,
           rule: {
             id: 'rule-1',
             startTime: '10:00',
@@ -520,6 +521,7 @@ describe('OfficesService (story 15-3)', () => {
         longitude: 72.8296,
         radiusM: 100,
         archivedAt: null,
+        formattedAddress: null,
         rules: [
           {
             id: 'rule-1',
@@ -928,5 +930,243 @@ describe('OfficesService (story 15-3)', () => {
 
   it('is injectable with just the Supabase factory (no other providers)', () => {
     expect(service).toBeDefined();
+  });
+  describe('office pin address (formatted_address)', () => {
+    const createDto = {
+      name: 'Andheri West',
+      latitude: 19.1364,
+      longitude: 72.8296,
+      radiusM: 100,
+      startTime: '10:00',
+      endTime: '18:00',
+      lateCutoffMinutes: 15,
+      fullDayHours: 8,
+      halfDayHours: 4,
+    };
+    const ADDRESS = 'Koramangala, Bengaluru';
+    const withAddress = { ...officeRow, formatted_address: ADDRESS };
+
+    function createSetup(opts: { offices: RpcResult[] }) {
+      const q = seeded(mockAdmin({ offices: opts.offices, rules: [seededRules()] }));
+      q.rpcs.set(
+        'attendance_create_office',
+        rpcQueue({ data: OFFICE_ID, error: null }),
+      );
+      return q;
+    }
+
+    it('create with an address stores it on that office, scoped to the tenant, and returns it', async () => {
+      const q = createSetup({
+        offices: [
+          { data: null, error: null }, // the address UPDATE
+          { data: withAddress, error: null }, // re-read
+        ],
+      });
+
+      const result = await service.createOffice(ownerUser, {
+        ...createDto,
+        formattedAddress: ADDRESS,
+      });
+
+      expect(q.officesQb.qb.update).toHaveBeenCalledWith({ formatted_address: ADDRESS });
+      expect(q.officesQb.qb.eq).toHaveBeenCalledWith('id', OFFICE_ID);
+      expect(q.officesQb.qb.eq).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+      expect(result.formattedAddress).toBe(ADDRESS);
+    });
+
+    it('create without an address writes nothing extra and returns null', async () => {
+      const q = createSetup({ offices: [{ data: officeRow, error: null }] });
+
+      const result = await service.createOffice(ownerUser, createDto);
+
+      expect(q.officesQb.qb.update).not.toHaveBeenCalled();
+      expect(result.formattedAddress).toBeNull();
+    });
+
+    it('create still succeeds when saving the address fails (display text only)', async () => {
+      createSetup({
+        offices: [
+          { data: null, error: { code: 'XX000', message: 'boom' } }, // address UPDATE fails
+          { data: officeRow, error: null },
+        ],
+      });
+
+      const result = await service.createOffice(ownerUser, {
+        ...createDto,
+        formattedAddress: ADDRESS,
+      });
+
+      expect(result.id).toBe(OFFICE_ID);
+      expect(result.formattedAddress).toBeNull();
+    });
+
+    it('the create RPC is called exactly as before — the address never rides on it', async () => {
+      const q = createSetup({
+        offices: [
+          { data: null, error: null },
+          { data: withAddress, error: null },
+        ],
+      });
+
+      await service.createOffice(ownerUser, { ...createDto, formattedAddress: ADDRESS });
+
+      const args = (q.rpc.mock.calls.find(([n]) => n === 'attendance_create_office') as unknown[])[1];
+      expect(Object.keys(args as object)).not.toContain('p_formatted_address');
+    });
+
+    it('PATCH with a new pin and an address saves both together', async () => {
+      const q = seeded(
+        mockAdmin({
+          offices: [
+            { data: [OFFICE_ID], error: null },
+            { data: withAddress, error: null },
+          ],
+          rules: [seededRules()],
+        }),
+      );
+
+      const result = await service.updateOffice(ownerUser, OFFICE_ID, {
+        latitude: 12.9352,
+        longitude: 77.6245,
+        formattedAddress: ADDRESS,
+      });
+
+      expect(q.officesQb.qb.update).toHaveBeenCalledWith({
+        latitude: 12.9352,
+        longitude: 77.6245,
+        formatted_address: ADDRESS,
+      });
+      expect(result.formattedAddress).toBe(ADDRESS);
+    });
+
+    it('PATCH that moves the pin WITHOUT an address clears the old address', async () => {
+      const q = seeded(
+        mockAdmin({
+          offices: [
+            { data: [OFFICE_ID], error: null },
+            { data: officeRow, error: null },
+          ],
+          rules: [seededRules()],
+        }),
+      );
+
+      await service.updateOffice(ownerUser, OFFICE_ID, {
+        latitude: 12.9352,
+        longitude: 77.6245,
+      });
+
+      expect(q.officesQb.qb.update).toHaveBeenCalledWith({
+        latitude: 12.9352,
+        longitude: 77.6245,
+        formatted_address: null,
+      });
+    });
+
+    it('PATCH that only changes the radius or name leaves the address alone', async () => {
+      const q = seeded(
+        mockAdmin({
+          offices: [
+            { data: [OFFICE_ID], error: null },
+            { data: withAddress, error: null },
+          ],
+          rules: [seededRules()],
+        }),
+      );
+
+      await service.updateOffice(ownerUser, OFFICE_ID, { radiusM: 250, name: 'HQ' });
+
+      expect(q.officesQb.qb.update).toHaveBeenCalledWith({ name: 'HQ', radius_m: 250 });
+    });
+
+    it('PATCH with an address but no pin is rejected (an address must describe a pin)', async () => {
+      seeded(mockAdmin());
+
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, { formattedAddress: ADDRESS }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+    });
+
+    it('PATCH with only one coordinate is rejected — a pin is a pair (and would wipe the address)', async () => {
+      const q = seeded(mockAdmin());
+
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, { latitude: 12.9 }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, { longitude: 77.6 }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+      expect(q.officesQb.qb.update).not.toHaveBeenCalled();
+    });
+
+    it('rejected requests touch the database not at all (checked before any write)', async () => {
+      const q = seeded(mockAdmin());
+
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, { formattedAddress: ADDRESS }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+
+      expect(q.from).not.toHaveBeenCalled();
+      expect(q.rpc).not.toHaveBeenCalled();
+    });
+
+    it('create guards the address write to this tenant, this live office and the same pin', async () => {
+      const q = createSetup({
+        offices: [
+          { data: null, error: null },
+          { data: withAddress, error: null },
+        ],
+      });
+
+      await service.createOffice(ownerUser, { ...createDto, formattedAddress: ADDRESS });
+
+      expect(q.officesQb.qb.eq).toHaveBeenCalledWith('latitude', createDto.latitude);
+      expect(q.officesQb.qb.eq).toHaveBeenCalledWith('longitude', createDto.longitude);
+      expect(q.officesQb.qb.is).toHaveBeenCalledWith('archived_at', null);
+    });
+
+    it('PATCH with an address and only one coordinate is rejected too', async () => {
+      seeded(mockAdmin());
+
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, { latitude: 12.9, formattedAddress: ADDRESS }),
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+    });
+
+    it('PATCH on an unknown or archived office is still a 404, address or not', async () => {
+      seeded(mockAdmin({ offices: [{ data: [], error: null }] }));
+
+      await expectErrorCode(
+        service.updateOffice(ownerUser, OFFICE_ID, {
+          latitude: 12.9,
+          longitude: 77.6,
+          formattedAddress: ADDRESS,
+        }),
+        404,
+        ErrorCode.ATTENDANCE_OFFICE_NOT_FOUND,
+      );
+    });
+
+    it('list returns each office address, null where none is stored', async () => {
+      seeded(
+        mockAdmin({
+          offices: [{ data: [withAddress, { ...officeRow, id: 'o2', name: 'B' }], error: null }],
+          rules: [{ data: [], error: null }],
+        }),
+      );
+
+      const list = await service.listOffices(ownerUser);
+
+      expect(list.map((o) => o.formattedAddress)).toEqual([ADDRESS, null]);
+    });
   });
 });

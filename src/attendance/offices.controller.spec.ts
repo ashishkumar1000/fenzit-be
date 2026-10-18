@@ -17,6 +17,7 @@ const office: OfficeResponse = {
   latitude: 19.1364,
   longitude: 72.8296,
   radiusM: 100,
+  formattedAddress: null,
   archivedAt: null,
   rule: null,
   nextRule: null,

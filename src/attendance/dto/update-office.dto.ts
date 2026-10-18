@@ -12,7 +12,7 @@ import {
   Min,
   Validate,
 } from 'class-validator';
-import { OFFICE_HOURS_MAX, OFFICE_LATE_CUTOFF_MAX, OFFICE_LATE_CUTOFF_MIN, OFFICE_RADIUS_MAX, OFFICE_RADIUS_MIN, TIME_PATTERN } from './create-office.dto';
+import { OFFICE_ADDRESS_MAX, OFFICE_HOURS_MAX, blankToUndefined, OFFICE_LATE_CUTOFF_MAX, OFFICE_LATE_CUTOFF_MIN, OFFICE_RADIUS_MAX, OFFICE_RADIUS_MIN, TIME_PATTERN } from './create-office.dto';
 import {
   OfficeEndTimeAfterStartConstraint,
   OfficeHalfLessThanFullConstraint,
@@ -49,6 +49,16 @@ export class UpdateOfficeDto {
   @Min(-180)
   @Max(180)
   longitude?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Address of the new pin (display text). Only valid together with latitude and longitude. Whenever latitude and longitude are sent without an address, the stored address is cleared (it can never describe a different place) — so resend the current address with an unchanged pin.',
+  })
+  @IsOptional()
+  @Transform(blankToUndefined)
+  @IsString()
+  @MaxLength(OFFICE_ADDRESS_MAX)
+  formattedAddress?: string;
 
   @ApiPropertyOptional({ description: 'New geofence radius in metres (50–1000).' })
   @IsOptional()

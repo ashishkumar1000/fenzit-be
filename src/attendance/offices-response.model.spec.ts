@@ -34,6 +34,7 @@ const officeRow: AttendanceOfficeRow = {
   latitude: 19.1364,
   longitude: 72.8296,
   radius_m: 200,
+  formatted_address: null,
   archived_at: null,
   created_at: '2026-09-26T00:00:00Z',
   updated_at: '2026-09-26T00:00:00Z',
@@ -80,6 +81,28 @@ describe('offices-response.model (story 15-3)', () => {
     it('maps a Postgres numeric (string) and a JS number alike to a number', () => {
       expect(toOfficeRuleResponse(ruleRow({ full_day_hours: 8, half_day_hours: '4.00' })))
         .toEqual(expect.objectContaining({ fullDayHours: 8, halfDayHours: 4 }));
+    });
+  });
+
+  describe('toOfficeDetailResponse — formattedAddress', () => {
+    it('carries the stored address through', () => {
+      const detail = toOfficeDetailResponse(
+        { ...officeRow, formatted_address: 'Koramangala, Bengaluru' },
+        [],
+      );
+      expect(detail.formattedAddress).toBe('Koramangala, Bengaluru');
+    });
+
+    it('is null for an office saved without one', () => {
+      expect(toOfficeDetailResponse(officeRow, []).formattedAddress).toBeNull();
+    });
+
+    it('is null (never undefined) for a row read before the column existed', () => {
+      const legacy = { ...officeRow } as Partial<AttendanceOfficeRow>;
+      delete legacy.formatted_address;
+      expect(
+        toOfficeDetailResponse(legacy as AttendanceOfficeRow, []).formattedAddress,
+      ).toBeNull();
     });
   });
 

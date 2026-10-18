@@ -4,6 +4,7 @@ import {
   IsInt,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   Matches,
   Max,
@@ -30,6 +31,16 @@ export const OFFICE_LATE_CUTOFF_MAX = 120;
 export const OFFICE_LATE_CUTOFF_DEFAULT = 15;
 export const OFFICE_FULL_DAY_DEFAULT = 8;
 export const OFFICE_HALF_DAY_DEFAULT = 4;
+/** Trims a string; blank text or null means "no address" (the same as omitting it). */
+export function blankToUndefined({ value }: { value: unknown }): unknown {
+  if (value === null) return undefined;
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/** Matches the CHECK on attendance_offices.formatted_address. */
+export const OFFICE_ADDRESS_MAX = 500;
 /** Matches the numeric(4,2) columns — the mirror for precision overflow. */
 export const OFFICE_HOURS_MAX = 99.99;
 
@@ -55,6 +66,17 @@ export class CreateOfficeDto {
   @Min(-180)
   @Max(180)
   longitude: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Human-readable address of the pin, shown instead of raw coordinates. Display text only; optional.',
+    example: 'Koramangala, Bengaluru',
+  })
+  @IsOptional()
+  @Transform(blankToUndefined)
+  @IsString()
+  @MaxLength(OFFICE_ADDRESS_MAX)
+  formattedAddress?: string;
 
   @ApiPropertyOptional({
     description: 'Geofence radius in metres.',
