@@ -1028,6 +1028,7 @@ override row are absent — they read the tenant default.
 
 Sets one employee's override via `attendance_set_weekly_off_override`
 (same AD-8 algorithm, keyed on the employee).
+Saving exactly the same `days` (an empty array included) from a later date that falls inside that employee's still-future queued change moves that change (the queued rule is removed and the earlier override is stretched up to the new date), mirroring the everyone rule (R-20).
 
 **Body:** `{ days: number[], effectiveFrom?: 'YYYY-MM-DD' }`
 

@@ -9,6 +9,7 @@ import { VALIDATION_PIPE_OPTIONS } from './common/validation-pipe-options';
 import { CorrelationLogger } from './common/correlation/correlation-logger';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { FASTIFY_ROUTER_OPTIONS } from './common/fastify-adapter-options';
 import { allowBodilessDelete } from './common/allow-bodiless-delete';
 import { addRequestMetricsHooks, initTelemetry } from './telemetry';
 
@@ -21,14 +22,7 @@ async function bootstrap(): Promise<void> {
     AppModule,
     new FastifyAdapter({
       logger: false,
-      routerOptions: {
-        ignoreTrailingSlash: true,
-        // R-03: Fastify's default maxParamLength (100) makes the router answer
-        // 414 before any pipe runs, so an over-long :id never reached
-        // ParseUUIDPipe (expected 400 VALIDATION_ERROR). 256 lets realistic
-        // junk ids reach the pipes; the 8 KB HTTP header limit still caps the URL.
-        maxParamLength: 256,
-      },
+      routerOptions: FASTIFY_ROUTER_OPTIONS,
       // Close idle keep-alive connections on server close so the SIGTERM
       // drain (Render deploys) can finish inside the 30s grace window.
       forceCloseConnections: 'idle',

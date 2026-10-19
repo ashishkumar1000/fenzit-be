@@ -6,6 +6,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { JwtService } from '@nestjs/jwt';
+import { FASTIFY_ROUTER_OPTIONS } from '../src/common/fastify-adapter-options';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import {
@@ -41,7 +42,7 @@ describe('Places (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
-      new FastifyAdapter(),
+      new FastifyAdapter({ routerOptions: FASTIFY_ROUTER_OPTIONS }),
     );
 
     app.setGlobalPrefix('api/v1', { exclude: ['health'] });
@@ -331,11 +332,10 @@ describe('Places (e2e)', () => {
       expect(response.statusCode).toBe(422);
     });
 
-    // Over-long placeIds are rejected even earlier than the DTO: Fastify's
-    // own maxParamLength guard (default 100) fires at the routing layer with
-    // 414, before the ValidationPipe. Still a pre-provider rejection — the
-    // 422 contract below covers the shapes that do reach the DTO.
-    it('should return 414 when placeId exceeds Fastify maxParamLength (over-long param)', async () => {
+    // R-03: with the shared maxParamLength (256) an over-long placeId no longer
+    // dies as a router 414; it reaches the DTO and gets the Places format-contract
+    // rejection (422, same as the other malformed-placeId cases above).
+    it('should return 422 (not router 414) when placeId is over-long (256 chars)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/resolve/${'a'.repeat(256)}?sessionToken=${SESSION_TOKEN}`,
@@ -344,7 +344,7 @@ describe('Places (e2e)', () => {
         },
       });
 
-      expect(response.statusCode).toBe(414);
+      expect(response.statusCode).toBe(422);
     });
 
     it('should return 502 PLACES_UPSTREAM_ERROR when the provider throws (sentinel placeId)', async () => {
