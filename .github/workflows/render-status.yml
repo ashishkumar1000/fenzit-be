@@ -8,8 +8,8 @@
 #   canceled      -> failure
 #
 # Required secret: RENDER_API_KEY (Render Dashboard -> Account Settings ->
-# API Keys, starts with rnd_). The service is looked up by name from
-# render.yaml, so no service ID secret is needed.
+# API Keys, starts with rnd_). The service is pinned by ID (not name) so a
+# rename on Render cannot break the watcher; the ID is an identifier, not a secret.
 #
 # Commit messages containing [skip render] produce no deploy; the workflow
 # exits neutral after a grace period instead of failing.
@@ -40,10 +40,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          # The live Render service is fenzit-be-1 (Singapore recreate, 2026-10-16;
-          # the original fenzit-be service was deleted at cutover — the CF worker
-          # fenzit-api-proxy likewise targets fenzit-be-1.onrender.com now).
-          SERVICE_NAME: fenzit-be-1
+          # Live Render service fenzit-be-sg (Singapore), URL fenzit-be-1.onrender.com.
+          # Pinned by ID: the earlier name lookup ("fenzit-be-1") matched nothing,
+          # because fenzit-be-1 is the hostname, not the service name.
+          SERVICE_ID: srv-db8qfnei0phs738lfdi0
           POLL_SECONDS: "5"
           DEPLOY_APPEAR_TIMEOUT: "300" # wait for Render to register the commit's deploy
           WATCH_TIMEOUT: "1200"        # max time watching a deploy in progress
@@ -64,16 +64,13 @@ jobs:
               > /dev/null || echo "::warning::Could not post commit status"
           }
 
-          # ---- resolve service id by name ----
-          SERVICE_ID=$(api "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=10" \
-            | jq -r --arg n "$SERVICE_NAME" \
-              '[.[] | select(.service.name == $n) | .service.id][0] // empty')
-          if [ -z "$SERVICE_ID" ]; then
-            echo "::error::Render service '$SERVICE_NAME' not found — check RENDER_API_KEY"
+          # ---- confirm the pinned service is reachable with this key ----
+          if [ -z "$(api "https://api.render.com/v1/services/$SERVICE_ID" | jq -r '.id // empty')" ]; then
+            echo "::error::Render service $SERVICE_ID not found or not accessible — if the service was recreated its ID changed (update SERVICE_ID); otherwise check RENDER_API_KEY and account"
             exit 1
           fi
           TARGET_URL="https://dashboard.render.com/web/$SERVICE_ID"
-          echo "Watching service $SERVICE_NAME ($SERVICE_ID) for commit $SHA"
+          echo "Watching service $SERVICE_ID for commit $SHA"
 
           # ---- wait for this commit's deploy to appear ----
           DEPLOY_JSON=""
