@@ -32,6 +32,17 @@ export class SupabaseClientFactory {
     });
   }
 
+  /** Anon key, no user token. For public reference data the anon role may read. */
+  createPublic(): SupabaseClient {
+    return createClient(this.supabaseUrl, this.supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+  }
+
   createAdmin(): SupabaseClient {
     return createClient(this.supabaseUrl, this.supabaseServiceRoleKey, {
       auth: {

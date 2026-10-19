@@ -25,6 +25,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { EarlyAccessModule } from './early-access/early-access.module';
+import { CountryCodesModule } from './country-codes/country-codes.module';
 import { TelemetryShutdown } from './telemetry';
 
 @Module({
@@ -172,6 +173,7 @@ import { TelemetryShutdown } from './telemetry';
     ReportsModule,
     AttendanceModule,
     EarlyAccessModule,
+    CountryCodesModule,
   ],
   controllers: [HealthController],
   providers: [

@@ -18,7 +18,8 @@ export class EarlyAccessController {
   @ApiOperation({ summary: 'Join the early access list (public)' })
   @ApiResponse({
     status: 202,
-    description: 'Accepted. Same answer for a new or an existing email.',
+    description:
+      'Accepted. The message is the same for a new or an existing email.',
     type: EarlyAccessResponseDto,
   })
   @ApiResponse({ status: 422, description: 'Invalid email or phone' })
@@ -26,7 +27,7 @@ export class EarlyAccessController {
   async join(
     @Body() dto: CreateEarlyAccessDto,
   ): Promise<EarlyAccessResponseDto> {
-    await this.earlyAccessService.join(dto);
-    return { message: JOINED_MESSAGE };
+    const reference = await this.earlyAccessService.join(dto);
+    return { message: JOINED_MESSAGE, reference };
   }
 }
