@@ -12,6 +12,9 @@ import { AppModule } from './app.module';
 import { FASTIFY_ROUTER_OPTIONS } from './common/fastify-adapter-options';
 import { allowBodilessDelete } from './common/allow-bodiless-delete';
 import { addRequestMetricsHooks, initTelemetry } from './telemetry';
+import fastifyCors from '@fastify/cors';
+import { buildCorsOptions } from './common/cors/cors-options';
+import { parseCorsOrigins } from './common/cors/cors-origins';
 
 async function bootstrap(): Promise<void> {
   // Start metrics export before any instrumented code runs (no-op without
@@ -44,6 +47,16 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+
+  // Browser access for the web app (fenzit-web). Exact origins only, from
+  // CORS_ALLOWED_ORIGINS; a bad value throws here and stops the boot.
+  // @fastify/cors is typed against the top-level fastify, but Nest bundles its
+  // own copy (5.11 vs 5.12). The plugin API is identical at runtime, so the
+  // cast stays at this one boundary, as in allow-bodiless-delete.ts.
+  await app.register(
+    fastifyCors as Parameters<typeof app.register>[0],
+    buildCorsOptions(parseCorsOrigins(process.env['CORS_ALLOWED_ORIGINS'])),
+  );
 
   // R-15: a body-less DELETE with a JSON content-type must reach the guards.
   allowBodilessDelete(app.getHttpAdapter().getInstance());
