@@ -20,7 +20,8 @@ import { EMPTY_ME_SUMMARY } from './me-summary.model';
 const tech: RequestUser = {
   userId: 'tech-uuid',
   tenantId: 'tenant-uuid',
-  role: Role.TECHNICIAN,
+  role: Role.EMPLOYEE,
+  platformAdmin: false,
   rawJwt: 'mock-jwt',
 };
 

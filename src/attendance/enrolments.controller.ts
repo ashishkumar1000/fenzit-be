@@ -18,15 +18,14 @@ import {
 } from '@nestjs/swagger';
 import { EnrolmentsService } from './enrolments.service';
 import { EnrolmentQueryDto, ReassignOfficeDto, SetEnrolmentDto } from './dto/enrolment.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { UUID_PATTERN } from '../common/utils/uuid-pattern.util';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
- * FR-2/FR-6 enrolment routes (Epic 15, Story 15-7). Owner-only; every
+ * FR-2/FR-6 enrolment routes (Epic 15, Story 15-7). Company-admin only; every
  * write is a single pg transaction (no RPCs — user decision 2026-09-28)
  * and every read answers from the attendance_access_state view. The
  * wizard's per-employee office picks (15-8) and the roster UI (15-9) loop
@@ -50,7 +49,7 @@ export class EnrolmentsController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -76,7 +75,7 @@ export class EnrolmentsController {
   }
 
   @Put(':employeeId')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -119,7 +118,7 @@ export class EnrolmentsController {
   }
 
   @Put(':employeeId/office')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -161,7 +160,7 @@ export class EnrolmentsController {
   }
 
   @Delete(':employeeId')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

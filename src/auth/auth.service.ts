@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  NotFoundException,
   ConflictException,
   InternalServerErrorException,
   Injectable,
@@ -21,14 +22,17 @@ import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { SetupCompanyDto } from './dto/setup-company.dto';
-import { InviteTechnicianDto } from './dto/invite-technician.dto';
+import { InviteMemberDto } from './dto/invite-member.dto';
 import { ErrorCode } from '../common/enums/error-code.enum';
-import { Role } from '../common/enums/role.enum';
+import { MembershipRole, Role } from '../common/enums/role.enum';
+import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
+import { memberRpcException } from '../common/members/member-rpc-error';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 
 export interface TenantResponse {
   id: string;
-  ownerId: string;
+  /** Who set the company up. History only; nothing uses it for access. */
+  createdBy: string;
   companyName: string;
   gstin: string | null;
   address: string | null;
@@ -36,6 +40,29 @@ export interface TenantResponse {
   upiVpa: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface UserIdentityRow {
+  id: string;
+  country_code: string;
+  phone_number: string;
+  name: string | null;
+  platform_admin: boolean;
+  disabled: boolean;
+}
+
+/** The `{ token, user }` body every login endpoint returns. */
+export interface LoginResult {
+  token: string;
+  user: {
+    userId: string;
+    tenantId: string | null;
+    role: Role | null;
+    name: string | null;
+    platformAdmin: boolean;
+    /** True when the person has only removed memberships (no company now). */
+    formerMember: boolean;
+  };
 }
 
 const OTP_TTL_SECONDS = 300;
@@ -239,8 +266,10 @@ export class AuthService {
     user: {
       userId: string;
       tenantId: string | null;
-      role: string;
+      role: Role | null;
       name: string | null;
+      platformAdmin: boolean;
+      formerMember: boolean;
     };
   }> {
     const { otpSessionId, otpCode } = dto;
@@ -289,38 +318,26 @@ export class AuthService {
     }
 
     const adminClient = this.supabaseClientFactory.createAdmin();
-    let user = await this.findOrCreateUser(
+    const user = await this.findOrCreateUser(
       session.countryCode,
       session.phoneNumber,
       adminClient,
     );
 
-    // Auto-accept: invited technician's first OTP login activates their account
-    if (user.status === 'invited') {
-      const { data: activatedUser, error: updateError } = await adminClient
-        .from('users')
-        .update({ status: 'active', updated_at: new Date().toISOString() })
-        .eq('id', user.id)
-        .eq('status', 'invited') // idempotent guard — no-op if already activated
-        .select('id, country_code, phone_number, name, role, tenant_id, status')
-        .single();
-
-      if (updateError || !activatedUser) {
-        this.logger.error('Failed to activate invited user:', {
-          error: updateError,
-        });
-        throw new InternalServerErrorException(
-          'Failed to activate invited user',
-        );
-      }
-      user = activatedUser;
+    // A disabled person is refused with the same generic 401 as a bad code,
+    // so the response never says why (decision 35).
+    if (user.disabled) {
+      throw new UnauthorizedException({
+        error_code: ErrorCode.INVALID_OTP,
+        message: 'Invalid OTP code',
+      });
     }
 
-    const token = await this.jwtService.signAsync({
-      sub: user.id,
-      tenantId: user.tenant_id ?? null,
-      role: user.role,
-    });
+    const access = await this.activateMembership(user.id, adminClient);
+
+    // Identity only: company and role are read from the database on every
+    // request, so a removed or changed membership takes effect at once.
+    const token = await this.signAccessToken(user.id);
 
     await this.otpSessionStore.delete(otpSessionId);
 
@@ -328,10 +345,127 @@ export class AuthService {
       token,
       user: {
         userId: user.id,
-        tenantId: user.tenant_id ?? null,
-        role: user.role,
+        tenantId: access.tenantId,
+        role: access.role,
         name: user.name,
+        platformAdmin: user.platform_admin,
+        formerMember: access.formerMember,
       },
+    };
+  }
+
+  /**
+   * Finishes a login for an already-verified, non-disabled user (used by the
+   * email shortcut login): activates an invited membership, signs the
+   * identity-only token and returns the same body as `verifyOtp`.
+   */
+  async issueLogin(
+    user: UserIdentityRow,
+    admin: SupabaseClient,
+  ): Promise<LoginResult> {
+    // A disabled person never gets a token, whichever login route called us.
+    // A generic 401 for every route, so it reveals nothing about the account.
+    if (user.disabled) {
+      throw new UnauthorizedException({
+        error_code: ErrorCode.UNAUTHORIZED,
+        message: 'We could not sign you in right now.',
+      });
+    }
+    const access = await this.activateMembership(user.id, admin);
+    const token = await this.signAccessToken(user.id);
+    return {
+      token,
+      user: {
+        userId: user.id,
+        tenantId: access.tenantId,
+        role: access.role,
+        name: user.name,
+        platformAdmin: user.platform_admin,
+        formerMember: access.formerMember,
+      },
+    };
+  }
+
+  /** The login token. Carries identity and the `typ: 'access'` marker only. */
+  private signAccessToken(userId: string): Promise<string> {
+    return this.jwtService.signAsync({ sub: userId, typ: ACCESS_TOKEN_TYPE });
+  }
+
+  /**
+   * First sign-in activates an invited membership (an invite is accepted by
+   * signing in). Returns the person's live company and role, or nulls when
+   * they have none (new, or only removed memberships). A platform admin has no
+   * membership and reads as `platform_admin`.
+   */
+  private async activateMembership(
+    userId: string,
+    admin: SupabaseClient,
+  ): Promise<{
+    tenantId: string | null;
+    role: Role | null;
+    formerMember: boolean;
+  }> {
+    const { data: userRow } = await admin
+      .from('users')
+      .select('platform_admin')
+      .eq('id', userId)
+      .maybeSingle<{ platform_admin: boolean }>();
+    if (userRow?.platform_admin) {
+      return { tenantId: null, role: Role.PLATFORM_ADMIN, formerMember: false };
+    }
+
+    // The one-live-membership index makes this at most one row.
+    const { data: live, error } = await admin
+      .from('memberships')
+      .select('tenant_id, role, status')
+      .eq('user_id', userId)
+      .neq('status', 'removed')
+      .maybeSingle<{ tenant_id: string; role: MembershipRole; status: string }>();
+
+    if (error) {
+      this.logger.error('Failed to read membership at login:', { error });
+      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to sign in' });
+    }
+    if (!live) {
+      // No live membership. A removed row tells the app to say "no access"
+      // rather than walk a brand-new person through company setup.
+      const { data: removed, error: removedError } = await admin
+        .from('memberships')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('status', 'removed');
+      if (removedError) {
+        this.logger.error('Failed to read removed membership at login:', {
+          error: removedError,
+        });
+        throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to sign in' });
+      }
+      return {
+        tenantId: null,
+        role: null,
+        formerMember: (removed ?? []).length > 0,
+      };
+    }
+
+    if (live.status === 'invited') {
+      const { error: activateError } = await admin
+        .from('memberships')
+        .update({ status: 'active' })
+        .eq('user_id', userId)
+        .eq('status', 'invited'); // idempotent guard — no-op if already activated
+      if (activateError) {
+        this.logger.error('Failed to activate invited membership:', {
+          error: activateError,
+        });
+        throw new InternalServerErrorException(
+          'Failed to activate invited user',
+        );
+      }
+    }
+    return {
+      tenantId: live.tenant_id,
+      role: live.role,
+      formerMember: false,
     };
   }
 
@@ -362,111 +496,99 @@ export class AuthService {
     return { token, expiresAt: new Date(exp * 1000).toISOString() };
   }
 
-  async inviteTechnician(
-    owner: RequestUser,
-    dto: InviteTechnicianDto,
-  ): Promise<{ invite_id: string }> {
-    if (!owner.tenantId) {
+  async inviteMember(
+    caller: RequestUser,
+    dto: InviteMemberDto,
+  ): Promise<{ invite_id: string; employee_code: string }> {
+    if (!caller.tenantId) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Company setup required before inviting technicians',
+        message: 'Company setup required before inviting people',
       });
+    }
+
+    const role = dto.role ?? Role.EMPLOYEE;
+    const skillIds = [...new Set(dto.skillIds ?? [])];
+    if (role === Role.EMPLOYEE && skillIds.length === 0) {
+      throw new HttpException(
+        {
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'At least one skill ID is required',
+        },
+        422,
+      );
     }
 
     const admin = this.supabaseClientFactory.createAdmin();
-
-    // Check for existing active member in this tenant with the same phone
-    const { data: existing } = await admin
-      .from('users')
-      .select('id, status')
-      .eq('country_code', dto.countryCode)
-      .eq('phone_number', dto.phoneNumber)
-      .eq('tenant_id', owner.tenantId)
-      .eq('status', 'active')
-      .maybeSingle();
-
-    if (existing) {
-      throw new ConflictException({
-        error_code: ErrorCode.DUPLICATE_RESOURCE,
-        message: 'Phone number is already an active member of this tenant',
-      });
-    }
 
     // Validate all skillIds exist in the global skills catalog (Story 4.2:
     // skills are developer-seeded platform-wide, no tenant scoping). Only
     // active skills are assignable — the invite payload lists what GET /skills
     // serves.
-    const uniqueSkillIds = [...new Set(dto.skillIds)];
-    const { data: validSkills, error: skillValidationError } = await admin
-      .from('skills')
-      .select('id')
-      .in('id', uniqueSkillIds)
-      .eq('is_active', true);
+    if (skillIds.length > 0) {
+      const { data: validSkills, error: skillValidationError } = await admin
+        .from('skills')
+        .select('id')
+        .in('id', skillIds)
+        .eq('is_active', true);
 
-    if (skillValidationError) {
-      this.logger.error('Failed to validate skill IDs:', {
-        error: skillValidationError,
-      });
-      throw new InternalServerErrorException('Failed to validate skill IDs');
-    }
+      if (skillValidationError) {
+        this.logger.error('Failed to validate skill IDs:', {
+          error: skillValidationError,
+        });
+        throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to validate skill IDs' });
+      }
 
-    if (!validSkills || validSkills.length !== uniqueSkillIds.length) {
-      throw new BadRequestException({
-        error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'One or more skill IDs are invalid',
-      });
-    }
-
-    const { data: newUser, error } = await admin
-      .from('users')
-      .insert({
-        id: this.generateUuid(),
-        country_code: dto.countryCode,
-        phone_number: dto.phoneNumber,
-        name: dto.name,
-        role: Role.TECHNICIAN,
-        status: 'invited',
-        tenant_id: owner.tenantId,
-      })
-      .select('id')
-      .single();
-
-    if (error) {
-      if (error.code === '23505') {
-        throw new ConflictException({
-          error_code: ErrorCode.DUPLICATE_RESOURCE,
-          message: 'This phone number is already registered in this tenant',
+      if (!validSkills || validSkills.length !== skillIds.length) {
+        throw new BadRequestException({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'One or more skill IDs are invalid',
         });
       }
+    }
+
+    // One all-or-nothing database step: find or create the person, refuse a
+    // person who already belongs to a company, create the membership with its
+    // employee code, attach the skills, and write the audit row.
+    const { data, error } = await admin.rpc('invite_member', {
+      p_caller: caller.userId,
+      p_tenant_id: caller.tenantId,
+      p_country_code: dto.countryCode,
+      p_phone_number: dto.phoneNumber,
+      p_name: dto.name,
+      p_role: role,
+      p_skill_ids: skillIds,
+    });
+
+    if (error) {
+      const mapped = memberRpcException(error);
+      if (mapped) throw mapped;
       if (error.code === '23503') {
         throw new BadRequestException({
           error_code: ErrorCode.VALIDATION_ERROR,
           message: 'Invalid country code',
         });
       }
-      this.logger.error('Failed to create technician invite:', { error });
-      throw new InternalServerErrorException('Failed to create invite');
+      // Two invites for the same phone at once end in the same 409.
+      if (error.code === '23505') {
+        throw new ConflictException({
+          error_code: ErrorCode.DUPLICATE_RESOURCE,
+          message: 'This person already belongs to a company',
+        });
+      }
+      this.logger.error('Failed to create member invite:', { error });
+      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to create invite' });
     }
 
-    const { error: skillsError } = await admin.from('user_skills').insert(
-      uniqueSkillIds.map((skillId) => ({
-        user_id: newUser.id,
-        skill_id: skillId,
-      })),
-    );
-
-    if (skillsError) {
-      this.logger.error('Failed to insert user_skills:', {
-        error: skillsError,
-      });
-      // Compensating delete — avoid orphaned invited user with no skills
-      await admin.from('users').delete().eq('id', newUser.id);
-      throw new InternalServerErrorException(
-        'Failed to assign skills to technician',
-      );
+    const row = (data as Array<Record<string, unknown>> | null)?.[0];
+    if (!row) {
+      this.logger.error('invite_member returned no rows');
+      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to create invite' });
     }
-
-    return { invite_id: newUser.id };
+    return {
+      invite_id: row['member_user_id'] as string,
+      employee_code: row['member_employee_code'] as string,
+    };
   }
 
   async setupCompany(
@@ -474,6 +596,11 @@ export class AuthService {
     dto: SetupCompanyDto,
   ): Promise<{ tenant: TenantResponse; created: boolean; token: string }> {
     const admin = this.supabaseClientFactory.createAdmin();
+
+    // Fenzit staff edit the company named in X-Company-Id; they never create one.
+    if (user.platformAdmin) {
+      return this.updateCompanyAsStaff(user, dto);
+    }
 
     const { data, error } = await admin.rpc('setup_tenant_for_owner', {
       p_user_id: user.userId,
@@ -485,6 +612,10 @@ export class AuthService {
     });
 
     if (error) {
+      // 403 for a disabled person (staff are sent to updateCompanyAsStaff above),
+      // 409 for a person who already belongs to another company (decisions 28 and 34).
+      const mapped = memberRpcException(error);
+      if (mapped) throw mapped;
       this.logger.error('setup_tenant_for_owner RPC failed:', { error });
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
@@ -503,7 +634,7 @@ export class AuthService {
     const row = rows[0];
     const tenant: TenantResponse = {
       id: row['id'] as string,
-      ownerId: row['owner_id'] as string,
+      createdBy: row['created_by'] as string,
       companyName: row['company_name'] as string,
       gstin: (row['gstin'] as string | null) ?? null,
       address: (row['address'] as string | null) ?? null,
@@ -513,7 +644,7 @@ export class AuthService {
       updatedAt: row['updated_at'] as string,
     };
 
-    // Persist the owner's name (collected on the signup profile screen) onto
+    // Persist the admin's name (collected on the signup profile screen) onto
     // their users row. Optional: clients that don't send it leave
     // `users.name` null. Non-fatal on failure — the tenant was already
     // created, and `/users/me` consumers render a null name gracefully.
@@ -523,40 +654,96 @@ export class AuthService {
         .update({ name: dto.name })
         .eq('id', user.userId);
       if (nameError) {
-        this.logger.warn('Failed to save owner name during company setup:', {
+        this.logger.warn('Failed to save admin name during company setup:', {
           error: nameError,
         });
       }
     }
 
-    const token = await this.jwtService.signAsync({
-      sub: user.userId,
-      tenantId: tenant.id,
-      role: Role.OWNER,
-    });
+    // The login token is identity only; company and role come from the
+    // membership just created. A fresh one is returned so existing clients
+    // that swap the token after setup keep working.
+    const token = await this.signAccessToken(user.userId);
 
     return { tenant, created: row['inserted'] as boolean, token };
   }
 
+  /** Platform admin path of POST /auth/company: update, never create. */
+  private async updateCompanyAsStaff(
+    user: RequestUser,
+    dto: SetupCompanyDto,
+  ): Promise<{ tenant: TenantResponse; created: boolean; token: string }> {
+    if (!user.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Name the company with the X-Company-Id header',
+      });
+    }
+    // Only the fields sent are changed (same rule as a repeat setup call).
+    const changes: Record<string, string> = {
+      company_name: dto.companyName,
+      state_code: dto.stateCode,
+    };
+    if (dto.gstin !== undefined) changes.gstin = dto.gstin;
+    if (dto.address !== undefined) changes.address = dto.address;
+    if (dto.upiVpa !== undefined) changes.upi_vpa = dto.upiVpa;
+
+    const { data, error } = await this.supabaseClientFactory
+      .createAdmin()
+      .from('tenants')
+      .update({ ...changes, updated_at: new Date().toISOString() })
+      .eq('id', user.tenantId)
+      .select(
+        'id, created_by, company_name, gstin, address, state_code, upi_vpa, created_at, updated_at',
+      )
+      .maybeSingle();
+    if (error) {
+      this.logger.error('Staff company update failed:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to update the company',
+      });
+    }
+    if (!data) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Company not found',
+      });
+    }
+    const tenant: TenantResponse = {
+      id: data.id as string,
+      createdBy: data.created_by as string,
+      companyName: data.company_name as string,
+      gstin: (data.gstin as string | null) ?? null,
+      address: (data.address as string | null) ?? null,
+      stateCode: data.state_code as string,
+      upiVpa: (data.upi_vpa as string | null) ?? null,
+      createdAt: data.created_at as string,
+      updatedAt: data.updated_at as string,
+    };
+    return {
+      tenant,
+      created: false,
+      token: await this.signAccessToken(user.userId),
+    };
+  }
+
+  /**
+   * The one user row for a phone number (identity only). Creates it on first
+   * sign-in. Company and role live on the membership, not here.
+   */
   private async findOrCreateUser(
     countryCode: string,
     phoneNumber: string,
     supabaseClient: SupabaseClient,
-  ): Promise<{
-    id: string;
-    country_code: string;
-    phone_number: string;
-    name: string | null;
-    role: string;
-    tenant_id: string | null;
-    status: string;
-  }> {
-    const { data: matchingUsers, error } = await supabaseClient
+  ): Promise<UserIdentityRow> {
+    const columns = 'id, country_code, phone_number, name, platform_admin, disabled';
+    const { data: existing, error } = await supabaseClient
       .from('users')
-      .select('id, country_code, phone_number, name, role, tenant_id, status')
+      .select(columns)
       .eq('country_code', countryCode)
       .eq('phone_number', phoneNumber)
-      .order('created_at', { ascending: true });
+      .maybeSingle<UserIdentityRow>();
 
     if (error) {
       this.logger.error('Failed to query user:', { error });
@@ -566,36 +753,20 @@ export class AuthService {
       });
     }
 
-    if (matchingUsers && matchingUsers.length > 0) {
-      // A phone can have several rows (cross-tenant invites, plus legacy
-      // owner stubs created by earlier partial signups). Pick the row that
-      // can actually sign in: a real membership (active first, then invited)
-      // always beats a tenant-less stub; oldest row breaks remaining ties.
-      // `.single()` here treated "multiple rows" as "no rows" and fell into
-      // the create path below, minting a new stub on every login (FN-2026-10-03).
-      const withTenant = matchingUsers.filter((u) => u.tenant_id !== null);
-      const picked =
-        withTenant.find((u) => u.status === 'active') ??
-        withTenant.find((u) => u.status === 'invited') ??
-        withTenant[0] ??
-        matchingUsers[0];
-      return picked;
+    if (existing) {
+      return existing;
     }
 
-    const newUserId = this.generateUuid();
     const { data: newUser, error: createError } = await supabaseClient
       .from('users')
       .insert({
-        id: newUserId,
+        id: this.generateUuid(),
         country_code: countryCode,
         phone_number: phoneNumber,
-        role: Role.OWNER,
-        status: 'active',
         name: null,
-        tenant_id: null,
       })
-      .select('id, country_code, phone_number, name, role, tenant_id, status')
-      .single();
+      .select(columns)
+      .single<UserIdentityRow>();
 
     if (createError || !newUser) {
       // A concurrent first login can create the row between our select and
@@ -604,12 +775,10 @@ export class AuthService {
       if (createError?.code === '23505') {
         const { data: racedUser } = await supabaseClient
           .from('users')
-          .select('id, country_code, phone_number, name, role, tenant_id, status')
+          .select(columns)
           .eq('country_code', countryCode)
           .eq('phone_number', phoneNumber)
-          .order('created_at', { ascending: true })
-          .limit(1)
-          .maybeSingle();
+          .maybeSingle<UserIdentityRow>();
         if (racedUser) {
           return racedUser;
         }

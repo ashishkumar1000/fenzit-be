@@ -51,7 +51,8 @@ describe('AttachmentsService', () => {
   const tech: RequestUser = {
     userId: 'tech-1',
     tenantId: 'tenant-uuid',
-    role: Role.TECHNICIAN,
+    role: Role.EMPLOYEE,
+    platformAdmin: false,
     rawJwt: 'jwt',
   };
   const techNoTenant: RequestUser = { ...tech, tenantId: null };

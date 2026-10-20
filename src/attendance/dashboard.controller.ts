@@ -5,12 +5,11 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { DashboardQueryDto } from './dto/dashboard-query.dto';
 import { DashboardService } from './dashboard';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
  * 19-2's owner dashboard route (spec D5) — FR-24's five tiles + the two
@@ -26,7 +25,7 @@ export class DashboardController {
   constructor(private readonly dashboard: DashboardService) {}
 
   @Get('dashboard')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

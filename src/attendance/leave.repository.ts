@@ -413,8 +413,9 @@ export async function employeeExistsInTenant(
   employeeId: string,
 ): Promise<boolean> {
   const result = await tx.query<{ n: string }>(
-    `select count(*)::text as n from public.users
-     where tenant_id = $1::uuid and id = $2::uuid and role = 'technician'`,
+    `select count(*)::text as n from public.memberships
+     where tenant_id = $1::uuid and user_id = $2::uuid
+       and role = 'employee' and status <> 'removed'`,
     [tenantId, employeeId],
   );
   return Number(result.rows[0]?.n ?? 0) > 0;
@@ -453,18 +454,6 @@ export async function findLastEvent(
   return row ? { cause: row.cause, actorId: row.actor_id } : null;
 }
 
-/** tenants.owner_id — the recipient for owner-facing leave events. */
-export async function readOwnerId(
-  tx: PoolClient,
-  tenantId: string,
-): Promise<string | null> {
-  const result = await tx.query<{ owner_id: string }>(
-    'select owner_id from public.tenants where id = $1::uuid',
-    [tenantId],
-  );
-  return result.rows[0]?.owner_id ?? null;
-}
-
 /** Employee display name for payloads (nullable — never blocks the write). */
 export async function readEmployeeName(
   tx: PoolClient,
@@ -472,7 +461,10 @@ export async function readEmployeeName(
   employeeId: string,
 ): Promise<string | null> {
   const result = await tx.query<{ name: string }>(
-    'select name from public.users where tenant_id = $1::uuid and id = $2::uuid',
+    `select u.name
+       from public.memberships m
+       join public.users u on u.id = m.user_id
+      where m.tenant_id = $1::uuid and m.user_id = $2::uuid`,
     [tenantId, employeeId],
   );
   return result.rows[0]?.name ?? null;
@@ -536,7 +528,7 @@ export async function listLeaveRequests(
   const result = await tx.query<LeaveListRow>(
     `select r.id, r.tenant_id, r.employee_id, r.request_id, r.start_date::text,
             r.end_date::text, r.part, r.reason, r.created_by, r.created_at,
-            u.name as employee_name, u.employee_code,
+            u.name as employee_name, m.employee_code,
             s.derived_status
      from public.leave_requests r
      join (
@@ -545,6 +537,8 @@ export async function listLeaveRequests(
        group by leave_request_id
      ) s on s.leave_request_id = r.id
      left join public.users u on u.id = r.employee_id
+     left join public.memberships m
+       on m.user_id = r.employee_id and m.tenant_id = r.tenant_id
      where ${conditions.join(' and ')}
      order by r.created_at desc, r.id desc
      limit $${params.length}`,

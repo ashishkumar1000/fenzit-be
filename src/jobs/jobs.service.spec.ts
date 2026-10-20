@@ -13,6 +13,10 @@ import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
+import {
+  memberRow,
+  membersTable,
+} from '../../test/helpers/member-rows-stub';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobStatus } from './enums/job-status.enum';
@@ -91,7 +95,8 @@ describe('JobsService', () => {
   const owner: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'jwt',
   };
 
@@ -144,10 +149,9 @@ describe('JobsService', () => {
     data: { id: 'cust-1', tenant_id: 'tenant-uuid' },
     error: null,
   };
-  const technicianOk = {
-    data: { id: 'tech-1', tenant_id: 'tenant-uuid', role: 'technician' },
-    error: null,
-  };
+  // The employee check reads the company's memberships (one matching row = ok).
+  const technicianOk = { data: [memberRow('tech-1')], error: null };
+  const technicianMissing = { data: [], error: null };
   const notFound = { data: null, error: { code: 'PGRST116' } };
 
   beforeEach(async () => {
@@ -217,25 +221,26 @@ describe('JobsService', () => {
     return { select, eqs };
   }
 
-  // admin.from('customers') → 2 eq (id, tenant); from('users') → 3 eq (id, tenant, role);
+  // admin.from('customers') → 2 eq (id, tenant); from('memberships') → the company-member reader (tenant + role filters);
   // from('skills') → 2 eq (id, is_active); from('jobs') → 2 eq (id, tenant) +
   // maybeSingle — the Story 4.5 post-RPC embed re-fetch (refetchWithEmbeds).
   function mockAdmin(opts: {
     customer?: { data: unknown; error: unknown };
-    technician?: { data: unknown; error: unknown };
+    technician?: { data: ReturnType<typeof memberRow>[] | null; error: unknown };
     skill?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
     refetch?: { data: unknown; error: unknown };
   }) {
-    const chains: Record<string, { select: jest.Mock; eqs: jest.Mock[] }> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chains: Record<string, any> = {};
     const from = jest.fn((table: string) => {
       if (table === 'customers') {
         chains.customers = singleChain(opts.customer ?? customerOk, 2);
         return chains.customers;
       }
-      if (table === 'users') {
-        chains.users = singleChain(opts.technician ?? technicianOk, 3);
-        return chains.users;
+      if (table === 'memberships') {
+        chains.memberships = membersTable(opts.technician ?? technicianOk);
+        return chains.memberships;
       }
       if (table === 'skills') {
         chains.skills = skillsChain(opts.skill ?? skillOk);
@@ -266,9 +271,19 @@ describe('JobsService', () => {
   }
 
   it('creates a job (existing customerId path) and maps to camelCase', async () => {
-    const { rpc, from } = mockAdmin({});
+    const { rpc, from, chains } = mockAdmin({});
 
     const result = await service.createJob(owner, dtoExisting);
+
+    // The assignee must be an employee of THIS company, and not removed.
+    expect(chains.memberships.filters).toEqual(
+      expect.arrayContaining([
+        ['eq', 'tenant_id', 'tenant-uuid'],
+        ['eq', 'role', 'employee'],
+        ['in', 'user_id', ['tech-1']],
+        ['neq', 'status', 'removed'],
+      ]),
+    );
 
     expect(result.jobNumber).toBe('JB-2026-0001');
     expect(result.status).toBe('scheduled');
@@ -405,7 +420,7 @@ describe('JobsService', () => {
   });
 
   it('throws 404 when the technician is not in the tenant', async () => {
-    mockAdmin({ technician: notFound });
+    mockAdmin({ technician: technicianMissing });
 
     await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
       NotFoundException,
@@ -598,7 +613,8 @@ describe('JobsService', () => {
     const technician: RequestUser = {
       userId: 'tech-self',
       tenantId: 'tenant-uuid',
-      role: Role.TECHNICIAN,
+      role: Role.EMPLOYEE,
+      platformAdmin: false,
       rawJwt: 'jwt',
     };
 
@@ -910,7 +926,8 @@ describe('JobsService', () => {
         const tech: RequestUser = {
           userId: 'tech-self',
           tenantId: 'tenant-uuid',
-          role: Role.TECHNICIAN,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
           rawJwt: 'jwt',
         };
 
@@ -931,7 +948,8 @@ describe('JobsService', () => {
         const tech: RequestUser = {
           userId: 'tech-self',
           tenantId: 'tenant-uuid',
-          role: Role.TECHNICIAN,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
           rawJwt: 'jwt',
         };
 
@@ -960,7 +978,8 @@ describe('JobsService', () => {
           const tech: RequestUser = {
             userId: 'tech-self',
             tenantId: 'tenant-uuid',
-            role: Role.TECHNICIAN,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
             rawJwt: 'jwt',
           };
 
@@ -975,7 +994,8 @@ describe('JobsService', () => {
         const tech: RequestUser = {
           userId: 'tech-self',
           tenantId: 'tenant-uuid',
-          role: Role.TECHNICIAN,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
           rawJwt: 'jwt',
         };
 
@@ -1077,6 +1097,11 @@ describe('JobsService', () => {
       country_code: '+91',
       phone_number: '9990001111',
     };
+    const technicianRow_member = {
+      name: 'Ravi',
+      countryCode: '+91',
+      phoneNumber: '9990001111',
+    };
     const customerRow = {
       id: 'cust-1',
       name: 'Priya',
@@ -1111,7 +1136,8 @@ describe('JobsService', () => {
     const techOwn: RequestUser = {
       userId: 'tech-1', // matches jobRow.technician_id
       tenantId: 'tenant-uuid',
-      role: Role.TECHNICIAN,
+      role: Role.EMPLOYEE,
+      platformAdmin: false,
       rawJwt: 'jwt',
     };
     const techOther: RequestUser = { ...techOwn, userId: 'tech-self' };
@@ -1120,7 +1146,7 @@ describe('JobsService', () => {
     // end in .single(); user_skills ends in .eq(); activity_logs/.order() ends in .order().
     function mockDetailAdmin(opts: {
       job?: { data: unknown; error: unknown };
-      technician?: { data: unknown; error: unknown };
+      technician?: { data: ReturnType<typeof memberRow>[] | null; error: unknown };
       skills?: { data: unknown; error: unknown };
       customer?: { data: unknown; error: unknown };
       logs?: { data: unknown; error: unknown };
@@ -1141,8 +1167,8 @@ describe('JobsService', () => {
         .mockResolvedValue(opts.attachments ?? { data: [], error: null });
       const attachEq2 = jest.fn().mockReturnValue({ order: attachOrder });
       const attachEq1 = jest.fn().mockReturnValue({ eq: attachEq2 });
-      const chains: Record<string, { select: jest.Mock; eqs: jest.Mock[] }> =
-        {};
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chains: Record<string, any> = {};
       const from = jest.fn((table: string) => {
         if (table === 'jobs') {
           chains.jobs = singleChain(
@@ -1151,12 +1177,14 @@ describe('JobsService', () => {
           );
           return chains.jobs;
         }
-        if (table === 'users') {
-          chains.users = singleChain(
-            opts.technician ?? { data: technicianRow, error: null },
-            2,
+        if (table === 'memberships') {
+          chains.memberships = membersTable(
+            opts.technician ?? {
+              data: [memberRow(technicianRow.id, technicianRow_member)],
+              error: null,
+            },
           );
-          return chains.users;
+          return chains.memberships;
         }
         if (table === 'customers') {
           chains.customers = singleChain(
@@ -1458,7 +1486,7 @@ describe('JobsService', () => {
 
     it('throws 500 when a NOT-NULL FK row is missing (PGRST116 on technician)', async () => {
       mockDetailAdmin({
-        technician: { data: null, error: { code: 'PGRST116' } },
+        technician: { data: [], error: null },
       });
 
       await expect(service.getJobDetail(owner, 'job-uuid')).rejects.toThrow(
@@ -1487,11 +1515,19 @@ describe('JobsService', () => {
         'tenant_id',
         'tenant-uuid',
       );
-      // technician + customer: second eq is the tenant filter
-      expect(m.chains.users.eqs[1]).toHaveBeenCalledWith(
+      // technician: read through the company-member reader, scoped to this
+      // company, and a removed employee is kept (history view)
+      expect(m.chains.memberships.filters).toContainEqual([
+        'eq',
         'tenant_id',
         'tenant-uuid',
-      );
+      ]);
+      expect(m.chains.memberships.filters).not.toContainEqual([
+        'neq',
+        'status',
+        'removed',
+      ]);
+      // customer: second eq is the tenant filter
       expect(m.chains.customers.eqs[1]).toHaveBeenCalledWith(
         'tenant_id',
         'tenant-uuid',
@@ -1540,7 +1576,7 @@ describe('JobsService', () => {
       expect(result.id).toBe('job-uuid');
       expect(result.jobNumber).toBe('JB-2026-0001');
       // no technicianId → no technician validation read
-      expect(from).not.toHaveBeenCalledWith('users');
+      expect(from).not.toHaveBeenCalledWith('memberships');
       expect(rpc).toHaveBeenCalledWith(
         'update_job_with_log',
         expect.objectContaining({
@@ -1596,7 +1632,7 @@ describe('JobsService', () => {
       const dto: UpdateJobDto = { technicianId: 'tech-2' };
       await service.updateJob(owner, 'job-uuid', dto);
 
-      expect(from).toHaveBeenCalledWith('users'); // technician validated
+      expect(from).toHaveBeenCalledWith('memberships'); // technician validated
       expect(rpc).toHaveBeenCalledWith(
         'update_job_with_log',
         expect.objectContaining({ p_cancel: false, p_technician_id: 'tech-2' }),
@@ -1621,7 +1657,7 @@ describe('JobsService', () => {
       await service.updateJob(owner, 'job-uuid', dto);
 
       // cancel is not a reassignment → no technician validation
-      expect(from).not.toHaveBeenCalledWith('users');
+      expect(from).not.toHaveBeenCalledWith('memberships');
       expect(rpc).toHaveBeenCalledWith(
         'update_job_with_log',
         expect.objectContaining({ p_cancel: true, p_technician_id: null }),
@@ -1651,7 +1687,7 @@ describe('JobsService', () => {
     });
 
     it('throws 404 when the new technician is not in the tenant', async () => {
-      mockAdmin({ technician: notFound });
+      mockAdmin({ technician: technicianMissing });
 
       await expect(
         service.updateJob(owner, 'job-uuid', { technicianId: 'ghost' }),

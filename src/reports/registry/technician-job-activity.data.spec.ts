@@ -5,6 +5,7 @@ import {
   FetchedJob,
 } from './technician-job-activity.data';
 import { ReportFetchContext } from './report-definition';
+import { memberRow } from '../../../test/helpers/member-rows-stub';
 
 /**
  * Unit tests for the Technician Job Activity fetcher (story 12-5).
@@ -230,7 +231,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
           { data: page2, error: null, count: 2001 },
           { data: page3, error: null, count: 2001 },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         // 2001 jobs → ceil(2001 / 500) attachment IN-chunks.
         attachments: [
           { data: [], error: null },
@@ -269,7 +270,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [{ data: [], error: null }],
       });
 
@@ -293,11 +294,11 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 2,
           },
         ],
-        users: [
+        memberships: [
           {
             data: [
-              { id: 't1', name: 'Ravi' },
-              { id: 't2', name: 'Amit' },
+              memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' }),
+              memberRow('t2', { name: 'Amit', employeeCode: 'EMP-t2' }),
             ],
             error: null,
           },
@@ -310,13 +311,15 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       );
 
       expect(result.technicians).toEqual([
-        { id: 't1', name: 'Ravi', employeeCode: null },
-        { id: 't2', name: 'Amit', employeeCode: null },
+        { id: 't1', name: 'Ravi', employeeCode: 'EMP-t1' },
+        { id: 't2', name: 'Amit', employeeCode: 'EMP-t2' },
       ]);
-      // Names come from one tenant-scoped chunked users query.
-      const users = client.chains.get('users')![0];
-      expect(users.calls.get('eq')).toEqual([['tenant_id', 'tenant-uuid']]);
-      expect(users.calls.get('in')).toEqual([['id', ['t1', 't2']]]);
+      // Names and codes come from one company-scoped, chunked read of the
+      // memberships. Removed members stay in (a report keeps their past work).
+      const members = client.chains.get('memberships')![0];
+      expect(members.calls.get('eq')).toEqual([['tenant_id', 'tenant-uuid']]);
+      expect(members.calls.get('in')).toEqual([['user_id', ['t1', 't2']]]);
+      expect(members.calls.get('neq')).toBeUndefined();
     });
 
     it('a selected technician with zero jobs keeps their section (FR18)', async () => {
@@ -329,11 +332,11 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [
+        memberships: [
           {
             data: [
-              { id: 't1', name: 'Ravi' },
-              { id: 't2', name: 'Amit' },
+              memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' }),
+              memberRow('t2', { name: 'Amit', employeeCode: 'EMP-t2' }),
             ],
             error: null,
           },
@@ -356,7 +359,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       expect(result.technicians.map((t) => t.name)).toEqual(['Ravi', 'Amit']);
     });
 
-    it("a missing users row degrades to 'Unknown technician', not a failure", async () => {
+    it("a missing member row degrades to 'Unknown technician', not a failure", async () => {
       const client = makeSupabase({
         tenants: [TENANT_OK],
         jobs: [
@@ -366,7 +369,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [], error: null }],
+        memberships: [{ data: [], error: null }],
         attachments: [{ data: [], error: null }],
       });
 
@@ -395,7 +398,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 2,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [
           {
             data: [
@@ -431,7 +434,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [{ data: [], error: null }],
       });
 
@@ -457,7 +460,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [
           { data: fullPage, error: null },
           {
@@ -494,7 +497,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
 
       expect(result.jobs).toEqual([]);
       expect(client.from).not.toHaveBeenCalledWith('attachments');
-      expect(client.from).not.toHaveBeenCalledWith('users');
+      expect(client.from).not.toHaveBeenCalledWith('memberships');
     });
   });
 
@@ -526,7 +529,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       });
       // The guard fires on the first page — nothing else is ever queried.
       expect(client.from).not.toHaveBeenCalledWith('attachments');
-      expect(client.from).not.toHaveBeenCalledWith('users');
+      expect(client.from).not.toHaveBeenCalledWith('memberships');
     });
 
     it('a count exactly at maxJobs is allowed', async () => {
@@ -539,7 +542,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [{ data: [], error: null }],
       });
 
@@ -605,7 +608,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: [{ id: 't1', name: 'Ravi' }], error: null }],
+        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
         attachments: [{ data: null, error: { message: 'boom' } }],
       });
 
@@ -614,7 +617,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
       ).rejects.toThrow('Failed to fetch attachments for report: boom');
     });
 
-    it('a users read error surfaces as a fetch failure', async () => {
+    it('a members read error surfaces as a fetch failure', async () => {
       const client = makeSupabase({
         tenants: [TENANT_OK],
         jobs: [
@@ -624,7 +627,7 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [{ data: null, error: { message: 'boom' } }],
+        memberships: [{ data: null, error: { message: 'boom' } }],
         // The attachments fetch runs concurrently — must not shadow the error.
         attachments: [{ data: [], error: null }],
       });
@@ -655,8 +658,8 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        users: [
-          { data: [{ id: 't1', name: 'Ravi', employee_code: 'EMP-002' }], error: null },
+        memberships: [
+          { data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-002' })], error: null },
         ],
         attachments: [{ data: [], error: null }],
       });

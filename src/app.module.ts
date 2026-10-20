@@ -8,8 +8,10 @@ import { HealthController } from './health/health.controller';
 import { AppConfigModule } from './app-config/app-config.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
-import { RolesGuard } from './common/guards/roles.guard';
+import { PermissionsGuard } from './common/guards/permissions.guard';
+import { MembershipResolver } from './common/auth/membership-resolver';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { PlatformAuditInterceptor } from './common/interceptors/platform-audit.interceptor';
 import { CorrelationInterceptor } from './common/correlation/correlation.interceptor';
 import { AuthModule } from './auth/auth.module';
 import { SkillsModule } from './skills/skills.module';
@@ -26,6 +28,7 @@ import { ReportsModule } from './reports/reports.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { EarlyAccessModule } from './early-access/early-access.module';
 import { CountryCodesModule } from './country-codes/country-codes.module';
+import { MembersModule } from './members/members.module';
 import { TelemetryShutdown } from './telemetry';
 
 @Module({
@@ -174,12 +177,15 @@ import { TelemetryShutdown } from './telemetry';
     AttendanceModule,
     EarlyAccessModule,
     CountryCodesModule,
+    MembersModule,
   ],
   controllers: [HealthController],
   providers: [
     // Flushes the last metrics batch to Grafana after the HTTP server
     // closes on SIGTERM (Nest onApplicationShutdown lifecycle).
     TelemetryShutdown,
+    // Reads the caller's company and role per request (JwtAuthGuard).
+    MembershipResolver,
     {
       provide: APP_FILTER,
       useClass: GlobalExceptionFilter,
@@ -190,7 +196,7 @@ import { TelemetryShutdown } from './telemetry';
     },
     {
       provide: APP_GUARD,
-      useClass: RolesGuard,
+      useClass: PermissionsGuard,
     },
     {
       // First interceptor: validates/generates the correlation context so
@@ -201,6 +207,11 @@ import { TelemetryShutdown } from './telemetry';
     {
       provide: APP_INTERCEPTOR,
       useClass: LoggingInterceptor,
+    },
+    {
+      // Records every platform-admin write in the audit log (roles spec 13, 42).
+      provide: APP_INTERCEPTOR,
+      useClass: PlatformAuditInterceptor,
     },
   ],
 })

@@ -17,9 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { HttpException } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { LeaveService } from './leave.service';
@@ -31,6 +29,7 @@ import {
   RejectLeaveDto,
   RevokeLeaveDto,
 } from './dto/leave.dto';
+import { Can } from '../common/decorators/can.decorator';
 
 /** AD-6: UUID v4, generated per user tap by the app (same gate as check-in). */
 const UUID_V4_PATTERN =
@@ -51,7 +50,7 @@ export class MeLeaveController {
   ) {}
 
   @Get('preview')
-  @Roles(Role.TECHNICIAN)
+  @Can('leave.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -75,7 +74,7 @@ export class MeLeaveController {
   }
 
   @Post()
-  @Roles(Role.TECHNICIAN)
+  @Can('leave.own')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -113,7 +112,7 @@ export class MeLeaveController {
   }
 
   @Get()
-  @Roles(Role.TECHNICIAN)
+  @Can('leave.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -128,7 +127,7 @@ export class MeLeaveController {
   }
 
   @Get(':id/preview')
-  @Roles(Role.TECHNICIAN)
+  @Can('leave.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -146,7 +145,7 @@ export class MeLeaveController {
   }
 
   @Post(':id/cancel')
-  @Roles(Role.TECHNICIAN)
+  @Can('leave.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -2,7 +2,8 @@ import { Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { findActiveLeaveForDate } from './leave.repository';
 import { transitionLeaveDays } from './leave-transition';
-import { readEmployeeName, readOwnerId } from './leave.repository';
+import { readEmployeeName } from './leave.repository';
+import { readCompanyAdminIds } from './company-admins';
 
 /**
  * FR-9's accepted path (17-4, spec D11): a CONFIRMED check-in on a
@@ -39,7 +40,7 @@ export async function autoCancelLeaveForCheckIn(
     });
     return;
   }
-  const ownerId = await readOwnerId(tx, input.tenantId);
+  const adminIds = await readCompanyAdminIds(tx, input.tenantId);
   const employeeName = await readEmployeeName(
     tx,
     input.tenantId,
@@ -56,9 +57,9 @@ export async function autoCancelLeaveForCheckIn(
     cause: 'checkin_auto_cancel',
     actorId: input.employeeId,
     reason: null,
-    notification: ownerId
+    notification: adminIds.length > 0
       ? {
-          recipientId: ownerId,
+          recipientIds: adminIds,
           payload: { employeeName, leaveDate: input.workDate },
           dedupeSuffix: input.workDate,
         }

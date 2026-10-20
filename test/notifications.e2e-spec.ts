@@ -8,27 +8,37 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 
 describe('Notifications (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-notifications-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
   const OWNER_ID = '00000000-0000-4000-8000-000000000001';
   const TECH_ID = '00000000-0000-4000-8000-000000000002';
+  // A signed-in person with no company yet.
+  const NO_COMPANY_ID = '00000000-0000-4000-8000-000000000003';
   const NOTIF_A = '00000000-0000-4000-8000-0000000000a1';
   const NOTIF_B = '00000000-0000-4000-8000-0000000000a2';
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
-      .compile();
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: NO_COMPANY_ID, tenantId: null, role: null },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -49,16 +59,17 @@ describe('Notifications (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(tenantId: string | null = TENANT_ID) {
-    return jwtService.sign({ sub: OWNER_ID, tenantId, role: 'owner' });
+  function ownerJwt() {
+    return accessToken(jwtService, OWNER_ID);
+  }
+
+  /** A signed-in person who belongs to no company yet. */
+  function noCompanyJwt() {
+    return accessToken(jwtService, NO_COMPANY_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: TECH_ID,
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   const unreadRow = {
@@ -307,7 +318,7 @@ describe('Notifications (e2e)', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/notifications',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
       expect(response.statusCode).toBe(200);
@@ -351,7 +362,7 @@ describe('Notifications (e2e)', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/notifications/unread-count',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
       expect(response.statusCode).toBe(200);
@@ -410,7 +421,7 @@ describe('Notifications (e2e)', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/notifications/mark-read',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: { ids: [NOTIF_A] },
       });
 
@@ -485,7 +496,7 @@ describe('Notifications (e2e)', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/notifications/mark-all-read',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
       expect(response.statusCode).toBe(200);

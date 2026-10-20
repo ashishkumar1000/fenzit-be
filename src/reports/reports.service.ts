@@ -14,6 +14,7 @@ import { NotFound } from '@aws-sdk/client-s3';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
+import { listCompanyMembers } from '../common/members/company-members';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
@@ -396,14 +397,15 @@ export class ReportsService {
     }
 
     const admin = this.supabaseClientFactory.createAdmin();
-    const { data, error } = await admin
-      .from('users')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .eq('role', Role.TECHNICIAN)
-      .in('id', requested);
-
-    if (error) {
+    let members: Awaited<ReturnType<typeof listCompanyMembers>>;
+    try {
+      // Reports may cover a removed employee's past work, so history is kept.
+      members = await listCompanyMembers(admin, tenantId, {
+        role: Role.EMPLOYEE,
+        userIds: requested,
+        includeRemoved: true,
+      });
+    } catch (error) {
       this.logger.error('Failed to validate report technicians:', { error });
       throw new InternalServerErrorException({
         error_code: ErrorCode.INTERNAL_SERVER_ERROR,
@@ -411,7 +413,7 @@ export class ReportsService {
       });
     }
 
-    const found = new Set((data ?? []).map((u) => u.id));
+    const found = new Set(members.map((m) => m.userId));
     const invalid = requested.filter((id) => !found.has(id));
     if (invalid.length > 0) {
       throw new BadRequestException({

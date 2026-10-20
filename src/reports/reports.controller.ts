@@ -19,11 +19,10 @@ import {
 import { ReportsService } from './reports.service';
 import { CreateReportRequestDto } from './dto/create-report-request.dto';
 import { ListReportsQueryDto } from './dto/list-reports-query.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 @ApiTags('Reports')
 @ApiBearerAuth()
@@ -32,7 +31,7 @@ export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('report.request')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
@@ -60,7 +59,7 @@ export class ReportsController {
   // NOTE: `:id` must stay BELOW the parameterless `@Get()` list route above —
   // it is a catch-all that would otherwise shadow `GET /reports`.
   @Get()
-  @Roles(Role.OWNER)
+  @Can('report.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Report history, newest first (cursor-paginated, page 20)',
@@ -76,7 +75,7 @@ export class ReportsController {
   }
 
   @Post(':id/retry')
-  @Roles(Role.OWNER)
+  @Can('report.request')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
@@ -102,7 +101,7 @@ export class ReportsController {
   }
 
   @Get(':id')
-  @Roles(Role.OWNER)
+  @Can('report.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

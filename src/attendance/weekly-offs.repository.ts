@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { listCompanyMembers } from '../common/members/company-members';
 import { WeeklyOffRow } from './weekly-offs-response.model';
 import {
   Admin,
@@ -90,18 +91,28 @@ export async function readEmployeeNames(
   if (employeeIds.length === 0) {
     return new Map();
   }
-  const { data, error } = await admin
-    .from('users')
-    .select('id, name, country_code, phone_number')
-    .eq('tenant_id', tenantId)
-    .in('id', employeeIds);
-  if (error) {
-    // The failure is in the users read — name the message accordingly (the
+  let rows: EmployeeRow[];
+  try {
+    // Display names only; a removed employee's old override still shows a name.
+    rows = (
+      await listCompanyMembers(admin, tenantId, {
+        userIds: employeeIds,
+        includeRemoved: true,
+      })
+    ).map((m) => ({
+      id: m.userId,
+      name: m.name,
+      country_code: m.countryCode,
+      phone_number: m.phoneNumber,
+    }));
+  } catch (err) {
+    logger.error('Failed to read employee names for weekly off', err instanceof Error ? err.stack : String(err));
+    // The failure is in the members read — name the message accordingly (the
     // review: the thrown message misattributed it to the overrides table).
     throw internalError('Failed to read employee names');
   }
   const names = new Map<string, string>();
-  for (const row of (data ?? []) as EmployeeRow[]) {
+  for (const row of rows) {
     // Same display fallback as the RPCs (20260927000003): name, then the
     // reassembled E.164 number (users.phone was split long ago). The dial
     // code already carries its '+' — country_codes.dial_code is FK-enforced

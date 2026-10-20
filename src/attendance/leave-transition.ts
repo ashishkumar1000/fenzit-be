@@ -70,7 +70,7 @@ interface TransitionCore {
   reason?: string | null;
   /** Payload + recipient for the registry notification; null = insert none. */
   notification: {
-    recipientId: string;
+    recipientIds: string[];
     payload: Record<string, unknown>;
     /** Extra key segment (e.g. the date) after the request id. */
     dedupeSuffix?: string;
@@ -206,7 +206,7 @@ export async function cancelLeaveOnDisable(
       actorId: null,
       reason: null,
       notification: {
-        recipientId: employeeId,
+        recipientIds: [employeeId],
         payload: {
           startDate: sweep.startDate,
           endDate: sweep.endDate,
@@ -242,29 +242,32 @@ export async function cancelLeaveOnDisable(
   if (!eventType || !input.notification) {
     return;
   }
-  const dedupeKey = [
-    input.tenantId,
-    eventType,
-    input.notification.recipientId,
-    input.requestId,
-    input.notification.dedupeSuffix ?? '',
-  ]
-    .filter((part) => part !== '')
-    .join(':');
-  await tx.query(
-    `insert into public.notifications
-       (tenant_id, user_id, job_id, event_type, payload, entity_type, entity_id, dedupe_key)
-     values ($1::uuid, $2::uuid, null, $3::text, $4::jsonb, $5::text, $6::uuid, $7::text)
-     on conflict (dedupe_key) where dedupe_key is not null do nothing`,
-    [
+  for (const recipientId of input.notification.recipientIds) {
+    const dedupeKey = [
       input.tenantId,
-      input.notification.recipientId,
       eventType,
-      JSON.stringify(input.notification.payload),
-      LEAVE_ENTITY_TYPE,
-      // entity_id = the leave request row id (AD-13); the payload is self-contained.
-      input.leaveRequestDbId,
-      dedupeKey,
-    ],
-  );
+      recipientId,
+      input.requestId,
+      input.notification.dedupeSuffix ?? '',
+    ]
+      .filter((part) => part !== '')
+      .join(':');
+    await tx.query(
+      `insert into public.notifications
+         (tenant_id, user_id, job_id, event_type, payload, entity_type, entity_id, dedupe_key)
+       values ($1::uuid, $2::uuid, null, $3::text, $4::jsonb, $5::text, $6::uuid, $7::text)
+       on conflict (dedupe_key) where dedupe_key is not null do nothing`,
+      [
+        input.tenantId,
+        recipientId,
+        eventType,
+        JSON.stringify(input.notification.payload),
+        LEAVE_ENTITY_TYPE,
+        // entity_id = the leave request row id (AD-13); the payload is self-contained.
+        input.leaveRequestDbId,
+        dedupeKey,
+      ],
+    );
+  }
 }
+

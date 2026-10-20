@@ -12,6 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
+import { findCompanyMember } from '../common/members/company-members';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
@@ -319,22 +320,22 @@ export class JobsService {
 
     // AC #4 — technician must belong to the tenant and be a technician.
     {
-      const { data, error } = await admin
-        .from('users')
-        .select('id, tenant_id, role')
-        .eq('id', dto.technicianId)
-        .eq('tenant_id', owner.tenantId)
-        .eq('role', 'technician')
-        .single<{ id: string; tenant_id: string; role: string }>();
-
-      if (error && error.code !== 'PGRST116') {
+      let employee: Awaited<ReturnType<typeof findCompanyMember>>;
+      try {
+        employee = await findCompanyMember(
+          admin,
+          owner.tenantId,
+          dto.technicianId,
+          { role: Role.EMPLOYEE },
+        );
+      } catch (error) {
         this.logger.error('Failed to validate technician:', { error });
         throw new InternalServerErrorException({
           error_code: ErrorCode.INTERNAL_SERVER_ERROR,
           message: 'Failed to validate technician',
         });
       }
-      if (!data || data.tenant_id !== owner.tenantId) {
+      if (!employee) {
         throw new NotFoundException({
           error_code: ErrorCode.RESOURCE_NOT_FOUND,
           message: 'Technician not found',
@@ -491,22 +492,22 @@ export class JobsService {
     // AC#7 — when reassigning, the new technician must belong to the tenant and be
     // a technician. Mirrors createJob's technician validation exactly.
     if (dto.technicianId) {
-      const { data, error } = await admin
-        .from('users')
-        .select('id, tenant_id, role')
-        .eq('id', dto.technicianId)
-        .eq('tenant_id', owner.tenantId)
-        .eq('role', 'technician')
-        .single<{ id: string; tenant_id: string; role: string }>();
-
-      if (error && error.code !== 'PGRST116') {
+      let employee: Awaited<ReturnType<typeof findCompanyMember>>;
+      try {
+        employee = await findCompanyMember(
+          admin,
+          owner.tenantId,
+          dto.technicianId,
+          { role: Role.EMPLOYEE },
+        );
+      } catch (error) {
         this.logger.error('Failed to validate technician:', { error });
         throw new InternalServerErrorException({
           error_code: ErrorCode.INTERNAL_SERVER_ERROR,
           message: 'Failed to validate technician',
         });
       }
-      if (!data || data.tenant_id !== owner.tenantId) {
+      if (!employee) {
         throw new NotFoundException({
           error_code: ErrorCode.RESOURCE_NOT_FOUND,
           message: 'Technician not found',
@@ -633,8 +634,8 @@ export class JobsService {
       // today's window is ORed with their in_progress jobs (the technician_id
       // self-scope below ANDs the OR branch down to their own jobs). An
       // explicit `date` re-anchor is a day-history view — keep the pure window
-      // there. Owners always keep the pure day-window view.
-      if (user.role === Role.TECHNICIAN && !query.date) {
+      // there. Company admins always keep the pure day-window view.
+      if (user.role === Role.EMPLOYEE && !query.date) {
         qb = qb.or(
           `and(scheduled_start.gte.${range.start.toISOString()},scheduled_start.lt.${range.end.toISOString()}),status.eq.${JobStatus.IN_PROGRESS}`,
         );
@@ -667,9 +668,9 @@ export class JobsService {
     }
 
     // AC #4 / #5 — technician scoping. Technicians see ONLY their own jobs; the
-    // technicianId query param is silently ignored for them. Owners may filter.
+    // technicianId query param is silently ignored for them. Company admins may filter.
     // Common to every scope.
-    if (user.role === Role.TECHNICIAN) {
+    if (user.role === Role.EMPLOYEE) {
       qb = qb.eq('technician_id', user.userId);
     } else if (query.technicianId) {
       qb = qb.eq('technician_id', query.technicianId);
@@ -763,9 +764,9 @@ export class JobsService {
       });
     }
 
-    // 2) Ownership gate — a technician may only view jobs assigned to them
+    // 2) Ownership gate — an employee may only view jobs assigned to them
     //    (AC#4). Resolved AFTER the 404 so a cross-tenant job is never 403.
-    if (user.role === Role.TECHNICIAN && row.technician_id !== user.userId) {
+    if (user.role === Role.EMPLOYEE && row.technician_id !== user.userId) {
       throw new ForbiddenException({
         error_code: ErrorCode.FORBIDDEN,
         message: 'Forbidden',
@@ -776,12 +777,23 @@ export class JobsService {
     //    governs writes). technician_id / customer_id are NOT NULL FKs, so the
     //    rows always exist; a missing row is a server fault (500), not a 404.
     const [techRes, skillRes, custRes, logRes, attachRes] = await Promise.all([
-      admin
-        .from('users')
-        .select('id, name, country_code, phone_number')
-        .eq('id', row.technician_id)
-        .eq('tenant_id', user.tenantId)
-        .single<TechnicianRow>(),
+      // History view: a removed employee's name still shows on their old jobs.
+      findCompanyMember(admin, user.tenantId, row.technician_id, {
+        includeRemoved: true,
+      }).then(
+        (m) => ({
+          data: m
+            ? ({
+                id: m.userId,
+                name: m.name,
+                country_code: m.countryCode,
+                phone_number: m.phoneNumber,
+              } as TechnicianRow)
+            : null,
+          error: null as unknown,
+        }),
+        (error: unknown) => ({ data: null as TechnicianRow | null, error }),
+      ),
       admin
         .from('user_skills')
         // Skills come from the global catalog (Story 4.2) — no tenant scoping
@@ -815,7 +827,7 @@ export class JobsService {
     // branch below handle it — otherwise the ID-naming diagnostic log never
     // fires. Any other error on any of the four reads is a genuine fault → 500.
     const realError =
-      (techRes.error && techRes.error.code !== 'PGRST116') ||
+      techRes.error ||
       (custRes.error && custRes.error.code !== 'PGRST116') ||
       skillRes.error ||
       logRes.error ||

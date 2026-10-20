@@ -8,6 +8,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 
 describe('Skills (e2e)', () => {
   let app: NestFastifyApplication;
@@ -15,19 +17,25 @@ describe('Skills (e2e)', () => {
   let mockCreate: jest.Mock;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-skills-e2e';
-  const OWNER_ID = 'owner-uuid-skills-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
+  const OWNER_ID = '11111111-1111-4111-8111-111111111111';
+  const TECH_ID = '22222222-2222-4222-8222-222222222222';
 
   beforeAll(async () => {
     mockCreate = jest.fn();
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: mockCreate, createAdmin: mockCreateAdmin })
-      .compile();
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: mockCreate, createAdmin: mockCreateAdmin }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -46,16 +54,12 @@ describe('Skills (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(tenantId: string | null = TENANT_ID) {
-    return jwtService.sign({ sub: OWNER_ID, tenantId, role: 'owner' });
+  function ownerJwt() {
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: 'tech-uuid',
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   describe('tenant skills CRUD removed (Story 4.2)', () => {
@@ -103,7 +107,7 @@ describe('Skills (e2e)', () => {
       return fromSpy;
     }
 
-    it('should return 200 with the global catalog for an Owner JWT', async () => {
+    it('should return 200 with the global catalog for a company admin', async () => {
       const fromSpy = mockJwtClient(catalogRows);
 
       const response = await app.inject({
@@ -118,7 +122,7 @@ describe('Skills (e2e)', () => {
       expect(fromSpy).toHaveBeenCalledWith('skills');
     });
 
-    it('should return 200 with the global catalog for a Technician JWT', async () => {
+    it('should return 200 with the global catalog for an employee', async () => {
       mockJwtClient(catalogRows);
 
       const response = await app.inject({

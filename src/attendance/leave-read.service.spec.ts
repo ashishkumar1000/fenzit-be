@@ -54,14 +54,21 @@ function listRow(overrides: Partial<LeaveListRow> = {}): LeaveListRow {
 }
 
 function ownerUser(): RequestUser {
-  return { userId: OWNER, tenantId: TENANT, role: Role.OWNER, rawJwt: 'jwt' };
+  return {
+    userId: OWNER,
+    tenantId: TENANT,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
+    rawJwt: 'jwt',
+  };
 }
 
 function techUser(): RequestUser {
   return {
     userId: EMP,
     tenantId: TENANT,
-    role: Role.TECHNICIAN,
+    role: Role.EMPLOYEE,
+    platformAdmin: false,
     rawJwt: 'jwt',
   };
 }

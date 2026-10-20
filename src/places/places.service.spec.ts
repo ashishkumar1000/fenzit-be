@@ -21,7 +21,8 @@ describe('PlacesService', () => {
   const ownerUser: RequestUser = {
     userId: '550e8400-e29b-41d4-a716-446655440000',
     tenantId: 'tenant-uuid-111',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 

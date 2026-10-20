@@ -6,10 +6,9 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { SkillsService } from './skills.service';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { AnyMember } from '../common/decorators/any-member.decorator';
 
 @ApiTags('Skills')
 @ApiBearerAuth()
@@ -18,7 +17,7 @@ export class SkillsController {
   constructor(private readonly skillsService: SkillsService) {}
 
   @Get()
-  @Roles(Role.OWNER, Role.TECHNICIAN)
+  @AnyMember()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List the global skills catalog (developer-seeded)',

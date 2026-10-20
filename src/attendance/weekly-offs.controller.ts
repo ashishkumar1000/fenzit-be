@@ -22,15 +22,14 @@ import {
   SetWeeklyOffDefaultDto,
   SetWeeklyOffOverrideDto,
 } from './dto/weekly-off.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { UUID_PATTERN } from '../common/utils/uuid-pattern.util';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
- * FR-18/FR-19 weekly-off routes (Epic 15, Story 15-5). Owner-only; the
+ * FR-18/FR-19 weekly-off routes (Epic 15, Story 15-5). Company-admin only; the
  * day-context resolution that reads these tables arrives with 16-1, and
  * the employee-facing "my weekly offs" with 15-10/19-6. No idempotency
  * interceptor (AD-6 excludes attendance): every write is lock-serialised
@@ -54,7 +53,7 @@ export class WeeklyOffsController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -80,7 +79,7 @@ export class WeeklyOffsController {
   }
 
   @Put()
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -110,7 +109,7 @@ export class WeeklyOffsController {
   }
 
   @Get('overrides')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Per-employee weekly-off overrides with current/pending picks',
@@ -131,7 +130,7 @@ export class WeeklyOffsController {
   }
 
   @Put('overrides/:employeeId')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -170,7 +169,7 @@ export class WeeklyOffsController {
   }
 
   @Delete('overrides/:employeeId')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

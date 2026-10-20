@@ -118,7 +118,8 @@ describe('OfficesService (story 15-3)', () => {
   const ownerUser: RequestUser = {
     userId: 'owner-uuid',
     tenantId: TENANT_ID,
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
   const noTenantUser: RequestUser = { ...ownerUser, tenantId: null };

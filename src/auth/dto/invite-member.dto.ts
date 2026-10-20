@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsString,
   Matches,
@@ -7,10 +7,15 @@ import {
   ArrayMinSize,
   ArrayMaxSize,
   ArrayUnique,
+  IsIn,
+  IsOptional,
   IsUUID,
+  ValidateIf,
 } from 'class-validator';
+import { MEMBERSHIP_ROLES, Role } from '../../common/enums/role.enum';
+import type { MembershipRole } from '../../common/enums/role.enum';
 
-export class InviteTechnicianDto {
+export class InviteMemberDto {
   @ApiProperty({ example: '+91', description: 'Dial code (e.g. +91, +1, +44)' })
   @IsString()
   @Matches(/^\+\d{1,4}$/, {
@@ -31,17 +36,28 @@ export class InviteTechnicianDto {
   @MinLength(1)
   name: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
+    enum: MEMBERSHIP_ROLES,
+    default: Role.EMPLOYEE,
+    description:
+      'Role inside the company. Defaults to employee. A company admin can set company_admin, employee or viewer, never platform_admin.',
+  })
+  @IsOptional()
+  @IsIn(MEMBERSHIP_ROLES, {
+    message: 'role must be company_admin, employee or viewer',
+  })
+  role?: MembershipRole;
+
+  @ApiPropertyOptional({
     type: [String],
-    required: true,
     example: ['550e8400-e29b-41d4-a716-446655440001'],
     description:
-      'Array of global skills-catalog UUIDs to assign to this technician (min 1, max 20)',
+      'Global skills-catalog UUIDs (max 20). Required, at least one, for an employee; optional for other roles.',
   })
+  @ValidateIf((o: InviteMemberDto) => o.skillIds !== undefined)
   @IsArray()
-  @ArrayMinSize(1, { message: 'At least one skill ID is required' })
   @ArrayMaxSize(20, { message: 'At most 20 skill IDs are allowed' })
   @ArrayUnique({ message: 'Skill IDs must be unique' })
   @IsUUID('all', { each: true, message: 'Each skill ID must be a valid UUID' })
-  skillIds: string[];
+  skillIds?: string[];
 }

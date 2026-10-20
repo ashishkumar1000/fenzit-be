@@ -8,6 +8,9 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { MembershipResolver } from '../src/common/auth/membership-resolver';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, fakeMembershipResolver } from './helpers/auth-test-utils';
 import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 import { encodeCursor } from '../src/common/utils/cursor.util';
 
@@ -25,6 +28,11 @@ type RpcResult = { data: unknown; error: Record<string, unknown> | null };
 type SqlResult = { rows: unknown[]; rowCount?: number };
 
 const TENANT_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f0';
+
+// Real-looking ids: the guard refuses a token whose `sub` is not a UUID.
+const OWNER_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a1';
+// A signed-in person who belongs to no company yet.
+const NO_COMPANY_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a3';
 const EMPLOYEE_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f1';
 const TODAY = '2026-09-29'; // Tuesday; 09-28 is a tracked, record-backed past day
 
@@ -118,7 +126,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
     if (sql.includes('from public.leave_request_days')) return { rows: [] };
     if (sql.includes('from public.attendance_day_overrides')) return { rows: [] };
     if (sql.includes('distinct on')) return { rows: [] };
-    if (sql.startsWith('select count(*)::text as n from public.users'))
+    if (sql.startsWith('select count(*)::text as n from public.memberships'))
       return { rows: [{ n: '1' }] };
     return { rows: [] };
   }
@@ -169,6 +177,14 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       })
       .overrideProvider(PgPoolFactory)
       .useValue(pgTxOverride())
+      .overrideProvider(MembershipResolver)
+      .useValue(
+        fakeMembershipResolver([
+          { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+          { userId: EMPLOYEE_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+          { userId: NO_COMPANY_ID, tenantId: null, role: null },
+        ]),
+      )
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -188,19 +204,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
   beforeEach(resetQueues);
 
   function ownerJwt() {
-    return jwtService.sign({
-      sub: 'owner-uuid-e2e',
-      tenantId: TENANT_ID,
-      role: 'owner',
-    });
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: EMPLOYEE_ID,
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, EMPLOYEE_ID);
   }
 
   const putUrl = (workDate = '2026-09-28', employeeId = EMPLOYEE_ID) =>
@@ -220,7 +228,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       expect(body).toMatchObject({
         workDate: '2026-09-28',
         override: { status: 'absent', checkinAt: null, checkoutAt: null },
-        actorId: 'owner-uuid-e2e',
+        actorId: OWNER_ID,
       });
       expect(typeof body.correctedAt).toBe('string');
       // G2-P9: the audit row's UTC stamp re-anchored to the tenant offset
@@ -397,7 +405,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('404 ATTENDANCE_EMPLOYEE_NOT_FOUND for an unknown employee (no existence leak)', async () => {
       txFacts = (sql) =>
-        sql.startsWith('select count(*)::text as n from public.users')
+        sql.startsWith('select count(*)::text as n from public.memberships')
           ? { rows: [{ n: '0' }] }
           : baseFacts(sql);
 
@@ -505,7 +513,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('404 for an unknown employee', async () => {
       txFacts = (sql) =>
-        sql.startsWith('select count(*)::text as n from public.users')
+        sql.startsWith('select count(*)::text as n from public.memberships')
           ? { rows: [{ n: '0' }] }
           : baseFacts(sql);
       const res = await app.inject({
@@ -638,7 +646,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('404 ATTENDANCE_EMPLOYEE_NOT_FOUND for a foreign employee (D6 — no existence leak on the history read)', async () => {
       txFacts = (sql) =>
-        sql.startsWith('select count(*)::text as n from public.users')
+        sql.startsWith('select count(*)::text as n from public.memberships')
           ? { rows: [{ n: '0' }] } // outside this tenant's roster
           : baseFacts(sql);
       const res = await app.inject({
@@ -858,7 +866,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('404 for an unknown employee, 422 for a bad workDate — both pre-DB', async () => {
       txFacts = (sql) =>
-        sql.startsWith('select count(*)::text as n from public.users')
+        sql.startsWith('select count(*)::text as n from public.memberships')
           ? { rows: [{ n: '0' }] }
           : baseFacts(sql);
       const unknown = await app.inject({

@@ -18,13 +18,12 @@ import type { FastifyReply } from 'fastify';
 import { AttendanceService } from './attendance.service';
 import { UpdateSetupStepDto } from './dto/update-setup-step.dto';
 import { SetupStateResponse } from './attendance-response.model';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
- * FR-1 setup wizard routes (Epic 15, Story 15-2). Owner-only; the
+ * FR-1 setup wizard routes (Epic 15, Story 15-2). Company-admin only; the
  * technician entry point is `me/access` in a later story. No idempotency
  * interceptor (AD-6): start/step-save are idempotent by construction and
  * complete is state-guarded.
@@ -36,7 +35,7 @@ export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -51,7 +50,7 @@ export class AttendanceController {
   }
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -80,7 +79,7 @@ export class AttendanceController {
   }
 
   @Patch()
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Persist the wizard step the owner is now on (FR-1 progress)',
@@ -98,7 +97,7 @@ export class AttendanceController {
   }
 
   @Post('complete')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

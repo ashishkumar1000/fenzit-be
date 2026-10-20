@@ -4,7 +4,7 @@ import { ReportsService } from './reports.service';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import { ROLES_KEY } from '../common/decorators/roles.decorator';
+import { CAN_KEY } from '../common/decorators/can.decorator';
 
 // Nest route metadata keys (mirror of @nestjs/common/constants — imported
 // values, not literals, per auth.controller.spec.ts's metadata-reflection style).
@@ -17,7 +17,8 @@ describe('ReportsController — retry route (POST :id/retry)', () => {
   const user: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -38,13 +39,13 @@ describe('ReportsController — retry route (POST :id/retry)', () => {
     expect(retryReport).toHaveBeenCalledWith(user, REQUEST_ID);
   });
 
-  it('is owner-only — a technician must never be able to re-queue a report', () => {
-    const roles = Reflect.getMetadata(
-      ROLES_KEY,
+  it('needs report.request — an employee must never be able to re-queue a report (a viewer may, decision 39)', () => {
+    const can = Reflect.getMetadata(
+      CAN_KEY,
       ReportsController.prototype.retryReport,
-    ) as Role[] | undefined;
+    ) as string[] | undefined;
 
-    expect(roles).toEqual([Role.OWNER]);
+    expect(can).toEqual(['report.request']);
   });
 
   it('is wired as POST reports/:id/retry', () => {
@@ -75,7 +76,8 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
   const user: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -125,9 +127,9 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
   describe('createReport (POST /reports)', () => {
     const handler = ReportsController.prototype.createReport;
 
-    it('is owner-only', () => {
-      const roles = Reflect.getMetadata(ROLES_KEY, handler) as Role[];
-      expect(roles).toEqual([Role.OWNER]);
+    it('needs report.request (employees are refused)', () => {
+      const can = Reflect.getMetadata(CAN_KEY, handler) as string[];
+      expect(can).toEqual(['report.request']);
     });
 
     it('is wired as POST reports with an explicit 201', () => {
@@ -149,9 +151,9 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
   describe('listReports (GET /reports)', () => {
     const handler = ReportsController.prototype.listReports;
 
-    it('is owner-only', () => {
-      const roles = Reflect.getMetadata(ROLES_KEY, handler) as Role[];
-      expect(roles).toEqual([Role.OWNER]);
+    it('needs report.read (employees are refused)', () => {
+      const can = Reflect.getMetadata(CAN_KEY, handler) as string[];
+      expect(can).toEqual(['report.read']);
     });
 
     it('is wired as GET reports with the default 200', () => {
@@ -165,9 +167,9 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
   describe('getReportStatus (GET /reports/:id)', () => {
     const handler = ReportsController.prototype.getReportStatus;
 
-    it('is owner-only', () => {
-      const roles = Reflect.getMetadata(ROLES_KEY, handler) as Role[];
-      expect(roles).toEqual([Role.OWNER]);
+    it('needs report.read (employees are refused)', () => {
+      const can = Reflect.getMetadata(CAN_KEY, handler) as string[];
+      expect(can).toEqual(['report.read']);
     });
 
     it('is wired as GET reports/:id with 200', () => {

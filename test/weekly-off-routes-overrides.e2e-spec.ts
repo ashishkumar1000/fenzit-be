@@ -48,8 +48,8 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
   let other: Crew;
   let T: string;
 
-  const owner = () => bearerFor(jwt, crew, crew.owner, 'owner');
-  const tech = () => bearerFor(jwt, crew, crew.staff[0], 'technician');
+  const owner = () => bearerFor(jwt, crew, crew.owner);
+  const tech = () => bearerFor(jwt, crew, crew.staff[0]);
   const url = (emp: string) =>
     `/api/v1/attendance/weekly-offs/overrides/${emp}`;
 
@@ -86,9 +86,10 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
     await resetWeeklyOff(admin, [crew, other], true);
     must(
       await admin
-        .from('users')
+        .from('memberships')
         .update({ status: 'active' })
-        .in('id', crew.staff),
+        .eq('tenant_id', crew.tenant)
+        .in('user_id', crew.staff),
     );
   });
 
@@ -115,7 +116,7 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
   };
 
   describe('PUT override', () => {
-    maybeIt('owner happy path: 200, response and DB row agree', async () => {
+    maybeIt('company admin happy path: 200, response and DB row agree', async () => {
       const [a] = crew.staff;
       const r = await put(a, { days: [6, 7] });
       expect(r.status).toBe(200);
@@ -155,7 +156,7 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
       });
     });
 
-    maybeIt('technician: 403 and nothing is written', async () => {
+    maybeIt('employee: 403 and nothing is written', async () => {
       const r = await put(crew.staff[1], { days: [6] }, tech());
       expect(r.status).toBe(403);
       expect(await overrideSpans(pool, crew.staff[1], T)).toEqual([]);
@@ -187,7 +188,12 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
 
     maybeIt('invited employee: 422 NOT_ACTIVE, nothing written', async () => {
       const a = crew.staff[2];
-      must(await admin.from('users').update({ status: 'invited' }).eq('id', a));
+      must(
+        await admin
+          .from('memberships')
+          .update({ status: 'invited' })
+          .eq('user_id', a),
+      );
       const r = await put(a, { days: [6] });
       expect(r.status).toBe(422);
       expect(r.body.error_code).toBe('ATTENDANCE_EMPLOYEE_NOT_ACTIVE');
@@ -264,10 +270,10 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
     );
 
     maybeIt(
-      'tenant isolation: each owner sees only own overrides',
+      'tenant isolation: each company admin sees only own overrides',
       async () => {
         await put(crew.staff[0], { days: [6] });
-        const otherOwner = bearerFor(jwt, other, other.owner, 'owner');
+        const otherOwner = bearerFor(jwt, other, other.owner);
         await put(other.staff[0], { days: [7] }, otherOwner);
         const mine = await list();
         const theirs = await list(otherOwner);
@@ -276,7 +282,7 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
       },
     );
 
-    maybeIt('technician: 403; no token: 401', async () => {
+    maybeIt('employee: 403; no token: 401', async () => {
       expect((await list(tech())).status).toBe(403);
       expect((await list({})).status).toBe(401);
     });

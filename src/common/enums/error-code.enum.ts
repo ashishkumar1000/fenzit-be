@@ -4,6 +4,14 @@ export enum ErrorCode {
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   RESOURCE_NOT_FOUND = 'RESOURCE_NOT_FOUND',
   DUPLICATE_RESOURCE = 'DUPLICATE_RESOURCE',
+  /** The invited person is already a member of THIS company (409). Another
+   *  company's member gets DUPLICATE_RESOURCE instead. */
+  ALREADY_IN_TEAM = 'ALREADY_IN_TEAM',
+  /** The number belongs to Fenzit staff, who cannot join a company (400). */
+  PLATFORM_STAFF_NOT_MEMBER = 'PLATFORM_STAFF_NOT_MEMBER',
+  /** A role change or removal would leave a company without an active
+   *  company admin (decision 27). Answers 409. */
+  LAST_ADMIN = 'LAST_ADMIN',
   RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
   INVALID_OTP = 'INVALID_OTP',
   OTP_EXPIRED = 'OTP_EXPIRED',

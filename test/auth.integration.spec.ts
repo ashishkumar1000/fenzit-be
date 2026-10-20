@@ -12,40 +12,144 @@ import {
   SmsDeliveryProvider,
 } from '../src/auth/sms-delivery.provider';
 import { OtpSessionStore } from '../src/auth/otp-session-store';
+import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'crypto';
 
-const mockUser = {
-  id: 'test-user-id-otp',
-  country_code: '+91',
-  phone_number: '9999999999',
-  name: null,
-  role: 'owner',
-  tenant_id: null,
-  status: 'active',
+type Row = Record<string, unknown>;
+type Result = {
+  data: unknown;
+  error: { code: string; message: string } | null;
 };
 
-const mockSelectOrdered = jest.fn();
-const mockInsertSelectSingle = jest.fn();
+// A small in-memory stand-in for the three tables login touches. `users`
+// holds identity only; company and role live on `memberships`.
+const db: Record<'users' | 'memberships' | 'tenants', Row[]> = {
+  users: [],
+  memberships: [],
+  tenants: [],
+};
+
+/** Just enough of the Supabase query builder: select/insert/update + eq/neq. */
+class FakeQuery implements PromiseLike<Result> {
+  private mode: 'select' | 'insert' | 'update' = 'select';
+  private columns = '';
+  private patch: Row = {};
+  private newRow: Row = {};
+  private readonly filters: Array<(r: Row) => boolean> = [];
+
+  constructor(private readonly table: keyof typeof db) {}
+
+  select(columns = ''): this {
+    this.columns = columns;
+    return this;
+  }
+  insert(row: Row): this {
+    this.mode = 'insert';
+    this.newRow = row;
+    return this;
+  }
+  update(patch: Row): this {
+    this.mode = 'update';
+    this.patch = patch;
+    return this;
+  }
+  eq(col: string, val: unknown): this {
+    this.filters.push((r) => r[col] === val);
+    return this;
+  }
+  neq(col: string, val: unknown): this {
+    this.filters.push((r) => r[col] !== val);
+    return this;
+  }
+  maybeSingle(): Promise<Result> {
+    return this.run().then((r) =>
+      r.error ? r : { data: (r.data as Row[])[0] ?? null, error: null },
+    );
+  }
+  single(): Promise<Result> {
+    return this.run().then((r) => {
+      if (r.error) return r;
+      const row = (r.data as Row[])[0];
+      return row
+        ? { data: row, error: null }
+        : { data: null, error: { code: 'PGRST116', message: 'no rows' } };
+    });
+  }
+  then<T1 = Result, T2 = never>(
+    ok?: ((v: Result) => T1 | PromiseLike<T1>) | null,
+    fail?: ((e: unknown) => T2 | PromiseLike<T2>) | null,
+  ): PromiseLike<T1 | T2> {
+    return this.run().then(ok, fail);
+  }
+
+  private run(): Promise<Result> {
+    const rows = db[this.table];
+    if (this.mode === 'insert') {
+      const clash =
+        this.table === 'users' &&
+        rows.some(
+          (u) =>
+            u['country_code'] === this.newRow['country_code'] &&
+            u['phone_number'] === this.newRow['phone_number'],
+        );
+      if (clash) {
+        return Promise.resolve({
+          data: null,
+          error: { code: '23505', message: 'duplicate phone' },
+        });
+      }
+      const row: Row =
+        this.table === 'users'
+          ? { platform_admin: false, disabled: false, ...this.newRow }
+          : { ...this.newRow };
+      rows.push(row);
+      return Promise.resolve({ data: [row], error: null });
+    }
+    const hit = rows.filter((r) => this.filters.every((f) => f(r)));
+    if (this.mode === 'update') {
+      hit.forEach((r) => Object.assign(r, this.patch));
+      return Promise.resolve({ data: hit, error: null });
+    }
+    // The access check embeds the person's memberships in the users read.
+    const data = this.columns.includes('memberships:')
+      ? hit.map((u) => ({
+          ...u,
+          memberships: db.memberships.filter((m) => m['user_id'] === u['id']),
+        }))
+      : hit;
+    return Promise.resolve({ data, error: null });
+  }
+}
 
 const mockAdminClient = {
-  from: jest.fn().mockImplementation((table: string) => {
-    if (table === 'users') {
-      return {
-        select: jest.fn().mockReturnValue({
-          eq: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({ order: mockSelectOrdered }),
-          }),
-        }),
-        insert: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({ single: mockInsertSelectSingle }),
-        }),
-      };
-    }
-    return {};
-  }),
+  from: jest.fn((table: keyof typeof db) => new FakeQuery(table)),
 };
+
+const COMPANY = '11111111-1111-4111-8111-111111111111';
+const seedUser = (phone: string, extra: Row = {}): Row => {
+  const user: Row = {
+    id: randomUUID(),
+    country_code: '+91',
+    phone_number: phone,
+    name: null,
+    platform_admin: false,
+    disabled: false,
+    ...extra,
+  };
+  db.users.push(user);
+  return user;
+};
+const seedMembership = (userId: unknown, role: string, status: string) =>
+  db.memberships.push({ user_id: userId, tenant_id: COMPANY, role, status });
 
 describe('Auth Integration Tests (e2e)', () => {
   let app: NestFastifyApplication;
+
+  beforeEach(() => {
+    db.users.length = 0;
+    db.memberships.length = 0;
+    db.tenants.length = 0;
+  });
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -224,9 +328,6 @@ describe('Auth Integration Tests (e2e)', () => {
       failingSend.mockRejectedValueOnce(
         new SmsDeliveryError('MSG91 send timed out after 4000ms', 'timeout'),
       );
-      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
-      mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
-
       const { sendStatus, sessionId } =
         await sendAndCaptureSession('5550002222');
 
@@ -245,11 +346,6 @@ describe('Auth Integration Tests (e2e)', () => {
   });
 
   describe('POST /api/v1/auth/otp/verify', () => {
-    beforeEach(() => {
-      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
-      mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
-    });
-
     it('should verify OTP and return JWT for valid code', async () => {
       const sendResponse = await app.inject({
         method: 'POST',
@@ -273,14 +369,109 @@ describe('Auth Integration Tests (e2e)', () => {
       expect(verifyResponse.statusCode).toBe(200);
       const verifyBody = JSON.parse(verifyResponse.body);
       expect(verifyBody).toHaveProperty('token');
+      // A brand-new person has no company yet: no tenant, no role.
       expect(verifyBody.user).toMatchObject({
         userId: expect.any(String),
         tenantId: null,
-        role: 'owner',
+        role: null,
+        platformAdmin: false,
       });
       expect(verifyBody.token).toMatch(
         /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
       );
+      // The token is identity only; company and role never ride in it.
+      const claims = app.get(JwtService).decode(verifyBody.token);
+      expect(claims).toMatchObject({
+        sub: verifyBody.user.userId,
+        typ: 'access',
+      });
+      expect(claims).not.toHaveProperty('role');
+      expect(claims).not.toHaveProperty('tenantId');
+    });
+
+    /** Send an OTP for a phone and verify it with the master code. */
+    async function login(phone: string) {
+      const send = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/send',
+        payload: { countryCode: '+91', phoneNumber: phone },
+      });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp/verify',
+        payload: {
+          otpSessionId: JSON.parse(send.body).otp_session_id,
+          otpCode: '1039',
+        },
+      });
+      return { status: res.statusCode, body: JSON.parse(res.body) };
+    }
+
+    it('first sign-in activates an invited membership and returns its company and role', async () => {
+      const user = seedUser('4440000001');
+      seedMembership(user['id'], 'employee', 'invited');
+
+      const { status, body } = await login('4440000001');
+
+      expect(status).toBe(200);
+      expect(body.user).toMatchObject({
+        userId: user['id'],
+        tenantId: COMPANY,
+        role: 'employee',
+      });
+      expect(db.memberships[0]['status']).toBe('active');
+    });
+
+    it('an active company admin signs in without any change to the membership', async () => {
+      const user = seedUser('4440000002', { name: 'Asha' });
+      seedMembership(user['id'], 'company_admin', 'active');
+
+      const { status, body } = await login('4440000002');
+
+      expect(status).toBe(200);
+      expect(body.user).toMatchObject({
+        tenantId: COMPANY,
+        role: 'company_admin',
+        name: 'Asha',
+      });
+      expect(db.memberships).toHaveLength(1);
+      expect(db.memberships[0]['status']).toBe('active');
+    });
+
+    it('a person whose only membership was removed gets no company and no role, and it stays removed', async () => {
+      const user = seedUser('4440000003');
+      seedMembership(user['id'], 'employee', 'removed');
+
+      const { status, body } = await login('4440000003');
+
+      expect(status).toBe(200);
+      expect(body.user).toMatchObject({ tenantId: null, role: null });
+      expect(db.memberships[0]['status']).toBe('removed');
+    });
+
+    it('a platform admin signs in as platform_admin with no company', async () => {
+      seedUser('4440000004', { platform_admin: true });
+
+      const { status, body } = await login('4440000004');
+
+      expect(status).toBe(200);
+      expect(body.user).toMatchObject({
+        tenantId: null,
+        role: 'platform_admin',
+        platformAdmin: true,
+      });
+    });
+
+    it('a disabled person is refused with the generic 401 INVALID_OTP and nothing is activated', async () => {
+      const user = seedUser('4440000005', { disabled: true });
+      seedMembership(user['id'], 'employee', 'invited');
+
+      const { status, body } = await login('4440000005');
+
+      expect(status).toBe(401);
+      expect(body.error_code).toBe('INVALID_OTP');
+      expect(body).not.toHaveProperty('token');
+      expect(db.memberships[0]['status']).toBe('invited');
     });
 
     it('should reject a wrong code with 401 INVALID_OTP over HTTP', async () => {
@@ -367,11 +558,6 @@ describe('Auth Integration Tests (e2e)', () => {
   });
 
   describe('JWT authentication', () => {
-    beforeEach(() => {
-      mockSelectOrdered.mockResolvedValue({ data: [], error: null });
-      mockInsertSelectSingle.mockResolvedValue({ data: mockUser, error: null });
-    });
-
     it('should allow protected route access with valid JWT', async () => {
       const sendResponse = await app.inject({
         method: 'POST',
@@ -402,6 +588,38 @@ describe('Auth Integration Tests (e2e)', () => {
 
       expect(realtimeResponse.statusCode).toBe(200);
       expect(JSON.parse(realtimeResponse.body)).toHaveProperty('token');
+    });
+
+    it('refuses an old-style token that carries tenantId and role instead of the access marker', async () => {
+      const user = seedUser('4440000006');
+      seedMembership(user['id'], 'company_admin', 'active');
+      const oldToken = app
+        .get(JwtService)
+        .sign({ sub: user['id'], tenantId: COMPANY, role: 'owner' });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/realtime-token',
+        headers: { authorization: `Bearer ${oldToken}` },
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('refuses a valid access token once the person is disabled', async () => {
+      const user = seedUser('4440000007');
+      const token = app
+        .get(JwtService)
+        .sign({ sub: user['id'], typ: 'access' });
+      user['disabled'] = true;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/realtime-token',
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+      expect(response.statusCode).toBe(401);
     });
   });
 });

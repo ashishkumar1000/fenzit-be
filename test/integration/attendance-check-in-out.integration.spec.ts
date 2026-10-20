@@ -13,6 +13,7 @@
  * removed in afterAll.
  */
 import { Pool } from 'pg';
+import { Role } from '../../src/common/enums/role.enum';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
@@ -176,11 +177,15 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     // Pre-clean leftovers from an aborted earlier run (same probe phones).
     const { data: stale } = await admin
       .from('users')
-      .select('id, tenant_id')
+      .select('id')
       .in('phone_number', PROBE_PHONES);
     if (stale && stale.length > 0) {
+      const { data: staleMemberships } = await admin
+        .from('memberships')
+        .select('tenant_id')
+        .in('user_id', stale.map((s) => s.id));
       const staleTenants = [
-        ...new Set(stale.map((s) => s.tenant_id).filter(Boolean)),
+        ...new Set((staleMemberships ?? []).map((m) => m.tenant_id)),
       ] as string[];
       for (const t of staleTenants) {
         await admin.from('attendance_records').delete().eq('tenant_id', t);
@@ -195,11 +200,15 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
           .from('attendance_weekly_off_defaults')
           .delete()
           .eq('tenant_id', t);
-        await admin.from('attendance_enrolments').delete().eq('tenant_id', t);
-        await admin
-          .from('attendance_office_assignments')
-          .delete()
-          .eq('tenant_id', t);
+        // Enrolments + assignments go in ONE statement (the coverage trigger
+        // fires per statement); the company delete no longer cascades them.
+        await pool.query(
+          `with gone as (
+             delete from public.attendance_enrolments where tenant_id = $1 returning 1
+           )
+           delete from public.attendance_office_assignments where tenant_id = $1`,
+          [t],
+        );
         await admin.from('attendance_onboarding').delete().eq('tenant_id', t);
         await admin
           .from('attendance_setup_progress')
@@ -207,6 +216,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
           .eq('tenant_id', t);
         await admin.from('attendance_settings').delete().eq('tenant_id', t);
         await admin.from('attendance_offices').delete().eq('tenant_id', t);
+        await admin.from('memberships').delete().eq('tenant_id', t);
         await admin.from('tenants').delete().eq('id', t);
       }
       await admin
@@ -224,45 +234,46 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       return res.data as T;
     };
 
-    must(
-      await admin.from('users').insert({
-        id: OWNER,
-        role: 'owner',
-        status: 'active',
-        country_code: '+91',
-        phone_number: PROBE_PHONES[0],
-        name: '16-x probe owner',
-      }),
-    );
-    must(
-      await admin.from('tenants').insert({
-        id: TENANT,
-        owner_id: OWNER,
-        company_name: '16-x journey probe',
-        state_code: 'KA',
-      }),
-    );
-    await admin.from('users').update({ tenant_id: TENANT }).eq('id', OWNER);
+    // Identity first, then the company, then who belongs to it.
     must(
       await admin.from('users').insert([
+        {
+          id: OWNER,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[0],
+          name: '16-x probe owner',
+        },
         ...ALL_TECHS.map((id, i) => ({
           id,
-          tenant_id: TENANT,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PROBE_PHONES[i + 1],
           name: `16-x probe tech ${i}`,
         })),
         {
           id: TECH_NEW,
-          tenant_id: TENANT,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PROBE_PHONES[6],
           name: '16-x probe tech (never enrolled)',
         },
+      ]),
+    );
+    must(
+      await admin.from('tenants').insert({
+        id: TENANT,
+        created_by: OWNER,
+        company_name: '16-x journey probe',
+        state_code: 'KA',
+      }),
+    );
+    must(
+      await admin.from('memberships').insert([
+        { user_id: OWNER, tenant_id: TENANT, role: 'company_admin', status: 'active' },
+        ...[...ALL_TECHS, TECH_NEW].map((id) => ({
+          user_id: id,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+        })),
       ]),
     );
     must(
@@ -323,11 +334,15 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       .from('attendance_weekly_off_defaults')
       .delete()
       .eq('tenant_id', TENANT);
-    await admin.from('attendance_enrolments').delete().eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_office_assignments')
-      .delete()
-      .eq('tenant_id', TENANT);
+    // Enrolments + assignments go in ONE statement (the coverage trigger
+    // fires per statement); the company delete no longer cascades them.
+    await pool.query(
+      `with gone as (
+         delete from public.attendance_enrolments where tenant_id = $1 returning 1
+       )
+       delete from public.attendance_office_assignments where tenant_id = $1`,
+      [TENANT],
+    );
     await admin.from('attendance_onboarding').delete().eq('tenant_id', TENANT);
     await admin
       .from('attendance_setup_progress')
@@ -335,8 +350,9 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       .eq('tenant_id', TENANT);
     await admin.from('attendance_settings').delete().eq('tenant_id', TENANT);
     await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
-    await admin.from('users').delete().in('id', [OWNER, ...ALL_TECHS, TECH_NEW]);
+    await admin.from('memberships').delete().eq('tenant_id', TENANT);
     await admin.from('tenants').delete().eq('id', TENANT);
+    await admin.from('users').delete().in('id', [OWNER, ...ALL_TECHS, TECH_NEW]);
     await servicePool.onModuleDestroy();
     await pool.end();
   });
@@ -345,7 +361,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const key = randomUUID();
     const err = await service
       .checkIn(
-        { userId: TECH_MAIN, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         key,
       )
@@ -368,7 +384,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const key = randomUUID();
     const err = await service
       .checkIn(
-        { userId: TECH_NEW, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_NEW, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         key,
       )
@@ -397,7 +413,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
 
     const key = randomUUID();
     const response = await service.checkIn(
-      { userId: TECH_MAIN, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+      { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
       fix(),
       key,
     );
@@ -451,7 +467,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const key = rows[0].request_id as string;
 
     const replay = await service.checkIn(
-      { userId: TECH_MAIN, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+      { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
       fix(),
       key,
     );
@@ -472,7 +488,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const key = randomUUID();
     const err = await service
       .checkIn(
-        { userId: TECH_MAIN, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         key,
       )
@@ -507,7 +523,8 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
         {
           userId: TECH_WEEKLY,
           tenantId: TENANT,
-          role: 'technician',
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
           rawJwt: 'x',
         },
         fix(),
@@ -532,7 +549,8 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
         {
           userId: TECH_HOLIDAY,
           tenantId: TENANT,
-          role: 'technician',
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
           rawJwt: 'x',
         },
         fix(),
@@ -550,7 +568,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const key = randomUUID();
     const err = await service
       .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix({ ...DELHI }),
         key,
       )
@@ -575,7 +593,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const before = await attemptCount(TECH_RATE);
     const replayErr = await service
       .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix({ ...DELHI }),
         key,
       )
@@ -592,7 +610,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   maybeIt('low_accuracy lands as its own counted outcome', async () => {
     await expect(
       service.checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix({ accuracyM: 150 }),
         randomUUID(),
       ),
@@ -603,7 +621,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   maybeIt('stale_fix is its own counted outcome (probed on TECH_OUT, whose budget stays under the limit)', async () => {
     await expect(
       service.checkIn(
-        { userId: TECH_OUT, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix({ fixAgeMs: 40_000 }),
         randomUUID(),
       ),
@@ -630,7 +648,8 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
           {
             userId: TECH_RATE,
             tenantId: TENANT,
-            role: 'technician',
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
             rawJwt: 'x',
           },
           fix({ mocked: true }),
@@ -648,7 +667,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     // Mocked #3 (the 5th counted rejection → also arms the block).
     const err = await service
       .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix({ mocked: true }),
         randomUUID(),
       )
@@ -689,7 +708,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   maybeIt('while blocked: 429 + Retry-After, recorded but never counted (AD-15)', async () => {
     const err = await service
       .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         randomUUID(),
       )
@@ -720,7 +739,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       [TECH_RATE],
     );
     const response = await service.checkIn(
-      { userId: TECH_RATE, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+      { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
       fix(),
       randomUUID(),
     );
@@ -730,7 +749,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   maybeIt('check-out without a check-in records not_checked_in (409)', async () => {
     const err = await service
       .checkOut(
-        { userId: TECH_OUT, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         randomUUID(),
       )
@@ -746,12 +765,12 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
 
   maybeIt('check-out updates the SAME row and reports worked minutes + early checkout', async () => {
     await service.checkIn(
-      { userId: TECH_OUT, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+      { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
       fix(),
       randomUUID(),
     );
     const response = await service.checkOut(
-      { userId: TECH_OUT, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+      { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
       fix(),
       randomUUID(),
     );
@@ -762,9 +781,14 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     expect(response.earlyCheckoutMinutes).toBe(
       RULE_END_MINUTE - minuteOfOffsetInstant(response.checkoutAt),
     );
+    // Worked minutes = real elapsed, nearest minute, never zero for a
+    // non-zero span (user ruling 2026-10-02). Read off the two instants,
+    // NOT off their wall-minute labels: a punch pair a few seconds apart
+    // inside one wall minute still counts as 1.
+    const elapsedMs =
+      Date.parse(response.checkoutAt) - Date.parse(response.checkinAt);
     expect(response.workedMinutes).toBe(
-      minuteOfOffsetInstant(response.checkoutAt) -
-        minuteOfOffsetInstant(response.checkinAt),
+      elapsedMs === 0 ? 0 : Math.max(1, Math.round(elapsedMs / 60_000)),
     );
 
     const r = await pool.query(
@@ -785,7 +809,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   maybeIt('a second check-out records already_checked_out (409)', async () => {
     const err = await service
       .checkOut(
-        { userId: TECH_OUT, tenantId: TENANT, role: 'technician', rawJwt: 'x' },
+        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
         fix(),
         randomUUID(),
       )
@@ -830,7 +854,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       effectiveFrom: today,
     });
     const state = await enrolments.reassignOffice(
-      { userId: OWNER, tenantId: TENANT, role: 'owner', rawJwt: 'x' },
+      { userId: OWNER, tenantId: TENANT, role: Role.COMPANY_ADMIN, platformAdmin: false, rawJwt: 'x' },
       TECH_MAIN,
       dto,
     );

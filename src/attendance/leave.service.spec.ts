@@ -18,7 +18,9 @@ import { ApplyLeaveDto, OnBehalfLeaveDto } from './dto/leave.dto';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const EMPLOYEE = '22222222-2222-4222-8222-222222222222';
-const OWNER = '33333333-3333-4333-8333-333333333333';
+const ADMIN = '33333333-3333-4333-8333-333333333333';
+// A second company admin — every admin gets the alert (decision 36).
+const ADMIN_2 = '44444444-4444-4444-8444-444444444444';
 const KEY = '44444444-4444-4444-8444-444444444444';
 const REQ_DB_ID = '55555555-5555-4555-8555-555555555555';
 
@@ -50,7 +52,8 @@ function user(id: string): RequestUser {
   return {
     userId: id,
     tenantId: TENANT,
-    role: 'technician',
+    role: 'employee',
+    platformAdmin: false,
   } as unknown as RequestUser;
 }
 
@@ -90,8 +93,8 @@ function baseRouter(
       return { rows: [{ today: '2026-09-29' }] };
     if (sql.includes('select now() as now'))
       return { rows: [{ now: new Date('2026-09-29T03:30:00Z') }] };
-    if (sql.includes('select owner_id from public.tenants'))
-      return { rows: [{ owner_id: OWNER }] };
+    if (sql.includes("m.role = 'company_admin'"))
+      return { rows: [{ user_id: ADMIN }, { user_id: ADMIN_2 }] };
     if (sql.includes('select timezone from public.tenants'))
       return { rows: [{ timezone: 'Asia/Kolkata' }] };
     // findRequestIdByKey (replay) — caller-scoped.
@@ -122,8 +125,8 @@ function baseRouter(
     if (sql.includes('from public.leave_events'))
       return { rows: overrides.lastEvent ? [overrides.lastEvent] : [] };
     // employeeExistsInTenant (the D10 on-behalf 404 check) — the count
-    // shape, kept OFF the `select name from public.users` route below.
-    if (sql.includes('from public.users') && sql.includes('count(*)'))
+    // shape, kept OFF the `select u.name` route below.
+    if (sql.includes('from public.memberships') && sql.includes('count(*)'))
       return { rows: [{ n: '1' }] };
     // readEnrolmentFloor AND buildDayContext both read this table — the
     // row carries both shapes (valid+enabled_at for the context).
@@ -194,7 +197,7 @@ function baseRouter(
     }
     if (sql.includes('insert into public.leave_events')) return { rows: [] };
     if (sql.includes('insert into public.notifications')) return { rows: [] };
-    if (sql.includes('select name from public.users'))
+    if (sql.includes('select u.name'))
       return { rows: [{ name: 'Arya' }] };
     return { rows: [] };
   };
@@ -227,7 +230,7 @@ async function rejectionOf(
 }
 
 describe('LeaveService — apply (17-1)', () => {
-  it('locks tenant → employee, inserts the request, all-pending days, event and owner notification', async () => {
+  it('locks tenant → employee, inserts the request, all-pending days, event and one notification per company admin', async () => {
     const { tx, queries, service } = fakeTx(baseRouter());
     const view = await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
     expect(queries[0].sql).toContain('attendance_lock_tenant');
@@ -240,14 +243,17 @@ describe('LeaveService — apply (17-1)', () => {
       q.sql.includes('insert into public.leave_request_days'),
     );
     expect(daysInsert?.params?.[3]).toBe('pending');
-    const notification = queries.find((q) =>
+    const notifications = queries.filter((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(notification?.params?.[1]).toBe(OWNER); // recipient = the owner
-    expect(JSON.parse(notification?.params?.[3] as string)).toMatchObject({
-      employeeName: 'Arya',
-      workingDays: 3,
-    });
+    // One row per company admin.
+    expect(notifications.map((n) => n.params?.[1])).toEqual([ADMIN, ADMIN_2]);
+    for (const n of notifications) {
+      expect(JSON.parse(n.params?.[3] as string)).toMatchObject({
+        employeeName: 'Arya',
+        workingDays: 3,
+      });
+    }
     expect(view.status).toBe('pending');
     expect(view.workingDays).toBe(3);
   });
@@ -381,7 +387,7 @@ describe('LeaveService — apply (17-1)', () => {
       employeeId: EMPLOYEE,
     });
     await service.applyOnBehalf(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       onBehalf,
       KEY,
     );
@@ -396,7 +402,7 @@ describe('LeaveService — apply (17-1)', () => {
     const requestInsert = queries.find((q) =>
       q.sql.includes('insert into public.leave_requests'),
     );
-    expect(requestInsert?.params?.[7]).toBe(OWNER); // created_by = the owner
+    expect(requestInsert?.params?.[7]).toBe(ADMIN); // created_by = the admin
   });
 });
 
@@ -404,7 +410,7 @@ describe('LeaveService — approve / reject (17-2)', () => {
   it('approves every pending day under the lock and notifies the employee', async () => {
     const { queries, service } = fakeTx(baseRouter());
     const view = await service.approve(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
     );
     const update = queries.find((q) =>
@@ -423,11 +429,11 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const { queries, service } = fakeTx(
       baseRouter({
         sourceDays: [],
-        lastEvent: { cause: 'approve', actor_id: OWNER },
+        lastEvent: { cause: 'approve', actor_id: ADMIN },
       }),
     );
     await service.approve(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
     );
     expect(
@@ -442,12 +448,12 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const { service } = fakeTx(
       baseRouter({
         sourceDays: [],
-        lastEvent: { cause: 'approve', actor_id: OWNER },
+        lastEvent: { cause: 'approve', actor_id: ADMIN },
       }),
     );
     const { body } = await rejectionOf(
       service.reject(
-        { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
         REQ_DB_ID,
         'No budget',
       ),
@@ -459,7 +465,7 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const { service } = fakeTx(baseRouter({ request: null }));
     const { status } = await rejectionOf(
       service.approve(
-        { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
         REQ_DB_ID,
       ),
     );
@@ -478,7 +484,7 @@ describe('LeaveService — revoke with the split rule (17-3)', () => {
       baseRouter({ sourceDays, updateCount: 2 }),
     );
     await service.revoke(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
       'Needed on site',
     );
@@ -525,7 +531,7 @@ describe('LeaveService — revoke with the split rule (17-3)', () => {
       return inner;
     });
     await service.revoke(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
       'Needed on site',
     );
@@ -539,11 +545,11 @@ describe('LeaveService — revoke with the split rule (17-3)', () => {
     const ownRetry = fakeTx(
       baseRouter({
         sourceDays: [],
-        lastEvent: { cause: 'owner_revoke', actor_id: OWNER },
+        lastEvent: { cause: 'owner_revoke', actor_id: ADMIN },
       }),
     );
     await ownRetry.service.revoke(
-      { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
       'Needed on site',
     );
@@ -556,12 +562,12 @@ describe('LeaveService — revoke with the split rule (17-3)', () => {
     const conflict = fakeTx(
       baseRouter({
         sourceDays: [],
-        lastEvent: { cause: 'approve', actor_id: OWNER },
+        lastEvent: { cause: 'approve', actor_id: ADMIN },
       }),
     );
     const { body } = await rejectionOf(
       conflict.service.revoke(
-        { userId: OWNER, tenantId: TENANT } as unknown as RequestUser,
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
         REQ_DB_ID,
         'Needed on site',
       ),
@@ -571,7 +577,7 @@ describe('LeaveService — revoke with the split rule (17-3)', () => {
 });
 
 describe('LeaveService — cancel (17-3, FR-15)', () => {
-  it('cancels the employee’s actionable pending/approved dates and notifies the OWNER', async () => {
+  it('cancels the employee’s actionable pending/approved dates and notifies every company admin', async () => {
     const { queries, service } = fakeTx(
       baseRouter({
         sourceDays: [
@@ -586,10 +592,10 @@ describe('LeaveService — cancel (17-3, FR-15)', () => {
     );
     expect(update?.params?.[0]).toBe('cancelled');
     expect(update?.params?.[3]).toEqual(['pending', 'approved']);
-    const notification = queries.find((q) =>
+    const notifications = queries.filter((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(notification?.params?.[1]).toBe(OWNER);
+    expect(notifications.map((n) => n.params?.[1])).toEqual([ADMIN, ADMIN_2]);
   });
 
   it('404s when the request belongs to ANOTHER employee (me-route scoping)', async () => {

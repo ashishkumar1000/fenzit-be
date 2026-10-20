@@ -8,6 +8,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { StorageService } from '../src/storage/storage.service';
 import { V1_TEMPLATE } from './fixtures/v1-template';
 
@@ -16,9 +18,9 @@ describe('Sync (e2e)', () => {
   let jwtService: JwtService;
   let mockCreate: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-sync-e2e';
+  const TENANT_ID = '55555555-5555-4555-8555-555555555555';
   const TECH_ID = '33333333-3333-4333-8333-333333333333';
-  const OWNER_ID = 'owner-uuid-sync-e2e';
+  const OWNER_ID = '66666666-6666-4666-8666-666666666666';
 
   const jobRow = (updatedAt: string) => ({
     id: 'job-uuid-sync-1',
@@ -47,17 +49,22 @@ describe('Sync (e2e)', () => {
   beforeAll(async () => {
     mockCreate = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: mockCreate, createAdmin: jest.fn() })
-      .overrideProvider(StorageService)
-      .useValue({
-        getPresignedUploadUrl: jest.fn(),
-        getPresignedReadUrl: jest.fn(),
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
       })
-      .compile();
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: mockCreate, createAdmin: jest.fn() })
+        .overrideProvider(StorageService)
+        .useValue({
+          getPresignedUploadUrl: jest.fn(),
+          getPresignedReadUrl: jest.fn(),
+        }),
+      [
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -78,19 +85,11 @@ describe('Sync (e2e)', () => {
   });
 
   function techJwt(techId: string = TECH_ID) {
-    return jwtService.sign({
-      sub: techId,
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, techId);
   }
 
   function ownerJwt() {
-    return jwtService.sign({
-      sub: OWNER_ID,
-      tenantId: TENANT_ID,
-      role: 'owner',
-    });
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function buildChain(rows: any[]) {
@@ -154,6 +153,14 @@ describe('Sync (e2e)', () => {
       expect(body.jobs[0]).not.toHaveProperty('requireCompletionSignature');
       // gt() should NOT have been called for initial sync
       expect(chain.gt).not.toHaveBeenCalled();
+      // The database client is built from a one-minute token for the caller
+      // (sub = the caller, role 'authenticated'), not the login token.
+      const dbToken = mockCreate.mock.calls[0][0] as string;
+      expect(dbToken).not.toBe(techJwt());
+      expect(jwtService.decode(dbToken)).toMatchObject({
+        sub: TECH_ID,
+        role: 'authenticated',
+      });
     });
 
     it('AC2 — delta sync with lastSyncedAt applies gt filter', async () => {
@@ -190,7 +197,7 @@ describe('Sync (e2e)', () => {
       expect(body.serverTime).toBeDefined();
     });
 
-    it('AC5 — owner JWT returns 403', async () => {
+    it('AC5 — company admin token returns 403 (no job.sync permission)', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/sync',

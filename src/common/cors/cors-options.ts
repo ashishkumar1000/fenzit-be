@@ -18,6 +18,8 @@ export const CORS_ALLOWED_HEADERS = [
   CORRELATION_HEADER,
   SESSION_HEADER,
   IDEMPOTENCY_HEADER,
+  // Fenzit staff name the company they act on with this header.
+  'X-Company-Id',
 ];
 
 /**

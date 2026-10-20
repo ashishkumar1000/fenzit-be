@@ -265,7 +265,7 @@ export class CustomersService {
   }
 
   /**
-   * Owner-only partial update (SPEC-edit-customer CAP-4), modelled on the
+   * Company-admin partial update (SPEC-edit-customer CAP-4), modelled on the
    * offices updateOffice precedent. Only the mutable subset is writable — the
    * update DTO structurally excludes countryCode/phoneNumber, so the stored
    * phone can never change here (and no unique column is mutable, so no 23505
@@ -550,7 +550,7 @@ export class CustomersService {
    * Total number of customers in the tenant — an exact DB count, independent
    * of the cursor-paginated list above (whose page length caps at the page
    * size). Consumed by the profile endpoint (`customerCount` on
-   * `OwnerProfileResponse`) so Home can show the real total without paging
+   * `CompanyProfileResponse`) so Home can show the real total without paging
    * through the customer list.
    */
   async countCustomers(tenantId: string): Promise<number> {

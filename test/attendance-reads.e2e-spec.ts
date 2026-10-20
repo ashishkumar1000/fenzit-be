@@ -8,6 +8,9 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { MembershipResolver } from '../src/common/auth/membership-resolver';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, fakeMembershipResolver } from './helpers/auth-test-utils';
 import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 
 /**
@@ -25,6 +28,11 @@ type RpcResult = { data: unknown; error: Record<string, unknown> | null };
 type SqlResult = { rows: unknown[] };
 
 const TENANT_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f0';
+
+// Real-looking ids: the guard refuses a token whose `sub` is not a UUID.
+const OWNER_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a1';
+// A signed-in person who belongs to no company yet.
+const NO_COMPANY_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a3';
 const EMPLOYEE_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f1';
 const OFFICE_ID = 'f2e0a5c7-1b9d-4a5c-8b6d-0000000000f2';
 const TENANT_TZ = 'Asia/Kolkata';
@@ -198,6 +206,14 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
       })
       .overrideProvider(PgPoolFactory)
       .useValue(pgTxOverride())
+      .overrideProvider(MembershipResolver)
+      .useValue(
+        fakeMembershipResolver([
+          { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+          { userId: EMPLOYEE_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+          { userId: NO_COMPANY_ID, tenantId: null, role: null },
+        ]),
+      )
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -217,19 +233,11 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
   beforeEach(resetQueues);
 
   function ownerJwt() {
-    return jwtService.sign({
-      sub: 'owner-uuid-e2e',
-      tenantId: TENANT_ID,
-      role: 'owner',
-    });
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: EMPLOYEE_ID,
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, EMPLOYEE_ID);
   }
 
   describe('GET /attendance/dashboard (owner)', () => {

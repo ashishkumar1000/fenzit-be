@@ -8,6 +8,13 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
+
+// Real-looking ids: the guard refuses a token whose `sub` is not a UUID.
+const OWNER_ID = '11111111-1111-4111-8111-111111111111';
+const TECH_ID = '22222222-2222-4222-8222-222222222222';
+const TENANT_ID = '33333333-3333-4333-8333-333333333333';
 
 describe('Company Onboarding (e2e)', () => {
   let app: NestFastifyApplication;
@@ -17,8 +24,8 @@ describe('Company Onboarding (e2e)', () => {
   const JWT_SECRET = 'test-jwt-secret-for-e2e-tests-minimum-32-chars';
 
   const rpcRow = {
-    id: 'tenant-uuid-e2e',
-    owner_id: 'owner-uuid-e2e',
+    id: TENANT_ID,
+    created_by: OWNER_ID,
     company_name: 'E2E Corp',
     gstin: null,
     address: null,
@@ -31,20 +38,27 @@ describe('Company Onboarding (e2e)', () => {
   beforeAll(async () => {
     mockRpc = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({
-        create: jest.fn(),
-        createAdmin: jest.fn().mockReturnValue({
-          rpc: mockRpc,
-          from: jest.fn().mockReturnValue({
-            upsert: jest.fn().mockResolvedValue({ error: null }),
+    // The owner has no company yet (they are setting one up); the employee
+    // belongs to another company.
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({
+          create: jest.fn(),
+          createAdmin: jest.fn().mockReturnValue({
+            rpc: mockRpc,
+            from: jest.fn().mockReturnValue({
+              upsert: jest.fn().mockResolvedValue({ error: null }),
+            }),
           }),
         }),
-      })
-      .compile();
+      [
+        { userId: OWNER_ID, tenantId: null, role: null },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -63,16 +77,12 @@ describe('Company Onboarding (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(userId = 'owner-uuid-e2e', tenantId: string | null = null) {
-    return jwtService.sign({ sub: userId, tenantId, role: 'owner' });
+  function ownerJwt(userId = OWNER_ID) {
+    return accessToken(jwtService, userId);
   }
 
-  function techJwt(userId = 'tech-uuid-e2e') {
-    return jwtService.sign({
-      sub: userId,
-      tenantId: 'some-tenant',
-      role: 'technician',
-    });
+  function techJwt(userId = TECH_ID) {
+    return accessToken(jwtService, userId);
   }
 
   describe('POST /api/v1/auth/company', () => {
@@ -93,7 +103,8 @@ describe('Company Onboarding (e2e)', () => {
       const body = JSON.parse(response.body);
       expect(body.token).toBeDefined();
       expect(body.tenant).toMatchObject({
-        id: 'tenant-uuid-e2e',
+        id: TENANT_ID,
+        createdBy: OWNER_ID,
         companyName: 'E2E Corp',
         stateCode: 'KA',
       });
@@ -116,7 +127,7 @@ describe('Company Onboarding (e2e)', () => {
       expect(response.statusCode).toBe(200);
     });
 
-    it('should return 403 for a Technician JWT (AC5)', async () => {
+    it('should return 403 for an employee token (AC5)', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/company',

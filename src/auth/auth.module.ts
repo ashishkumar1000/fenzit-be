@@ -7,6 +7,7 @@ import { InMemoryOtpSessionStore } from './in-memory-otp-session.store';
 import { SmsDeliveryProvider } from './sms-delivery.provider';
 import { MockSmsDeliveryProvider } from './mock-sms-delivery.provider';
 import { Msg91SmsDeliveryProvider } from './msg91-sms-delivery.provider';
+import { EmailLoginService } from './email-login.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 
 /**
@@ -61,6 +62,7 @@ export function createSmsDeliveryProvider(
   controllers: [AuthController],
   providers: [
     AuthService,
+    EmailLoginService,
     {
       provide: OtpSessionStore,
       useClass: InMemoryOtpSessionStore,

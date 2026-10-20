@@ -19,6 +19,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { StorageService } from '../src/storage/storage.service';
 import { V1_TEMPLATE } from './fixtures/v1-template';
 
@@ -47,20 +49,27 @@ describe('Idempotency (e2e) — Story 4.2', () => {
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({
-        create: jest.fn(),
-        createAdmin: mockCreateAdmin,
+    // Each technician belongs to a different company (the guard reads the
+    // company from the database, not the token).
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
       })
-      .overrideProvider(StorageService)
-      .useValue({
-        getPresignedUploadUrl: jest.fn(),
-        getPresignedReadUrl: jest.fn(),
-      })
-      .compile();
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({
+          create: jest.fn(),
+          createAdmin: mockCreateAdmin,
+        })
+        .overrideProvider(StorageService)
+        .useValue({
+          getPresignedUploadUrl: jest.fn(),
+          getPresignedReadUrl: jest.fn(),
+        }),
+      [
+        { userId: TECH_A, tenantId: TENANT_A, role: Role.EMPLOYEE },
+        { userId: TECH_B, tenantId: TENANT_B, role: Role.EMPLOYEE },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -83,8 +92,10 @@ describe('Idempotency (e2e) — Story 4.2', () => {
     mockCreateAdmin.mockReset();
   });
 
-  function techJwt(tenantId: string, sub: string) {
-    return jwtService.sign({ sub, tenantId, role: 'technician' });
+  // `_tenantId` is kept so each call still reads as "this tech in this
+  // company"; the company itself is fixed by the people list above.
+  function techJwt(_tenantId: string, sub: string) {
+    return accessToken(jwtService, sub);
   }
 
   /**

@@ -27,11 +27,10 @@ import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { UploadAttachmentDto } from './dto/upload-attachment.dto';
 import { ConfirmAttachmentDto } from './dto/confirm-attachment.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 @ApiTags('Jobs')
 @ApiBearerAuth()
@@ -44,7 +43,7 @@ export class JobsController {
   ) {}
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('job.write')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create a job for a customer and assign it to a technician',
@@ -60,7 +59,7 @@ export class JobsController {
   }
 
   @Get()
-  @Roles(Role.OWNER, Role.TECHNICIAN)
+  @Can('job.read_all', 'job.read_own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -77,7 +76,7 @@ export class JobsController {
   // NOTE: `:id` must stay BELOW the parameterless `@Get()` list route above —
   // it is a catch-all that would otherwise shadow `GET /jobs`.
   @Get(':id')
-  @Roles(Role.OWNER, Role.TECHNICIAN)
+  @Can('job.read_all', 'job.read_own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -102,7 +101,7 @@ export class JobsController {
   }
 
   @Patch(':id')
-  @Roles(Role.OWNER)
+  @Can('job.write')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Edit, reassign, or cancel a scheduled job',
@@ -129,7 +128,7 @@ export class JobsController {
   }
 
   @Post(':id/workflow')
-  @Roles(Role.TECHNICIAN)
+  @Can('job.advance')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
@@ -173,7 +172,7 @@ export class JobsController {
   }
 
   @Post(':id/attachments')
-  @Roles(Role.TECHNICIAN)
+  @Can('job.advance')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
@@ -203,7 +202,7 @@ export class JobsController {
   }
 
   @Post(':id/attachments/:uploadId/confirm')
-  @Roles(Role.TECHNICIAN)
+  @Can('job.advance')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Confirm a completed R2 upload (Phase 2 of two-phase upload)',

@@ -17,19 +17,25 @@ import {
 import type { FastifyReply } from 'fastify';
 import { AuthService } from './auth.service';
 import { Public } from '../common/decorators/public.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { EmailLoginDto } from './dto/email-login.dto';
+import { EmailLoginService } from './email-login.service';
 import { SetupCompanyDto } from './dto/setup-company.dto';
-import { InviteTechnicianDto } from './dto/invite-technician.dto';
+import { InviteMemberDto } from './dto/invite-member.dto';
+import { Can } from '../common/decorators/can.decorator';
+import { AnyMember } from '../common/decorators/any-member.decorator';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly emailLoginService: EmailLoginService,
+  ) {}
 
   @Public()
   @Post('otp/send')
@@ -92,8 +98,9 @@ export class AuthController {
         user: {
           userId: '550e8400-e29b-41d4-a716-446655440000',
           tenantId: null,
-          role: 'owner',
+          role: null,
           name: null,
+          platformAdmin: false,
         },
       },
     },
@@ -107,35 +114,78 @@ export class AuthController {
     return this.authService.verifyOtp(dto);
   }
 
+  // DEV SHORTCUT — remove at go-live gate (see email-login.constants.ts)
+  @Public()
+  @Post('email/login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Log in with email and the fixed development password',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Signed in. Same body as otp/verify. Signs in an existing user only; never creates one.',
+    schema: {
+      example: {
+        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+        user: {
+          userId: '550e8400-e29b-41d4-a716-446655440000',
+          tenantId: null,
+          role: 'platform_admin',
+          name: null,
+          platformAdmin: true,
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Wrong password, unknown email or disabled user (one generic answer)',
+  })
+  @ApiResponse({ status: 422, description: 'Malformed or missing fields' })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many failed attempts for this email (Retry-After)',
+  })
+  async emailLogin(@Body() dto: EmailLoginDto) {
+    return this.emailLoginService.login(dto);
+  }
+
   @Post('invite')
-  @Roles(Role.OWNER)
+  @Can('member.invite')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Invite a technician by phone number' })
+  @ApiOperation({ summary: 'Invite a person to the company by phone number' })
   @ApiResponse({
     status: 201,
     description:
-      'Invite created — technician user record created with status: invited',
-    schema: { example: { invite_id: '550e8400-e29b-41d4-a716-446655440000' } },
+      'Invite created — an invited membership for the person, with their employee code',
+    schema: {
+      example: {
+        invite_id: '550e8400-e29b-41d4-a716-446655440000',
+        employee_code: 'EMP-002',
+      },
+    },
   })
-  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — not a company admin' })
   @ApiResponse({
     status: 409,
-    description: 'Phone already an active member of this tenant',
+    description: 'The person already belongs to a company',
   })
   @ApiResponse({
     status: 422,
     description: 'Validation error — invalid skillIds or phone format',
   })
-  async inviteTechnician(
+  async inviteMember(
     @CurrentUser() user: RequestUser,
-    @Body() dto: InviteTechnicianDto,
+    @Body() dto: InviteMemberDto,
   ) {
-    return this.authService.inviteTechnician(user, dto);
+    return this.authService.inviteMember(user, dto);
   }
 
   @Post('company')
-  @Roles(Role.OWNER)
+  @Can('company.create_own', 'company.manage')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create or update company profile (idempotent)' })
   @ApiResponse({
@@ -146,7 +196,7 @@ export class AuthController {
     status: 200,
     description: 'Company updated — idempotent upsert, tenant already existed',
   })
-  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — not a company admin or platform admin' })
   @ApiResponse({
     status: 422,
     description: 'Validation error (invalid GSTIN, missing stateCode)',
@@ -165,19 +215,19 @@ export class AuthController {
   }
 
   @Get('realtime-token')
-  // Owner + technician (Story 14.2): the channel is per-user, not per-role.
+  @AnyMember()
+  // Any signed-in person (Story 14.2): the channel is per-user, not per-role.
   // AD-18's security gate is satisfied by Story 14-1 (RPC grants revoked,
   // users_update_own column-limited). Token scoping needs no change: the
   // sub-keyed realtime.messages policy (notifications_topic_recipient_only)
   // already denies any foreign topic server-side, so a technician token can
   // only ever receive their own user:<sub>:notifications topic.
-  @Roles(Role.OWNER, Role.TECHNICIAN)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mint a short-lived Supabase Realtime token' })
   @ApiResponse({
     status: 200,
     description:
-      'One-hour token carrying sub + role: "authenticated" + exp — the claim set Supabase Realtime accepts (the login JWT is rejected: no exp, role is not a Postgres role). Issued to owners and technicians alike; each token can only reach its own user topic.',
+      'One-hour token carrying sub + role: "authenticated" + exp — the claim set Supabase Realtime accepts (the login JWT is rejected: no exp, role is not a Postgres role). Issued to every signed-in member; each token can only reach its own user topic.',
     schema: {
       example: {
         token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',

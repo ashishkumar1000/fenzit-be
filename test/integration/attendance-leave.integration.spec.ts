@@ -24,6 +24,7 @@ import { CheckInOutService } from '../../src/attendance/check-in-out.service';
 import { EnrolmentsService } from '../../src/attendance/enrolments.service';
 import { ApplyLeaveDto } from '../../src/attendance/dto/leave.dto';
 import { CheckInOutDto } from '../../src/attendance/dto/check-in-out.dto';
+import { purgeCompanyChildren } from '../helpers/attendance-company-fixture';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
@@ -103,13 +104,21 @@ function fix(overrides: Partial<CheckInOutDto> = {}): CheckInOutDto {
 
 const KEY = () => randomUUID();
 
-/** A technician JWT-identity stub — services take the user, not a token. */
+/** An employee identity stub — services take the user, not a token. */
 const techUser = (userId: string) => ({
   userId,
   tenantId: TENANT,
-  role: 'technician',
+  role: 'employee',
+  platformAdmin: false,
+  rawJwt: '',
 });
-const ownerUser = () => ({ userId: OWNER, tenantId: TENANT, role: 'owner' });
+const ownerUser = () => ({
+  userId: OWNER,
+  tenantId: TENANT,
+  role: 'company_admin',
+  platformAdmin: false,
+  rawJwt: '',
+});
 
 describe('Leave journey (17-1..17-4, real DB)', () => {
   const maybeIt = IS_REAL_DB ? it : it.skip;
@@ -202,38 +211,48 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     );
 
     // ---- fixtures: tenant, owner, techs, office, rules, enrolments ----
+    // Users (identity only) -> tenant -> memberships: attendance rows point at
+    // a membership, so each person needs one before anything references them.
     must(
-      await admin.from('users').insert({
-        id: OWNER,
-        role: 'owner',
-        status: 'active',
-        country_code: '+91',
-        phone_number: PROBE_PHONES[0],
-        name: '17-4 probe owner',
-      }),
+      await admin.from('users').insert([
+        {
+          id: OWNER,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[0],
+          name: '17-4 probe owner',
+        },
+        ...ALL_TECHS.map((id, i) => ({
+          id,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[i + 1],
+          name: `17-4 probe tech ${i}`,
+        })),
+      ]),
     );
     must(
       await admin.from('tenants').insert({
         id: TENANT,
-        owner_id: OWNER,
+        created_by: OWNER,
         company_name: '17-4 journey probe',
         state_code: 'KA',
         timezone: 'Asia/Kolkata',
       }),
     );
-    await admin.from('users').update({ tenant_id: TENANT }).eq('id', OWNER);
     must(
-      await admin.from('users').insert(
-        ALL_TECHS.map((id, i) => ({
-          id,
+      await admin.from('memberships').insert([
+        {
+          user_id: OWNER,
           tenant_id: TENANT,
-          role: 'technician',
+          role: 'company_admin',
           status: 'active',
-          country_code: '+91',
-          phone_number: PROBE_PHONES[i + 1],
-          name: `17-4 probe tech ${i}`,
+        },
+        ...ALL_TECHS.map((id) => ({
+          user_id: id,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
         })),
-      ),
+      ]),
     );
     must(
       await admin.from('attendance_settings').insert({
@@ -360,7 +379,7 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     if (!IS_REAL_DB) return;
     // The FK-safe teardown IS probe 26's tenant-drop assertion: leave rows
     // RESTRICT to their request, both cascade from the tenant.
-    await admin.from('notifications').delete().eq('tenant_id', TENANT);
+    await purgeCompanyChildren(pool, [TENANT]);
     const { error } = await admin.from('tenants').delete().eq('id', TENANT);
     expect(error).toBeNull();
     await admin

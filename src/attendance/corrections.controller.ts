@@ -16,7 +16,6 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -26,20 +25,20 @@ import {
   ListCorrectionsQueryDto,
   PutCorrectionDto,
 } from './dto/correction.dto';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
- * The corrections routes (18-2). Owner class-level; the `me` history read
- * is a method-level @Roles(Role.TECHNICIAN) override (RolesGuard
- * getAllAndOverride). Cross-tenant ids 404 with no existence leak (D6).
+ * The corrections routes (18-2). Each method carries its own @Can
+ * permission (the `me` history read is `attendance.own`). Cross-tenant ids 404 with no existence leak (D6).
  */
 @ApiTags('Attendance')
 @ApiBearerAuth()
 @Controller('attendance')
-@Roles(Role.OWNER)
 export class CorrectionsController {
   constructor(private readonly correctionsService: CorrectionsService) {}
 
   @Put('corrections/:employeeId/:workDate')
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -71,6 +70,7 @@ export class CorrectionsController {
   }
 
   @Delete('corrections/:employeeId/:workDate')
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -96,6 +96,7 @@ export class CorrectionsController {
   }
 
   @Get('corrections')
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -115,6 +116,7 @@ export class CorrectionsController {
   }
 
   @Post('attempts/acknowledge')
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -138,7 +140,7 @@ export class CorrectionsController {
 
   /** The technician's own correction history (identity from the JWT). */
   @Get('me/corrections')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -69,7 +69,7 @@ export async function overlapCount(
      + (select count(*) from public.attendance_weekly_off_overrides a
           join public.attendance_weekly_off_overrides b
             on a.employee_id = b.employee_id and a.id < b.id and a.valid && b.valid
-         where a.employee_id in (select id from public.users where tenant_id = any($1::uuid[])))
+         where a.tenant_id = any($1::uuid[]))
      )::text as n`,
     [tenants],
   );

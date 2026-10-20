@@ -49,6 +49,7 @@ export function must<T>(res: {
 
 export interface Crew {
   tenant: string;
+  /** The company admin (the person who created the company). */
   owner: string;
   staff: string[];
 }
@@ -85,8 +86,8 @@ export function openClients(): { pool: Pool; admin: SupabaseClient } {
 }
 
 /**
- * One throwaway tenant: an owner plus `staffCount` active technicians. If a
- * later insert fails, the rows already inserted are removed before rethrowing.
+ * One throwaway tenant: a company admin plus `staffCount` active employees.
+ * Order: users (identity only) -> tenant -> memberships. If a later insert fails, the rows already inserted are removed before rethrowing.
  */
 export async function createCrew(
   admin: SupabaseClient,
@@ -100,8 +101,6 @@ export async function createCrew(
     must(
       await admin.from('users').insert({
         id: owner,
-        role: 'owner',
-        status: 'active',
         country_code: '+91',
         phone_number: phone(),
         name: 'wo owner',
@@ -112,8 +111,6 @@ export async function createCrew(
         await admin.from('users').insert(
           staff.map((id, i) => ({
             id,
-            role: 'technician',
-            status: 'active',
             country_code: '+91',
             phone_number: phone(),
             name: `wo staff ${i + 1}`,
@@ -124,17 +121,27 @@ export async function createCrew(
     must(
       await admin.from('tenants').insert({
         id: tenant,
-        owner_id: owner,
+        created_by: owner,
         company_name: `wo probe ${tenant.slice(0, 8)}`,
         state_code: 'KA',
         timezone: tz,
       }),
     );
     must(
-      await admin
-        .from('users')
-        .update({ tenant_id: tenant })
-        .in('id', [owner, ...staff]),
+      await admin.from('memberships').insert([
+        {
+          user_id: owner,
+          tenant_id: tenant,
+          role: 'company_admin',
+          status: 'active',
+        },
+        ...staff.map((id) => ({
+          user_id: id,
+          tenant_id: tenant,
+          role: 'employee',
+          status: 'active',
+        })),
+      ]),
     );
     must(
       await admin.from('attendance_settings').insert({
@@ -182,6 +189,10 @@ export async function removeCrew(
       [
         'settings',
         admin.from('attendance_settings').delete().eq('tenant_id', crew.tenant),
+      ],
+      [
+        'memberships',
+        admin.from('memberships').delete().eq('tenant_id', crew.tenant),
       ],
       ['tenant', admin.from('tenants').delete().eq('id', crew.tenant)],
     ];

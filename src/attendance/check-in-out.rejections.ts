@@ -6,7 +6,8 @@ import {
   RATE_BLOCK_MINUTES,
   RATE_MAX_COUNTED,
 } from './constants';
-import { dbNow, countCountedInWindow, countMonthlyMocked, insertAttempt, insertFakeLocationAlert, readOwnerId, AttemptKind, AttemptLocation } from './check-in-out.repository';
+import { readCompanyAdminIds } from './company-admins';
+import { dbNow, countCountedInWindow, countMonthlyMocked, insertAttempt, insertFakeLocationAlert, AttemptKind, AttemptLocation } from './check-in-out.repository';
 import { DayContext } from '../common/day-status/day-context';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ATTENDANCE_NOTIFICATION_EVENT } from './notification-events';
@@ -112,7 +113,7 @@ const logger = new Logger('CheckInOutRejections');
 
 /**
  * AD-13/D5: on the 3rd `mocked` attempt of the tenant-local calendar
- * month, notify the owner once. The dedupe key makes a same-month
+ * month, notify every company admin once. The dedupe key makes a same-month
  * re-entry a no-op at the index, so the count can safely include the row
  * this transaction just wrote.
  */
@@ -122,27 +123,29 @@ async function maybeAlertFakeLocation(
 ): Promise<void> {
   const { count, month } = await countMonthlyMocked(tx, ctx.employeeId, ctx.timezone);
   if (count < FAKE_LOCATION_ALERT_THRESHOLD) return;
-  const ownerId = await readOwnerId(tx, ctx.tenantId);
-  if (!ownerId) {
-    logger.error('Fake-location alert: tenant has no owner', {
+  const adminIds = await readCompanyAdminIds(tx, ctx.tenantId);
+  if (adminIds.length === 0) {
+    logger.error('Fake-location alert: company has no active admin', {
       tenantId: ctx.tenantId,
     });
     return;
   }
   const employee = await readEmployee(tx, ctx.tenantId, ctx.employeeId);
-  await insertFakeLocationAlert(tx, {
-    tenantId: ctx.tenantId,
-    ownerId,
-    employeeId: ctx.employeeId,
-    employeeName: employee?.name ?? null,
-    month,
-    attemptCount: count,
-    dedupeKey: [
-      ctx.tenantId,
-      ATTENDANCE_NOTIFICATION_EVENT.FAKE_LOCATION,
-      ownerId,
-      ctx.employeeId,
+  for (const recipientId of adminIds) {
+    await insertFakeLocationAlert(tx, {
+      tenantId: ctx.tenantId,
+      recipientId,
+      employeeId: ctx.employeeId,
+      employeeName: employee?.name ?? null,
       month,
-    ].join(':'),
-  });
+      attemptCount: count,
+      dedupeKey: [
+        ctx.tenantId,
+        ATTENDANCE_NOTIFICATION_EVENT.FAKE_LOCATION,
+        recipientId,
+        ctx.employeeId,
+        month,
+      ].join(':'),
+    });
+  }
 }

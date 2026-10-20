@@ -250,7 +250,12 @@ describe('weekly-off override RPC (real DB)', () => {
   maybeIt(
     'invited (not yet active) employee is PT422 ATTENDANCE_EMPLOYEE_NOT_ACTIVE',
     async () => {
-      must(await admin.from('users').update({ status: 'invited' }).eq('id', B));
+      must(
+        await admin
+          .from('memberships')
+          .update({ status: 'invited' })
+          .eq('user_id', B),
+      );
       try {
         const r = await save(B, [7], 0);
         expect(r.error?.code).toBe('PT422');
@@ -258,7 +263,10 @@ describe('weekly-off override RPC (real DB)', () => {
         expect(await rows(B)).toEqual([]);
       } finally {
         must(
-          await admin.from('users').update({ status: 'active' }).eq('id', B),
+          await admin
+            .from('memberships')
+            .update({ status: 'active' })
+            .eq('user_id', B),
         );
       }
     },

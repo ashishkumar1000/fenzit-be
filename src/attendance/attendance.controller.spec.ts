@@ -4,7 +4,8 @@ import { AttendanceService } from './attendance.service';
 import { SetupStateResponse } from './attendance-response.model';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import { ROLES_KEY } from '../common/decorators/roles.decorator';
+import { CAN_KEY } from '../common/decorators/can.decorator';
+import { Permission } from '../common/permissions/permissions';
 
 // Nest route metadata keys (mirror of @nestjs/common/constants — imported
 // values, not literals, per reports.controller.spec.ts's reflection style).
@@ -23,7 +24,8 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
   const user: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -119,15 +121,20 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
       },
     );
 
-    it.each(['getSetupState', 'startSetup', 'saveStep', 'completeSetup'])(
-      '%s is owner-only — a technician must never reach the setup wizard',
-      (handler: keyof AttendanceController) => {
-        const roles = Reflect.getMetadata(
-          ROLES_KEY,
+    it.each([
+      ['getSetupState', 'attendance.read'],
+      ['startSetup', 'attendance.manage'],
+      ['saveStep', 'attendance.manage'],
+      ['completeSetup', 'attendance.manage'],
+    ])(
+      '%s needs an admin-side permission — an employee must never reach the setup wizard',
+      (handler: keyof AttendanceController, permission: Permission) => {
+        const needed = Reflect.getMetadata(
+          CAN_KEY,
           AttendanceController.prototype[handler] as object,
-        ) as Role[] | undefined;
+        ) as Permission[] | undefined;
 
-        expect(roles).toEqual([Role.OWNER]);
+        expect(needed).toEqual([permission]);
       },
     );
 

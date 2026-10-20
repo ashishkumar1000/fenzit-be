@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
+import { listCompanyMembers } from '../common/members/company-members';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
@@ -84,12 +85,19 @@ interface UserProfileBase {
   name: string | null;
   countryCode: string;
   phoneNumber: string;
-  status: string;
+  /** The membership status, or null when the person has no company. Null means no access. */
+  status: string | null;
   tenant: TenantSummary | null;
+  /** Fenzit staff flag (website admin tools). */
+  platformAdmin: boolean;
 }
 
-export interface OwnerProfileResponse extends UserProfileBase {
-  role: Role.OWNER;
+/**
+ * The company-wide profile: company admin, viewer, platform admin acting on a
+ * company, and a person with no company yet (empty lists, `role` null).
+ */
+export interface CompanyProfileResponse extends UserProfileBase {
+  role: Role.COMPANY_ADMIN | Role.VIEWER | Role.PLATFORM_ADMIN | null;
   technicians: TechnicianSummary[];
   technicianCount: number;
   /** Exact tenant-wide customer total (the `customers` page itself is capped at its page size). */
@@ -109,8 +117,8 @@ export interface OwnerProfileResponse extends UserProfileBase {
   attendance: AttendanceAccessSummary;
 }
 
-export interface TechnicianProfileResponse extends UserProfileBase {
-  role: Role.TECHNICIAN;
+export interface EmployeeProfileResponse extends UserProfileBase {
+  role: Role.EMPLOYEE;
   skills: string[];
   skillIds: string[];
   jobs: PaginatedResponse<ProfileJobResponse>;
@@ -169,18 +177,21 @@ export type ProfileJobResponse = JobResponse & {
   customer: ProfileCustomerEmbed;
 };
 
+/** `GET /users/me/access` — the access fields only, see `getMyAccess`. */
+export interface UserAccessResponse {
+  role: Role | null;
+  tenant: { id: string } | null;
+  platformAdmin: boolean;
+}
+
 export type UserProfileResponse =
-  OwnerProfileResponse | TechnicianProfileResponse;
+  CompanyProfileResponse | EmployeeProfileResponse;
 
 interface OwnUserRow {
   id: string;
   name: string | null;
   country_code: string;
   phone_number: string;
-  role: Role;
-  status: string;
-  tenant_id: string | null;
-  employee_code: string | null;
 }
 
 interface TenantRow {
@@ -201,17 +212,6 @@ interface SkillEmbed {
 
 interface UserSkillsEmbedRow {
   skills: SkillEmbed | SkillEmbed[] | null;
-}
-
-interface TechnicianListRow {
-  id: string;
-  employee_code: string | null;
-  name: string | null;
-  country_code: string;
-  phone_number: string;
-  status: string;
-  created_at: string;
-  user_skills: UserSkillsEmbedRow[] | null;
 }
 
 const EMPTY_JOB_COUNTS: JobCounts = {
@@ -249,6 +249,21 @@ export class UsersService {
     private readonly jobsService: JobsService,
   ) {}
 
+  /**
+   * The lean access check: role, company and platform-admin flag, read from
+   * the same request user the full profile reads (`JwtAuthGuard` builds it
+   * from the database on every request). No extra query, so the app can ask
+   * on every foreground without pulling the whole profile. It must never
+   * disagree with `GET /users/me` — both answer from that one `RequestUser`.
+   */
+  getMyAccess(user: RequestUser): UserAccessResponse {
+    return {
+      role: user.role,
+      tenant: user.tenantId ? { id: user.tenantId } : null,
+      platformAdmin: user.platformAdmin,
+    };
+  }
+
   async getMyProfile(
     user: RequestUser,
     query: GetProfileQueryDto,
@@ -257,7 +272,7 @@ export class UsersService {
 
     const { data: ownRow, error: ownError } = await admin
       .from('users')
-      .select('id, employee_code, name, country_code, phone_number, role, status, tenant_id')
+      .select('id, name, country_code, phone_number')
       .eq('id', user.userId)
       .single<OwnUserRow>();
 
@@ -272,47 +287,61 @@ export class UsersService {
       });
     }
 
+    // The employee code and membership status live on the membership. A
+    // platform admin has none, and a person with no company has none yet.
+    let membership: { employee_code: string; status: string } | null = null;
+    if (user.tenantId && user.role !== Role.PLATFORM_ADMIN) {
+      const { data: memberRow, error: memberError } = await admin
+        .from('memberships')
+        .select('employee_code, status')
+        .eq('user_id', user.userId)
+        .eq('tenant_id', user.tenantId)
+        .maybeSingle<{ employee_code: string; status: string }>();
+      if (memberError) {
+        this.logger.error('Failed to fetch own membership:', {
+          error: memberError,
+          userId: user.userId,
+        });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to fetch profile',
+        });
+      }
+      membership = memberRow;
+    }
+
     const base: UserProfileBase = {
       id: ownRow.id,
-      employeeCode: ownRow.employee_code,
+      employeeCode: membership?.employee_code ?? null,
       name: ownRow.name,
       countryCode: ownRow.country_code,
       phoneNumber: ownRow.phone_number,
-      status: ownRow.status,
+      status: membership?.status ?? null,
       tenant: null,
+      platformAdmin: user.platformAdmin,
     };
 
-    // Pre-onboarding owner (or a data state with no tenant yet) — return a
-    // minimal profile rather than erroring; "get my profile" should work
-    // even before company setup, unlike the write endpoints in auth/jobs.
-    if (!ownRow.tenant_id) {
-      if (ownRow.role === Role.TECHNICIAN) {
-        return {
-          ...base,
-          role: Role.TECHNICIAN,
-          skills: [],
-          skillIds: [],
-          jobs: new PaginatedResponse<ProfileJobResponse>([], null),
-          jobCounts: EMPTY_JOB_COUNTS,
-          attendance: NO_ATTENDANCE_ACCESS,
-        };
-      }
+    // No company yet (a new sign-up, a removed member, or a platform admin who
+    // named no company) — return a minimal profile rather than erroring; "get
+    // my profile" should work before company setup, unlike the write
+    // endpoints in auth/jobs.
+    if (!user.tenantId) {
       return {
         ...base,
-        role: Role.OWNER,
+        role: user.role as CompanyProfileResponse['role'],
         technicians: [],
         technicianCount: 0,
         customerCount: 0,
         customers: new PaginatedResponse<CustomerListItem>([], null),
         jobs: new PaginatedResponse<ProfileJobResponse>([], null),
         jobCounts: EMPTY_JOB_COUNTS,
-        // No tenant → the attendance-free default (the view has no row to
-        // read) — same as the technician pre-onboarding shape above.
+        // No company → the attendance-free default (the view has no row to
+        // read).
         attendance: NO_ATTENDANCE_ACCESS,
       };
     }
 
-    const tenantId = ownRow.tenant_id;
+    const tenantId = user.tenantId;
 
     const { data: tenantRow, error: tenantError } = await admin
       .from('tenants')
@@ -340,7 +369,7 @@ export class UsersService {
       upiVpa: tenantRow.upi_vpa,
     };
 
-    if (ownRow.role === Role.TECHNICIAN) {
+    if (user.role === Role.EMPLOYEE) {
       const [skills, jobs, jobCounts, attendance] = await Promise.all([
         this.getOwnSkills(admin, user.userId),
         this.listProfileJobs(
@@ -356,7 +385,7 @@ export class UsersService {
 
       return {
         ...base,
-        role: Role.TECHNICIAN,
+        role: Role.EMPLOYEE,
         tenant,
         skills: skills.map((s) => s.name),
         skillIds: skills.map((s) => s.id),
@@ -369,10 +398,6 @@ export class UsersService {
     const [technicians, customers, jobs, jobCounts, customerCount, attendance] =
       await Promise.all([
         this.listTechnicians(admin, tenantId),
-        // Pass the DB-fresh tenantId (not the possibly-stale JWT claim on `user`)
-        // so this call can never disagree with the tenant/technicians/jobs above —
-        // e.g. right after setupCompany mints a new token the client hasn't
-        // swapped in yet, `user.tenantId` could still be null.
         this.customersService.listCustomers(
           { ...user, tenantId },
           { cursor: query.customersCursor, limit: query.customersLimit },
@@ -394,7 +419,7 @@ export class UsersService {
 
     return {
       ...base,
-      role: Role.OWNER,
+      role: user.role as CompanyProfileResponse['role'],
       tenant,
       technicians,
       technicianCount: technicians.length,
@@ -432,16 +457,13 @@ export class UsersService {
     admin: SupabaseClient,
     tenantId: string,
   ): Promise<TechnicianSummary[]> {
-    const { data, error } = await admin
-      .from('users')
-      .select(
-        'id, employee_code, name, country_code, phone_number, status, created_at, user_skills(skills(id, name))',
-      )
-      .eq('tenant_id', tenantId)
-      .eq('role', Role.TECHNICIAN)
-      .order('created_at', { ascending: true });
-
-    if (error) {
+    let members: Awaited<ReturnType<typeof listCompanyMembers>>;
+    try {
+      members = await listCompanyMembers(admin, tenantId, {
+        role: Role.EMPLOYEE,
+        withSkills: true,
+      });
+    } catch (error) {
       this.logger.error('Failed to list technicians for profile:', { error });
       throw new InternalServerErrorException({
         error_code: ErrorCode.INTERNAL_SERVER_ERROR,
@@ -449,21 +471,17 @@ export class UsersService {
       });
     }
 
-    const rows = (data ?? []) as TechnicianListRow[];
-    return rows.map((row) => {
-      const skills = this.flattenSkills(row.user_skills ?? []);
-      return {
-        id: row.id,
-        employeeCode: row.employee_code,
-        name: row.name,
-        countryCode: row.country_code,
-        phoneNumber: row.phone_number,
-        status: row.status,
-        skills: skills.map((s) => s.name),
-        skillIds: skills.map((s) => s.id),
-        createdAt: row.created_at,
-      };
-    });
+    return members.map((m) => ({
+      id: m.userId,
+      employeeCode: m.employeeCode,
+      name: m.name,
+      countryCode: m.countryCode,
+      phoneNumber: m.phoneNumber,
+      status: m.status,
+      skills: (m.skills ?? []).map((sk) => sk.name),
+      skillIds: (m.skills ?? []).map((sk) => sk.id),
+      createdAt: m.createdAt,
+    }));
   }
 
   /**
@@ -585,7 +603,7 @@ export class UsersService {
       // Zero new IST arithmetic — copy of the jobs-list today window,
       // including its in_progress OR branch for the technician's own view: an
       // active job must not vanish from the profile's Today page when its slot
-      // crosses midnight IST. Owners (technicianId=null) keep the pure
+      // crosses midnight IST. Company admins (technicianId=null) keep the pure
       // day-window view.
       const range = getIstDayRange();
       if (technicianId) {
@@ -665,11 +683,22 @@ export class UsersService {
     const customerIds = [...new Set(rows.map((r) => r.customer_id))];
 
     const [usersRes, skillsRes, customersRes] = await Promise.all([
-      admin
-        .from('users')
-        .select('id, name, country_code, phone_number')
-        .in('id', techIds)
-        .eq('tenant_id', tenantId),
+      // History view: a removed employee's name still shows on their old jobs.
+      listCompanyMembers(admin, tenantId, {
+        userIds: techIds,
+        includeRemoved: true,
+      }).then(
+        (members) => ({
+          data: members.map((m) => ({
+            id: m.userId,
+            name: m.name,
+            country_code: m.countryCode,
+            phone_number: m.phoneNumber,
+          })),
+          error: null as unknown,
+        }),
+        (error: unknown) => ({ data: null, error }),
+      ),
       admin
         .from('user_skills')
         .select('user_id, skills!inner(name)')

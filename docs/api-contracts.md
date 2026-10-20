@@ -251,6 +251,30 @@ jobs regardless of the day window; the owner view keeps the pure window. A
 - `401` — Missing/invalid JWT
 - `422` — Invalid `jobsScope` (anything other than `today`/`all`)
 
+#### `GET /api/v1/users/me/access` `[Bearer JWT, any signed-in user]`
+
+The lean access check (2026-10-20). Use it to re-check access on launch and
+on every return to the foreground. It reads the same request user as
+`GET /users/me`, so role and company always agree with the full profile, and
+it runs no database query of its own.
+
+**Response (200):** exactly three fields, nothing else:
+
+```json
+{ "role": "company_admin" | "employee" | "viewer" | "platform_admin" | null,
+  "tenant": { "id": "<company uuid>" } | null,
+  "platformAdmin": false }
+```
+
+- A person with no company, or a removed member, gets `role: null` and
+  `tenant: null`, never a stale company id.
+- Fenzit staff with no named company get `platformAdmin: true` and
+  `tenant: null`.
+
+**Responses:**
+- `200` — Access payload above
+- `401` — Missing/invalid JWT
+
 #### `PATCH /api/v1/users/me` `[Bearer JWT, Role: owner | technician]`
 
 Update the caller's own display name. Returns the same shape as

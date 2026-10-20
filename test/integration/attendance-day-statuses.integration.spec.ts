@@ -102,23 +102,34 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
   const ownerUser = (): RequestUser => ({
     userId: OWNER,
     tenantId: TENANT,
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'probe-jwt',
   });
 
   const techUser = (): RequestUser => ({
     userId: TECH,
     tenantId: TENANT,
-    role: Role.TECHNICIAN,
+    role: Role.EMPLOYEE,
+    platformAdmin: false,
     rawJwt: 'probe-jwt',
   });
 
-  const tenantDelete = (): Promise<unknown> =>
-    pool.query(
+  // Memberships RESTRICT the company delete, so they go first (users go
+  // last, by the caller, once nothing references them).
+  const tenantDelete = async (): Promise<unknown> => {
+    await pool.query(
+      `delete from public.memberships where tenant_id in (
+         select id from public.tenants where id = $1
+           or company_name like 'epic-18 integration probe%')`,
+      [TENANT],
+    );
+    return pool.query(
       `delete from public.tenants where id = $1
          or company_name like 'epic-18 integration probe%'`,
       [TENANT],
     );
+  };
 
   /** Every check-in needs its attempt row. */
   const seedRecord = async (
@@ -228,9 +239,9 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
   const seedScaffold = async (): Promise<void> => {
     await pool.query('begin');
     await pool.query(
-      `insert into public.users (id, name, role, tenant_id, status, country_code, phone_number)
-       values ($1, '18-1 probe owner', 'owner', null, 'active', '+91', $2),
-              ($3, '18-1 probe tech', 'technician', null, 'active', '+91', $4)`,
+      `insert into public.users (id, name, country_code, phone_number)
+       values ($1, '18-1 probe owner', '+91', $2),
+              ($3, '18-1 probe tech', '+91', $4)`,
       [
         OWNER,
         `7${Date.now()}`.slice(-10).replace(/^./, '7') + '1',
@@ -239,13 +250,14 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
       ],
     );
     await pool.query(
-      `insert into public.tenants (id, owner_id, company_name, state_code, timezone)
+      `insert into public.tenants (id, created_by, company_name, state_code, timezone)
        values ($1, $2, $3, 'KA', $4)`,
       [TENANT, OWNER, `epic-18 integration probe ${TENANT.slice(0, 8)}`, TZ],
     );
     await pool.query(
-      'update public.users set tenant_id = $1 where id = any($2::uuid[])',
-      [TENANT, [OWNER, TECH]],
+      `insert into public.memberships (user_id, tenant_id, role, status)
+       values ($2, $1, 'company_admin', 'active'), ($3, $1, 'employee', 'active')`,
+      [TENANT, OWNER, TECH],
     );
     await pool.query(
       `insert into public.attendance_settings (tenant_id, enabled, setup_completed_at)
@@ -428,12 +440,17 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
          delete from public.attendance_office_assignments where tenant_id = $1`,
         [TENANT],
       );
-      // users.tenant_id is ON DELETE SET NULL — a plain id list would orphan
-      // the perf test's 50 probe workers; take every user of the tenant.
-      await pool.query('delete from public.users where tenant_id = $1', [
-        TENANT,
-      ]);
+      // Take every member of the tenant (incl. the perf test's 50 probe
+      // workers), drop memberships + company, THEN the users — the keys are
+      // RESTRICT, so the order matters.
+      const members = await pool.query<{ user_id: string }>(
+        'select user_id from public.memberships where tenant_id = $1',
+        [TENANT],
+      );
       await tenantDelete();
+      await pool.query('delete from public.users where id = any($1::uuid[])', [
+        [...members.rows.map((r) => r.user_id), OWNER, TECH],
+      ]);
       const residual = await pool.query<{ n: string }>(
         `select coalesce(sum(n), 0)::text as n from (
            select count(*) n from public.attendance_day_overrides where tenant_id = $1
@@ -714,9 +731,14 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     const GRACE = randomUUID();
     const phone = '9' + String(900000000 + (Date.now() % 9_000_000)); // 900-908M — never hits the perf range
     await pool.query(
-      `insert into public.users (id, name, role, tenant_id, status, country_code, phone_number)
-       values ($1, '18-1 probe grace tech', 'technician', $2, 'active', '+91', $3)`,
-      [GRACE, TENANT, phone],
+      `insert into public.users (id, name, country_code, phone_number)
+       values ($1, '18-1 probe grace tech', '+91', $2)`,
+      [GRACE, phone],
+    );
+    await pool.query(
+      `insert into public.memberships (user_id, tenant_id, role, status)
+       values ($1, $2, 'employee', 'active')`,
+      [GRACE, TENANT],
     );
     // The coverage guard checks the (assignment, enrolment) pair at once —
     // seed both inside one transaction (same posture as the perf block).
@@ -860,11 +882,16 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     // would 409 the whole scaffold — review G2-P14).
     const phoneBase = 910000000 + (Date.now() % 80_000_000);
     await pool.query(
-      `insert into public.users (id, name, role, tenant_id, status, country_code, phone_number)
-       select u.id, 'perf worker ' || row_number() over (), 'technician', $1, 'active', '+91',
-              '9' || (($2 + row_number() over ())::bigint)::text
-       from unnest($3::uuid[]) as u(id)`,
-      [TENANT, phoneBase, perfUsers],
+      `insert into public.users (id, name, country_code, phone_number)
+       select u.id, 'perf worker ' || row_number() over (), '+91',
+              '9' || (($1 + row_number() over ())::bigint)::text
+       from unnest($2::uuid[]) as u(id)`,
+      [phoneBase, perfUsers],
+    );
+    await pool.query(
+      `insert into public.memberships (user_id, tenant_id, role, status)
+       select u.id, $1, 'employee', 'active' from unnest($2::uuid[]) as u(id)`,
+      [TENANT, perfUsers],
     );
     // Assignments BEFORE enrolments — the coverage guard checks the pair at
     // COMMIT, so all seeding goes in one transaction.

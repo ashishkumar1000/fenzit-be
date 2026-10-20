@@ -25,12 +25,11 @@ import {
   HolidayDateQueryDto,
   UpdateHolidayDto,
 } from './dto/holiday.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { UUID_PATTERN } from '../common/utils/uuid-pattern.util';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /** Raw request — the patch-route date-immutability check reads the body. */
 interface RawRequest {
@@ -38,7 +37,7 @@ interface RawRequest {
 }
 
 /**
- * FR-20 holiday routes (Epic 15, Story 15-5). Owner-only; day statuses that
+ * FR-20 holiday routes (Epic 15, Story 15-5). Company-admin only; day statuses that
  * consume holidays recompute on read (AD-10) in Epic 16. No idempotency
  * interceptor (AD-6 excludes attendance): the (tenant, date) unique makes a
  * retried add a 409, and the dedupe keys bound the notification fan-out.
@@ -83,7 +82,7 @@ export class HolidaysController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List holidays, ascending by date (FE groups upcoming/past)',
@@ -104,7 +103,7 @@ export class HolidaysController {
   }
 
   @Get('impact')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -129,7 +128,7 @@ export class HolidaysController {
   }
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -153,7 +152,7 @@ export class HolidaysController {
   }
 
   @Patch(':id')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Rename a holiday (the date is immutable)' })
   @ApiResponse({ status: 200, description: '{ id, date, name }' })
@@ -184,7 +183,7 @@ export class HolidaysController {
   }
 
   @Delete(':id')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Remove a holiday; removed future dates notify tracked employees',

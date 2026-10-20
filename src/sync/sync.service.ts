@@ -1,8 +1,10 @@
+import { ErrorCode } from '../common/enums/error-code.enum';
 import {
   Injectable,
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { SyncJobDto, SyncResponseDto } from './dto/sync-response.dto';
@@ -23,7 +25,10 @@ const SYNC_JOB_COLUMNS = `${JOB_COLUMNS}, customers!inner(name, address), attach
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
 
-  constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseFactory: SupabaseClientFactory,
+    private readonly jwtService: JwtService,
+  ) {}
 
   async sync(
     user: RequestUser,
@@ -33,7 +38,19 @@ export class SyncService {
     // anything that mutated during query execution on the next sync cycle.
     const serverTime = new Date().toISOString();
 
-    const client = this.supabaseFactory.create(user.rawJwt);
+    // Sync reads with the caller's own identity so row-level security (the
+    // memberships-based policies) is a second layer under the backend's own
+    // filters. The login token cannot be used here: PostgREST needs a real
+    // database role in the `role` claim, and the login token carries none. So
+    // a one-minute token for the `authenticated` role, same `sub`, is minted
+    // per request. The payload carries its own `exp` — no options object
+    // (jsonwebtoken throws on both).
+    const dbToken = await this.jwtService.signAsync({
+      sub: user.userId,
+      role: 'authenticated',
+      exp: Math.floor(Date.now() / 1000) + 60,
+    });
+    const client = this.supabaseFactory.create(dbToken);
 
     let query = client
       .from('jobs')
@@ -51,7 +68,7 @@ export class SyncService {
 
     if (error) {
       this.logger.error('Delta sync query failed', error);
-      throw new InternalServerErrorException('Sync query failed');
+      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Sync query failed' });
     }
 
     // Story 4.5 — skill/template embeds map the same way the job responses do

@@ -21,10 +21,9 @@ import { ResolveQueryDto } from './dto/resolve-query.dto';
 import { ResolvedPlaceDto } from './dto/resolve-response.dto';
 import { ReverseQueryDto } from './dto/reverse-query.dto';
 import { ReverseGeocodedAddressDto } from './dto/reverse-response.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 @ApiTags('Places')
 @ApiBearerAuth()
@@ -33,7 +32,7 @@ export class PlacesController {
   constructor(private readonly placesService: PlacesService) {}
 
   @Get('autosuggest')
-  @Roles(Role.OWNER)
+  @Can('places.search')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Address autosuggest for customer address entry' })
   @ApiResponse({
@@ -58,7 +57,7 @@ export class PlacesController {
   }
 
   @Get('resolve/:placeId')
-  @Roles(Role.OWNER)
+  @Can('places.search')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Resolve a place-autosuggest selection to a full address',
@@ -97,7 +96,7 @@ export class PlacesController {
   }
 
   @Get('reverse')
-  @Roles(Role.OWNER)
+  @Can('places.search')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Reverse geocode raw coordinates into an address (map-picker pin row)',

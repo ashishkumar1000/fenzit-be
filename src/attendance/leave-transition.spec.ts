@@ -48,7 +48,7 @@ const baseTransition = {
   actorId: RECIPIENT,
   reason: null,
   notification: {
-    recipientId: EMPLOYEE,
+    recipientIds: [EMPLOYEE],
     payload: { startDate: '2026-10-01', endDate: '2026-10-02', workingDays: 2 },
   },
 };
@@ -153,7 +153,7 @@ describe('transitionLeaveDays (AD-23 update path)', () => {
       fromStates: ['pending', 'approved'],
       toState: 'cancelled',
       notification: {
-        recipientId: RECIPIENT,
+        recipientIds: [RECIPIENT],
         payload: { employeeName: 'Arya', leaveDate: '2026-09-29' },
         dedupeSuffix: '2026-09-29',
       },
@@ -165,6 +165,55 @@ describe('transitionLeaveDays (AD-23 update path)', () => {
     expect(notification.params?.[6]).toBe(
       `${TENANT}:leave.checkin_auto_cancel:${RECIPIENT}:11111111-1111-4111-8111-111111111111:2026-09-29`,
     );
+  });
+
+  it('inserts one notification row per recipient, each with its own recipient-embedded dedupe key', async () => {
+    const { tx, queries } = fakeTx([
+      (sql) =>
+        sql.includes('update public.leave_request_days')
+          ? { rows: [{ leave_date: '2026-10-01' }] }
+          : undefined,
+    ]);
+    await transitionLeaveDays(tx, {
+      ...baseTransition,
+      dates: ['2026-10-01'],
+      fromStates: ['pending'],
+      toState: 'approved',
+      notification: {
+        recipientIds: [EMPLOYEE, RECIPIENT],
+        payload: {},
+      },
+    });
+    const rows = queries.filter((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(rows.map((q) => q.params?.[1])).toEqual([EMPLOYEE, RECIPIENT]);
+    expect(rows.map((q) => q.params?.[6])).toEqual([
+      `${TENANT}:leave.approved:${EMPLOYEE}:11111111-1111-4111-8111-111111111111`,
+      `${TENANT}:leave.approved:${RECIPIENT}:11111111-1111-4111-8111-111111111111`,
+    ]);
+  });
+
+  it('an empty recipient list writes the event row but no notification', async () => {
+    const { tx, queries } = fakeTx([
+      (sql) =>
+        sql.includes('update public.leave_request_days')
+          ? { rows: [{ leave_date: '2026-10-01' }] }
+          : undefined,
+    ]);
+    await transitionLeaveDays(tx, {
+      ...baseTransition,
+      dates: ['2026-10-01'],
+      fromStates: ['pending'],
+      toState: 'approved',
+      notification: { recipientIds: [], payload: {} },
+    });
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.notifications')),
+    ).toBe(false);
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(true);
   });
 
   it('rowcount mismatch aborts (a raced transition must not half-apply, D2)', async () => {
@@ -213,7 +262,7 @@ describe('transitionLeaveDays (AD-23 update path)', () => {
       dates: ['2026-10-01'],
       fromStates: ['pending', 'approved'],
       toState: 'cancelled',
-      notification: { recipientId: EMPLOYEE, payload: {} },
+      notification: { recipientIds: [EMPLOYEE], payload: {} },
     });
     expect(
       queries.some((q) => q.sql.includes('insert into public.notifications')),

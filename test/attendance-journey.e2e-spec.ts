@@ -10,6 +10,8 @@ import { AppModule } from '../src/app.module';
 import { Pool } from 'pg';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
+import { accessToken } from './helpers/auth-test-utils';
+import { purgeCompanyChildren } from './helpers/attendance-company-fixture';
 
 /**
  * The attendance module's real-DB JOURNEY suite (the standing rule: every
@@ -66,9 +68,9 @@ describe('Attendance journey (real DB, real routes)', () => {
     `7${Date.now()}${i}`.slice(-12).replace(/[^0-9]/g, ''),
   );
 
-  /** The leg's bearer — sub/tenantId/role read by the guards. */
-  const bearerFor = (userId: string, role: 'owner' | 'technician'): string =>
-    jwt.sign({ sub: userId, tenantId: tenant, role });
+  /** The leg's bearer — identity only; company and role come from the
+   *  person's membership row, read per request by the guard. */
+  const bearerFor = (userId: string): string => accessToken(jwt, userId);
 
   beforeAll(async () => {
     if (!IS_REAL_DB) return;
@@ -92,44 +94,48 @@ describe('Attendance journey (real DB, real routes)', () => {
     await app.getHttpAdapter().getInstance().ready();
     jwt = moduleFixture.get(JwtService);
 
-    // The users before the tenant (the tenant FK's owner leg), the tenant,
-    // then the crew's tenant links — the other probes' order.
+    // Users (identity only) before the tenant (its created_by leg), the
+    // tenant, then each person's membership — the other probes' order.
     must(
-      await admin.from('users').insert({
-        id: owner,
-        role: 'owner',
-        status: 'active',
-        country_code: '+91',
-        phone_number: phones[0],
-        name: 'journey owner',
-      }),
-    );
-    must(
-      await admin.from('users').insert(
-        techs.map((id, i) => ({
+      await admin.from('users').insert([
+        {
+          id: owner,
+          country_code: '+91',
+          phone_number: phones[0],
+          name: 'journey owner',
+        },
+        ...techs.map((id, i) => ({
           id,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: phones[i + 1],
           name: `journey tech ${i + 1}`,
         })),
-      ),
+      ]),
     );
     must(
       await admin.from('tenants').insert({
         id: tenant,
-        owner_id: owner,
+        created_by: owner,
         company_name: `journey probe ${tenant.slice(0, 8)}`,
         state_code: 'KA',
         timezone: TZ,
       }),
     );
     must(
-      await admin
-        .from('users')
-        .update({ tenant_id: tenant })
-        .in('id', [owner, ...techs]),
+      await admin.from('memberships').insert([
+        {
+          user_id: owner,
+          tenant_id: tenant,
+          role: 'company_admin',
+          status: 'active',
+        },
+        ...techs.map((id) => ({
+          user_id: id,
+          tenant_id: tenant,
+          role: 'employee',
+          status: 'active',
+        })),
+      ]),
     );
     must(
       await admin.from('attendance_settings').insert({
@@ -238,7 +244,7 @@ describe('Attendance journey (real DB, real routes)', () => {
     let res = await app.inject({
       method: 'GET',
       url: '/api/v1/attendance/dashboard',
-      headers: { authorization: `Bearer ${bearerFor(owner, 'owner')}` },
+      headers: { authorization: `Bearer ${bearerFor(owner)}` },
     });
     expect(res.statusCode).toBe(200);
     const unfiltered = JSON.parse(res.body);
@@ -272,7 +278,7 @@ describe('Attendance journey (real DB, real routes)', () => {
     res = await app.inject({
       method: 'GET',
       url: `/api/v1/attendance/dashboard?officeId=${south}`,
-      headers: { authorization: `Bearer ${bearerFor(owner, 'owner')}` },
+      headers: { authorization: `Bearer ${bearerFor(owner)}` },
     });
     expect(res.statusCode).toBe(200);
     const filtered = JSON.parse(res.body);
@@ -293,7 +299,7 @@ describe('Attendance journey (real DB, real routes)', () => {
     res = await app.inject({
       method: 'GET',
       url: `/api/v1/attendance/dashboard?officeId=${north}`,
-      headers: { authorization: `Bearer ${bearerFor(owner, 'owner')}` },
+      headers: { authorization: `Bearer ${bearerFor(owner)}` },
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).flags.checkoutMissing).toEqual([]);
@@ -302,7 +308,7 @@ describe('Attendance journey (real DB, real routes)', () => {
   maybeIt('19-5 — the owner monthly view echoes the tenant today, and the office filter narrows the rows', async () => {
     const today = await scalarDate(0);
     const d1 = await scalarDate(-1);
-    const headers = { authorization: `Bearer ${bearerFor(owner, 'owner')}` };
+    const headers = { authorization: `Bearer ${bearerFor(owner)}` };
 
     // The two-day window [d1, today] rides the 19-4 leg's fixtures
     // (enrolments cover 60 days back; tech 2's d1 record has a check-in
@@ -454,36 +460,8 @@ async function cleanup(
   tenantId: string,
   crew: string[],
 ): Promise<void> {
-  void pool;
-  await admin.from('notifications').delete().eq('tenant_id', tenantId);
-  await admin.from('leave_request_days').delete().eq('tenant_id', tenantId);
-  await admin.from('leave_requests').delete().eq('tenant_id', tenantId);
-  await pool.query(`delete from public.attendance_records where tenant_id = $1`, [tenantId]);
-  await pool.query(`delete from public.attendance_attempts where tenant_id = $1`, [tenantId]);
-  await admin
-    .from('attendance_day_overrides')
-    .delete()
-    .eq('tenant_id', tenantId);
-  await admin.from('attendance_enrolments').delete().eq('tenant_id', tenantId);
-  await admin
-    .from('attendance_office_assignments')
-    .delete()
-    .eq('tenant_id', tenantId);
-  await admin
-    .from('attendance_office_rules')
-    .delete()
-    .eq('tenant_id', tenantId);
-  await admin.from('attendance_offices').delete().eq('tenant_id', tenantId);
-  await admin
-    .from('attendance_setup_progress')
-    .delete()
-    .eq('tenant_id', tenantId);
-  await admin.from('attendance_onboarding').delete().eq('tenant_id', tenantId);
-  await admin
-    .from('attendance_weekly_off_defaults')
-    .delete()
-    .eq('tenant_id', tenantId);
-  await admin.from('attendance_settings').delete().eq('tenant_id', tenantId);
+  // Every child row, then the memberships (RESTRICT to tenants and users).
+  await purgeCompanyChildren(pool, [tenantId]);
   await admin.from('tenants').delete().eq('id', tenantId);
   const del = await admin.from('users').delete().in('id', crew);
   if (del.error) throw new Error(`users leak: ${del.error.message}`);

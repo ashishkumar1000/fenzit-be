@@ -2,10 +2,8 @@ import 'reflect-metadata';
 import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { MeLeaveController } from './me-leave.controller';
 import { LeaveController } from './leave.controller';
-import { Role } from '../common/enums/role.enum';
-
-// Nest role metadata key (the house mirror — me-attendance.controller.spec).
-const ROLES_KEY = 'roles';
+import { CAN_KEY } from '../common/decorators/can.decorator';
+import { Permission } from '../common/permissions/permissions';
 
 /**
  * Route wiring pins for the leave controllers (17-1..17-4). The 16-1
@@ -99,17 +97,28 @@ describe('LeaveController route pins (owner)', () => {
 });
 
 describe('role guard pins (spec §7)', () => {
-  it('every me/leave handler is TECHNICIAN-only', () => {
+  it('every me/leave handler needs leave.own (employee-only)', () => {
     for (const handler of ['previewApply', 'apply', 'list', 'previewCancel', 'cancel']) {
-      const roles = Reflect.getMetadata(ROLES_KEY, MeLeaveController.prototype[handler] as object);
-      expect(roles).toEqual([Role.TECHNICIAN]);
+      const needed = Reflect.getMetadata(CAN_KEY, MeLeaveController.prototype[handler] as object);
+      expect(needed).toEqual(['leave.own']);
     }
   });
 
-  it('the owner controller is OWNER-only at CLASS level — a technician must never approve, revoke or apply on behalf', () => {
-    // @Roles(Role.OWNER) sits on the LeaveController class — one guard for
-    // every handler, pinned at the class.
-    const roles = Reflect.getMetadata(ROLES_KEY, LeaveController);
-    expect(roles).toEqual([Role.OWNER]);
+  it('every admin leave handler needs an admin-side permission — an employee must never approve, revoke or apply on behalf', () => {
+    // @Can sits on each LeaveController handler (the class carries none), so
+    // pin every handler: reads need leave.read_all, decisions leave.approve,
+    // apply-on-behalf leave.create_on_behalf.
+    const expected: Array<[string, Permission]> = [
+      ['list', 'leave.read_all'],
+      ['previewRevoke', 'leave.read_all'],
+      ['approve', 'leave.approve'],
+      ['reject', 'leave.approve'],
+      ['revoke', 'leave.approve'],
+      ['applyOnBehalf', 'leave.create_on_behalf'],
+    ];
+    for (const [handler, permission] of expected) {
+      const needed = Reflect.getMetadata(CAN_KEY, LeaveController.prototype[handler] as object);
+      expect(needed).toEqual([permission]);
+    }
   });
 });

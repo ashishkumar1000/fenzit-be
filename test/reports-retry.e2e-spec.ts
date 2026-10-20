@@ -8,11 +8,13 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 
 /**
  * Story 12-7 — POST /api/v1/reports/:id/retry (re-queue a FAILED report).
  *
- * The retry endpoint is owner-only and runs through the IdempotencyInterceptor
+ * The retry endpoint needs the report.request permission (company admin or viewer; an employee is refused) and runs through the IdempotencyInterceptor
  * (a POST without an X-Idempotency-Key header passes straight through, per the
  * interceptor contract). The Supabase admin client is mocked so no live DB is
  * required: the retry path touches only `report_requests` — a tenant-scoped
@@ -23,7 +25,7 @@ describe('Reports retry (e2e)', () => {
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-reports-retry-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
   const OWNER_ID = '00000000-0000-4000-8000-000000000001';
   const TECH_ID = '00000000-0000-4000-8000-000000000002';
   const REQUEST_ID = '00000000-0000-4000-8000-0000000000a1';
@@ -32,12 +34,17 @@ describe('Reports retry (e2e)', () => {
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
-      .compile();
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -63,15 +70,11 @@ describe('Reports retry (e2e)', () => {
   });
 
   function ownerJwt() {
-    return jwtService.sign({ sub: OWNER_ID, tenantId: TENANT_ID, role: 'owner' });
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: TECH_ID,
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   const failedRow = {
@@ -184,7 +187,7 @@ describe('Reports retry (e2e)', () => {
   });
 
   describe('403 / 401 — auth', () => {
-    it('should return 403 for a technician JWT (owner-only route)', async () => {
+    it('should return 403 for an employee token (report.request needed)', async () => {
       const from = jest.fn();
       mockCreateAdmin.mockReturnValue({ from });
 

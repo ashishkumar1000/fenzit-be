@@ -5,18 +5,17 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { DayStatusesService } from './day-status.read';
 import { DayStatusesQueryDto, MeDayStatusesQueryDto } from './dto/correction.dto';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
  * The day-statuses reads (18-1) — the single implementation every Epic 18
  * surface (and the Epic 19 aggregates) reads rows from. Each method
- * carries its own @Roles (the owner route OWNER, the `me` route a
- * method-level TECHNICIAN override — RolesGuard getAllAndOverride). Both
+ * carries its own @Can permission (the company route
+ * `attendance.read`, the `me` route `attendance.own`). Both
  * run `validateDayStatusRange` first (from ≤ to, span ≤ 62 → 422) BEFORE
  * the service transaction — the span-cap DoS lesson keeps the cap off the
  * transaction pool.
@@ -28,7 +27,7 @@ export class DayStatusesController {
   constructor(private readonly dayStatusesService: DayStatusesService) {}
 
   @Get('day-statuses')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -59,7 +58,7 @@ export class DayStatusesController {
   }
 
   @Get('me/day-statuses')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'FR-10 my day statuses for a range (identity from the JWT; AD-17 gate: none → 403)',

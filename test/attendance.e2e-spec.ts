@@ -8,6 +8,9 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { MembershipResolver } from '../src/common/auth/membership-resolver';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, fakeMembershipResolver } from './helpers/auth-test-utils';
 import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 
 /**
@@ -23,6 +26,12 @@ import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 type RpcResult = { data: unknown; error: Record<string, unknown> | null };
 
 const TENANT_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000e2';
+
+// Real-looking ids: the guard refuses a token whose `sub` is not a UUID.
+const OWNER_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a1';
+const TECH_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a2';
+// A signed-in person who belongs to no company yet.
+const NO_COMPANY_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a3';
 const OFFICE_ID = 'f2e0a5c7-1b9d-4a5c-8b6d-0000000000e3';
 
 const settingsRow = {
@@ -90,6 +99,31 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
     args: Record<string, unknown> | undefined;
   }> = [];
 
+  /**
+   * A company person as `listCompanyMembers` reads them: the membership row
+   * with the person's identity embedded. Names and phones live on `users`,
+   * role and status on `memberships`.
+   */
+  function memberRow(u: {
+    id: string;
+    name: string | null;
+    country_code: string;
+    phone_number: string;
+  }) {
+    return {
+      user_id: u.id,
+      role: 'employee',
+      status: 'active',
+      employee_code: 'EMP-001',
+      created_at: '2026-06-01T00:00:00Z',
+      users: {
+        name: u.name,
+        country_code: u.country_code,
+        phone_number: u.phone_number,
+      },
+    };
+  }
+
   function qbFor(table: string) {
     const queue = tableQueues.get(table);
     if (!queue) throw new Error(`unexpected table ${table}`);
@@ -100,6 +134,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       'is',
       'order',
       'in',
+      'neq',
       'update',
       'upsert',
       'maybeSingle',
@@ -163,6 +198,14 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       })
       .overrideProvider(PgPoolFactory)
       .useValue(pgTxOverride())
+      .overrideProvider(MembershipResolver)
+      .useValue(
+        fakeMembershipResolver([
+          { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+          { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+          { userId: NO_COMPANY_ID, tenantId: null, role: null },
+        ]),
+      )
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -186,19 +229,11 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
   beforeEach(resetQueues);
 
   function ownerJwt() {
-    return jwtService.sign({
-      sub: 'owner-uuid-e2e',
-      tenantId: TENANT_ID,
-      role: 'owner',
-    });
+    return accessToken(jwtService, OWNER_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: 'tech-uuid-e2e',
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   describe('setup wizard routes (15-2 defer: mounting, 403, 422)', () => {
@@ -611,12 +646,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       phone_number: '9999900005',
     };
 
-    it('weekly-off routes reject a no-tenant owner JWT with 400 VALIDATION_ERROR', async () => {
-      const noTenantJwt = jwtService.sign({
-        sub: 'owner-uuid-e2e',
-        tenantId: null,
-        role: 'owner',
-      });
+    it('weekly-off routes reject a person with no company with 403 FORBIDDEN', async () => {
+      const noTenantJwt = accessToken(jwtService, NO_COMPANY_ID);
 
       const res = await app.inject({
         method: 'GET',
@@ -624,10 +655,10 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         headers: { authorization: `Bearer ${noTenantJwt}` },
       });
 
-      expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
-      // The guard passes the null tenant through — requireTenant (service
-      // layer) is what produces the 400, not a 401/403 from the boundary.
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error_code).toBe('FORBIDDEN');
+      // A person with no company holds none of the attendance permissions,
+      // so the permissions guard refuses before any service code runs.
       expect(rpcCalls).toHaveLength(0);
     });
 
@@ -794,16 +825,16 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
           error: null,
         },
       ]);
-      tableQueues.set('users', [
+      tableQueues.set('memberships', [
         {
           data: [
-            employeeUser,
-            {
+            memberRow(employeeUser),
+            memberRow({
               id: EMP_B,
               name: 'Alpha Singh',
               country_code: '+91',
               phone_number: '9999900006',
-            },
+            }),
           ],
           error: null,
         },
@@ -836,7 +867,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       tableQueues.set('attendance_weekly_off_overrides', [
         { data: [overrideRow], error: null },
       ]);
-      tableQueues.set('users', [{ data: [employeeUser], error: null }]);
+      tableQueues.set('memberships', [
+        { data: [memberRow(employeeUser)], error: null },
+      ]);
 
       const res = await app.inject({
         method: 'PUT',
@@ -920,7 +953,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
       tableQueues.set('attendance_weekly_off_overrides', []);
-      tableQueues.set('users', [{ data: [employeeUser], error: null }]);
+      tableQueues.set('memberships', [
+        { data: [memberRow(employeeUser)], error: null },
+      ]);
 
       const res = await app.inject({
         method: 'DELETE',
@@ -1290,7 +1325,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         if (sql.includes('attendance_today')) {
           return { rows: [{ today: '2026-09-28' }] };
         }
-        if (sql.includes('from public.users where')) {
+        if (sql.includes('from public.memberships m')) {
           return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
         }
         if (sql.includes('attendance_offices')) {
@@ -1339,7 +1374,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         if (sql.includes('attendance_today')) {
           return { rows: [{ today: '2026-09-28' }] };
         }
-        if (sql.includes('from public.users where')) {
+        if (sql.includes('from public.memberships m')) {
           return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
         }
         if (sql.includes('attendance_offices')) {
@@ -1400,7 +1435,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         if (sql.includes('attendance_today')) {
           return { rows: [{ today: '2026-09-28' }] };
         }
-        if (sql.includes('from public.users where')) {
+        if (sql.includes('from public.memberships m')) {
           return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
         }
         if (sql.includes('attendance_offices')) {
@@ -1523,7 +1558,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         if (sql.includes('attendance_today')) {
           return { rows: [{ today: '2026-09-28' }] };
         }
-        if (sql.includes('from public.users where')) {
+        if (sql.includes('from public.memberships m')) {
           return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
         }
         if (sql.includes('attendance_offices')) {
@@ -1559,7 +1594,7 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         if (sql.includes('attendance_today')) {
           return { rows: [{ today: '2026-09-28' }] };
         }
-        if (sql.includes('from public.users where')) {
+        if (sql.includes('from public.memberships m')) {
           return { rows: [{ id: EMPLOYEE_ID, name: 'Ravi' }] };
         }
         if (sql.includes('attendance_offices')) {
@@ -1591,15 +1626,15 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
     });
 
     it('GET /attendance/enrolments lists the roster (200, never 404)', async () => {
-      tableQueues.set('users', [
+      tableQueues.set('memberships', [
         {
           data: [
-            {
+            memberRow({
               id: EMPLOYEE_ID,
               name: 'Ravi',
               country_code: '+91',
               phone_number: '9999900005',
-            },
+            }),
           ],
           error: null,
         },
@@ -1625,12 +1660,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
     });
 
-    it('enrolment routes reject a no-tenant owner JWT with 400 VALIDATION_ERROR', async () => {
-      const noTenantJwt = jwtService.sign({
-        sub: 'owner-uuid-e2e',
-        tenantId: null,
-        role: 'owner',
-      });
+    it('enrolment routes reject a person with no company with 403 FORBIDDEN', async () => {
+      const noTenantJwt = accessToken(jwtService, NO_COMPANY_ID);
 
       const res = await app.inject({
         method: 'GET',
@@ -1638,8 +1669,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         headers: { authorization: `Bearer ${noTenantJwt}` },
       });
 
-      expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error_code).toBe('FORBIDDEN');
     });
 
     it('missing JWT is 401 on the new routes', async () => {

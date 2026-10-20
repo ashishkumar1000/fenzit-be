@@ -199,7 +199,7 @@ describe('weekly-off RLS and permissions (real DB)', () => {
     }
   });
 
-  describe('authenticated role (tenant owner claims, SET ROLE)', () => {
+  describe('authenticated role (company admin claims, SET ROLE)', () => {
     /** Run `fn` inside a rolled-back transaction as `authenticated`. */
     const asOwner = async <R>(
       fn: (c: PoolClient) => Promise<R>,
@@ -254,7 +254,7 @@ describe('weekly-off RLS and permissions (real DB)', () => {
     });
 
     maybeIt(
-      'the RPCs are permission-denied, even for the tenant owner',
+      'the RPCs are permission-denied, even for the company admin',
       async () => {
         await asOwner(async (c) => {
           await fails(

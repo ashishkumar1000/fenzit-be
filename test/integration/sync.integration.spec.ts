@@ -25,6 +25,8 @@ import { AppModule } from '../../src/app.module';
 import { SupabaseClientFactory } from '../../src/common/factories/supabase-client.factory';
 import { StorageService } from '../../src/storage/storage.service';
 import { V1_TEMPLATE } from '../fixtures/v1-template';
+import { Role } from '../../src/common/enums/role.enum';
+import { accessToken, withPeople } from '../helpers/auth-test-utils';
 
 describe('Offline Sync Integration — Story 4.3', () => {
   let app: NestFastifyApplication;
@@ -64,17 +66,21 @@ describe('Offline Sync Integration — Story 4.3', () => {
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
-      .overrideProvider(StorageService)
-      .useValue({
-        getPresignedUploadUrl: jest.fn(),
-        getPresignedReadUrl: jest.fn(),
+    // The guard reads company and role from the database per request; a fake
+    // resolver stands in so mockCreateAdmin only serves the route under test.
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
       })
-      .compile();
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
+        .overrideProvider(StorageService)
+        .useValue({
+          getPresignedUploadUrl: jest.fn(),
+          getPresignedReadUrl: jest.fn(),
+        }),
+      [{ userId: TECH, tenantId: TENANT, role: Role.EMPLOYEE }],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -98,7 +104,7 @@ describe('Offline Sync Integration — Story 4.3', () => {
   });
 
   function techJwt() {
-    return jwtService.sign({ sub: TECH, tenantId: TENANT, role: 'technician' });
+    return accessToken(jwtService, TECH);
   }
 
   function buildChain(opts: {

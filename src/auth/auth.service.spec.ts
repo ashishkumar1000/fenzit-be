@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
+  NotFoundException,
   InternalServerErrorException,
   UnauthorizedException,
   HttpException,
@@ -22,8 +24,60 @@ import { Role } from '../common/enums/role.enum';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { SetupCompanyDto } from './dto/setup-company.dto';
-import { InviteTechnicianDto } from './dto/invite-technician.dto';
+import { InviteMemberDto } from './dto/invite-member.dto';
 import * as bcrypt from 'bcrypt';
+
+/** A chainable query stub: every filter returns itself, the end call resolves `result`. */
+function queryChain(result: { data: unknown; error: unknown }) {
+  const chain: Record<string, jest.Mock> = {};
+  for (const m of ['select', 'eq', 'neq', 'in']) {
+    chain[m] = jest.fn(() => chain);
+  }
+  chain['maybeSingle'] = jest.fn().mockResolvedValue(result);
+  chain['single'] = jest.fn().mockResolvedValue(result);
+  return chain;
+}
+
+/**
+ * Admin client for the sign-in path: the users lookup (and the platform_admin
+ * read) answer with `user`; the memberships read answers with `membership`;
+ * the membership activation update is captured.
+ */
+function loginAdmin(opts: {
+  user: object;
+  membership?: { tenant_id: string; role: string; status: string } | null;
+  activateError?: { message: string } | null;
+}) {
+  const activateStatusEq = jest
+    .fn()
+    .mockResolvedValue({ error: opts.activateError ?? null });
+  const activateUserEq = jest.fn(() => ({ eq: activateStatusEq }));
+  const update = jest.fn(() => ({ eq: activateUserEq }));
+  const memberships = {
+    ...queryChain({ data: opts.membership ?? null, error: null }),
+    update,
+  };
+  const users = queryChain({ data: opts.user, error: null });
+  return {
+    update,
+    activateUserEq,
+    activateStatusEq,
+    memberships,
+    from: jest.fn((table: string) =>
+      table === 'users' ? users : memberships,
+    ),
+  };
+}
+
+const userRow = (over: Record<string, unknown> = {}) => ({
+  id: '550e8400-e29b-41d4-a716-446655440000',
+  country_code: '+91',
+  phone_number: '1234567890',
+  name: null,
+  platform_admin: false,
+  disabled: false,
+  ...over,
+});
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -276,28 +330,6 @@ describe('AuthService', () => {
   });
 
   describe('verifyOtp', () => {
-    /**
-     * Returns a single-call from() mock for findOrCreateUser
-     * (select → eq → eq → order). The FN-2026-10-03 fix made the query
-     * return a ROW LIST (dedup across stub rows), so `.order` resolves the
-     * awaited `{ data, error }` with the user as the single row.
-     */
-    function mockFindUser(user: object) {
-      return {
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                order: jest
-                  .fn()
-                  .mockResolvedValueOnce({ data: [user], error: null }),
-              }),
-            }),
-          }),
-        }),
-      };
-    }
-
     /** Arrange a live session whose REAL code differs from the given one, so
      *  only the pre-release master path can verify. */
     function mockLiveSession() {
@@ -312,15 +344,7 @@ describe('AuthService', () => {
       otpSessionStore.delete.mockResolvedValue(undefined);
       jwtService.signAsync.mockResolvedValueOnce('master-jwt');
       supabaseClientFactory.createAdmin.mockReturnValue(
-        mockFindUser({
-          id: '550e8400-e29b-41d4-a716-446655440000',
-          country_code: '+91',
-          phone_number: '1234567890',
-          name: null,
-          role: 'technician',
-          tenant_id: null,
-          status: 'active',
-        }) as never,
+        loginAdmin({ user: userRow() }) as never,
       );
     }
 
@@ -371,21 +395,12 @@ describe('AuthService', () => {
       };
 
       const userId = '550e8400-e29b-41d4-a716-446655440000';
-      const mockUser = {
-        id: userId,
-        country_code: '+91',
-        phone_number: '1234567890',
-        name: null,
-        role: 'owner',
-        tenant_id: null,
-        status: 'active',
-      };
 
       otpSessionStore.get.mockResolvedValue(session);
       jwtService.signAsync.mockResolvedValueOnce('final-jwt');
       otpSessionStore.delete.mockResolvedValue(undefined);
       supabaseClientFactory.createAdmin.mockReturnValue(
-        mockFindUser(mockUser) as never,
+        loginAdmin({ user: userRow({ id: userId }) }) as never,
       );
 
       const result = await service.verifyOtp({
@@ -394,11 +409,19 @@ describe('AuthService', () => {
       });
 
       expect(result).toHaveProperty('token', 'final-jwt');
-      expect(result.user).toMatchObject({
+      // A new person has no company yet: role and tenant are null.
+      expect(result.user).toEqual({
         userId,
         tenantId: null,
-        role: 'owner',
+        role: null,
         name: null,
+        platformAdmin: false,
+        formerMember: false,
+      });
+      // The login token is identity only: no tenantId, no role.
+      expect(jwtService.signAsync).toHaveBeenCalledWith({
+        sub: userId,
+        typ: 'access',
       });
       expect(otpSessionStore.delete).toHaveBeenCalled();
     });
@@ -505,7 +528,8 @@ describe('AuthService', () => {
     const ownerUser: RequestUser = {
       userId: '550e8400-e29b-41d4-a716-446655440000',
       tenantId: null,
-      role: Role.OWNER,
+      role: null,
+      platformAdmin: false,
       rawJwt: 'mock-jwt',
     };
 
@@ -517,7 +541,7 @@ describe('AuthService', () => {
 
     const rpcRow = {
       id: 'tenant-uuid',
-      owner_id: ownerUser.userId,
+      created_by: ownerUser.userId,
       company_name: 'Jobzo Services',
       gstin: '29ABCDE1234F1Z5',
       address: null,
@@ -546,7 +570,7 @@ describe('AuthService', () => {
       expect(result.token).toBe('fresh-owner-jwt');
       expect(result.tenant).toMatchObject({
         id: 'tenant-uuid',
-        ownerId: ownerUser.userId,
+        createdBy: ownerUser.userId,
         companyName: 'Jobzo Services',
       });
     });
@@ -645,6 +669,26 @@ describe('AuthService', () => {
       );
     });
 
+    it('maps a platform admin refusal (PT403) to 403 and an existing-company person (PT409) to 409', async () => {
+      const failWith = (code: string) =>
+        supabaseClientFactory.createAdmin.mockReturnValue({
+          rpc: jest.fn().mockResolvedValue({
+            data: null,
+            error: { code, message: 'refused' },
+          }),
+        } as never);
+
+      failWith('PT403');
+      await expect(service.setupCompany(ownerUser, dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+      failWith('PT409');
+      await expect(service.setupCompany(ownerUser, dto)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
     it('should throw InternalServerErrorException when RPC returns empty array', async () => {
       const mockAdmin = {
         rpc: jest.fn().mockResolvedValue({ data: [], error: null }),
@@ -726,17 +770,18 @@ describe('AuthService', () => {
     });
   });
 
-  describe('inviteTechnician', () => {
-    const ownerUser: RequestUser = {
+  describe('inviteMember', () => {
+    const adminUser: RequestUser = {
       userId: '550e8400-e29b-41d4-a716-446655440000',
       tenantId: 'tenant-uuid-111',
-      role: Role.OWNER,
+      role: Role.COMPANY_ADMIN,
+      platformAdmin: false,
       rawJwt: 'mock-jwt',
     };
 
     const SKILL_ID = '550e8400-e29b-41d4-a716-446655440001';
 
-    const dto: InviteTechnicianDto = {
+    const dto: InviteMemberDto = {
       countryCode: '+91',
       phoneNumber: '1111111111',
       name: 'Ravi Kumar',
@@ -744,23 +789,13 @@ describe('AuthService', () => {
     };
 
     function makeMockAdmin(opts: {
-      existingActive?: { id: string; status: string } | null;
       validSkills?: { id: string }[];
       validSkillsError?: { code?: string; message?: string } | null;
-      insertResult?: {
-        data: { id: string } | null;
-        error: { code?: string; message?: string } | null;
+      rpcResult?: {
+        data: unknown;
+        error: { code?: string; message?: string; hint?: string } | null;
       };
-      userSkillsError?: { code?: string; message?: string } | null;
     }) {
-      const maybeSingleFn = jest
-        .fn()
-        .mockResolvedValue({ data: opts.existingActive ?? null, error: null });
-      const singleInsertFn = jest
-        .fn()
-        .mockResolvedValue(
-          opts.insertResult ?? { data: { id: 'invite-uuid' }, error: null },
-        );
       const validSkillsData =
         opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
 
@@ -769,104 +804,140 @@ describe('AuthService', () => {
         data: opts.validSkillsError ? null : validSkillsData,
         error: opts.validSkillsError ?? null,
       });
+      const skillCheckIn = jest.fn().mockReturnValue({ eq: skillCheckEq });
 
-      let fromCallCount = 0;
       return {
         skillCheckEq,
-        from: jest.fn().mockImplementation(() => {
-          fromCallCount++;
-          if (fromCallCount === 1) {
-            // active-member check
-            return {
-              select: jest.fn().mockReturnValue({
-                eq: jest.fn().mockReturnValue({
-                  eq: jest.fn().mockReturnValue({
-                    eq: jest.fn().mockReturnValue({
-                      eq: jest.fn().mockReturnValue({
-                        maybeSingle: maybeSingleFn,
-                      }),
-                    }),
-                  }),
-                }),
-              }),
-            };
-          } else if (fromCallCount === 2) {
-            // global skills-catalog check (Story 4.2)
-            return {
-              select: jest.fn().mockReturnValue({
-                in: jest.fn().mockReturnValue({
-                  eq: skillCheckEq,
-                }),
-              }),
-            };
-          } else if (fromCallCount === 3) {
-            // user INSERT
-            return {
-              insert: jest.fn().mockReturnValue({
-                select: jest.fn().mockReturnValue({
-                  single: singleInsertFn,
-                }),
-              }),
-            };
-          } else if (fromCallCount === 4) {
-            // user_skills INSERT
-            return {
-              insert: jest
-                .fn()
-                .mockResolvedValue({ error: opts.userSkillsError ?? null }),
-            };
-          } else {
-            // compensating delete on user_skills failure
-            return {
-              delete: jest.fn().mockReturnValue({
-                eq: jest.fn().mockResolvedValue({ error: null }),
-              }),
-            };
-          }
+        skillCheckIn,
+        rpc: jest.fn().mockResolvedValue(
+          opts.rpcResult ?? {
+            data: [
+              {
+                member_user_id: 'invite-uuid',
+                member_employee_code: 'EMP-0001',
+              },
+            ],
+            error: null,
+          },
+        ),
+        from: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({ in: skillCheckIn }),
         }),
       };
     }
 
-    it('should create an invite and return invite_id (201 path)', async () => {
+    const rpcFails = (code: string, hint?: string) =>
+      makeMockAdmin({
+        rpcResult: { data: null, error: { code, message: 'x', hint } },
+      });
+
+    it('should create an invite through the invite_member function and return invite_id + employee_code (201 path)', async () => {
       const mockAdmin = makeMockAdmin({});
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-      expect(await service.inviteTechnician(ownerUser, dto)).toEqual({
+      expect(await service.inviteMember(adminUser, dto)).toEqual({
         invite_id: 'invite-uuid',
+        employee_code: 'EMP-0001',
       });
       // Story 4.2 — validation runs against the global catalog, not tenant_skills,
       // and only active skills are assignable.
-      expect(mockAdmin.from).toHaveBeenNthCalledWith(2, 'skills');
+      expect(mockAdmin.from).toHaveBeenCalledWith('skills');
       expect(mockAdmin.skillCheckEq).toHaveBeenCalledWith('is_active', true);
+      // The caller and company come from the request user, never the body.
+      expect(mockAdmin.rpc).toHaveBeenCalledWith('invite_member', {
+        p_caller: adminUser.userId,
+        p_tenant_id: 'tenant-uuid-111',
+        p_country_code: '+91',
+        p_phone_number: '1111111111',
+        p_name: 'Ravi Kumar',
+        p_role: Role.EMPLOYEE,
+        p_skill_ids: [SKILL_ID],
+      });
     });
 
-    it('should throw BadRequestException when owner has no tenantId (company not set up)', async () => {
-      const noTenantOwner: RequestUser = { ...ownerUser, tenantId: null };
+    it('defaults the role to employee when none is sent, and passes an explicit role through', async () => {
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      await service.inviteMember(adminUser, dto);
+      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
+        p_role: 'employee',
+      });
+
+      await service.inviteMember(adminUser, {
+        ...dto,
+        role: Role.COMPANY_ADMIN,
+      });
+      expect(mockAdmin.rpc.mock.calls[1][1]).toMatchObject({
+        p_role: 'company_admin',
+      });
+    });
+
+    it('invites a viewer without skills: no skills lookup, empty p_skill_ids', async () => {
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      const { skillIds: _skillIds, ...noSkills } = dto;
+      void _skillIds;
+      await service.inviteMember(adminUser, { ...noSkills, role: Role.VIEWER });
+      expect(mockAdmin.from).not.toHaveBeenCalled();
+      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
+        p_role: 'viewer',
+        p_skill_ids: [],
+      });
+    });
+
+    it('rejects an employee with no skills (missing or empty) with 422 before any database call', async () => {
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      const { skillIds: _skillIds, ...noSkills } = dto;
+      void _skillIds;
+      for (const candidate of [noSkills, { ...dto, skillIds: [] }]) {
+        await expect(
+          service.inviteMember(adminUser, candidate),
+        ).rejects.toMatchObject({ status: 422 });
+      }
+      expect(mockAdmin.rpc).not.toHaveBeenCalled();
+    });
+
+    it('removes duplicate skill IDs before validating and sending', async () => {
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      await service.inviteMember(adminUser, {
+        ...dto,
+        skillIds: [SKILL_ID, SKILL_ID],
+      });
+      expect(mockAdmin.skillCheckIn).toHaveBeenCalledWith('id', [SKILL_ID]);
+      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
+        p_skill_ids: [SKILL_ID],
+      });
+    });
+
+    it('should throw BadRequestException when the caller has no tenantId (company not set up)', async () => {
+      const noTenantAdmin: RequestUser = { ...adminUser, tenantId: null };
       await expect(
-        service.inviteTechnician(noTenantOwner, dto),
+        service.inviteMember(noTenantAdmin, dto),
       ).rejects.toThrow(BadRequestException);
       expect(supabaseClientFactory.createAdmin).not.toHaveBeenCalled();
     });
 
     it('should throw BadRequestException when skillIds are not in the global catalog (AC5)', async () => {
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({ validSkills: [] }) as never,
-      );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
+      const mockAdmin = makeMockAdmin({ validSkills: [] });
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         BadRequestException,
       );
+      expect(mockAdmin.rpc).not.toHaveBeenCalled();
     });
 
     it('should throw BadRequestException when only some skillIds are valid (AC5 partial)', async () => {
-      const dtoWithTwo: InviteTechnicianDto = {
+      const dtoWithTwo: InviteMemberDto = {
         ...dto,
         skillIds: [SKILL_ID, '550e8400-e29b-41d4-a716-446655440002'],
       };
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({ validSkills: [{ id: SKILL_ID }] }) as never,
-      );
+      const mockAdmin = makeMockAdmin({ validSkills: [{ id: SKILL_ID }] });
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       await expect(
-        service.inviteTechnician(ownerUser, dtoWithTwo),
+        service.inviteMember(adminUser, dtoWithTwo),
       ).rejects.toThrow(BadRequestException);
+      expect(mockAdmin.rpc).not.toHaveBeenCalled();
     });
 
     it('should throw InternalServerErrorException when skill validation DB query fails', async () => {
@@ -878,206 +949,286 @@ describe('AuthService', () => {
           },
         }) as never,
       );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         InternalServerErrorException,
       );
     });
 
-    it('should throw BadRequestException on invalid country code FK violation (23503)', async () => {
+    it('maps PT403 to 403, PT404 to 404 and PT400 to 400', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
-          insertResult: {
-            data: null,
-            error: { code: '23503', message: 'fk constraint' },
-          },
-        }) as never,
+        rpcFails('PT403') as never,
       );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        rpcFails('PT404') as never,
+      );
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
+        NotFoundException,
+      );
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        rpcFails('PT400') as never,
+      );
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         BadRequestException,
       );
     });
 
-    it('should throw ConflictException when phone is already active in tenant (409 path)', async () => {
+    it('should throw ConflictException DUPLICATE_RESOURCE when the person already belongs to a company (PT409)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
-          existingActive: { id: 'existing-user-id', status: 'active' },
-        }) as never,
+        rpcFails('PT409') as never,
       );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 409,
+        response: expect.objectContaining({
+          error_code: ErrorCode.DUPLICATE_RESOURCE,
+        }),
+      });
+    });
+
+    it('maps a PT409 carrying the LAST_ADMIN hint to the LAST_ADMIN code', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        rpcFails('PT409', ErrorCode.LAST_ADMIN) as never,
+      );
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 409,
+        response: expect.objectContaining({
+          error_code: ErrorCode.LAST_ADMIN,
+        }),
+      });
+    });
+
+    it('should throw BadRequestException on invalid country code FK violation (23503)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        rpcFails('23503') as never,
+      );
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw ConflictException on a concurrent duplicate invite (23505)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        rpcFails('23505') as never,
+      );
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         ConflictException,
       );
     });
 
-    it('should throw ConflictException on unique phone constraint violation (23505)', async () => {
+    it('should throw InternalServerErrorException on an unexpected database error', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
-          insertResult: {
-            data: null,
-            error: { code: '23505', message: 'duplicate key' },
-          },
-        }) as never,
+        rpcFails('42P01') as never,
       );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
-        ConflictException,
-      );
-    });
-
-    it('should throw InternalServerErrorException on unexpected DB error during user INSERT', async () => {
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
-          insertResult: {
-            data: null,
-            error: { code: '42P01', message: 'relation does not exist' },
-          },
-        }) as never,
-      );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
+      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         InternalServerErrorException,
       );
     });
 
-    it('should throw InternalServerErrorException when user_skills INSERT fails', async () => {
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
-          userSkillsError: {
-            code: '23503',
-            message: 'fk constraint on user_skills',
-          },
-        }) as never,
-      );
-      await expect(service.inviteTechnician(ownerUser, dto)).rejects.toThrow(
-        InternalServerErrorException,
-      );
+    it('should throw InternalServerErrorException when the function returns no row', async () => {
+      for (const data of [[], null]) {
+        supabaseClientFactory.createAdmin.mockReturnValue(
+          makeMockAdmin({ rpcResult: { data, error: null } }) as never,
+        );
+        await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
+          InternalServerErrorException,
+        );
+      }
     });
 
-    it('should use createAdmin (service role) for the invite insert', async () => {
+    it('should use createAdmin (service role) for the invite', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
         makeMockAdmin({}) as never,
       );
-      await service.inviteTechnician(ownerUser, dto);
+      await service.inviteMember(adminUser, dto);
       expect(supabaseClientFactory.createAdmin).toHaveBeenCalled();
     });
   });
 
-  describe('verifyOtp — auto-accept for invited technician', () => {
-    const invitedUserId = '550e8400-e29b-41d4-a716-000000000099';
+  describe('verifyOtp — membership at sign-in', () => {
+    const userId = '550e8400-e29b-41d4-a716-000000000099';
     const tenantId = 'tenant-uuid-111';
 
-    const invitedUser = {
-      id: invitedUserId,
-      country_code: '+91',
-      phone_number: '2222222222',
-      name: 'Ravi Kumar',
-      role: 'technician',
-      tenant_id: tenantId,
-      status: 'invited',
-    };
-
-    const activatedUser = { ...invitedUser, status: 'active' };
-
-    it('should activate an invited user and issue JWT with correct tenantId and role', async () => {
+    async function arrangeLiveSession() {
       const otp = '123456';
-      const otpHash = await bcrypt.hash(otp, 10);
       const session: OtpSession = {
         countryCode: '+91',
         phoneNumber: '2222222222',
-        otpHash,
+        otpHash: await bcrypt.hash(otp, 10),
         attempts: 0,
         locked: false,
         expiresAt: Date.now() + 300_000,
       };
-
       otpSessionStore.get.mockResolvedValue(session);
       otpSessionStore.delete.mockResolvedValue(undefined);
-      jwtService.signAsync.mockResolvedValueOnce('technician-jwt');
+      jwtService.signAsync.mockResolvedValueOnce('member-jwt');
+      return otp;
+    }
 
-      const updateSingleFn = jest
-        .fn()
-        .mockResolvedValue({ data: activatedUser, error: null });
-
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                order: jest
-                  .fn()
-                  .mockResolvedValueOnce({ data: [invitedUser], error: null }),
-              }),
-            }),
-          }),
-          update: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                // .eq('status', 'invited') idempotency guard
-                select: jest.fn().mockReturnValue({
-                  single: updateSingleFn,
-                }),
-              }),
-            }),
-          }),
-        }),
-      };
-
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+    it('should activate an invited membership and return the live tenantId and role', async () => {
+      const otp = await arrangeLiveSession();
+      const admin = loginAdmin({
+        user: userRow({ id: userId, name: 'Ravi Kumar' }),
+        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
 
       const result = await service.verifyOtp({
         otpSessionId: 'session-id',
         otpCode: otp,
       });
 
-      expect(result.token).toBe('technician-jwt');
-      expect(result.user.tenantId).toBe(tenantId);
-      expect(result.user.role).toBe('technician');
-      expect(updateSingleFn).toHaveBeenCalled();
+      expect(result.token).toBe('member-jwt');
+      expect(result.user).toEqual({
+        userId,
+        tenantId,
+        role: 'employee',
+        name: 'Ravi Kumar',
+        platformAdmin: false,
+        formerMember: false,
+      });
+      // Activation targets this person's invited membership only (idempotent guard).
+      expect(admin.update).toHaveBeenCalledWith({ status: 'active' });
+      expect(admin.activateUserEq).toHaveBeenCalledWith('user_id', userId);
+      expect(admin.activateStatusEq).toHaveBeenCalledWith('status', 'invited');
+      // Role and tenant stay out of the token.
+      expect(jwtService.signAsync).toHaveBeenCalledWith({
+        sub: userId,
+        typ: 'access',
+      });
     });
 
-    it('should NOT trigger auto-accept for already active users', async () => {
-      const otp = '123456';
-      const otpHash = await bcrypt.hash(otp, 10);
-      const session: OtpSession = {
-        countryCode: '+91',
-        phoneNumber: '2222222222',
-        otpHash,
-        attempts: 0,
-        locked: false,
-        expiresAt: Date.now() + 300_000,
-      };
+    it('should fail the sign-in with a 500 when activating the invite fails', async () => {
+      const otp = await arrangeLiveSession();
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        loginAdmin({
+          user: userRow({ id: userId }),
+          membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+          activateError: { message: 'db down' },
+        }) as never,
+      );
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp }),
+      ).rejects.toThrow(InternalServerErrorException);
+      expect(otpSessionStore.delete).not.toHaveBeenCalled();
+    });
 
-      otpSessionStore.get.mockResolvedValue(session);
-      otpSessionStore.delete.mockResolvedValue(undefined);
-      jwtService.signAsync.mockResolvedValueOnce('owner-jwt');
+    it('should NOT trigger activation for already active members', async () => {
+      const otp = await arrangeLiveSession();
+      const admin = loginAdmin({
+        user: userRow({ id: userId }),
+        membership: {
+          tenant_id: tenantId,
+          role: 'company_admin',
+          status: 'active',
+        },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
 
-      const activeUser = {
-        id: invitedUserId,
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      expect(admin.update).not.toHaveBeenCalled();
+      expect(result.user).toMatchObject({ tenantId, role: 'company_admin' });
+    });
+
+    it('returns a viewer as viewer', async () => {
+      const otp = await arrangeLiveSession();
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        loginAdmin({
+          user: userRow({ id: userId }),
+          membership: { tenant_id: tenantId, role: 'viewer', status: 'active' },
+        }) as never,
+      );
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+      expect(result.user).toMatchObject({ tenantId, role: 'viewer' });
+    });
+
+    it('signs a platform admin in as platform_admin with no tenant and no membership read', async () => {
+      const otp = await arrangeLiveSession();
+      const admin = loginAdmin({
+        user: userRow({ id: userId, platform_admin: true }),
+        membership: { tenant_id: tenantId, role: 'employee', status: 'active' },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      expect(result.user).toMatchObject({
+        tenantId: null,
+        role: 'platform_admin',
+        platformAdmin: true,
+      });
+      expect(admin.from).not.toHaveBeenCalledWith('memberships');
+    });
+
+    it('refuses a disabled user with the generic INVALID_OTP 401: no token, no activation', async () => {
+      const otp = await arrangeLiveSession();
+      const admin = loginAdmin({
+        user: userRow({ id: userId, disabled: true }),
+        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp }),
+      ).rejects.toMatchObject({
+        status: 401,
+        response: expect.objectContaining({
+          error_code: 'INVALID_OTP',
+          message: 'Invalid OTP code',
+        }),
+      });
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+      expect(admin.update).not.toHaveBeenCalled();
+    });
+
+    it('creates an identity-only users row on first sign-in (no role, tenant or status columns)', async () => {
+      const otp = await arrangeLiveSession();
+      const created = userRow({ id: userId, phone_number: '2222222222' });
+      const insertChain = queryChain({ data: created, error: null });
+      const insert = jest.fn(() => insertChain);
+      const usersRead = queryChain({ data: null, error: null });
+      const users = { ...usersRead, insert };
+      // The second users read (platform_admin) finds the created row.
+      usersRead['maybeSingle']
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: created, error: null });
+      const memberships = queryChain({ data: null, error: null });
+      supabaseClientFactory.createAdmin.mockReturnValue({
+        from: jest.fn((t: string) => (t === 'users' ? users : memberships)),
+      } as never);
+
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      const inserted = (insert.mock.calls[0] as unknown[])[0] as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(inserted).sort()).toEqual([
+        'country_code',
+        'id',
+        'name',
+        'phone_number',
+      ]);
+      expect(inserted).toMatchObject({
         country_code: '+91',
         phone_number: '2222222222',
         name: null,
-        role: 'owner',
-        tenant_id: null,
-        status: 'active',
-      };
-
-      const updateFn = jest.fn();
-      const mockAdmin = {
-        from: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            eq: jest.fn().mockReturnValue({
-              eq: jest.fn().mockReturnValue({
-                order: jest
-                  .fn()
-                  .mockResolvedValueOnce({ data: [activeUser], error: null }),
-              }),
-            }),
-          }),
-          update: updateFn,
-        }),
-      };
-
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-
-      await service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp });
-      expect(updateFn).not.toHaveBeenCalled();
+      });
+      expect(result.user).toMatchObject({ tenantId: null, role: null });
     });
   });
 
@@ -1085,7 +1236,8 @@ describe('AuthService', () => {
     const user: RequestUser = {
       userId: '550e8400-e29b-41d4-a716-446655440000',
       tenantId: 'tenant-uuid',
-      role: Role.OWNER,
+      role: Role.COMPANY_ADMIN,
+      platformAdmin: false,
       rawJwt: 'login-jwt',
     };
 
@@ -1108,7 +1260,7 @@ describe('AuthService', () => {
       };
       expect(claims.sub).toBe(user.userId);
       // Realtime requires a claim naming an existing Postgres role (Story 3.1
-      // spike) — the login JWT's 'owner'/'technician' role is rejected.
+      // spike) — the login JWT is not a Realtime token and is rejected.
       expect(claims.role).toBe('authenticated');
       // Exactly the TTL, robust to scheduler drift between before/after.
       expect(claims.exp).toBeGreaterThanOrEqual(

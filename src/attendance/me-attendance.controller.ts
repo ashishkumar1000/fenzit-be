@@ -18,10 +18,9 @@ import { CheckInOutService } from './check-in-out.service';
 import { CheckInOutDto } from './dto/check-in-out.dto';
 import { HttpException } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /** AD-6: UUID v4, generated per user tap by the app. */
 const UUID_V4_PATTERN =
@@ -44,7 +43,7 @@ export class MeAttendanceController {
   ) {}
 
   @Get('access')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -61,7 +60,7 @@ export class MeAttendanceController {
   }
 
   @Get('summary')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -78,7 +77,7 @@ export class MeAttendanceController {
   }
 
   @Post('onboarding')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -94,7 +93,7 @@ export class MeAttendanceController {
   }
 
   @Post('check-in')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -132,7 +131,7 @@ export class MeAttendanceController {
   }
 
   @Post('check-out')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:

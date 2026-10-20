@@ -18,6 +18,7 @@
  * FK-safe order (records/attempts/rules RESTRICT to their parents).
  */
 import { Pool } from 'pg';
+import { Role } from '../../src/common/enums/role.enum';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
@@ -94,7 +95,13 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     userId: string,
     role: 'owner' | 'technician',
   ): RequestUser =>
-    ({ userId, tenantId: TENANT, role, rawJwt: 'probe-jwt' }) as unknown as RequestUser;
+    ({
+      userId,
+      tenantId: TENANT,
+      role: role === 'owner' ? Role.COMPANY_ADMIN : Role.EMPLOYEE,
+      platformAdmin: false,
+      rawJwt: 'probe-jwt',
+    }) as unknown as RequestUser;
 
   const must = <T>(
     res: { data: T | null; error: { message: string } | null },
@@ -237,15 +244,16 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     });
 
     // Self-heal first: when a previous run's beforeAll crashes, jest never
-    // reaches afterAll, and the users seeded (tenant-less by design until
-    // the tenant row exists) leak as orphans. The signature is this probe's
-    // alone — tenant-less + probe names, older than 10 minutes (a still-
-    // running crashed process is never raced).
+    // reaches afterAll, and the users seeded (company-less by design until
+    // the membership rows exist) leak as orphans. The signature is this
+    // probe's alone — no membership, no company created + probe names, older
+    // than 10 minutes (a still-running crashed process is never raced).
     await pool.query(
-      `delete from public.users
-       where tenant_id is null
+      `delete from public.users u
+       where not exists (select 1 from public.memberships m where m.user_id = u.id)
+         and not exists (select 1 from public.tenants t where t.created_by = u.id)
          and (name = 'probe owner' or name like 'probe tech %')
-         and created_at < now() - interval '10 minutes'`,
+         and u.created_at < now() - interval '10 minutes'`,
     );
     admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -266,8 +274,6 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     must(
       await admin.from('users').insert({
         id: OWNER,
-        role: 'owner',
-        status: 'active',
         country_code: '+91',
         phone_number: PHONES[0],
         name: 'probe owner',
@@ -277,8 +283,6 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       await admin.from('users').insert(
         Object.values(TECHS).map((id, i) => ({
           id,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PHONES[i + 1],
           name: techName(i + 1),
@@ -288,17 +292,22 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     must(
       await admin.from('tenants').insert({
         id: TENANT,
-        owner_id: OWNER,
+        created_by: OWNER,
         company_name: `19-2/19-3 dashboard probe ${TENANT.slice(0, 8)}`,
         state_code: 'KA',
         timezone: TZ,
       }),
     );
     must(
-      await admin
-        .from('users')
-        .update({ tenant_id: TENANT })
-        .in('id', [...Object.values(TECHS), OWNER]),
+      await admin.from('memberships').insert([
+        { user_id: OWNER, tenant_id: TENANT, role: 'company_admin', status: 'active' },
+        ...Object.values(TECHS).map((id) => ({
+          user_id: id,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+        })),
+      ]),
     );
     must(
       await admin.from('attendance_settings').insert({
@@ -522,14 +531,15 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       `delete from public.attendance_day_overrides where tenant_id = $1`,
       [TENANT],
     );
-    await admin
-      .from('attendance_enrolments')
-      .delete()
-      .eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_office_assignments')
-      .delete()
-      .eq('tenant_id', TENANT);
+    // Enrolments + assignments go in ONE statement (the coverage trigger
+    // fires per statement); the company delete no longer cascades them.
+    await pool.query(
+      `with gone as (
+         delete from public.attendance_enrolments where tenant_id = $1 returning 1
+       )
+       delete from public.attendance_office_assignments where tenant_id = $1`,
+      [TENANT],
+    );
     await admin
       .from('attendance_office_rules')
       .delete()
@@ -545,9 +555,10 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       .delete()
       .eq('tenant_id', TENANT);
     await admin.from('attendance_settings').delete().eq('tenant_id', TENANT);
-    // Tenants first (the drop orphans users via the owner FK's SET NULL),
-    // THEN the probe's users legs — the reverse order would violate
-    // tenants_owner_id_fkey on the owner and silently skip the whole leg.
+    // Memberships, then the company, THEN the users — memberships and
+    // tenants.created_by both RESTRICT, so the reverse order would fail and
+    // silently skip the whole leg.
+    await admin.from('memberships').delete().eq('tenant_id', TENANT);
     await admin.from('tenants').delete().eq('id', TENANT);
     const del = await admin
       .from('users')

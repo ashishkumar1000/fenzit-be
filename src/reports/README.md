@@ -9,7 +9,7 @@ stores it in R2, and the owner polls/downloads it through the status endpoint.
 ```
 src/reports/
   reports.module.ts            module wiring (imports only common/ + storage — NFR5)
-  reports.controller.ts        POST / · GET / · GET /:id (owner-only)
+  reports.controller.ts        POST / · GET / · GET /:id (company admin only)
   reports.service.ts           create/status/list + params validation
   report-response.model.ts     row + response shapes (single source)
   registry/

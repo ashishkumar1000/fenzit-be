@@ -51,8 +51,14 @@ export async function readEmployee(
   tenantId: string,
   employeeId: string,
 ): Promise<{ id: string; name: string | null } | null> {
+  // Only a tracked employee: a company admin, a viewer, a removed member or a
+  // disabled person is not someone the attendance module can enrol or alert on.
   const result = await tx.query<{ id: string; name: string | null }>(
-    'select id, name from public.users where id = $1 and tenant_id = $2',
+    `select u.id, u.name
+       from public.memberships m
+       join public.users u on u.id = m.user_id
+      where m.user_id = $1 and m.tenant_id = $2
+        and m.role = 'employee' and m.status <> 'removed' and not u.disabled`,
     [employeeId, tenantId],
   );
   return result.rows[0] ?? null;

@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import type { ReportFetchContext } from './report-definition';
 import { fetchAttendanceReportData } from './attendance.data';
+import { memberRow } from '../../../test/helpers/member-rows-stub';
 
 /**
  * Spec for 21-2's attendance fetcher. The pg transaction client is stubbed
@@ -28,6 +29,12 @@ const NAMES: Record<string, string> = {
   [E1]: 'Asha',
   [E2]: 'Bimal',
 };
+
+// Names and EMP codes now come from the company-member reader (memberships
+// joined to users), not a users-table read.
+const MEMBERS = Object.entries(NAMES).map(([id, name], i) =>
+  memberRow(id, { name, employeeCode: `EMP-000${i + 1}` }),
+) as unknown as PgRow[];
 
 type PgRow = Record<string, unknown>;
 
@@ -194,7 +201,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme Services' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [
         { employee_id: E1, outcome: 'mocked' },
@@ -231,13 +238,24 @@ describe('fetchAttendanceReportData (21-2)', () => {
     expect(branch.summary.absent).toBe(2);
     expect(branch.summary.daysWorked).toBe(0);
 
+    // Names come from this company's memberships, removed members included
+    // (a report keeps the past days of someone who has since left).
+    expect(supa.calls['memberships']).toEqual(
+      expect.arrayContaining([['eq', 'tenant_id', TENANT]]),
+    );
+    expect(supa.calls['memberships']).not.toContainEqual([
+      'neq',
+      'status',
+      'removed',
+    ]);
+
     // Register: 3 days ≤ 31 → rendered, codes from the engine outcomes.
-    // code: the row's EMP reference (null here — the stub users have none).
+    // code: the member's EMP reference, read from the membership.
     expect(data.scope.registerDays).toBe(3);
     expect(data.register?.dates).toHaveLength(3);
     expect(data.register?.rows[0]).toEqual({
       name: 'Asha',
-      code: null,
+      code: 'EMP-0001',
       codes: ['P', 'A', 'H'],
     });
 
@@ -255,7 +273,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -280,7 +298,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -304,7 +322,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [
         { employee_id: E1 },
         { employee_id: E2 },
@@ -325,7 +343,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -345,7 +363,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub({ ...baseFixtures(), records: [] });
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -378,7 +396,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const pg = pgStub(fixtures);
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -401,7 +419,7 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -425,7 +443,7 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -454,7 +472,7 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       // The stub ignores .in filters, so the fixture models what PostgREST
       // would return for the pinned .in('employee_id', [E2]) probe: only
@@ -487,7 +505,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: [],
+      memberships: [],
       attendance_enrolments: [],
       attendance_attempts: [],
     });
@@ -516,7 +534,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub(baseFixtures());
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: [],
+      memberships: [],
       attendance_enrolments: [],
       attendance_attempts: [],
     });
@@ -540,7 +558,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg2 = pgStub(baseFixtures());
     const supa2 = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: [],
+      memberships: [],
       attendance_enrolments: [],
       attendance_attempts: [],
     });
@@ -571,7 +589,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub({ ...baseFixtures(), records: [] });
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -595,7 +613,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub({ ...baseFixtures(), records: [] });
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -634,7 +652,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub(fixtures);
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
@@ -664,7 +682,7 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     const pg = pgStub(fixtures);
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
-      users: Object.entries(NAMES).map(([id, name]) => ({ id, name })),
+      memberships: MEMBERS,
       attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [{ employee_id: E1, outcome: 'mocked' }],
     });

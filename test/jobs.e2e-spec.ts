@@ -8,6 +8,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { StorageService } from '../src/storage/storage.service';
 import { getIstDayRange } from '../src/common/utils/ist-day-range.util';
 import { V1_TEMPLATE as SHARED_V1_TEMPLATE } from './fixtures/v1-template';
@@ -17,8 +19,12 @@ describe('Jobs (e2e)', () => {
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-jobs-e2e';
-  const OWNER_ID = 'owner-uuid-jobs-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
+  const OWNER_ID = '11111111-1111-4111-8111-111111111111';
+  // An employee who is NOT the assignee of the fixture jobs.
+  const OTHER_TECH_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  // A signed-in person who belongs to no company yet.
+  const NO_COMPANY_ID = '00000000-0000-4000-8000-000000000003';
   const CUSTOMER_ID = '11111111-1111-4111-8111-111111111111';
   const TECH_ID = '22222222-2222-4222-8222-222222222222';
   // Cursor keysets carry a JOB id, not a customer id — keep the fixture honest
@@ -28,21 +34,28 @@ describe('Jobs (e2e)', () => {
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
-      .overrideProvider(StorageService)
-      .useValue({
-        getPresignedUploadUrl: jest
-          .fn()
-          .mockResolvedValue('https://r2.example.com/presigned'),
-        getPresignedReadUrl: jest
-          .fn()
-          .mockResolvedValue('https://r2.example.com/read'),
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
       })
-      .compile();
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
+        .overrideProvider(StorageService)
+        .useValue({
+          getPresignedUploadUrl: jest
+            .fn()
+            .mockResolvedValue('https://r2.example.com/presigned'),
+          getPresignedReadUrl: jest
+            .fn()
+            .mockResolvedValue('https://r2.example.com/read'),
+        }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: OTHER_TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: NO_COMPANY_ID, tenantId: null, role: null },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -63,16 +76,19 @@ describe('Jobs (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(tenantId: string | null = TENANT_ID) {
-    return jwtService.sign({ sub: OWNER_ID, tenantId, role: 'owner' });
+  function ownerJwt() {
+    return accessToken(jwtService, OWNER_ID);
   }
 
+  /** A signed-in person who belongs to no company yet. */
+  function noCompanyJwt() {
+    return accessToken(jwtService, NO_COMPANY_ID);
+  }
+
+  // An employee who is not the assignee of the fixture jobs (OTHER_TECH_ID);
+  // `assignedTechJwt` below is the assignee (TECH_ID).
   function techJwt() {
-    return jwtService.sign({
-      sub: 'tech-uuid',
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, OTHER_TECH_ID);
   }
 
   const jobRow = {
@@ -187,11 +203,30 @@ describe('Jobs (e2e)', () => {
     data: { id: CUSTOMER_ID, tenant_id: TENANT_ID },
     error: null,
   };
-  const technicianOk = {
-    data: { id: TECH_ID, tenant_id: TENANT_ID, role: 'technician' },
-    error: null,
+  // Company people come from `memberships` (joined to the person's identity),
+  // read as a list: select().eq(tenant).order().[eq(role)].in(user ids).neq(status).
+  const memberRow = {
+    user_id: TECH_ID,
+    role: 'employee',
+    status: 'active',
+    employee_code: 'EMP-001',
+    created_at: '2026-06-01T00:00:00Z',
+    users: { name: 'Ravi', country_code: '+91', phone_number: '9990001111' },
   };
+  const technicianOk = { data: [memberRow], error: null };
+  // No such employee in this company (the list comes back empty).
+  const noMember = { data: [], error: null };
   const notFound = { data: null, error: { code: 'PGRST116' } };
+
+  /** A thenable query builder: every step returns itself, awaiting resolves. */
+  function membersChain(result: { data: unknown; error: unknown }) {
+    const qb: Record<string, unknown> = {};
+    for (const m of ['select', 'eq', 'in', 'neq', 'order']) {
+      qb[m] = jest.fn().mockReturnValue(qb);
+    }
+    qb.then = (resolve: (v: unknown) => void) => resolve(result);
+    return qb;
+  }
 
   function singleChain(
     result: { data: unknown; error: unknown },
@@ -278,8 +313,8 @@ describe('Jobs (e2e)', () => {
     const from = jest.fn((table: string) => {
       if (table === 'customers')
         return singleChain(opts.customer ?? customerOk, 2);
-      if (table === 'users')
-        return singleChain(opts.technician ?? technicianOk, 3);
+      if (table === 'memberships')
+        return membersChain(opts.technician ?? technicianOk);
       if (table === 'skills') return skillsChain(opts.skill ?? skillOk);
       if (table === 'jobs') return jobsChain;
       if (table === 'idempotency_log')
@@ -359,7 +394,7 @@ describe('Jobs (e2e)', () => {
 
       const from = jest.fn((table: string) => {
         if (table === 'customers') return { select: selectLookup, insert };
-        if (table === 'users') return singleChain(technicianOk, 3);
+        if (table === 'memberships') return membersChain(technicianOk);
         if (table === 'skills') return skillsChain(skillOk);
         // The post-RPC embed re-fetch (Story 4.5) reads jobs via
         // maybeSingle — route it through the dual-chain.
@@ -409,7 +444,7 @@ describe('Jobs (e2e)', () => {
     });
 
     it('AC4 — returns 404 RESOURCE_NOT_FOUND when technician is not in tenant', async () => {
-      mockAdmin({ technician: notFound });
+      mockAdmin({ technician: noMember });
 
       const response = await app.inject({
         method: 'POST',
@@ -589,7 +624,7 @@ describe('Jobs (e2e)', () => {
       },
     );
 
-    it('AC7 — returns 403 FORBIDDEN for a Technician JWT', async () => {
+    it('AC7 — returns 403 FORBIDDEN for an employee token', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/jobs',
@@ -612,16 +647,16 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
     });
 
-    it('AC9 — returns 400 VALIDATION_ERROR when the owner has no tenantId', async () => {
+    it('AC9 — returns 403 FORBIDDEN for a person with no company', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/jobs',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: validPayload,
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
   });
 
@@ -725,7 +760,7 @@ describe('Jobs (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(builder.eq).toHaveBeenCalledWith('technician_id', 'tech-uuid');
+      expect(builder.eq).toHaveBeenCalledWith('technician_id', OTHER_TECH_ID);
       expect(builder.eq).not.toHaveBeenCalledWith('technician_id', TECH_ID);
     });
 
@@ -1025,25 +1060,24 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
     });
 
-    it('AC11 — returns 400 when the owner has no tenantId', async () => {
+    it('AC11 — returns 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/jobs',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
   });
 
   describe('GET /api/v1/jobs/:id', () => {
     const JOB_UUID = '33333333-3333-4333-8333-333333333333';
-    const technicianRow = {
-      id: TECH_ID,
-      name: 'Ravi',
-      country_code: '+91',
-      phone_number: '9990001111',
+    const technicianMember = {
+      ...memberRow,
+      user_id: TECH_ID,
+      users: { name: 'Ravi', country_code: '+91', phone_number: '9990001111' },
     };
     const customerRow = {
       id: CUSTOMER_ID,
@@ -1067,13 +1101,13 @@ describe('Jobs (e2e)', () => {
       {
         id: 'log-2',
         event_type: 'step_on_my_way',
-        actor_id: 'tech-uuid',
+        actor_id: OTHER_TECH_ID,
         metadata: null,
         created_at: '2026-06-21T02:00:00Z',
       },
     ];
-    // techJwt() carries sub: 'tech-uuid' → a job assigned to that technician.
-    const ownJobRow = { ...jobRow, technician_id: 'tech-uuid' };
+    // techJwt() carries sub: OTHER_TECH_ID → a job assigned to that technician.
+    const ownJobRow = { ...jobRow, technician_id: OTHER_TECH_ID };
 
     function mockDetail(opts: {
       job?: { data: unknown; error: unknown };
@@ -1086,10 +1120,9 @@ describe('Jobs (e2e)', () => {
       const from = jest.fn((table: string) => {
         if (table === 'jobs')
           return singleChain(opts.job ?? { data: jobRow, error: null }, 2);
-        if (table === 'users')
-          return singleChain(
-            opts.technician ?? { data: technicianRow, error: null },
-            2,
+        if (table === 'memberships')
+          return membersChain(
+            opts.technician ?? { data: [technicianMember], error: null },
           );
         if (table === 'customers')
           return singleChain(
@@ -1235,7 +1268,7 @@ describe('Jobs (e2e)', () => {
     });
 
     it('AC4 — returns 403 FORBIDDEN when a technician requests a job not theirs', async () => {
-      mockDetail({}); // default jobRow.technician_id = TECH_ID (not 'tech-uuid')
+      mockDetail({}); // default jobRow.technician_id = TECH_ID (not OTHER_TECH_ID)
 
       const response = await app.inject({
         method: 'GET',
@@ -1280,15 +1313,15 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
     });
 
-    it('AC8 — returns 400 when the owner has no tenantId', async () => {
+    it('AC8 — returns 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/jobs/${JOB_UUID}`,
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
   });
 
@@ -1397,7 +1430,7 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('JOB_NOT_MODIFIABLE');
     });
 
-    it('AC6 — returns 403 FORBIDDEN for a Technician JWT', async () => {
+    it('AC6 — returns 403 FORBIDDEN for an employee token', async () => {
       const response = await app.inject({
         method: 'PATCH',
         url: `/api/v1/jobs/${JOB_UUID}`,
@@ -1410,7 +1443,7 @@ describe('Jobs (e2e)', () => {
     });
 
     it('AC7 — returns 404 when the new technician is not in the tenant', async () => {
-      mockAdmin({ technician: notFound });
+      mockAdmin({ technician: noMember });
 
       const response = await app.inject({
         method: 'PATCH',
@@ -1459,16 +1492,16 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('UNAUTHORIZED');
     });
 
-    it('AC10 — returns 400 when the owner has no tenantId', async () => {
+    it('AC10 — returns 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'PATCH',
         url: `/api/v1/jobs/${JOB_UUID}`,
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: { description: 'x' },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('AC12 — returns 422 for an empty body (no updatable fields)', async () => {
@@ -1547,8 +1580,8 @@ describe('Jobs (e2e)', () => {
 
   describe('POST /api/v1/jobs/:id/workflow', () => {
     // A technician JWT whose sub IS the assignee (jobRow.technician_id = TECH_ID).
-    function assignedTechJwt(tenantId: string | null = TENANT_ID) {
-      return jwtService.sign({ sub: TECH_ID, tenantId, role: 'technician' });
+    function assignedTechJwt() {
+      return accessToken(jwtService, TECH_ID);
     }
     const JOB_ID = '55555555-5555-4555-8555-555555555555';
     const WORKFLOW_URL = `/api/v1/jobs/${JOB_ID}/workflow`;
@@ -1763,7 +1796,7 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).status).toBe('completed');
     });
 
-    it('AC10 — Owner JWT → 403 FORBIDDEN', async () => {
+    it('AC10 — company admin token → 403 FORBIDDEN', async () => {
       mockAdmin({});
 
       const response = await app.inject({
@@ -1783,7 +1816,7 @@ describe('Jobs (e2e)', () => {
       const response = await app.inject({
         method: 'POST',
         url: WORKFLOW_URL,
-        // techJwt()'s sub is 'tech-uuid' — NOT the assignee (TECH_ID).
+        // techJwt()'s sub is OTHER_TECH_ID — NOT the assignee (TECH_ID).
         headers: { authorization: `Bearer ${techJwt()}` },
         payload: { step: 'on_my_way' },
       });
@@ -1850,18 +1883,18 @@ describe('Jobs (e2e)', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it('AC14 — no-tenant technician JWT → 400 VALIDATION_ERROR', async () => {
+    it('AC14 — no-company person → 403 FORBIDDEN', async () => {
       mockAdmin({});
 
       const response = await app.inject({
         method: 'POST',
         url: WORKFLOW_URL,
-        headers: { authorization: `Bearer ${assignedTechJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: { step: 'on_my_way' },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('AC15 — no Authorization header → 401', async () => {
@@ -1926,8 +1959,8 @@ describe('Jobs (e2e)', () => {
     const JOB_ID = '66666666-6666-4666-8666-666666666666';
     const UPLOAD_URL = `/api/v1/jobs/${JOB_ID}/attachments`;
 
-    function assignedTechJwt(tenantId: string | null = TENANT_ID) {
-      return jwtService.sign({ sub: TECH_ID, tenantId, role: 'technician' });
+    function assignedTechJwt() {
+      return accessToken(jwtService, TECH_ID);
     }
 
     const fetchRow = { ...jobRow, id: JOB_ID, technician_id: TECH_ID };
@@ -2013,7 +2046,7 @@ describe('Jobs (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('DUPLICATE_RESOURCE');
     });
 
-    it('AC12 — Owner JWT → 403 FORBIDDEN', async () => {
+    it('AC12 — company admin token → 403 FORBIDDEN', async () => {
       const response = await app.inject({
         method: 'POST',
         url: UPLOAD_URL,
@@ -2026,7 +2059,7 @@ describe('Jobs (e2e)', () => {
     it('AC13 — non-assignee technician → 403', async () => {
       mockAttachAdmin({
         job: {
-          data: { ...fetchRow, technician_id: 'other-tech' },
+          data: { ...fetchRow, technician_id: OTHER_TECH_ID },
           error: null,
         },
       });
@@ -2062,14 +2095,14 @@ describe('Jobs (e2e)', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it('AC16 — no-tenant JWT → 400', async () => {
+    it('AC16 — no-company person → 403', async () => {
       const response = await app.inject({
         method: 'POST',
         url: UPLOAD_URL,
-        headers: { authorization: `Bearer ${assignedTechJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: photoPayload,
       });
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(403);
     });
 
     it('AC17 — no Authorization header → 401', async () => {
@@ -2111,8 +2144,8 @@ describe('Jobs (e2e)', () => {
     const UPLOAD_ID = '88888888-8888-4888-8888-888888888888';
     const CONFIRM_URL = `/api/v1/jobs/${JOB_ID}/attachments/${UPLOAD_ID}/confirm`;
 
-    function assignedTechJwt(tenantId: string | null = TENANT_ID) {
-      return jwtService.sign({ sub: TECH_ID, tenantId, role: 'technician' });
+    function assignedTechJwt() {
+      return accessToken(jwtService, TECH_ID);
     }
 
     const fetchRow = { ...jobRow, id: JOB_ID, technician_id: TECH_ID };
@@ -2173,7 +2206,7 @@ describe('Jobs (e2e)', () => {
       expect(response.statusCode).toBe(410);
     });
 
-    it('AC12 — Owner JWT → 403', async () => {
+    it('AC12 — company admin token → 403', async () => {
       const response = await app.inject({
         method: 'POST',
         url: CONFIRM_URL,

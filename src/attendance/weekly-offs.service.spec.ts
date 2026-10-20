@@ -10,8 +10,8 @@ import { ErrorCode } from '../common/enums/error-code.enum';
  * 15-2/15-3's chain builders specialised for WeeklyOffsService's call shapes:
  * - today is one rpc (attendance_today) — stubbed per test (AD-7).
  * - the defaults/overrides tables serve read chains (select → eq [→ eq],
- *   awaited directly); the users table serves the name lookup
- *   (select → eq → in, awaited). All await via the chain's `then`, which
+ *   awaited directly); the memberships table serves the name
+ *   lookup through listCompanyMembers (select → eq → order → in, awaited). All await via the chain's `then`, which
  *   shifts a result queue (mockResolvedValueOnce ordering, as 15-2's
  *   startSetup).
  * rpc(name, args) dispatches on name; each name holds its own result queue
@@ -32,7 +32,7 @@ function resultQueue(fallback: RpcResult, ...queued: RpcResult[]) {
 function flexQb(defaultResult: RpcResult) {
   const queue = resultQueue(defaultResult);
   const qb: Record<string, jest.Mock> = {};
-  for (const m of ['select', 'eq', 'is', 'order', 'in', 'update', 'maybeSingle', 'single']) {
+  for (const m of ['select', 'eq', 'neq', 'is', 'order', 'in', 'update', 'maybeSingle', 'single']) {
     qb[m] = jest.fn().mockReturnValue(qb);
   }
   // Awaiting the chain consumes exactly one queued result.
@@ -40,6 +40,23 @@ function flexQb(defaultResult: RpcResult) {
     (resolve: (v: RpcResult) => unknown) => Promise.resolve(resolve(queue.next())),
   );
   return { qb, queue };
+}
+
+/** One memberships row with the user's identity embedded (what listCompanyMembers reads). */
+function member(
+  id: string,
+  name: string | null,
+  countryCode: string,
+  phoneNumber: string,
+) {
+  return {
+    user_id: id,
+    role: 'employee',
+    status: 'active',
+    employee_code: 'E-001',
+    created_at: '2026-09-01T00:00:00Z',
+    users: { name, country_code: countryCode, phone_number: phoneNumber },
+  };
 }
 
 function rpcQueue(...queued: RpcResult[]) {
@@ -99,7 +116,8 @@ describe('WeeklyOffsService (story 15-5)', () => {
   const ownerUser: RequestUser = {
     userId: 'owner-uuid',
     tenantId: TENANT_ID,
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
   const noTenantUser: RequestUser = { ...ownerUser, tenantId: null };
@@ -138,7 +156,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
           return defaultsQb.qb;
         case 'attendance_weekly_off_overrides':
           return overridesQb.qb;
-        case 'users':
+        case 'memberships':
           return usersQb.qb;
         case 'tenants':
           return tenantsQb.qb;
@@ -404,8 +422,8 @@ describe('WeeklyOffsService (story 15-5)', () => {
         users: [
           {
             data: [
-              { id: empA, name: 'Alpha Singh', country_code: '+91', phone_number: '9999900001' },
-              { id: empB, name: 'Zeta Kumar', country_code: '+91', phone_number: '9999900002' },
+              member(empA, 'Alpha Singh', '+91', '9999900001'),
+              member(empB, 'Zeta Kumar', '+91', '9999900002'),
             ],
             error: null,
           },
@@ -422,8 +440,11 @@ describe('WeeklyOffsService (story 15-5)', () => {
         current: null,
         next: { days: [1], validFrom: '2026-10-05', validTo: null },
       });
-      expect(q.usersQb.qb.select).toHaveBeenCalledWith('id, name, country_code, phone_number');
-      expect(q.usersQb.qb.in).toHaveBeenCalledWith('id', [empB, empA]);
+      // The names come from this company's members, including removed ones
+      // (a removed employee's old override still shows a name).
+      expect(q.usersQb.qb.eq).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+      expect(q.usersQb.qb.in).toHaveBeenCalledWith('user_id', [empB, empA]);
+      expect(q.usersQb.qb.neq).not.toHaveBeenCalled();
     });
 
     it('falls back to the reassembled E.164 number, then Unknown employee', async () => {
@@ -444,7 +465,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
           {
             data: [
               // No name — the phone fallback the RPCs also use (20260927000003).
-              { id: EMPLOYEE_ID, name: null, country_code: '+91', phone_number: '9999900003' },
+              member(EMPLOYEE_ID, null, '+91', '9999900003'),
             ],
             error: null,
           },
@@ -476,7 +497,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       const q = seeded(mockAdmin({
         overrides: [{ data: [overrideRow], error: null }],
         users: [
-          { data: [{ id: EMPLOYEE_ID, name: 'Ravi Kumar', country_code: '+91', phone_number: '9999900004' }], error: null },
+          { data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')], error: null },
         ],
       }));
       q.rpcs.set('attendance_set_weekly_off_override', rpcQueue({ data: null, error: null }));
@@ -525,7 +546,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
     it('maps an empty days override through (works all 7 days)', async () => {
       const q = seeded(mockAdmin({
         overrides: [{ data: [{ ...overrideRow, days: [] }], error: null }],
-        users: [{ data: [{ id: EMPLOYEE_ID, name: 'Ravi', country_code: '+91', phone_number: '1' }], error: null }],
+        users: [{ data: [member(EMPLOYEE_ID, 'Ravi', '+91', '1')], error: null }],
       }));
       q.rpcs.set('attendance_set_weekly_off_override', rpcQueue({ data: null, error: null }));
 
@@ -546,7 +567,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
     it('calls the removal RPC and returns the post-removal detail (current null once nothing covers today)', async () => {
       const q = seeded(mockAdmin({
         overrides: [{ data: [], error: null }],
-        users: [{ data: [{ id: EMPLOYEE_ID, name: 'Ravi Kumar', country_code: '+91', phone_number: '9999900004' }], error: null }],
+        users: [{ data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')], error: null }],
       }));
       q.rpcs.set('attendance_remove_weekly_off_override', rpcQueue({ data: null, error: null }));
 

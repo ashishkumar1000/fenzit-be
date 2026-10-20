@@ -7,7 +7,8 @@ import { CheckInOutService } from './check-in-out.service';
 import { CheckInOutDto } from './dto/check-in-out.dto';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import { ROLES_KEY } from '../common/decorators/roles.decorator';
+import { CAN_KEY } from '../common/decorators/can.decorator';
+import { Permission } from '../common/permissions/permissions';
 
 // Nest route-params metadata (mirror of @nestjs/common/constants — set by
 // the parameter decorators on the CLASS, keyed by method name).
@@ -30,7 +31,8 @@ const HTTP_CODE_METADATA = '__httpCode__';
 const tech: RequestUser = {
   userId: 'tech-uuid',
   tenantId: 'tenant-uuid',
-  role: Role.TECHNICIAN,
+  role: Role.EMPLOYEE,
+  platformAdmin: false,
   rawJwt: 'mock-jwt',
 };
 
@@ -182,14 +184,14 @@ describe('MeAttendanceController — technician reads + check-in/out (15-7/15-10
       'checkIn',
       'checkOut',
     ])(
-      '%s is technician-only — any other role must never reach the technician reads',
+      '%s is employee-only (attendance.own) — any other role must never reach the employee reads',
       (handler: keyof MeAttendanceController) => {
-        const roles = Reflect.getMetadata(
-          ROLES_KEY,
+        const needed = Reflect.getMetadata(
+          CAN_KEY,
           MeAttendanceController.prototype[handler] as object,
-        ) as Role[] | undefined;
+        ) as Permission[] | undefined;
 
-        expect(roles).toEqual([Role.TECHNICIAN]);
+        expect(needed).toEqual(['attendance.own']);
       },
     );
 

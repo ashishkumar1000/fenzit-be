@@ -47,8 +47,8 @@ describe('weekly-off routes (real DB, real routes)', () => {
   let T: string;
   const d = (n: number) => addDays(T, n);
 
-  const owner = () => bearerFor(jwt, crew, crew.owner, 'owner');
-  const tech = () => bearerFor(jwt, crew, crew.staff[0], 'technician');
+  const owner = () => bearerFor(jwt, crew, crew.owner);
+  const tech = () => bearerFor(jwt, crew, crew.staff[0]);
 
   beforeAll(async () => {
     if (!IS_REAL_DB) return;
@@ -193,10 +193,10 @@ describe('weekly-off routes (real DB, real routes)', () => {
   });
 
   maybeIt(
-    'tenant isolation: another tenant owner never sees this tenant rules',
+    'tenant isolation: another company admin never sees this tenant rules',
     async () => {
       await put({ days: [6], effectiveFrom: d(0) });
-      const r = await get(bearerFor(jwt, other, other.owner, 'owner'));
+      const r = await get(bearerFor(jwt, other, other.owner));
       expect(r.body).toEqual({
         configured: false,
         default: null,
@@ -207,7 +207,7 @@ describe('weekly-off routes (real DB, real routes)', () => {
   );
 
   maybeIt(
-    'technician gets 403 on GET and PUT; no token gets 401; nothing is written',
+    'employee gets 403 on GET and PUT; no token gets 401; nothing is written',
     async () => {
       expect((await get(tech())).status).toBe(403);
       expect((await put({ days: [7] }, tech())).status).toBe(403);

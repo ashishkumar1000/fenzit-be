@@ -17,9 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { HttpException } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { LeaveService } from './leave.service';
@@ -30,6 +28,7 @@ import {
   RejectLeaveDto,
   RevokeLeaveDto,
 } from './dto/leave.dto';
+import { Can } from '../common/decorators/can.decorator';
 
 /** AD-6: UUID v4, generated per user tap by the app. */
 const UUID_V4_PATTERN =
@@ -44,7 +43,6 @@ const UUID_V4_PATTERN =
 @ApiTags('Attendance')
 @ApiBearerAuth()
 @Controller('attendance/leave')
-@Roles(Role.OWNER)
 export class LeaveController {
   constructor(
     private readonly leaveService: LeaveService,
@@ -52,6 +50,7 @@ export class LeaveController {
   ) {}
 
   @Get()
+  @Can('leave.read_all')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -66,6 +65,7 @@ export class LeaveController {
   }
 
   @Get(':id/preview')
+  @Can('leave.read_all')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -83,6 +83,7 @@ export class LeaveController {
   }
 
   @Post(':id/approve')
+  @Can('leave.approve')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -104,6 +105,7 @@ export class LeaveController {
   }
 
   @Post(':id/reject')
+  @Can('leave.approve')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'FR-13 reject: optional reason; empty is valid' })
   @ApiResponse({
@@ -123,6 +125,7 @@ export class LeaveController {
   }
 
   @Post(':id/revoke')
+  @Can('leave.approve')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -149,6 +152,7 @@ export class LeaveController {
   }
 
   @Post('on-behalf')
+  @Can('leave.create_on_behalf')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:

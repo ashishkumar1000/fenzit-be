@@ -27,6 +27,7 @@ import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { PgPoolFactory } from '../../src/common/pg/pg-pool.factory';
 import { ReminderJobMetricsBinder } from '../../src/attendance/reminder-metrics';
+import { purgeCompanyChildren } from '../helpers/attendance-company-fixture';
 import {
   REMINDER_JOB_GAUGE_SQL,
   getReminderJobMetricQuery,
@@ -76,34 +77,45 @@ describe('Reminder cron hygiene (19-1, real DB)', () => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    // Fixture: one owner (tenant-less first — tenants.owner_id references
-    // it), the throwaway tenant, then the technician (attempts FK to
-    // users(id, tenant_id); the 20260928000002 composite shape).
-    await admin.from('users').insert({
-      id: OWNER,
-      role: 'owner',
-      status: 'active',
-      country_code: '+91',
-      phone_number: PROBE_PHONE,
-      name: '19-1 hygiene probe owner',
-    });
+    // Fixture: the admin and the employee (identity only), the throwaway
+    // tenant, then their memberships (attempts FK to memberships(user_id,
+    // tenant_id)).
+    await admin.from('users').insert([
+      {
+        id: OWNER,
+        country_code: '+91',
+        phone_number: PROBE_PHONE,
+        name: '19-1 hygiene probe owner',
+      },
+      {
+        id: EMPLOYEE,
+        country_code: '+91',
+        phone_number: PROBE_PHONE.replace(/.$/, '6'),
+        name: '19-1 hygiene probe tech',
+      },
+    ]);
     const r = await pool.query(
-      `insert into public.tenants (id, owner_id, company_name, state_code,
+      `insert into public.tenants (id, created_by, company_name, state_code,
                                     timezone)
        values ($1, $2, '19-1 hygiene probe', 'KA', 'Asia/Kolkata')
        returning id::text as id`,
       [TENANT, OWNER],
     );
     if (r.rows.length === 0) throw new Error('fixture tenant insert failed');
-    await admin.from('users').insert({
-      id: EMPLOYEE,
-      tenant_id: TENANT,
-      role: 'technician',
-      status: 'active',
-      country_code: '+91',
-      phone_number: PROBE_PHONE.replace(/.$/, '6'),
-      name: '19-1 hygiene probe tech',
-    });
+    await admin.from('memberships').insert([
+      {
+        user_id: OWNER,
+        tenant_id: TENANT,
+        role: 'company_admin',
+        status: 'active',
+      },
+      {
+        user_id: EMPLOYEE,
+        tenant_id: TENANT,
+        role: 'employee',
+        status: 'active',
+      },
+    ]);
   });
 
   afterAll(async () => {
@@ -117,6 +129,7 @@ describe('Reminder cron hygiene (19-1, real DB)', () => {
         [probesJobId, seededRunStarts],
       );
     }
+    await purgeCompanyChildren(pool, [TENANT]);
     await admin.from('tenants').delete().eq('id', TENANT);
     await pool.query(
       `delete from public.users where phone_number = any($1)`,

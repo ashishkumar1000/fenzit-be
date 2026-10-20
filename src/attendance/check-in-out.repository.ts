@@ -205,7 +205,7 @@ export async function insertFakeLocationAlert(
   tx: PoolClient,
   input: {
     tenantId: string;
-    ownerId: string;
+    recipientId: string;
     employeeId: string;
     employeeName: string | null;
     month: string;
@@ -223,7 +223,7 @@ export async function insertFakeLocationAlert(
      on conflict (dedupe_key) where dedupe_key is not null do nothing`,
     [
       input.tenantId,
-      input.ownerId,
+      input.recipientId,
       input.employeeId,
       ATTENDANCE_NOTIFICATION_EVENT.FAKE_LOCATION,
       input.employeeName,
@@ -233,16 +233,4 @@ export async function insertFakeLocationAlert(
       input.dedupeKey,
     ],
   );
-}
-
-/** tenants.owner_id — the fake-location alert recipient (3.1 precedent). */
-export async function readOwnerId(
-  tx: PoolClient,
-  tenantId: string,
-): Promise<string | null> {
-  const result = await tx.query<{ owner_id: string }>(
-    'select owner_id from public.tenants where id = $1',
-    [tenantId],
-  );
-  return result.rows[0]?.owner_id ?? null;
 }

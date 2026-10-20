@@ -14,14 +14,16 @@ describe('SkillsService', () => {
   const ownerUser: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
   const ownerNoTenant: RequestUser = {
     userId: 'owner-uuid',
     tenantId: null,
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -45,7 +47,8 @@ describe('SkillsService', () => {
     const technicianUser: RequestUser = {
       userId: 'tech-uuid',
       tenantId: 'tenant-uuid',
-      role: Role.TECHNICIAN,
+      role: Role.EMPLOYEE,
+      platformAdmin: false,
       rawJwt: 'mock-jwt',
     };
 

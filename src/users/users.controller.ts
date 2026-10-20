@@ -16,10 +16,9 @@ import {
 import { UsersService } from './users.service';
 import { GetProfileQueryDto } from './dto/get-profile-query.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { AnyMember } from '../common/decorators/any-member.decorator';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -28,7 +27,7 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get('me')
-  @Roles(Role.OWNER, Role.TECHNICIAN)
+  @AnyMember()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -51,8 +50,23 @@ export class UsersController {
     return this.usersService.getMyProfile(user, query);
   }
 
+  @Get('me/access')
+  @AnyMember()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Get the current user's access only: role, company id and platform-admin " +
+      'flag. Use this to re-check access on every foreground; GET /users/me ' +
+      'is the full profile and is heavier.',
+  })
+  @ApiResponse({ status: 200, description: 'Role, company id and platform-admin flag' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  getMyAccess(@CurrentUser() user: RequestUser) {
+    return this.usersService.getMyAccess(user);
+  }
+
   @Patch('me')
-  @Roles(Role.OWNER, Role.TECHNICIAN)
+  @AnyMember()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Update the current user's own display name",

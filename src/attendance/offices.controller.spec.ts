@@ -4,7 +4,8 @@ import { OfficesService } from './offices.service';
 import { OfficeDetailResponse, OfficeResponse } from './offices-response.model';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import { ROLES_KEY } from '../common/decorators/roles.decorator';
+import { CAN_KEY } from '../common/decorators/can.decorator';
+import { Permission } from '../common/permissions/permissions';
 
 // Nest route metadata keys (mirror of @nestjs/common/constants values).
 const PATH_METADATA = 'path';
@@ -29,7 +30,8 @@ describe('OfficesController (story 15-3)', () => {
   const user: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -127,21 +129,21 @@ describe('OfficesController (story 15-3)', () => {
     );
 
     it.each([
-      'listOffices',
-      'getOffice',
-      'createOffice',
-      'updateOffice',
-      'archiveOffice',
-      'getArchiveBlockers',
+      ['listOffices', 'attendance.read'],
+      ['getOffice', 'attendance.read'],
+      ['createOffice', 'attendance.manage'],
+      ['updateOffice', 'attendance.manage'],
+      ['archiveOffice', 'attendance.manage'],
+      ['getArchiveBlockers', 'attendance.manage'],
     ])(
-      '%s is owner-only — office management never opens to a technician',
-      (handler: keyof OfficesController) => {
-        const roles = Reflect.getMetadata(
-          ROLES_KEY,
+      '%s needs an admin-side permission — office management never opens to an employee',
+      (handler: keyof OfficesController, permission: Permission) => {
+        const needed = Reflect.getMetadata(
+          CAN_KEY,
           OfficesController.prototype[handler] as object,
-        ) as Role[] | undefined;
+        ) as Permission[] | undefined;
 
-        expect(roles).toEqual([Role.OWNER]);
+        expect(needed).toEqual([permission]);
       },
     );
 

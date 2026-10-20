@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../../common/enums/error-code.enum';
+import { listCompanyMembers } from '../../common/members/company-members';
 import type { ReportFetchContext } from './report-definition';
 import {
   readDayStatusGrid,
@@ -162,39 +163,6 @@ function tooLarge(): BadRequestException {
   });
 }
 
-/** Paged `.in(id-chunk)` read that collects every row past the 1000 cap. */
-async function fetchInChunks<T>(
-  supabase: SupabaseClient,
-  table: string,
-  columns: string,
-  chunkIds: string[],
-): Promise<T[]> {
-  const out: T[] = [];
-  for (let i = 0; i < chunkIds.length; i += IN_CHUNK_SIZE) {
-    const chunk = chunkIds.slice(i, i + IN_CHUNK_SIZE);
-    let pageFrom = 0;
-    for (;;) {
-      const { data, error } = await supabase
-        .from(table)
-        .select(columns)
-        .in('id', chunk)
-        // Offset pagination needs a stable sort or concurrent writes can
-        // skew pages (skips/dupes).
-        .order('id')
-        .range(pageFrom, pageFrom + PAGE_SIZE - 1);
-      if (error) {
-        throw new Error(
-          `Failed to fetch ${table} for report: ${error.message}`,
-        );
-      }
-      out.push(...((data ?? []) as T[]));
-      if (!data || data.length < PAGE_SIZE) break;
-      pageFrom += PAGE_SIZE;
-    }
-  }
-  return out;
-}
-
 async function fetchTenantName(
   supabase: SupabaseClient,
   tenantId: string,
@@ -245,17 +213,26 @@ type UserRef = { name: string; code: string | null };
 
 async function fetchEmployeeNames(
   supabase: SupabaseClient,
+  tenantId: string,
   employeeIds: string[],
 ): Promise<Map<string, UserRef>> {
   const refs = new Map<string, UserRef>();
-  const rows = await fetchInChunks<{ id: string; name: string; employee_code: string | null }>(
-    supabase,
-    'users',
-    'id, name, employee_code',
-    employeeIds,
-  );
-  for (const row of rows) {
-    refs.set(row.id, { name: row.name, code: row.employee_code });
+  for (let i = 0; i < employeeIds.length; i += IN_CHUNK_SIZE) {
+    // A report may cover a removed employee's past days, so history is kept.
+    let members: Awaited<ReturnType<typeof listCompanyMembers>>;
+    try {
+      members = await listCompanyMembers(supabase, tenantId, {
+        userIds: employeeIds.slice(i, i + IN_CHUNK_SIZE),
+        includeRemoved: true,
+      });
+    } catch (error) {
+      throw new Error(
+        `Failed to fetch members for report: ${(error as { message?: string })?.message}`,
+      );
+    }
+    for (const m of members) {
+      refs.set(m.userId, { name: m.name ?? '', code: m.employeeCode });
+    }
   }
   return refs;
 }
@@ -406,7 +383,7 @@ export async function fetchAttendanceReportData(
   ]);
 
   const employeeIds = enrolledIds.sort();
-  const employeeNames = await fetchEmployeeNames(supabase, employeeIds);
+  const employeeNames = await fetchEmployeeNames(supabase, ctx.tenantId, employeeIds);
 
   // Oversize guard BEFORE any grid read: the grid enumerates exactly
   // employeeIds × days rows, so this estimate is the real row count.

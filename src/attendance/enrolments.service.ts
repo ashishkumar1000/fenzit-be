@@ -9,6 +9,8 @@ import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import { Role } from '../common/enums/role.enum';
+import { listCompanyMembers } from '../common/members/company-members';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import {
@@ -85,21 +87,21 @@ export class EnrolmentsService {
     const tenantId = requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
 
-    const { data, error } = await admin
-      .from('users')
-      .select('id, name, country_code, phone_number')
-      .eq('tenant_id', tenantId)
-      .eq('role', 'technician');
-    if (error) {
+    let members: Awaited<ReturnType<typeof listCompanyMembers>>;
+    try {
+      members = await listCompanyMembers(admin, tenantId, {
+        role: Role.EMPLOYEE,
+      });
+    } catch (error) {
       this.logger.error('Failed to list tenant technicians:', { error });
       throw internalError('Failed to read enrolments');
     }
-    const technicians = (data ?? []) as Array<{
-      id: string;
-      name: string | null;
-      country_code: string | null;
-      phone_number: string | null;
-    }>;
+    const technicians = members.map((m) => ({
+      id: m.userId,
+      name: m.name,
+      country_code: m.countryCode,
+      phone_number: m.phoneNumber,
+    }));
     if (technicians.length === 0) {
       return [];
     }

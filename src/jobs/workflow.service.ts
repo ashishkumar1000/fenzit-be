@@ -103,7 +103,7 @@ export class WorkflowService {
       });
     }
 
-    // 2) Ownership gate — a technician may only advance jobs assigned to them.
+    // 2) Ownership gate — an employee may only advance jobs assigned to them.
     //    Resolved AFTER the 404 so a cross-tenant job is never disclosed as 403.
     if (row.technician_id !== user.userId) {
       throw new ForbiddenException({

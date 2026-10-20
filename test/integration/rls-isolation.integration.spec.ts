@@ -1,12 +1,22 @@
 /**
  * RLS Cross-Tenant Isolation Test (AR-20 — hard launch blocker)
  *
- * Verifies that Supabase RLS policies prevent tenants from reading
+ * Verifies that Supabase RLS policies prevent companies from reading
  * each other's data via the JWT-scoped client.
+ *
+ * Since the roles work (migrations 20261020000001-4) a policy no longer trusts
+ * a `tenantId` claim in the token. It asks the database "which company and
+ * role does this person have RIGHT NOW?" through private.current_company_id()
+ * / private.current_member_role(), which read the person's ACTIVE membership
+ * (and ignore disabled users). So every test person here is seeded with a
+ * users row plus a memberships row, and a token is only `{ sub, role:
+ * 'authenticated', exp }`. Viewer / removed / disabled / forged-claim cases
+ * live in rls-membership-policies.integration.spec.ts.
  *
  * Requires a real Supabase project. Tests are skipped when the env var
  * SUPABASE_URL is a stub (https://test.supabase.co). Set SUPABASE_URL,
- * SUPABASE_ANON_KEY, and SUPABASE_JWT_SECRET to real values to run.
+ * SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET and
+ * DATABASE_URL (audit-row cleanup only) to real values to run.
  */
 import { createClient } from '@supabase/supabase-js';
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -27,6 +37,13 @@ import { SupabaseClientFactory } from '../../src/common/factories/supabase-clien
 import { SkillsService } from '../../src/skills/skills.service';
 import type { RequestUser } from '../../src/common/interfaces/request-user.interface';
 import { Role } from '../../src/common/enums/role.enum';
+import {
+  apiClient,
+  mintJwt,
+  purgeCompany,
+  seedCompany,
+  serviceRoleClient,
+} from '../helpers/rls-seed';
 
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
 const SUPABASE_ANON_KEY = process.env['SUPABASE_ANON_KEY'] ?? '';
@@ -34,79 +51,104 @@ const SUPABASE_JWT_SECRET = process.env['SUPABASE_JWT_SECRET'] ?? '';
 const IS_REAL_DB =
   SUPABASE_URL !== '' && !SUPABASE_URL.includes('test.supabase.co');
 
-function mintJwt(
-  userId: string,
-  tenantId: string | null,
-  role: string,
-): string {
-  return jwt.sign({ sub: userId, tenantId, role }, SUPABASE_JWT_SECRET, {
-    algorithm: 'HS256',
-    expiresIn: '1h',
-  });
-}
-
 describe('RLS Cross-Tenant Isolation (AR-20)', () => {
   const maybeIt = IS_REAL_DB ? it : it.skip;
 
+  // Two throwaway companies plus a stranger (a real user with NO membership),
+  // shared by the read-isolation probes below. Ids sit in this suite's
+  // 00000000-…-b* block; phones are probe-specific (users.phone is unique).
+  const FX = {
+    tenantA: '00000000-0000-0000-0000-0000000000b1',
+    adminA: '00000000-0000-0000-0000-0000000000b2',
+    employeeA: '00000000-0000-0000-0000-0000000000b3',
+    tenantB: '00000000-0000-0000-0000-0000000000b4',
+    adminB: '00000000-0000-0000-0000-0000000000b5',
+    employeeB: '00000000-0000-0000-0000-0000000000b6',
+    stranger: '00000000-0000-0000-0000-0000000000b7',
+  };
+  const FX_PEOPLE_A = [FX.adminA, FX.employeeA];
+  const FX_PEOPLE_B = [FX.adminB, FX.employeeB, FX.stranger];
+
+  beforeAll(async () => {
+    if (!IS_REAL_DB) return;
+    const service = serviceRoleClient();
+    await seedCompany(service, {
+      tenantId: FX.tenantA,
+      companyName: 'RLS Company A',
+      createdBy: FX.adminA,
+      people: [
+        { id: FX.adminA, phone: '9999000201', role: 'company_admin' },
+        { id: FX.employeeA, phone: '9999000202', role: 'employee' },
+      ],
+    });
+    // The stranger rides in company B's seed list only so teardown removes
+    // them; they get no membership anywhere.
+    await seedCompany(service, {
+      tenantId: FX.tenantB,
+      companyName: 'RLS Company B',
+      createdBy: FX.adminB,
+      people: [
+        { id: FX.adminB, phone: '9999000203', role: 'company_admin' },
+        { id: FX.employeeB, phone: '9999000204', role: 'employee' },
+        { id: FX.stranger, phone: '9999000205', role: null },
+      ],
+    });
+  }, 120000);
+
+  afterAll(async () => {
+    if (!IS_REAL_DB) return;
+    const service = serviceRoleClient();
+    await purgeCompany(service, FX.tenantA, FX_PEOPLE_A);
+    await purgeCompany(service, FX.tenantB, FX_PEOPLE_B);
+  }, 120000);
+
   maybeIt(
-    'Owner B cannot read Owner A tenant row via JWT-scoped client',
+    'Company B admin and a person with no membership cannot read the company A tenant row',
     async () => {
-      // This test assumes at least one tenant row exists in the DB (created by Story 1.3 dev flow).
-      // It mints a JWT for a different user and confirms the SELECT returns no rows.
+      // tenants_member_read: id = private.current_company_id(). The old
+      // `owner_id = sub` rule is gone, so a creator no longer reads a tenant
+      // by being its owner; only an ACTIVE membership counts.
       //
       // The JWT role claim names the Postgres role PostgREST switches to, so it
-      // must be 'authenticated' (app roles like 'owner' are not Postgres roles
-      // — Postgres rejects them with 22023). Same pattern as 4.1's minted reads.
-
-      const ownerBId = '00000000-0000-0000-0000-000000000099'; // non-existent / different user
-      const ownerBJwt = mintJwt(ownerBId, null, 'authenticated');
-
-      const ownerBClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${ownerBJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
-
-      // RLS policy on tenants: owner_id = (auth.jwt() ->> 'sub')::uuid
-      // Owner B's JWT sub doesn't match any tenant's owner_id → empty result, not an error
-      const { data, error } = await ownerBClient
+      // must be 'authenticated' (app roles like 'company_admin' are not
+      // Postgres roles — Postgres rejects them with 22023).
+      const { data: bData, error: bError } = await apiClient(mintJwt(FX.adminB))
         .from('tenants')
-        .select('id, owner_id');
+        .select('id, created_by');
+      expect(bError).toBeNull();
+      // Company B's admin sees exactly their own company, never A's.
+      expect(bData).toEqual([{ id: FX.tenantB, created_by: FX.adminB }]);
 
+      // A real user with no membership: empty result, not an error and not 403.
+      const { data, error } = await apiClient(mintJwt(FX.stranger))
+        .from('tenants')
+        .select('id, created_by');
       expect(error).toBeNull();
-      expect(data).toEqual([]); // RLS returns empty, not 403
+      expect(data).toEqual([]);
+
+      // A person who does not exist at all behaves the same.
+      const { data: ghost, error: ghostError } = await apiClient(
+        mintJwt('00000000-0000-0000-0000-000000000099'),
+      )
+        .from('tenants')
+        .select('id');
+      expect(ghostError).toBeNull();
+      expect(ghost).toEqual([]);
     },
   );
 
   maybeIt(
-    'Owner A can read their own tenant row via JWT-scoped client',
+    'Company A admin and employee read exactly their own tenant row',
     async () => {
-      // Requires a tenant row whose owner_id is known. This test will be fully
-      // exercisable once a real tenant is created via the Story 1.3 endpoint.
-      // For now, it verifies the RLS SELECT policy permits the correct owner.
-      //
-      // To run: insert a test tenant via service role, then pass owner's userId here.
-      const ownerAId = process.env['TEST_OWNER_A_USER_ID'];
-      if (!ownerAId) {
-        console.log('Skipping: TEST_OWNER_A_USER_ID not set');
-        return;
+      // Positive side of the policy: a discriminating test needs one case
+      // where access IS granted, or "empty for everyone" would also pass.
+      for (const userId of [FX.adminA, FX.employeeA]) {
+        const { data, error } = await apiClient(mintJwt(userId))
+          .from('tenants')
+          .select('id, created_by');
+        expect(error).toBeNull();
+        expect(data).toEqual([{ id: FX.tenantA, created_by: FX.adminA }]);
       }
-
-      const ownerAJwt = mintJwt(ownerAId, null, 'authenticated');
-      const ownerAClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${ownerAJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
-
-      const { data, error } = await ownerAClient
-        .from('tenants')
-        .select('id, owner_id');
-
-      expect(error).toBeNull();
-      // Owner A should see at least their own row, and every returned row must belong to them
-      expect(data?.length).toBeGreaterThan(0);
-      expect(
-        data?.every((row: { owner_id: string }) => row.owner_id === ownerAId),
-      ).toBe(true);
     },
   );
 
@@ -324,7 +366,8 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       const probeUser: RequestUser = {
         userId: '00000000-0000-0000-0000-000000000099',
         tenantId: null,
-        role: Role.OWNER,
+        role: Role.COMPANY_ADMIN,
+        platformAdmin: false,
         rawJwt: 'unused',
       };
 
@@ -333,11 +376,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // must reproduce EXACTLY these rows (the mint→PostgREST contract);
       // the expected list is DB-derived, not hard-coded, so a future catalog
       // reseed cannot stale this probe out.
-      const catalogJwt = mintJwt(
-        '00000000-0000-0000-0000-000000000099',
-        null,
-        'authenticated',
-      );
+      const catalogJwt = mintJwt('00000000-0000-0000-0000-000000000099');
       const catalogClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         global: { headers: { Authorization: `Bearer ${catalogJwt}` } },
         auth: { persistSession: false, autoRefreshToken: false },
@@ -408,135 +447,270 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
   );
 
   maybeIt(
-    'user_skills RLS: cross-tenant reads exclude real rows, writes outside tenant denied, same-tenant writes allowed',
+    'user_skills RLS: cross-company reads exclude real rows, writes outside the company denied, same-company writes allowed',
     async () => {
-      // Story 4.2 — user_skills_tenant_isolation: a row is visible/writable
-      // only when its user's tenant matches the JWT tenantId (checked via an
-      // EXISTS join into users). Seeded through the service role so the probes
-      // are discriminating: a nonexistent user also fails the policy's EXISTS,
-      // which would mask a broken tenant comparison (4.2 review round 1).
-      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
-      expect(SERVICE_KEY).not.toBe('');
-      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
-
-      // Seed one technician under a freshly seeded tenant (users.tenant_id has
-      // an FK, and the dev DB may hold zero tenants — it does today) plus one
-      // user_skills row for them.
-      const foreignUserId = '00000000-0000-0000-0000-000000000090';
-      const seededTenantId = '00000000-0000-0000-0000-000000000097';
-      const { error: userUpsertError } = await serviceClient
-        .from('users')
-        .upsert(
-          {
-            id: foreignUserId,
-            country_code: '+91',
-            phone_number: '9999000001',
-            role: 'technician',
-            status: 'invited',
-          },
-          { onConflict: 'id' },
-        );
-      expect(userUpsertError).toBeNull();
-      const { error: tenantUpsertError } = await serviceClient
-        .from('tenants')
-        .upsert(
-          {
-            id: seededTenantId,
-            owner_id: foreignUserId,
-            company_name: 'RLS Probe Co',
-            state_code: 'KA',
-          },
-          { onConflict: 'id' },
-        );
-      expect(tenantUpsertError).toBeNull();
-      const { error: linkError } = await serviceClient
-        .from('users')
-        .update({ tenant_id: seededTenantId })
-        .eq('id', foreignUserId);
-      expect(linkError).toBeNull();
-      const { error: seedSkillError } = await serviceClient
+      // user_skills_member_read / _member_write: a row is visible/writable only
+      // when its user belongs to MY company (private.user_in_my_company) and,
+      // for writes, my role is company_admin or employee. Seeded through the
+      // service role so the probes are discriminating: a nonexistent user also
+      // fails the policy, which would mask a broken company comparison.
+      const service = serviceRoleClient();
+      const { error: seedSkillError } = await service
         .from('user_skills')
         .upsert(
           {
-            user_id: foreignUserId,
+            user_id: FX.employeeB,
             skill_id: skillByName('Pipe Leak Repair').id,
           },
           { onConflict: 'user_id,skill_id' },
         );
       expect(seedSkillError).toBeNull();
 
-      try {
-        // JWT scoped to a tenant that exists as a UUID but owns no users —
-        // the seeded row belongs to realTenantId, so it must be invisible.
-        const foreignTenantId = '00000000-0000-0000-0000-000000000098';
-        const crossTenantJwt = mintJwt(
-          '00000000-0000-0000-0000-000000000099',
-          foreignTenantId,
-          'authenticated',
-        );
-        const crossTenantClient = createClient(
-          SUPABASE_URL,
-          SUPABASE_ANON_KEY,
+      // Company A's admin has a real, active membership — just in the wrong
+      // company for this row.
+      const crossCompanyClient = apiClient(mintJwt(FX.adminA));
+
+      // SELECT (USING side): the seeded row must NOT come back — proves the
+      // company comparison filters, not merely that the table is empty.
+      const { data, error } = await crossCompanyClient
+        .from('user_skills')
+        .select('user_id, skill_id');
+      expect(error).toBeNull();
+      expect(
+        (data as { user_id: string }[]).some((r) => r.user_id === FX.employeeB),
+      ).toBe(false);
+
+      // INSERT (WITH CHECK side): an EXISTING user of another company → 42501.
+      // RLS runs before constraints, so the violation surfaces as a policy
+      // denial, not an FK error.
+      const { error: writeError } = await crossCompanyClient
+        .from('user_skills')
+        .insert({
+          user_id: FX.employeeB,
+          skill_id: skillByName('Drain Cleaning & Unclog').id,
+        });
+      expect(writeError).not.toBeNull();
+      expect((writeError as { code: string }).code).toBe('42501');
+
+      // DELETE and UPDATE are filtered by USING: zero rows touched, and the
+      // row survives (checked with the service role).
+      const { data: deleted, error: deleteError } = await crossCompanyClient
+        .from('user_skills')
+        .delete()
+        .eq('user_id', FX.employeeB)
+        .select();
+      expect(deleteError).toBeNull();
+      expect(deleted).toEqual([]);
+
+      // A real user with NO membership is denied the same way.
+      const { error: strangerError } = await apiClient(mintJwt(FX.stranger))
+        .from('user_skills')
+        .insert({
+          user_id: FX.employeeB,
+          skill_id: skillByName('Drain Cleaning & Unclog').id,
+        });
+      expect(strangerError).not.toBeNull();
+      expect((strangerError as { code: string }).code).toBe('42501');
+
+      const { data: stillThere } = await service
+        .from('user_skills')
+        .select('skill_id')
+        .eq('user_id', FX.employeeB);
+      expect(stillThere).toEqual([
+        { skill_id: skillByName('Pipe Leak Repair').id },
+      ]);
+
+      // Positive path: the user's own company (an employee) may write — WITH
+      // CHECK has a permissive side this suite must exercise.
+      const { error: insertError } = await apiClient(mintJwt(FX.employeeB))
+        .from('user_skills')
+        .insert({
+          user_id: FX.employeeB,
+          skill_id: skillByName('Drain Cleaning & Unclog').id,
+        });
+      expect(insertError).toBeNull();
+      // Company B's admin reads both rows of their own employee.
+      const { data: ownRows } = await apiClient(mintJwt(FX.adminB))
+        .from('user_skills')
+        .select('skill_id')
+        .eq('user_id', FX.employeeB);
+      expect(ownRows).toHaveLength(2);
+
+      await service.from('user_skills').delete().eq('user_id', FX.employeeB);
+    },
+  );
+
+  maybeIt(
+    'Company tables: each company reads only its own rows; a person without membership reads nothing; users and tenants follow the same rule',
+    async () => {
+      // The core isolation matrix. One real row per company in every
+      // company-scoped table, then every person reads every table. A policy
+      // that compared the wrong column, or one that fell back to "world
+      // readable when I have no company" (the old users rule), fails here.
+      const service = serviceRoleClient();
+      const acSkill = skillByName('AC General Service').id;
+      const istYear = new Date(
+        Date.now() + 5.5 * 60 * 60 * 1000,
+      ).getUTCFullYear();
+      const companies = [
+        {
+          tenantId: FX.tenantA,
+          adminId: FX.adminA,
+          techId: FX.employeeA,
+          tag: 'a',
+        },
+        {
+          tenantId: FX.tenantB,
+          adminId: FX.adminB,
+          techId: FX.employeeB,
+          tag: 'b',
+        },
+      ];
+      for (const c of companies) {
+        const { data: customer, error: customerError } = await service
+          .from('customers')
+          .insert({
+            tenant_id: c.tenantId,
+            name: `RLS matrix customer ${c.tag}`,
+            country_code: '+91',
+            phone_number: '9999000210',
+          })
+          .select('id')
+          .single();
+        expect(customerError).toBeNull();
+        const { data: jobRows, error: jobError } = await service.rpc(
+          'create_job_with_log',
           {
-            global: { headers: { Authorization: `Bearer ${crossTenantJwt}` } },
-            auth: { persistSession: false, autoRefreshToken: false },
+            p_tenant_id: c.tenantId,
+            p_customer_id: (customer as { id: string }).id,
+            p_technician_id: c.techId,
+            p_service_location: 'RLS matrix location',
+            p_skill_id: acSkill,
+            p_scheduled_start: new Date().toISOString(),
+            p_scheduled_end: null,
+            p_description: 'RLS matrix job',
+            p_priority: 'normal',
+            p_notes_for_technician: null,
+            p_actor_id: c.adminId,
+            p_year: istYear,
           },
         );
-
-        // SELECT (USING side): the seeded row must NOT come back — proves the
-        // tenant comparison filters, not merely that the table is empty.
-        const { data, error } = await crossTenantClient
-          .from('user_skills')
-          .select('user_id, skill_id');
-        expect(error).toBeNull();
-        expect(
-          (data as { user_id: string }[]).some(
-            (r) => r.user_id === foreignUserId,
-          ),
-        ).toBe(false);
-
-        // INSERT (WITH CHECK side): an EXISTING user of another tenant →
-        // 42501. RLS runs before constraints, so the violation surfaces as a
-        // policy denial, not an FK error.
-        const { error: writeError } = await crossTenantClient
-          .from('user_skills')
-          .insert({
-            user_id: foreignUserId,
-            skill_id: skillByName('Pipe Leak Repair').id,
-          });
-        expect(writeError).not.toBeNull();
-        expect((writeError as { code: string }).code).toBe('42501');
-
-        // Positive path: the seeded user's own tenant may write — WITH CHECK
-        // has a permissive side this suite never exercised before.
-        const ownTenantJwt = mintJwt(
-          foreignUserId,
-          seededTenantId,
-          'authenticated',
-        );
-        const ownTenantClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          global: { headers: { Authorization: `Bearer ${ownTenantJwt}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
-        });
-        const { error: insertError } = await ownTenantClient
-          .from('user_skills')
-          .insert({
-            user_id: foreignUserId,
-            skill_id: skillByName('Drain Cleaning & Unclog').id,
-          });
-        expect(insertError).toBeNull();
-      } finally {
-        // Cleanup: remove everything seeded (idempotent on re-run via upsert).
-        await serviceClient
-          .from('user_skills')
-          .delete()
-          .eq('user_id', foreignUserId);
-        await serviceClient.from('tenants').delete().eq('id', seededTenantId);
-        await serviceClient.from('users').delete().eq('id', foreignUserId);
+        expect(jobError).toBeNull();
+        const jobId = (jobRows as { id: string }[])[0].id;
+        const writes = await Promise.all([
+          service.from('attachments').insert({
+            job_id: jobId,
+            tenant_id: c.tenantId,
+            r2_key: `rls-matrix/${c.tag}/attachment`,
+            attachment_type: 'photo',
+            size_bytes: 1,
+          }),
+          service.from('attachment_uploads').insert({
+            job_id: jobId,
+            tenant_id: c.tenantId,
+            r2_key: `rls-matrix/${c.tag}/upload`,
+            attachment_type: 'photo',
+            mime_type: 'image/jpeg',
+            expires_at: new Date(Date.now() + 3600_000).toISOString(),
+          }),
+          service.from('idempotency_log').insert({
+            key: `rls-matrix-${c.tag}`,
+            tenant_id: c.tenantId,
+            scope: 'rls-matrix',
+            response_body: {},
+          }),
+          service.from('report_requests').insert({
+            tenant_id: c.tenantId,
+            requested_by: c.adminId,
+            report_type: 'rls_matrix',
+          }),
+          service
+            .from('user_skills')
+            .upsert(
+              { user_id: c.techId, skill_id: acSkill },
+              { onConflict: 'user_id,skill_id' },
+            ),
+        ]);
+        for (const w of writes) expect(w.error).toBeNull();
       }
+
+      const TENANT_TABLES = [
+        'customers',
+        'jobs',
+        'activity_logs',
+        'attachments',
+        'attachment_uploads',
+        'idempotency_log',
+        'report_requests',
+      ];
+      const readers = [
+        { who: 'admin A', id: FX.adminA, own: FX.tenantA },
+        { who: 'employee A', id: FX.employeeA, own: FX.tenantA },
+        { who: 'admin B', id: FX.adminB, own: FX.tenantB },
+        { who: 'employee B', id: FX.employeeB, own: FX.tenantB },
+      ];
+      for (const r of readers) {
+        const client = apiClient(mintJwt(r.id));
+        for (const table of TENANT_TABLES) {
+          const { data, error } = await client.from(table).select('tenant_id');
+          expect(error).toBeNull();
+          const seen = new Set(
+            (data as { tenant_id: string }[]).map((x) => x.tenant_id),
+          );
+          // Non-empty (access really granted) and nothing from the other company.
+          expect({ who: r.who, table, seen: [...seen] }).toEqual({
+            who: r.who,
+            table,
+            seen: [r.own],
+          });
+        }
+        // user_skills: only the skills of people in my own company.
+        const { data: skills } = await client
+          .from('user_skills')
+          .select('user_id');
+        const own =
+          r.own === FX.tenantA ? FX_PEOPLE_A : [FX.adminB, FX.employeeB];
+        const skillUsers = (skills as { user_id: string }[]).map(
+          (x) => x.user_id,
+        );
+        expect(skillUsers.length).toBeGreaterThan(0);
+        expect(skillUsers.every((u) => own.includes(u))).toBe(true);
+
+        // users: my company's people only — never the other company's, and
+        // never the stranger (a user with no company used to be world-readable).
+        const { data: people } = await client.from('users').select('id');
+        const peopleIds = (people as { id: string }[]).map((x) => x.id).sort();
+        expect(peopleIds).toEqual([...own].sort());
+      }
+
+      // The stranger (real user, no membership) reads nothing company-scoped,
+      // and only their own users row.
+      const stranger = apiClient(mintJwt(FX.stranger));
+      for (const table of [...TENANT_TABLES, 'user_skills', 'tenants']) {
+        const { data, error } = await stranger.from(table).select('*');
+        expect(error).toBeNull();
+        expect({ table, rows: data }).toEqual({ table, rows: [] });
+      }
+      const { data: ownRow } = await stranger
+        .from('users')
+        .select('id, phone_number');
+      expect(ownRow).toEqual([{ id: FX.stranger, phone_number: '9999000205' }]);
+
+      // Anon (no token) sees nothing either.
+      const anon = apiClient();
+      for (const table of TENANT_TABLES) {
+        const { data } = await anon.from(table).select('*');
+        expect({ table, rows: data }).toEqual({ table, rows: [] });
+      }
+
+      // Cleanup: tenant-scoped rows go with the fixture purge in afterAll;
+      // remove the user_skills now so later probes start clean.
+      await service
+        .from('user_skills')
+        .delete()
+        .in('user_id', [FX.employeeA, FX.employeeB]);
     },
+    60000,
   );
 
   maybeIt(
@@ -547,15 +721,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // response, so a broken PostgREST relationship (PGRST200) would 500 in
       // production while every mock-based suite stays green. This probe runs
       // the real embed: zero rows is fine, a relationship error is not.
-      const embedJwt = mintJwt(
-        '00000000-0000-0000-0000-000000000099',
-        '00000000-0000-0000-0000-000000000098',
-        'authenticated',
-      );
-      const embedClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${embedJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      const embedClient = apiClient(mintJwt(FX.adminA));
       const { error } = await embedClient
         .from('user_skills')
         .select('skills!inner(name)');
@@ -588,42 +754,18 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         Date.now() + 5.5 * 60 * 60 * 1000,
       ).getUTCFullYear();
 
-      // Seed owner user → tenant (owner_id FK) → tenant-linked technician +
-      // customer. Upserts keep re-runs idempotent, mirroring the user_skills
-      // probe above.
-      const { error: ownerError } = await serviceClient.from('users').upsert(
-        {
-          id: ownerId,
-          country_code: '+91',
-          phone_number: '9999000002',
-          role: 'owner',
-          status: 'active',
-        },
-        { onConflict: 'id' },
-      );
-      expect(ownerError).toBeNull();
-      const { error: tenantError } = await serviceClient.from('tenants').upsert(
-        {
-          id: tenantId,
-          owner_id: ownerId,
-          company_name: 'RPC Probe Co',
-          state_code: 'KA',
-        },
-        { onConflict: 'id' },
-      );
-      expect(tenantError).toBeNull();
-      const { error: techError } = await serviceClient.from('users').upsert(
-        {
-          id: techId,
-          tenant_id: tenantId,
-          country_code: '+91',
-          phone_number: '9999000003',
-          role: 'technician',
-          status: 'active',
-        },
-        { onConflict: 'id' },
-      );
-      expect(techError).toBeNull();
+      // Seed company admin + employee (users → tenant created_by → active
+      // memberships) and one customer. seedCompany pre-cleans, so re-runs are
+      // idempotent.
+      await seedCompany(serviceClient, {
+        tenantId,
+        companyName: 'RPC Probe Co',
+        createdBy: ownerId,
+        people: [
+          { id: ownerId, phone: '9999000002', role: 'company_admin' },
+          { id: techId, phone: '9999000003', role: 'employee' },
+        ],
+      });
       const { error: customerError } = await serviceClient
         .from('customers')
         .upsert(
@@ -695,13 +837,11 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(advRows[0].current_step).toBe('on_my_way');
       } finally {
         // Cleanup: no rows left behind (job first — activity_logs cascade;
-        // tenant last — job_sequences/customers cascade).
+        // then memberships → tenant → users, which the helper orders).
         if (createdJobId) {
           await serviceClient.from('jobs').delete().eq('id', createdJobId);
         }
-        await serviceClient.from('customers').delete().eq('id', customerId);
-        await serviceClient.from('users').delete().in('id', [ownerId, techId]);
-        await serviceClient.from('tenants').delete().eq('id', tenantId);
+        await purgeCompany(serviceClient, tenantId, [ownerId, techId]);
       }
     },
   );
@@ -731,15 +871,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // publishable key would present to call the RPC directly, bypassing
       // NestJS (which routes every RPC through the service-role client —
       // proven unaffected by the create_job_with_log probe above).
-      const authedJwt = mintJwt(
-        '00000000-0000-0000-0000-000000000099',
-        null,
-        'authenticated',
+      const authedRpcClient = apiClient(
+        mintJwt('00000000-0000-0000-0000-000000000099'),
       );
-      const authedRpcClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${authedJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
       const { error: authedRpcError } = await authedRpcClient.rpc(
         'advance_workflow_step',
         RPC_ARGS,
@@ -766,24 +900,29 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // Migration 20260925000002 (deferred-work item 2): anon lost UPDATE on
       // users entirely and authenticated was cut from a whole-table UPDATE
       // grant to a column-level UPDATE (name) grant. A row-only RLS policy
-      // cannot reject a combined `SET name, role` update — the grant-level
-      // check does, and Postgres evaluates it before RLS (so it fires even
-      // for a zero-row match, as here: the probe id belongs to no real user).
+      // cannot reject a combined `SET name, platform_admin` update — the
+      // grant-level check does, and Postgres evaluates it before RLS (so it
+      // fires even for a zero-row match, as here: the probe id belongs to no
+      // real user). After the roles work the privileged columns are
+      // platform_admin / disabled / email / phone (role, tenant_id and status
+      // no longer exist on users).
       const selfUserId = '00000000-0000-0000-0000-000000000099';
-      const selfJwt = mintJwt(selfUserId, null, 'authenticated');
-      const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${selfJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      const client = apiClient(mintJwt(selfUserId));
 
       // Combined self-update touching privileged columns → 42501 (grant
       // level), not an RLS rejection and not a silent partial update.
-      const { error: combinedError } = await client
-        .from('users')
-        .update({ name: 'RLS probe', role: 'owner', tenant_id: null })
-        .eq('id', selfUserId);
-      expect(combinedError).not.toBeNull();
-      expect((combinedError as { code: string }).code).toBe('42501');
+      for (const privileged of [
+        { platform_admin: true },
+        { disabled: false },
+        { email: 'probe@example.com' },
+      ]) {
+        const { error: combinedError } = await client
+          .from('users')
+          .update({ name: 'RLS probe', ...privileged })
+          .eq('id', selfUserId);
+        expect(combinedError).not.toBeNull();
+        expect((combinedError as { code: string }).code).toBe('42501');
+      }
 
       // Name-only self-update on an absent row → allowed at grant/RLS level;
       // zero rows matched, no error (and no row can be created — INSERT has
@@ -801,25 +940,20 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
   );
 
   maybeIt(
-    'users: anon UPDATE denied, authenticated privileged upsert denied, real name-only self-update succeeds (Story 14-1)',
+    'users: anon UPDATE denied, authenticated privileged upsert denied, real name-only self-update succeeds, self-promotion to platform admin refused (Story 14-1)',
     async () => {
       // Completes the 20260925000002 grant matrix with the paths the absent-row
       // probe above cannot exercise: (1) anon lost UPDATE entirely; (2) an
       // authenticated upsert touching non-name columns is denied (for an
-      // INSERT ... ON CONFLICT DO UPDATE SET role, Postgres checks the UPDATE
-      // column privileges up front — `role` is not in authenticated's
-      // UPDATE(name) grant; if the conflict path instead inserts, the
-      // insert-only-service-role policy denies it — either way 42501);
-      // (3) the intended self-service path works on a REAL row.
-      const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
-      expect(SERVICE_KEY).not.toBe('');
-      const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      // INSERT ... ON CONFLICT DO UPDATE SET platform_admin, Postgres checks
+      // the UPDATE column privileges up front — `platform_admin` is not in
+      // authenticated's UPDATE(name) grant; if the conflict path instead
+      // inserts, the insert-only-service-role policy denies it — either way
+      // 42501); (3) the intended self-service path works on a REAL row; (4) a
+      // real person cannot make themselves fenzit staff.
+      const serviceClient = serviceRoleClient();
 
-      const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      const anonClient = apiClient();
       const { error: anonUpdateError } = await anonClient
         .from('users')
         .update({ name: 'RLS probe' })
@@ -831,23 +965,19 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // unused by the other probes; the upsert probe targets an absent row,
       // so no pre-existing row can be modified).
       const upsertProbeId = '00000000-0000-0000-0000-000000000091';
-      const authedUpsertJwt = mintJwt(upsertProbeId, null, 'authenticated');
-      const authedUpsertClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${authedUpsertJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      const authedUpsertClient = apiClient(mintJwt(upsertProbeId));
       const { error: upsertError } = await authedUpsertClient
         .from('users')
-        .upsert({ id: upsertProbeId, name: 'RLS probe', role: 'owner' });
+        .upsert({ id: upsertProbeId, name: 'RLS probe', platform_admin: true });
       expect(upsertError).not.toBeNull();
       expect((upsertError as { code: string }).code).toBe('42501');
 
       // Positive path on a real seeded row: authenticated name-only update
-      // succeeds and touches nothing else (role/tenant_id must come back
-      // exactly as seeded). The phone is probe-specific (…092) — users has
-      // partial UNIQUE indexes on (country_code, phone_number), so reusing a
-      // phone from another suite's seed would fail the seed before the try
-      // even opens. A pre-clean makes re-runs idempotent after a crashed run.
+      // succeeds and touches nothing else (platform_admin/disabled must come
+      // back exactly as seeded). The phone is probe-specific (…092) — users
+      // has a UNIQUE index on (country_code, phone_number), so reusing a
+      // phone from another suite's seed would fail the seed. A pre-clean
+      // makes re-runs idempotent after a crashed run.
       const probeUserId = '00000000-0000-0000-0000-000000000092';
       await serviceClient.from('users').delete().eq('id', probeUserId);
       const { error: seedError } = await serviceClient.from('users').upsert(
@@ -855,36 +985,44 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           id: probeUserId,
           country_code: '+91',
           phone_number: '9999000092',
-          role: 'technician',
-          status: 'invited',
         },
         { onConflict: 'id' },
       );
       expect(seedError).toBeNull();
 
       try {
-        const selfJwt = mintJwt(probeUserId, null, 'authenticated');
-        const selfClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          global: { headers: { Authorization: `Bearer ${selfJwt}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
-        });
+        const selfClient = apiClient(mintJwt(probeUserId));
         const { data, error } = await selfClient
           .from('users')
           .update({ name: 'RLS probe self-update' })
           .eq('id', probeUserId)
-          .select('id, name, role, tenant_id');
+          .select('id, name, platform_admin, disabled');
         expect(error).toBeNull();
-        const rows = data as {
-          id: string;
-          name: string;
-          role: string;
-          tenant_id: string | null;
-        }[];
-        expect(rows).toHaveLength(1);
-        expect(rows[0].id).toBe(probeUserId);
-        expect(rows[0].name).toBe('RLS probe self-update');
-        expect(rows[0].role).toBe('technician');
-        expect(rows[0].tenant_id).toBeNull();
+        expect(data).toEqual([
+          {
+            id: probeUserId,
+            name: 'RLS probe self-update',
+            platform_admin: false,
+            disabled: false,
+          },
+        ]);
+
+        // (4) Self-promotion on the REAL row: refused at grant level, and the
+        // flag is still false afterwards (read with the service role).
+        const { error: promoteError } = await selfClient
+          .from('users')
+          .update({ platform_admin: true })
+          .eq('id', probeUserId);
+        expect(promoteError).not.toBeNull();
+        expect((promoteError as { code: string }).code).toBe('42501');
+        const { data: after } = await serviceClient
+          .from('users')
+          .select('platform_admin')
+          .eq('id', probeUserId)
+          .single();
+        expect((after as { platform_admin: boolean }).platform_admin).toBe(
+          false,
+        );
       } finally {
         // Cleanup: the probe row must not leak into the shared live DB.
         const { error: cleanupError } = await serviceClient
@@ -1066,6 +1204,42 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_date: '2030-01-01',
         },
+        // Roles work (migration 20261020000002): the five all-or-nothing
+        // member functions. Same SECURITY DEFINER + revoke pattern — a client
+        // must never be able to call them directly, whatever role it holds.
+        // The probe ids mutate nothing: the privilege check fires first.
+        write_audit_row: {
+          p_actor: PROBE_ID,
+          p_action: 'rls.probe',
+          p_tenant_id: PROBE_ID,
+          p_target_user: null,
+          p_details: {},
+        },
+        invite_member: {
+          p_caller: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_country_code: '+91',
+          p_phone_number: '9999000299',
+          p_name: 'RLS Probe',
+          p_role: 'viewer',
+          p_skill_ids: [],
+        },
+        change_member_role: {
+          p_caller: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_member_user_id: PROBE_ID,
+          p_new_role: 'viewer',
+        },
+        remove_member: {
+          p_caller: PROBE_ID,
+          p_tenant_id: PROBE_ID,
+          p_member_user_id: PROBE_ID,
+        },
+        set_user_disabled: {
+          p_caller: PROBE_ID,
+          p_user_id: PROBE_ID,
+          p_disabled: true,
+        },
       };
 
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
@@ -1077,11 +1251,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // Mirror the sweep with an authenticated JWT — anon-only coverage would
       // miss a future migration that re-grants EXECUTE to `authenticated`
       // alone (Story 14-1 review).
-      const authedProbeJwt = mintJwt(PROBE_ID, null, 'authenticated');
-      const authedPinClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        global: { headers: { Authorization: `Bearer ${authedProbeJwt}` } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      const authedPinClient = apiClient(mintJwt(PROBE_ID));
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
         const { error } = await authedPinClient.rpc(name, args);
         expect(error).not.toBeNull();
@@ -1096,6 +1266,8 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         // Story 15-2: timezone validator on tenants (BEFORE INSERT OR UPDATE
         // OF timezone).
         'tenants_timezone_guard',
+        // Roles work: append-only guard on audit_log.
+        'audit_log_append_only',
       ];
       for (const name of TRIGGER_FUNCTIONS) {
         const { error } = await anonRpcClient.rpc(name, {});
@@ -1136,54 +1308,18 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       const DEDUPE_KEY = 'rls-probe-14-2-dedupe';
       const PROBE_EVENT = 'rls_probe_14_2';
 
-      // Pre-clean (idempotency after a crashed prior run): notifications →
-      // users → tenants is the only valid delete order (notifications.user_id
-      // has no ON DELETE cascade; matches the finally block).
-      await serviceClient
-        .from('notifications')
-        .delete()
-        .in('user_id', [probeOwnerId, probeTechId]);
-      await serviceClient
-        .from('users')
-        .delete()
-        .in('id', [probeOwnerId, probeTechId]);
-      const { error: seedOwnerError } = await serviceClient
-        .from('users')
-        .upsert(
-          {
-            id: probeOwnerId,
-            country_code: '+91',
-            phone_number: '9999000088',
-            role: 'owner',
-            status: 'active',
-          },
-          { onConflict: 'id' },
-        );
-      expect(seedOwnerError).toBeNull();
-      const { error: tenantUpsertError } = await serviceClient
-        .from('tenants')
-        .upsert(
-          {
-            id: probeTenantId,
-            owner_id: probeOwnerId,
-            company_name: 'Realtime Probe Co',
-            state_code: 'KA',
-          },
-          { onConflict: 'id' },
-        );
-      expect(tenantUpsertError).toBeNull();
-      const { error: techError } = await serviceClient.from('users').upsert(
-        {
-          id: probeTechId,
-          tenant_id: probeTenantId,
-          country_code: '+91',
-          phone_number: '9999000089',
-          role: 'technician',
-          status: 'active',
-        },
-        { onConflict: 'id' },
-      );
-      expect(techError).toBeNull();
+      // Seed company admin + employee with ACTIVE memberships. seedCompany
+      // pre-cleans (idempotent after a crashed run) in FK order: notifications
+      // (no cascade on user/tenant) → memberships → tenant → users.
+      await seedCompany(serviceClient, {
+        tenantId: probeTenantId,
+        companyName: 'Realtime Probe Co',
+        createdBy: probeOwnerId,
+        people: [
+          { id: probeOwnerId, phone: '9999000088', role: 'company_admin' },
+          { id: probeTechId, phone: '9999000089', role: 'employee' },
+        ],
+      });
 
       // The realtime token exactly as mintRealtimeToken produces it: claims
       // { sub, role: 'authenticated', exp } signed with SUPABASE_JWT_SECRET.
@@ -1381,15 +1517,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         await foreignChannel?.unsubscribe();
         realtimeClient.removeAllChannels();
         realtimeClient.realtime.disconnect();
-        await serviceClient
-          .from('notifications')
-          .delete()
-          .in('user_id', [probeOwnerId, probeTechId]);
-        await serviceClient
-          .from('users')
-          .delete()
-          .in('id', [probeOwnerId, probeTechId]);
-        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+        await purgeCompany(serviceClient, probeTenantId, [
+          probeOwnerId,
+          probeTechId,
+        ]);
       }
     },
     30000,
@@ -1433,9 +1564,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       //   (c) schema pins — the exact column lists attendance.service.ts
       //       selects, run against the real tables (drift either way fails).
       //   (d) tenant isolation — a service-seeded settings row for the probe
-      //       tenant is invisible to a bare anon client and to a JWT of a
-      //       foreign tenant (both RLS policies scope on
-      //       auth.jwt() ->> 'tenantId'), visible only with service role.
+      //       tenant is invisible to a bare anon client and even to the
+      //       company's OWN active admin (module state has no RLS policy at
+      //       all), whatever `tenantId` claim the token carries; visible only
+      //       with the service role.
       const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
       expect(SERVICE_KEY).not.toBe('');
       const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
@@ -1449,45 +1581,16 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       const probeOwnerId = '00000000-0000-0000-0000-000000000091';
       const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-0000000000ff';
 
-      // Pre-clean (idempotency after a crashed prior run): attendance rows
-      // would cascade on tenant delete, but delete explicitly first — the
-      // same order the finally block uses.
-      await serviceClient
-        .from('attendance_setup_progress')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('attendance_settings')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient.from('users').delete().eq('id', probeOwnerId);
-      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
-
-      const { error: seedOwnerError } = await serviceClient
-        .from('users')
-        .upsert(
-          {
-            id: probeOwnerId,
-            country_code: '+91',
-            phone_number: '9999000091',
-            role: 'owner',
-            status: 'active',
-          },
-          { onConflict: 'id' },
-        );
-      expect(seedOwnerError).toBeNull();
-      const { error: tenantUpsertError } = await serviceClient
-        .from('tenants')
-        .upsert(
-          {
-            id: probeTenantId,
-            owner_id: probeOwnerId,
-            company_name: 'Attendance Probe Co',
-            state_code: 'KA',
-          },
-          { onConflict: 'id' },
-        );
-      expect(tenantUpsertError).toBeNull();
+      // seedCompany pre-cleans (attendance rows first, then memberships →
+      // tenant → users) and seeds the owner as an ACTIVE company_admin.
+      await seedCompany(serviceClient, {
+        tenantId: probeTenantId,
+        companyName: 'Attendance Probe Co',
+        createdBy: probeOwnerId,
+        people: [
+          { id: probeOwnerId, phone: '9999000091', role: 'company_admin' },
+        ],
+      });
       // The 15-2 default — assert it so a future default change is caught.
       const { data: seededTenant } = await serviceClient
         .from('tenants')
@@ -1581,18 +1684,13 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(anonProgressError).toBeNull();
         expect(anonProgress).toEqual([]);
 
-        // A JWT naming a different tenant: same empty result — with no
-        // policies the deny is unconditional; the JWT's tenant claim is
-        // irrelevant by design.
-        const foreignJwt = mintJwt(
-          probeOwnerId,
-          FOREIGN_TENANT_ID,
-          'authenticated',
-        );
-        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
+        // The company's own ACTIVE admin, token carrying a forged tenantId
+        // claim for another company: same empty result — with no policies the
+        // deny is unconditional; membership and claims are irrelevant here.
+        const foreignJwt = mintJwt(probeOwnerId, {
+          tenantId: FOREIGN_TENANT_ID,
         });
+        const foreignClient = apiClient(foreignJwt);
         const { data: foreignSettings } = await foreignClient
           .from('attendance_settings')
           .select('*');
@@ -1674,18 +1772,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .eq('tenant_id', probeTenantId);
         expect(settingsAfterRestart).toHaveLength(1);
       } finally {
-        // Cleanup: attendance rows → users → tenants (FK order), so the
-        // probe never leaks into the shared live DB.
-        await serviceClient
-          .from('attendance_setup_progress')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('attendance_settings')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient.from('users').delete().eq('id', probeOwnerId);
-        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+        // Cleanup: attendance rows → memberships → tenant → users (FK
+        // order), so the probe never leaks into the shared live DB.
+        await purgeCompany(serviceClient, probeTenantId, [probeOwnerId]);
       }
     },
     30000,
@@ -1718,44 +1807,16 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       const probeOwnerId = '00000000-0000-0000-0000-000000000097';
       const FOREIGN_TENANT_ID = '00000000-0000-0000-0000-0000000000fe';
 
-      // Pre-clean in FK order (rules RESTRICT office deletion — offices first
-      // is impossible while rules rows exist).
-      await serviceClient
-        .from('attendance_office_rules')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('attendance_offices')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient.from('users').delete().eq('id', probeOwnerId);
-      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
-
-      const { error: seedOwnerError } = await serviceClient
-        .from('users')
-        .upsert(
-          {
-            id: probeOwnerId,
-            country_code: '+91',
-            phone_number: '9999000097',
-            role: 'owner',
-            status: 'active',
-          },
-          { onConflict: 'id' },
-        );
-      expect(seedOwnerError).toBeNull();
-      const { error: tenantUpsertError } = await serviceClient
-        .from('tenants')
-        .upsert(
-          {
-            id: probeTenantId,
-            owner_id: probeOwnerId,
-            company_name: 'Office Probe Co',
-            state_code: 'KA',
-          },
-          { onConflict: 'id' },
-        );
-      expect(tenantUpsertError).toBeNull();
+      // seedCompany pre-cleans in FK order (rules RESTRICT office deletion, so
+      // they go first) and seeds the owner as an ACTIVE company_admin.
+      await seedCompany(serviceClient, {
+        tenantId: probeTenantId,
+        companyName: 'Office Probe Co',
+        createdBy: probeOwnerId,
+        people: [
+          { id: probeOwnerId, phone: '9999000097', role: 'company_admin' },
+        ],
+      });
 
       try {
         // --- (a) schema pins: both directions of drift fail (a dropped
@@ -1815,15 +1876,12 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .select('*');
         expect(anonRules).toEqual([]);
 
-        const foreignJwt = mintJwt(
-          probeOwnerId,
-          FOREIGN_TENANT_ID,
-          'authenticated',
-        );
-        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
+        // The company's own ACTIVE admin with a forged tenantId claim: still
+        // empty, because the tables carry no policy at all.
+        const foreignJwt = mintJwt(probeOwnerId, {
+          tenantId: FOREIGN_TENANT_ID,
         });
+        const foreignClient = apiClient(foreignJwt);
         const { data: foreignOffices } = await foreignClient
           .from('attendance_offices')
           .select('*');
@@ -2127,16 +2185,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(reArchiveError).toBeNull();
       } finally {
         // Cleanup in FK order, so the probe never leaks into the shared DB.
-        await serviceClient
-          .from('attendance_office_rules')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('attendance_offices')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient.from('users').delete().eq('id', probeOwnerId);
-        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+        await purgeCompany(serviceClient, probeTenantId, [probeOwnerId]);
       }
     },
     30000,
@@ -2183,67 +2232,19 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         ).toLocaleDateString('en-CA', { timeZone: 'UTC' });
       }
 
-      // Pre-clean in FK order (overrides RESTRICT user deletion — users
-      // last; notifications have no cascade on user/tenant deletes).
-      await serviceClient
-        .from('notifications')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('attendance_weekly_off_overrides')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('attendance_weekly_off_defaults')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('holidays')
-        .delete()
-        .eq('tenant_id', probeTenantId);
-      await serviceClient
-        .from('users')
-        .delete()
-        .in('id', [probeOwnerId, probeTechId]);
-      await serviceClient.from('tenants').delete().eq('id', probeTenantId);
-
-      const { error: seedOwnerError } = await serviceClient
-        .from('users')
-        .upsert(
-          {
-            id: probeOwnerId,
-            country_code: '+91',
-            phone_number: '9999000095',
-            role: 'owner',
-            status: 'active',
-          },
-          { onConflict: 'id' },
-        );
-      expect(seedOwnerError).toBeNull();
-      const { error: tenantUpsertError } = await serviceClient
-        .from('tenants')
-        .upsert(
-          {
-            id: probeTenantId,
-            owner_id: probeOwnerId,
-            company_name: 'Weekly Off Probe Co',
-            state_code: 'KA',
-          },
-          { onConflict: 'id' },
-        );
-      expect(tenantUpsertError).toBeNull();
-      const { error: techError } = await serviceClient.from('users').upsert(
-        {
-          id: probeTechId,
-          tenant_id: probeTenantId,
-          country_code: '+91',
-          phone_number: '9999000096',
-          role: 'technician',
-          status: 'active',
-        },
-        { onConflict: 'id' },
-      );
-      expect(techError).toBeNull();
+      // seedCompany pre-cleans in FK order (overrides RESTRICT membership
+      // deletion — memberships go last; notifications have no cascade) and
+      // seeds an ACTIVE company_admin plus an ACTIVE employee (the override
+      // setter requires an active membership).
+      await seedCompany(serviceClient, {
+        tenantId: probeTenantId,
+        companyName: 'Weekly Off Probe Co',
+        createdBy: probeOwnerId,
+        people: [
+          { id: probeOwnerId, phone: '9999000095', role: 'company_admin' },
+          { id: probeTechId, phone: '9999000096', role: 'employee' },
+        ],
+      });
 
       try {
         // --- (a) schema pins: both directions of drift fail (a dropped
@@ -2307,15 +2308,12 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           expect(anonRows).toEqual([]);
         }
 
-        const foreignJwt = mintJwt(
-          probeOwnerId,
-          FOREIGN_TENANT_ID,
-          'authenticated',
-        );
-        const foreignClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          global: { headers: { Authorization: `Bearer ${foreignJwt}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
+        // The company's own ACTIVE admin with a forged tenantId claim: still
+        // empty, because the tables carry no policy at all.
+        const foreignJwt = mintJwt(probeOwnerId, {
+          tenantId: FOREIGN_TENANT_ID,
         });
+        const foreignClient = apiClient(foreignJwt);
         for (const table of [
           'attendance_weekly_off_defaults',
           'attendance_weekly_off_overrides',
@@ -2788,27 +2786,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         );
       } finally {
         // Cleanup in FK order, so the probe never leaks into the shared DB.
-        await serviceClient
-          .from('notifications')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('attendance_weekly_off_overrides')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('attendance_weekly_off_defaults')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('holidays')
-          .delete()
-          .eq('tenant_id', probeTenantId);
-        await serviceClient
-          .from('users')
-          .delete()
-          .in('id', [probeOwnerId, probeTechId]);
-        await serviceClient.from('tenants').delete().eq('id', probeTenantId);
+        await purgeCompany(serviceClient, probeTenantId, [
+          probeOwnerId,
+          probeTechId,
+        ]);
       }
     },
     30000,

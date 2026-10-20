@@ -29,6 +29,7 @@ import { SupabaseClientFactory } from '../../src/common/factories/supabase-clien
 import { EMPTY_ME_SUMMARY } from '../../src/attendance/me-summary.model';
 import type { RequestUser } from '../../src/common/interfaces/request-user.interface';
 import { Role } from '../../src/common/enums/role.enum';
+import { purgeCompanyChildren } from '../helpers/attendance-company-fixture';
 import {
   insertAssignment,
   insertEnrolment,
@@ -63,7 +64,8 @@ const PROBE_PHONES = [
 const techUser: RequestUser = {
   userId: TECH,
   tenantId: TENANT,
-  role: Role.TECHNICIAN,
+  role: Role.EMPLOYEE,
+  platformAdmin: false,
   rawJwt: 'probe-jwt',
 };
 
@@ -123,93 +125,67 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
     } as unknown as SupabaseClientFactory);
 
     // Pre-clean any leftovers from an aborted earlier run (same probe
-    // phones), FK-safe order. attendance_onboarding has no tenant cascade
-    // gap here — every table is tenant-scoped or cleaned by tenant/id.
+    // phones), FK-safe order: children and memberships, tenants, users.
     const { data: stale } = await admin
       .from('users')
-      .select('id, tenant_id')
+      .select('id')
       .in('phone_number', PROBE_PHONES);
     if (stale && stale.length > 0) {
-      const staleTenants = [
-        ...new Set(stale.map((s) => s.tenant_id).filter(Boolean)),
-      ] as string[];
-      for (const t of staleTenants) {
-        await admin.from('notifications').delete().eq('tenant_id', t);
-        await admin.from('attendance_records').delete().eq('tenant_id', t);
-        await admin.from('attendance_attempts').delete().eq('tenant_id', t);
-        await admin.from('holidays').delete().eq('tenant_id', t);
-        await admin
-          .from('attendance_weekly_off_overrides')
-          .delete()
-          .eq('tenant_id', t);
-        await admin
-          .from('attendance_weekly_off_defaults')
-          .delete()
-          .eq('tenant_id', t);
-        await admin.from('attendance_office_rules').delete().eq('tenant_id', t);
-        // The deferred coverage guard (23514 ATTENDANCE_ASSIGNMENT_GAP)
-        // rejects an enrolment delete that un-anchors a live assignment —
-        // assignments FIRST, and every result checked (a silently swallowed
-        // failure here would defeat the pre-clean's whole purpose).
-        const assignDel = await admin
-          .from('attendance_office_assignments')
-          .delete()
-          .eq('tenant_id', t);
-        if (assignDel.error) throw assignDel.error;
-        const enrolDel = await admin
-          .from('attendance_enrolments')
-          .delete()
-          .eq('tenant_id', t);
-        if (enrolDel.error) throw enrolDel.error;
-        await admin.from('attendance_onboarding').delete().eq('tenant_id', t);
-        await admin
-          .from('attendance_setup_progress')
-          .delete()
-          .eq('tenant_id', t);
-        await admin.from('attendance_settings').delete().eq('tenant_id', t);
-        await admin.from('attendance_offices').delete().eq('tenant_id', t);
-        await admin.from('tenants').delete().eq('id', t);
+      const staleIds = stale.map((s) => s.id);
+      const { rows: staleRows } = await pool.query(
+        `select tenant_id as t from public.memberships where user_id = any($1::uuid[])
+         union select id from public.tenants where created_by = any($1::uuid[])`,
+        [staleIds],
+      );
+      const staleTenants = staleRows.map((x) => x.t as string);
+      if (staleTenants.length > 0) {
+        await purgeCompanyChildren(pool, staleTenants);
+        await admin.from('tenants').delete().in('id', staleTenants);
       }
-      await admin
-        .from('users')
-        .delete()
-        .in(
-          'id',
-          stale.map((s) => s.id),
-        );
+      await admin.from('users').delete().in('id', staleIds);
     }
 
-    // Fixtures: owner (tenant-less first — tenants.owner_id references it),
-    // tenant, technician, two offices, settings enabled+completed.
+    // Fixtures: users (identity only), tenant, memberships (the attendance
+    // rows point at them), two offices, settings enabled+completed.
     must(
-      await admin.from('users').insert({
-        id: OWNER,
-        role: 'owner',
-        status: 'active',
-        country_code: '+91',
-        phone_number: PROBE_PHONES[0],
-        name: '15-10 probe owner',
-      }),
+      await admin.from('users').insert([
+        {
+          id: OWNER,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[0],
+          name: '15-10 probe owner',
+        },
+        {
+          id: TECH,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[1],
+          name: '15-10 probe tech',
+        },
+      ]),
     );
     must(
       await admin.from('tenants').insert({
         id: TENANT,
-        owner_id: OWNER,
+        created_by: OWNER,
         company_name: '15-10 summary probe',
         state_code: 'KA',
       }),
     );
-    await admin.from('users').update({ tenant_id: TENANT }).eq('id', OWNER);
     must(
-      await admin.from('users').insert({
-        id: TECH,
-        tenant_id: TENANT,
-        role: 'technician',
-        status: 'active',
-        country_code: '+91',
-        phone_number: PROBE_PHONES[1],
-        name: '15-10 probe tech',
-      }),
+      await admin.from('memberships').insert([
+        {
+          user_id: OWNER,
+          tenant_id: TENANT,
+          role: 'company_admin',
+          status: 'active',
+        },
+        {
+          user_id: TECH,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+        },
+      ]),
     );
     must(
       await admin.from('attendance_offices').insert([
@@ -321,37 +297,12 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
         enrolments.rows.map((r) => r.id),
       );
     });
-    await admin.from('notifications').delete().eq('tenant_id', TENANT);
-    // 16-4 fixtures: records/attempts before users — the composite
-    // (employee_id, tenant_id) → users FK is ON DELETE RESTRICT.
-    await admin.from('attendance_records').delete().eq('tenant_id', TENANT);
-    await admin.from('attendance_attempts').delete().eq('tenant_id', TENANT);
-    await admin.from('holidays').delete().eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_weekly_off_overrides')
-      .delete()
-      .eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_weekly_off_defaults')
-      .delete()
-      .eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_office_rules')
-      .delete()
-      .eq('tenant_id', TENANT);
-    await admin.from('attendance_onboarding').delete().eq('tenant_id', TENANT);
-    await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_setup_progress')
-      .delete()
-      .eq('tenant_id', TENANT);
-    await admin.from('attendance_settings').delete().eq('tenant_id', TENANT);
-    // 17-8 probe residue: days before requests (the request FK is
-    // RESTRICT) and both before users (the employee FK is RESTRICT too).
-    await admin.from('leave_request_days').delete().eq('tenant_id', TENANT);
-    await admin.from('leave_requests').delete().eq('tenant_id', TENANT);
-    await admin.from('users').delete().in('id', [OWNER, TECH]);
+    // Every child row (records, attempts, holidays, weekly offs, rules, offices,
+    // settings, leave residue, notifications...) then the memberships — both
+    // the employee FKs and the membership FKs are RESTRICT.
+    await purgeCompanyChildren(pool, [TENANT]);
     await admin.from('tenants').delete().eq('id', TENANT);
+    await admin.from('users').delete().in('id', [OWNER, TECH]);
   }
 
   maybeIt(
@@ -689,6 +640,7 @@ describe('Attendance me/summary journey (15-10, real DB)', () => {
         'attendance_records',
         'attendance_attempts',
         'holidays',
+        'memberships',
       ]) {
         const { rows } = await pool.query(
           `select count(*)::int as n from public.${table} where tenant_id = $1`,

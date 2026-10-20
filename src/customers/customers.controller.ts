@@ -26,10 +26,9 @@ import { GetCustomerDetailQueryDto } from './dto/get-customer-detail-query.dto';
 import { CustomerDetailResponseDto } from './dto/customer-detail-response.dto';
 import { CustomerListItemDto } from './dto/customer-list-item.dto';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 @ApiTags('Customers')
 @ApiBearerAuth()
@@ -39,9 +38,9 @@ export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('customer.write')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Create a customer for the owner's tenant" })
+  @ApiOperation({ summary: "Create a customer for the company" })
   @ApiResponse({ status: 201, description: 'Customer created' })
   @ApiResponse({ status: 400, description: 'Company not set up' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
@@ -55,7 +54,7 @@ export class CustomersController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('customer.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -98,7 +97,7 @@ export class CustomersController {
   // NOTE: `:id` must stay below the parameterless `@Get()` list route above —
   // it is a catch-all that would otherwise shadow `GET /customers`.
   @Get(':id')
-  @Roles(Role.OWNER)
+  @Can('customer.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Get a customer profile with paginated job history',
@@ -127,9 +126,9 @@ export class CustomersController {
     return this.customersService.getCustomerDetail(user, id, query.cursor);
   }
 
-  // Mirrors the GET ':id' shape above (ParseUUIDPipe at the edge, owner-gated).
+  // Mirrors the GET ':id' shape above (ParseUUIDPipe at the edge, permission-gated).
   @Patch(':id')
-  @Roles(Role.OWNER)
+  @Can('customer.write')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -35,8 +35,8 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
   let crew: Crew;
   let T: string;
 
-  const owner = () => bearerFor(jwt, crew, crew.owner, 'owner');
-  const tech = () => bearerFor(jwt, crew, crew.staff[0], 'technician');
+  const owner = () => bearerFor(jwt, crew, crew.owner);
+  const tech = () => bearerFor(jwt, crew, crew.staff[0]);
   const JSON_CT = { 'content-type': 'application/json' };
   const emp = () => crew.staff[0];
   const url = () => `/api/v1/attendance/weekly-offs/overrides/${emp()}`;
@@ -85,7 +85,7 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
     app.inject({ method: 'DELETE', url: url(), headers, payload });
 
   maybeIt(
-    'empty body + json content-type: owner 200, row removed',
+    'empty body + json content-type: company admin 200, row removed',
     async () => {
       const r = await del({ ...owner(), ...JSON_CT }, '');
       expect(r.statusCode).toBe(200);
@@ -94,7 +94,7 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
   );
 
   maybeIt(
-    'empty body + json content-type: technician 403, row kept',
+    'empty body + json content-type: employee 403, row kept',
     async () => {
       const r = await del({ ...tech(), ...JSON_CT }, '');
       expect(r.statusCode).toBe(403);
@@ -102,13 +102,13 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
     },
   );
 
-  maybeIt('"{}" body: parsed, ignored by the route, owner 200', async () => {
+  maybeIt('"{}" body: parsed, ignored by the route, company admin 200', async () => {
     const r = await del({ ...owner(), ...JSON_CT }, '{}');
     expect(r.statusCode).toBe(200);
     expect(await overrideSpans(pool, emp(), T)).toEqual([]);
   });
 
-  maybeIt('"{}" body: technician still 403', async () => {
+  maybeIt('"{}" body: employee still 403', async () => {
     const r = await del({ ...tech(), ...JSON_CT }, '{}');
     expect(r.statusCode).toBe(403);
     expect(await overrideSpans(pool, emp(), T)).toEqual([[0, null, [6]]]);
@@ -122,7 +122,7 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
     ['bare word', 'nope'],
   ]) {
     maybeIt(
-      `${name}: 400 from the parser, even for an owner; row kept`,
+      `${name}: 400 from the parser, even for a company admin; row kept`,
       async () => {
         const r = await del({ ...owner(), ...JSON_CT }, body);
         expect(r.statusCode).toBe(400);
@@ -132,14 +132,14 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
   }
 
   maybeIt(
-    'invalid JSON from a technician is 400 (parser runs before guards)',
+    'invalid JSON from an employee is 400 (parser runs before guards)',
     async () => {
       const r = await del({ ...tech(), ...JSON_CT }, '{bad');
       expect(r.statusCode).toBe(400);
     },
   );
 
-  maybeIt('no content-type and no body: owner 200', async () => {
+  maybeIt('no content-type and no body: company admin 200', async () => {
     const r = await del(owner());
     expect(r.statusCode).toBe(200);
   });

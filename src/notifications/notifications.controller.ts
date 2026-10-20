@@ -26,13 +26,15 @@ import { MarkReadDto } from './dto/mark-read.dto';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { AnyMember } from '../common/decorators/any-member.decorator';
 
-// Deliberately no @Roles(...) and no @UseGuards(...): guards are global
-// APP_GUARDs, and authorization here is recipient-scoping (user_id = sub) —
-// stronger than a role gate and safe for a solo owner-technician tenant.
+// @AnyMember(), no @UseGuards(...): guards are global APP_GUARDs, and
+// authorization here is recipient-scoping (user_id = sub) — stronger than a
+// role gate and safe for a person with no company yet.
 @ApiTags('Notifications')
 @ApiBearerAuth()
 @ApiExtraModels(PaginatedResponse, NotificationResponse)
+@AnyMember()
 @Controller('notifications')
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}

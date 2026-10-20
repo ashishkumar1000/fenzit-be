@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../../common/enums/error-code.enum';
+import { listCompanyMembers } from '../../common/members/company-members';
 import type { ReportFetchContext } from './report-definition';
 
 /**
@@ -213,22 +214,19 @@ async function fetchTechnicianNames(
   const refs = new Map<string, { name: string; code: string | null }>();
   for (let i = 0; i < technicianIds.length; i += IN_CHUNK_SIZE) {
     const chunk = technicianIds.slice(i, i + IN_CHUNK_SIZE);
-    const { data, error } = await supabase
-      .from('users')
-      .select('id, name, employee_code')
-      .eq('tenant_id', tenantId)
-      .in('id', chunk);
-    if (error || !data) {
+    let members: Awaited<ReturnType<typeof listCompanyMembers>>;
+    try {
+      members = await listCompanyMembers(supabase, tenantId, {
+        userIds: chunk,
+        includeRemoved: true,
+      });
+    } catch (error) {
       throw new Error(
-        `Failed to fetch technicians for report: ${error?.message}`,
+        `Failed to fetch technicians for report: ${(error as { message?: string })?.message}`,
       );
     }
-    for (const row of data as {
-      id: string;
-      name: string;
-      employee_code: string | null;
-    }[]) {
-      refs.set(row.id, { name: row.name, code: row.employee_code });
+    for (const m of members) {
+      refs.set(m.userId, { name: m.name ?? '', code: m.employeeCode });
     }
   }
   return refs;

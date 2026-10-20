@@ -20,14 +20,13 @@ import { OfficesService } from './offices.service';
 import { CreateOfficeDto } from './dto/create-office.dto';
 import { UpdateOfficeDto } from './dto/update-office.dto';
 import { ListOfficesQueryDto } from './dto/list-offices-query.dto';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
- * FR-5 office management routes (Epic 15, Story 15-3). Owner-only; the
+ * FR-5 office management routes (Epic 15, Story 15-3). Company-admin only; the
  * check-in side that reads offices arrives with Epic 16. No idempotency
  * interceptor (AD-6): create is FE-guarded, PATCH is naturally idempotent
  * and archive is lock-serialised.
@@ -54,7 +53,7 @@ export class OfficesController {
   }
 
   @Get()
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List offices — each with the rule valid on today and a pending next rule',
@@ -71,7 +70,7 @@ export class OfficesController {
   }
 
   @Get(':id')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Office detail — full effective-dated rules history' })
   @ApiResponse({ status: 200, description: 'Office with its rules, ascending' })
@@ -83,7 +82,7 @@ export class OfficesController {
   }
 
   @Post()
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create an office with its initial rule (valid from today)',
@@ -99,7 +98,7 @@ export class OfficesController {
   }
 
   @Patch(':id')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -121,7 +120,7 @@ export class OfficesController {
   }
 
   @Post(':id/archive')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Archive an office (never deleted) — blocked by tracked employees with assignments',
@@ -140,7 +139,7 @@ export class OfficesController {
   }
 
   @Get(':id/archive/preview')
-  @Roles(Role.OWNER)
+  @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Preview: who blocks archiving this office (AD-24)',

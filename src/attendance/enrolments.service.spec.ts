@@ -36,7 +36,8 @@ const VIEW_ROW = {
 const owner: RequestUser = {
   userId: 'owner-uuid',
   tenantId: TENANT,
-  role: Role.OWNER,
+  role: Role.COMPANY_ADMIN,
+  platformAdmin: false,
   rawJwt: 'mock-jwt',
 };
 
@@ -88,7 +89,7 @@ function makeTx(options: TxOptions = {}) {
       }
       return { rows: [{ today: options.today ?? '2026-09-28' }] };
     }
-    if (sql.includes('from public.users where')) {
+    if (sql.includes('select u.id, u.name')) {
       return {
         rows:
           options.employeeFound === false
@@ -140,7 +141,7 @@ function makeTx(options: TxOptions = {}) {
     if (sql.includes('update public.leave_request_days')) return { rows: [] };
     if (sql.includes('insert into public.leave_events')) return { rows: [] };
     if (sql.includes('insert into public.notifications')) return { rows: [] };
-    if (sql.includes('select name from public.users'))
+    if (sql.includes('select u.name'))
       return { rows: [{ name: 'Ravi' }] };
     throw new Error(`unclassified query: ${sql}`);
   };
@@ -356,22 +357,32 @@ describe('EnrolmentsService (story 15-7)', () => {
   });
 
   describe('GET /enrolments — owner roster', () => {
-    it('joins the view states with technician display names', async () => {
+    it('joins the view states with employee display names', async () => {
+      const builders: Record<string, Record<string, jest.Mock>[]> = {};
       const admin = {
         from: jest.fn((table: string) => {
           const qb: Record<string, jest.Mock> = {};
-          for (const m of ['select', 'eq', 'in']) {
+          for (const m of ['select', 'eq', 'neq', 'in', 'order']) {
             qb[m] = jest.fn().mockReturnValue(qb);
           }
+          (builders[table] ??= []).push(qb);
+          // The roster reads company members: memberships rows with the
+          // user's identity embedded.
           const result =
-            table === 'users'
+            table === 'memberships'
               ? {
                   data: [
                     {
-                      id: EMPLOYEE,
-                      name: 'Ravi',
-                      country_code: '+91',
-                      phone_number: '9876543210',
+                      user_id: EMPLOYEE,
+                      role: 'employee',
+                      status: 'active',
+                      employee_code: 'E-001',
+                      created_at: '2026-09-01T00:00:00Z',
+                      users: {
+                        name: 'Ravi',
+                        country_code: '+91',
+                        phone_number: '9876543210',
+                      },
                     },
                   ],
                   error: null,
@@ -397,6 +408,11 @@ describe('EnrolmentsService (story 15-7)', () => {
         phone: '+919876543210',
         attendanceAccess: 'active',
       });
+      // Scoped to the caller's company and to employees only (admins are
+      // never enrolled), whatever the query shape.
+      const members = builders['memberships'][0];
+      expect(members.eq).toHaveBeenCalledWith('tenant_id', TENANT);
+      expect(members.eq).toHaveBeenCalledWith('role', Role.EMPLOYEE);
     });
   });
 });

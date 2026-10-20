@@ -41,7 +41,7 @@ const CUSTOMER = randomUUID();
 const JOB_DEADEND = randomUUID();
 const JOB_GUARD = randomUUID();
 
-/** Unique probe phones (16-1 pattern) — [0] owner, [1] technician. */
+/** Unique probe phones (16-1 pattern) — [0] company admin, [1] employee. */
 const PHONES = [0, 1].map((i) => `7${Date.now()}2${i}`.slice(-10));
 
 let admin: SupabaseClient;
@@ -157,37 +157,44 @@ beforeAll(async () => {
   expect(skill).not.toBeNull();
   skillId = skill!.id;
 
-  // Throwaway tenant shell + users (16-1 fixture shape): the owner user goes
-  // in FIRST (tenants.owner_id → users.id while users.tenant_id → tenants.id —
-  // same chicken-and-egg the attendance probes solve), then the tenant, then
-  // the link + the technician. state_code is NOT NULL on tenants.
+  // Throwaway company (identity-only users + memberships): the admin user
+  // goes in FIRST (tenants.created_by -> users.id), then the tenant, then the
+  // memberships that put both people in it (the foreign keys from jobs and
+  // attendance rows point at memberships). state_code is NOT NULL on tenants.
   const { error: ownerError } = await admin.from('users').insert({
     id: OWNER,
     country_code: '+91',
     phone_number: PHONES[0],
     name: 'QA Owner',
-    role: 'owner',
-    status: 'active',
   });
   expect(ownerError).toBeNull();
 
-  const { error: tenantError } = await admin
-    .from('tenants')
-    .insert({ id: TENANT, company_name: 'QA Photo Auto-Advance', owner_id: OWNER, state_code: 'KA' });
+  const { error: tenantError } = await admin.from('tenants').insert({
+    id: TENANT,
+    company_name: 'QA Photo Auto-Advance',
+    created_by: OWNER,
+    state_code: 'KA',
+  });
   expect(tenantError).toBeNull();
-
-  await admin.from('users').update({ tenant_id: TENANT }).eq('id', OWNER);
 
   const { error: techError } = await admin.from('users').insert({
     id: TECH,
     country_code: '+91',
     phone_number: PHONES[1],
     name: 'QA Tech',
-    role: 'technician',
-    status: 'active',
-    tenant_id: TENANT,
   });
   expect(techError).toBeNull();
+
+  const { error: memberError } = await admin.from('memberships').insert([
+    {
+      user_id: OWNER,
+      tenant_id: TENANT,
+      role: 'company_admin',
+      status: 'active',
+    },
+    { user_id: TECH, tenant_id: TENANT, role: 'employee', status: 'active' },
+  ]);
+  expect(memberError).toBeNull();
 
   const { error: customerError } = await admin.from('customers').insert({
     id: CUSTOMER,
@@ -205,15 +212,16 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!IS_REAL_DB) return;
   // FK-safe order: logs/notifications → attachments → uploads → jobs →
-  // customers → users → tenants.
+  // customers → memberships → tenants → users.
   await admin.from('activity_logs').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('notifications').delete().eq('tenant_id', TENANT);
   await admin.from('attachments').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('attachment_uploads').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('jobs').delete().in('id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('customers').delete().eq('id', CUSTOMER);
-  await admin.from('users').delete().in('id', [OWNER, TECH]);
+  await admin.from('memberships').delete().eq('tenant_id', TENANT);
   await admin.from('tenants').delete().eq('id', TENANT);
+  await admin.from('users').delete().in('id', [OWNER, TECH]);
 });
 
 describe('confirm_attachment photo auto-advance (real DB)', () => {

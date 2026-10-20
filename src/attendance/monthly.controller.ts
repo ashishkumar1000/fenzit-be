@@ -5,19 +5,18 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Role } from '../common/enums/role.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import {
   MeMonthlyQueryDto,
   MonthlyQueryDto,
 } from './dto/monthly-query.dto';
 import { MonthlyService } from './monthly';
+import { Can } from '../common/decorators/can.decorator';
 
 /**
  * 19-3's monthly routes (spec D6) over ONE aggregation. Each method
- * carries its own @Roles (RolesGuard getAllAndOverride). Range checks run
+ * carries its own @Can permission. Range checks run
  * BEFORE the service transaction (from/to format via the DTO; from ≤ to,
  * span ≤ 31, to ≤ tenant-today in the service → 422) — the span-cap DoS
  * lesson keeps the cap off the transaction pool.
@@ -29,7 +28,7 @@ export class MonthlyController {
   constructor(private readonly monthly: MonthlyService) {}
 
   @Get('monthly')
-  @Roles(Role.OWNER)
+  @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -58,7 +57,7 @@ export class MonthlyController {
   }
 
   @Get('me/monthly')
-  @Roles(Role.TECHNICIAN)
+  @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

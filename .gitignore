@@ -33,3 +33,6 @@ Cargo.lock
 
 # no lockfile by design — deps resolve at build time
 bun.lock
+
+# Supabase CLI local state (project link, CLI version)
+supabase/.temp/

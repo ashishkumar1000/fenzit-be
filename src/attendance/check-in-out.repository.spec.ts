@@ -54,7 +54,7 @@ describe('check-in/out repository SQL contracts (review patches)', () => {
     });
     await insertFakeLocationAlert(tx, {
       tenantId: 't1',
-      ownerId: 'o1',
+      recipientId: 'o1',
       employeeId: 'e1',
       employeeName: 'A',
       month: '2026-09',
@@ -88,7 +88,7 @@ describe('check-in/out repository SQL contracts (review patches)', () => {
     const tx = txRecording();
     await insertFakeLocationAlert(tx, {
       tenantId: 't1',
-      ownerId: 'o1',
+      recipientId: 'o1',
       employeeId: 'e1',
       employeeName: 'A',
       month: '2026-09',

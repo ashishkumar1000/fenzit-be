@@ -6,6 +6,14 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { JwtService } from '@nestjs/jwt';
+import { createHash } from 'crypto';
+import { Role } from '../src/common/enums/role.enum';
+import { MembershipResolver } from '../src/common/auth/membership-resolver';
+import {
+  accessToken,
+  fakeMembershipResolver,
+  FakePerson,
+} from './helpers/auth-test-utils';
 import { FASTIFY_ROUTER_OPTIONS } from '../src/common/fastify-adapter-options';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
@@ -27,18 +35,40 @@ describe('Places (e2e)', () => {
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-places-e2e';
-  const OWNER_ID = 'owner-uuid-places-e2e';
+  // The per-company rate limiter is keyed by the caller's company, so cases
+  // that must not share a request count each use their own company. A label
+  // maps to a stable company id and a company admin id; the people are
+  // registered when a token is minted, before any request is sent.
+  const DEFAULT_LABEL = 'default';
+  const TECH_ID = '22222222-2222-4222-8222-222222222222';
+  const TECH_TENANT_ID = '33333333-3333-4333-8333-333333333333';
+  const people = new Map<string, FakePerson>();
+  const uuidFor = (seed: string) => {
+    const h = createHash('sha1').update(seed).digest('hex');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  };
   const SESSION_TOKEN = 'a1b2c3d4-0000-4000-8000-000000000001';
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
+
+    people.set(TECH_ID, {
+      userId: TECH_ID,
+      tenantId: TECH_TENANT_ID,
+      role: Role.EMPLOYEE,
+    });
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(SupabaseClientFactory)
       .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
+      .overrideProvider(MembershipResolver)
+      .useValue({
+        resolve: (userId: string) =>
+          fakeMembershipResolver([...people.values()]).resolve(userId),
+        companyExists: () => Promise.resolve(true),
+      })
       .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -58,20 +88,23 @@ describe('Places (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(tenantId: string | null = TENANT_ID) {
-    return jwtService.sign({ sub: OWNER_ID, tenantId, role: 'owner' });
+  /** A company admin of the company named by `label`. */
+  function ownerJwt(label: string = DEFAULT_LABEL) {
+    const userId = uuidFor(`admin:${label}`);
+    people.set(userId, {
+      userId,
+      tenantId: uuidFor(`company:${label}`),
+      role: Role.COMPANY_ADMIN,
+    });
+    return accessToken(jwtService, userId);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: 'tech-uuid',
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   describe('GET /api/v1/places/autosuggest', () => {
-    it('should return 200 with fixture suggestions for a valid Owner JWT (happy path, bound MockPlacesProvider)', async () => {
+    it('should return 200 with fixture suggestions for a valid company admin token (happy path, bound MockPlacesProvider)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/autosuggest?q=${encodeURIComponent('andheri w')}&sessionToken=${SESSION_TOKEN}`,
@@ -99,7 +132,7 @@ describe('Places (e2e)', () => {
       expect(JSON.parse(response.body)).toEqual({ suggestions: [] });
     });
 
-    it('should return 403 for Technician JWT', async () => {
+    it('should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/autosuggest?q=andheri&sessionToken=${SESSION_TOKEN}`,
@@ -191,7 +224,7 @@ describe('Places (e2e)', () => {
     // own tenant so it doesn't inherit request counts from the other cases
     // above (mirrors test/auth.integration.spec.ts's OTP rate-limit test).
     it('should return 429 RATE_LIMITED once the real per-tenant rate limiter is exceeded', async () => {
-      const rateLimitJwt = ownerJwt('tenant-uuid-places-e2e-ratelimit');
+      const rateLimitJwt = ownerJwt('ratelimit');
 
       for (let i = 0; i < RATE_LIMIT_MAX; i++) {
         const response = await app.inject({
@@ -223,12 +256,12 @@ describe('Places (e2e)', () => {
     const KNOWN_PLACE_ID = 'mock-place-andheri-west-1';
     const NULLABLE_PLACE_ID = 'mock-place-koramangala-sublocality-1';
 
-    it('should return 200 with the resolved fixture for a valid Owner JWT (happy path, bound MockPlacesProvider)', async () => {
+    it('should return 200 with the resolved fixture for a valid company admin token (happy path, bound MockPlacesProvider)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-1')}`,
+          authorization: `Bearer ${ownerJwt('resolve-1')}`,
         },
       });
 
@@ -249,7 +282,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/${NULLABLE_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-2')}`,
+          authorization: `Bearer ${ownerJwt('resolve-2')}`,
         },
       });
 
@@ -261,7 +294,7 @@ describe('Places (e2e)', () => {
       expect(typeof body.longitude).toBe('number');
     });
 
-    it('should return 403 for Technician JWT', async () => {
+    it('should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
@@ -286,7 +319,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422')}`,
+          authorization: `Bearer ${ownerJwt('resolve-422')}`,
         },
       });
 
@@ -298,7 +331,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/${KNOWN_PLACE_ID}?sessionToken=${encodeURIComponent('   ')}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422b')}`,
+          authorization: `Bearer ${ownerJwt('resolve-422b')}`,
         },
       });
 
@@ -313,7 +346,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/short-id?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422c')}`,
+          authorization: `Bearer ${ownerJwt('resolve-422c')}`,
         },
       });
 
@@ -325,7 +358,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/mock-place-inv!alid?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422d')}`,
+          authorization: `Bearer ${ownerJwt('resolve-422d')}`,
         },
       });
 
@@ -340,7 +373,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/${'a'.repeat(256)}?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-422e')}`,
+          authorization: `Bearer ${ownerJwt('resolve-422e')}`,
         },
       });
 
@@ -352,7 +385,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/${SIMULATE_RESOLVE_ERROR_PLACE_ID}?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-502')}`,
+          authorization: `Bearer ${ownerJwt('resolve-502')}`,
         },
       });
 
@@ -367,7 +400,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/resolve/mock-place-does-not-exist?sessionToken=${SESSION_TOKEN}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-resolve-unknown')}`,
+          authorization: `Bearer ${ownerJwt('resolve-unknown')}`,
         },
       });
 
@@ -381,7 +414,7 @@ describe('Places (e2e)', () => {
     // CACHE_MANAGER, not a mock) to its resolve-specific limit — independent
     // budget from autosuggest's (own tenant, own key suffix).
     it('should return 429 RATE_LIMITED once the real per-tenant resolve rate limiter is exceeded', async () => {
-      const rateLimitJwt = ownerJwt('tenant-uuid-places-e2e-resolve-ratelimit');
+      const rateLimitJwt = ownerJwt('resolve-ratelimit');
 
       for (let i = 0; i < RESOLVE_RATE_LIMIT_MAX; i++) {
         const response = await app.inject({
@@ -412,12 +445,12 @@ describe('Places (e2e)', () => {
     const FIXTURE_QUERY = 'lat=19.1364&lng=72.8296';
     const OPEN_WATER_QUERY = 'lat=28.6139&lng=77.2090';
 
-    it('should return 200 with the reverse-geocoded fixture for a valid Owner JWT (happy path, bound MockPlacesProvider)', async () => {
+    it('should return 200 with the reverse-geocoded fixture for a valid company admin token (happy path, bound MockPlacesProvider)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-1')}`,
+          authorization: `Bearer ${ownerJwt('reverse-1')}`,
         },
       });
 
@@ -434,7 +467,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/reverse?${OPEN_WATER_QUERY}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-2')}`,
+          authorization: `Bearer ${ownerJwt('reverse-2')}`,
         },
       });
 
@@ -446,7 +479,7 @@ describe('Places (e2e)', () => {
       });
     });
 
-    it('should return 403 for Technician JWT', async () => {
+    it('should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/places/reverse?${FIXTURE_QUERY}`,
@@ -471,7 +504,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: '/api/v1/places/reverse?lat=90.1&lng=72.8296',
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422')}`,
+          authorization: `Bearer ${ownerJwt('reverse-422')}`,
         },
       });
 
@@ -486,7 +519,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: '/api/v1/places/reverse?lat=&lng=',
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422b')}`,
+          authorization: `Bearer ${ownerJwt('reverse-422b')}`,
         },
       });
 
@@ -498,7 +531,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: '/api/v1/places/reverse?lng=72.8296',
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-422c')}`,
+          authorization: `Bearer ${ownerJwt('reverse-422c')}`,
         },
       });
 
@@ -512,7 +545,7 @@ describe('Places (e2e)', () => {
         method: 'GET',
         url: `/api/v1/places/reverse?lat=${SIMULATE_REVERSE_ERROR_POINT.latitude}&lng=${SIMULATE_REVERSE_ERROR_POINT.longitude}`,
         headers: {
-          authorization: `Bearer ${ownerJwt('tenant-uuid-places-e2e-reverse-502')}`,
+          authorization: `Bearer ${ownerJwt('reverse-502')}`,
         },
       });
 
@@ -526,7 +559,7 @@ describe('Places (e2e)', () => {
     // limit — independent budget from autosuggest's/resolve's (own tenant,
     // own key suffix).
     it('should return 429 RATE_LIMITED once the real per-tenant reverse rate limiter is exceeded', async () => {
-      const rateLimitJwt = ownerJwt('tenant-uuid-places-e2e-reverse-ratelimit');
+      const rateLimitJwt = ownerJwt('reverse-ratelimit');
 
       for (let i = 0; i < REVERSE_RATE_LIMIT_MAX; i++) {
         const response = await app.inject({

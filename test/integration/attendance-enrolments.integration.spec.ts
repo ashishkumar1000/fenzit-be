@@ -114,20 +114,28 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
     // a silently failed fixture insert poisons the whole journey.
     const { data: stale } = await admin
       .from('users')
-      .select('id, tenant_id')
+      .select('id')
       .in('phone_number', PROBE_PHONES);
     if (stale && stale.length > 0) {
+      const { data: staleMemberships } = await admin
+        .from('memberships')
+        .select('tenant_id')
+        .in('user_id', stale.map((s) => s.id));
       const staleTenants = [
-        ...new Set(stale.map((s) => s.tenant_id).filter(Boolean)),
+        ...new Set((staleMemberships ?? []).map((m) => m.tenant_id)),
       ] as string[];
       for (const t of staleTenants) {
         await admin.from('notifications').delete().eq('tenant_id', t);
         await admin.from('holidays').delete().eq('tenant_id', t);
-        await admin.from('attendance_enrolments').delete().eq('tenant_id', t);
-        await admin
-          .from('attendance_office_assignments')
-          .delete()
-          .eq('tenant_id', t);
+        // Enrolments + assignments go in ONE statement (the coverage trigger
+        // fires per statement); the company delete no longer cascades them.
+        await pool.query(
+          `with gone as (
+             delete from public.attendance_enrolments where tenant_id = $1 returning 1
+           )
+           delete from public.attendance_office_assignments where tenant_id = $1`,
+          [t],
+        );
         await admin.from('attendance_onboarding').delete().eq('tenant_id', t);
         await admin
           .from('attendance_setup_progress')
@@ -136,6 +144,7 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
         await admin.from('attendance_settings').delete().eq('tenant_id', t);
         await admin.from('attendance_office_rules').delete().eq('tenant_id', t);
         await admin.from('attendance_offices').delete().eq('tenant_id', t);
+        await admin.from('memberships').delete().eq('tenant_id', t);
         await admin.from('tenants').delete().eq('id', t);
       }
       await admin
@@ -154,56 +163,53 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
       return res.data as T;
     };
 
-    // Fixtures: owner (tenant-less first — tenants.owner_id references it),
-    // tenant, two technicians, two live offices.
-    must(
-      await admin.from('users').insert({
-        id: OWNER,
-        role: 'owner',
-        status: 'active',
-        country_code: '+91',
-        phone_number: PROBE_PHONES[0],
-        name: '15-7 probe owner',
-      }),
-    );
-    must(
-      await admin.from('tenants').insert({
-        id: TENANT,
-        owner_id: OWNER,
-        company_name: '15-7 journey probe',
-        state_code: 'KA',
-      }),
-    );
-    await admin.from('users').update({ tenant_id: TENANT }).eq('id', OWNER);
+    // Fixtures: identity rows first, then the company (created_by = owner),
+    // then the memberships; two technicians, two live offices.
     must(
       await admin.from('users').insert([
         {
+          id: OWNER,
+          country_code: '+91',
+          phone_number: PROBE_PHONES[0],
+          name: '15-7 probe owner',
+        },
+        {
           id: TECH_ACTIVE,
-          tenant_id: TENANT,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PROBE_PHONES[1],
           name: '15-7 probe tech (active)',
         },
         {
           id: TECH_UPCOMING,
-          tenant_id: TENANT,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PROBE_PHONES[2],
           name: '15-7 probe tech (upcoming)',
         },
         {
           id: TECH_PAST,
-          tenant_id: TENANT,
-          role: 'technician',
-          status: 'active',
           country_code: '+91',
           phone_number: PROBE_PHONES[3],
           name: '15-9 probe tech (backdated)',
         },
+      ]),
+    );
+    must(
+      await admin.from('tenants').insert({
+        id: TENANT,
+        created_by: OWNER,
+        company_name: '15-7 journey probe',
+        state_code: 'KA',
+      }),
+    );
+    must(
+      await admin.from('memberships').insert([
+        { user_id: OWNER, tenant_id: TENANT, role: 'company_admin', status: 'active' },
+        ...[TECH_ACTIVE, TECH_UPCOMING, TECH_PAST].map((user_id) => ({
+          user_id,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+        })),
       ]),
     );
     must(
@@ -247,11 +253,15 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
     // Cleanup in FK-safe order; the tenant cascade takes the rest.
     await admin.from('notifications').delete().eq('tenant_id', TENANT);
     await admin.from('holidays').delete().eq('tenant_id', TENANT);
-    await admin.from('attendance_enrolments').delete().eq('tenant_id', TENANT);
-    await admin
-      .from('attendance_office_assignments')
-      .delete()
-      .eq('tenant_id', TENANT);
+    // Enrolments + assignments go in ONE statement (the coverage trigger
+    // fires per statement); the company delete no longer cascades them.
+    await pool.query(
+      `with gone as (
+         delete from public.attendance_enrolments where tenant_id = $1 returning 1
+       )
+       delete from public.attendance_office_assignments where tenant_id = $1`,
+      [TENANT],
+    );
     await admin.from('attendance_onboarding').delete().eq('tenant_id', TENANT);
     await admin
       .from('attendance_setup_progress')
@@ -265,11 +275,12 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
       .delete()
       .eq('tenant_id', TENANT);
     await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
+    await admin.from('memberships').delete().eq('tenant_id', TENANT);
+    await admin.from('tenants').delete().eq('id', TENANT);
     await admin
       .from('users')
       .delete()
       .in('id', [OWNER, TECH_ACTIVE, TECH_UPCOMING, TECH_PAST]);
-    await admin.from('tenants').delete().eq('id', TENANT);
     await pool.end();
   });
 

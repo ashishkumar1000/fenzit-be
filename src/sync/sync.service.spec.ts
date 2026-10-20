@@ -1,3 +1,4 @@
+import { JwtService } from '@nestjs/jwt';
 import { SyncService } from './sync.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { Role } from '../common/enums/role.enum';
@@ -69,7 +70,8 @@ describe('SyncService', () => {
   const user: RequestUser = {
     userId: 'tech-1',
     tenantId: 'tenant-1',
-    role: Role.TECHNICIAN,
+    role: Role.EMPLOYEE,
+    platformAdmin: false,
     rawJwt: 'raw-jwt',
   };
 
@@ -84,10 +86,12 @@ describe('SyncService', () => {
 
   function mockFactory(chain: any) {
     const create = jest.fn().mockReturnValue({ from: () => chain });
-    const service = new SyncService({
-      create,
-    } as unknown as SupabaseClientFactory);
-    return { service, create };
+    const signAsync = jest.fn().mockResolvedValue('minted-db-jwt');
+    const service = new SyncService(
+      { create } as unknown as SupabaseClientFactory,
+      { signAsync } as unknown as JwtService,
+    );
+    return { service, create, signAsync };
   }
 
   it('maps current_step, customer and attachment fields onto the sync payload', async () => {
@@ -199,12 +203,47 @@ describe('SyncService', () => {
 
     await service.sync(user, '2026-06-21T09:00:00Z');
 
-    expect(create).toHaveBeenCalledWith('raw-jwt');
+    // The database client is built with the freshly minted token, never the
+    // login token (which carries no database role).
+    expect(create).toHaveBeenCalledWith('minted-db-jwt');
+    expect(create).not.toHaveBeenCalledWith('raw-jwt');
     expect(chain.eq).toHaveBeenCalledWith('tenant_id', 'tenant-1');
     expect(chain.eq).toHaveBeenCalledWith('technician_id', 'tech-1');
     expect(chain.gt).toHaveBeenCalledWith('updated_at', '2026-06-21T09:00:00Z');
     // Terminal operator + page cap — the await must resolve at .limit(500).
     expect(chain.limit).toHaveBeenCalledWith(500);
+  });
+
+  it('mints a one-minute authenticated-role token for the caller (sub only, no tenant or role claims)', async () => {
+    const chain = buildChain([]);
+    const { service, signAsync } = mockFactory(chain);
+
+    const before = Math.floor(Date.now() / 1000);
+    await service.sync(user);
+    const after = Math.floor(Date.now() / 1000);
+
+    expect(signAsync).toHaveBeenCalledTimes(1);
+    const [claims, options] = signAsync.mock.calls[0] as [
+      { sub: string; role: string; exp: number },
+      unknown,
+    ];
+    expect(claims.sub).toBe('tech-1');
+    expect(claims.role).toBe('authenticated');
+    expect(claims.exp).toBeGreaterThanOrEqual(before + 60);
+    expect(claims.exp).toBeLessThanOrEqual(after + 60);
+    expect(Object.keys(claims).sort()).toEqual(['exp', 'role', 'sub']);
+    // The payload carries its own exp: jsonwebtoken throws if expiresIn is
+    // passed as well.
+    expect(options).toBeUndefined();
+  });
+
+  it('does not query when the token cannot be minted', async () => {
+    const chain = buildChain([]);
+    const { service, create, signAsync } = mockFactory(chain);
+    signAsync.mockRejectedValueOnce(new Error('no secret'));
+
+    await expect(service.sync(user)).rejects.toThrow('no secret');
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('selects the shared JOB_COLUMNS plus the sync-only relation embeds (Story 4.5)', async () => {

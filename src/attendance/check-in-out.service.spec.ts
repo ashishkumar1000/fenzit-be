@@ -16,7 +16,8 @@ import { CheckInOutDto } from './dto/check-in-out.dto';
 const tech: RequestUser = {
   userId: '11111111-1111-4111-8111-111111111111',
   tenantId: '22222222-2222-4222-8222-222222222222',
-  role: Role.TECHNICIAN,
+  role: Role.EMPLOYEE,
+  platformAdmin: false,
   rawJwt: 'mock-jwt',
 };
 
@@ -103,9 +104,12 @@ function happyRouter(
     if (sql.includes('attendance_lock')) return { rows: [], rowCount: 0 };
     if (sql.includes('select now() as now'))
       return { rows: [{ now: new Date() }], rowCount: 1 };
-    // Must precede the timezone read — both query public.tenants.
-    if (sql.includes('select owner_id from public.tenants'))
-      return { rows: [{ owner_id: 'owner-1' }], rowCount: 1 };
+    // Every active company admin is an alert recipient (decision 36).
+    if (sql.includes("m.role = 'company_admin'"))
+      return {
+        rows: [{ user_id: 'admin-1' }, { user_id: 'admin-2' }],
+        rowCount: 2,
+      };
     if (sql.includes('attendance_today'))
       return { rows: [{ today: '2026-09-28' }], rowCount: 1 };
     if (sql.includes('request_id = $3'))
@@ -146,7 +150,7 @@ function happyRouter(
         rowCount: overrides.leave ? 1 : 0,
       };
     // FR-9 auto-cancel payload reads (spec-17 D11).
-    if (sql.includes('select name from public.users'))
+    if (sql.includes('select u.name'))
       return { rows: [{ name: 'Arya' }], rowCount: 1 };
     if (sql.includes('insert into public.leave_request_days'))
       return { rows: [], rowCount: 1 };
@@ -165,7 +169,7 @@ function happyRouter(
     if (sql.includes('outcome = any'))
       return { rows: [{ n: '0' }], rowCount: 1 };
     if (sql.includes("outcome = 'mocked'")) return MOCKED_COUNT_DEFAULT;
-    if (sql.includes('select id, name from public.users'))
+    if (sql.includes('select u.id, u.name'))
       return { rows: [{ id: tech.userId, name: 'Arya' }], rowCount: 1 };
     if (sql.includes('checkin_attempt_id = $1'))
       return {
@@ -434,7 +438,7 @@ describe('CheckInOutService — check-in (16-1)', () => {
     );
   });
 
-  it('mocked is recorded and the 3rd of the month alerts the owner (AD-13/D5)', async () => {
+  it('mocked is recorded and the 3rd of the month alerts every company admin (AD-13/D5)', async () => {
     const tx = fakeTx(
       routerWith({
         "outcome = 'mocked'": {
@@ -451,29 +455,36 @@ describe('CheckInOutService — check-in (16-1)', () => {
     expect(err.getStatus()).toBe(422);
     expect(attemptOutcomeOf(tx)).toBe('mocked');
 
-    const alert = tx.queries.find((q) =>
+    // One alert row per admin — both admins are told, none twice.
+    const alerts = tx.queries.filter((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(alert).toBeDefined();
-    // The event type and entity type are registry-bound parameters now.
-    const params = alert?.params ?? [];
-    expect(params).toEqual(
-      expect.arrayContaining([
-        'attendance.fake_location',
-        'attendance',
-        'owner-1',
-        'Arya',
-        expect.any(String), // month
-        3,
-      ]),
-    );
-    const dedupeKey = params.find(
-      (p): p is string =>
-        typeof p === 'string' && p.includes(':attendance.fake_location:'),
-    );
-    expect(dedupeKey).toMatch(
-      /^22222222-2222-4222-8222-222222222222:attendance\.fake_location:owner-1:11111111-1111-4111-8111-111111111111:\d{4}-\d{2}$/,
-    );
+    expect(alerts).toHaveLength(2);
+    for (const adminId of ['admin-1', 'admin-2']) {
+      const alert = alerts.find((q) => q.params?.includes(adminId));
+      expect(alert).toBeDefined();
+      // The event type and entity type are registry-bound parameters now.
+      const params = alert?.params ?? [];
+      expect(params).toEqual(
+        expect.arrayContaining([
+          'attendance.fake_location',
+          'attendance',
+          adminId,
+          'Arya',
+          expect.any(String), // month
+          3,
+        ]),
+      );
+      const dedupeKey = params.find(
+        (p): p is string =>
+          typeof p === 'string' && p.includes(':attendance.fake_location:'),
+      );
+      expect(dedupeKey).toMatch(
+        new RegExp(
+          `^22222222-2222-4222-8222-222222222222:attendance\\.fake_location:${adminId}:11111111-1111-4111-8111-111111111111:\\d{4}-\\d{2}$`,
+        ),
+      );
+    }
   });
 
   it('mocked 2nd of the month alerts nobody', async () => {
@@ -703,14 +714,20 @@ describe('CheckInOutService — check-in × leave (17-4, FR-9)', () => {
       q.sql.includes('insert into public.leave_events'),
     );
     expect(event?.params?.[3]).toBe('checkin_auto_cancel');
-    const notification = tx.queries.find((q) =>
+    const notifications = tx.queries.filter((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(notification?.params?.[1]).toBe('owner-1'); // the owner is notified
-    expect(JSON.parse(notification?.params?.[3] as string)).toEqual({
-      employeeName: 'Arya',
-      leaveDate: '2026-09-28',
-    });
+    // Every company admin is notified, one row each.
+    expect(notifications.map((n) => n.params?.[1])).toEqual([
+      'admin-1',
+      'admin-2',
+    ]);
+    for (const notification of notifications) {
+      expect(JSON.parse(notification.params?.[3] as string)).toEqual({
+        employeeName: 'Arya',
+        leaveDate: '2026-09-28',
+      });
+    }
   });
 
   it('a too_far fix with confirm stays 422 and leaves the leave untouched', async () => {

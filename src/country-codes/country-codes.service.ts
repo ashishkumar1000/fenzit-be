@@ -1,3 +1,4 @@
+import { ErrorCode } from '../common/enums/error-code.enum';
 import {
   Injectable,
   InternalServerErrorException,
@@ -35,7 +36,7 @@ export class CountryCodesService {
       this.logger.error(
         `Failed to list country codes (code=${error.code ?? 'none'})`,
       );
-      throw new InternalServerErrorException('Failed to load country codes');
+      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to load country codes' });
     }
 
     const rows = (data ?? []) as CountryCodeRow[];

@@ -71,7 +71,7 @@ describe('weekly-off routes: non-IST tenants (real DB)', () => {
     app.inject({
       method: 'PUT',
       url: '/api/v1/attendance/weekly-offs',
-      headers: bearerFor(jwt, c, c.owner, 'owner'),
+      headers: bearerFor(jwt, c, c.owner),
       payload,
     });
   const view = async (c: Crew) =>
@@ -80,7 +80,7 @@ describe('weekly-off routes: non-IST tenants (real DB)', () => {
         await app.inject({
           method: 'GET',
           url: '/api/v1/attendance/weekly-offs',
-          headers: bearerFor(jwt, c, c.owner, 'owner'),
+          headers: bearerFor(jwt, c, c.owner),
         })
       ).body,
     ) as {

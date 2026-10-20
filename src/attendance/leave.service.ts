@@ -5,6 +5,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import { dbNow } from './check-in-out.repository';
+import { readCompanyAdminIds } from './company-admins';
 import { lockTenantShared, tenantToday } from './enrolments.repository';
 import { buildDayContext } from './day-context.read';
 import { isoWeekdayOf } from '../common/day-status/day-context';
@@ -35,7 +36,6 @@ import {
   employeeExistsInTenant,
   readEnrolmentFloor,
   readEmployeeName,
-  readOwnerId,
   readSettingsGate,
   readSpanFacts,
 } from './leave.repository';
@@ -294,7 +294,7 @@ export class LeaveService {
     );
     const notification = input.onBehalf
       ? {
-          recipientId: input.employeeId,
+          recipientIds: [input.employeeId],
           payload: {
             startDate: request.start_date,
             endDate: request.end_date,
@@ -503,10 +503,10 @@ export class LeaveService {
     request: { employee_id: string; start_date: string; end_date: string },
     actionDates: string[],
     reason: string | null,
-  ): Promise<{ recipientId: string; payload: Record<string, unknown> }> {
+  ): Promise<{ recipientIds: string[]; payload: Record<string, unknown> }> {
     if (cause === 'owner_revoke') {
       return {
-        recipientId: request.employee_id,
+        recipientIds: [request.employee_id],
         payload: {
           startDate: request.start_date,
           endDate: request.end_date,
@@ -517,7 +517,7 @@ export class LeaveService {
     }
     if (cause === 'reject') {
       return {
-        recipientId: request.employee_id,
+        recipientIds: [request.employee_id],
         payload: {
           startDate: request.start_date,
           endDate: request.end_date,
@@ -535,7 +535,7 @@ export class LeaveService {
       },
     );
     return {
-      recipientId: request.employee_id,
+      recipientIds: [request.employee_id],
       payload: {
         startDate: request.start_date,
         endDate: request.end_date,
@@ -616,18 +616,18 @@ export class LeaveService {
     );
   }
 
-  /** Owner-facing notification bundle (recipient = tenants.owner_id). */
+  /** Admin-facing notification bundle (recipients = every active company admin). */
   private async ownerNotification(
     tx: PoolClient,
     tenantId: string,
     input: { payload: Record<string, unknown> },
-  ): Promise<{ recipientId: string; payload: Record<string, unknown> }> {
-    const ownerId = await readOwnerId(tx, tenantId);
-    if (!ownerId) {
-      this.logger.error('Leave notification: tenant has no owner', {
+  ): Promise<{ recipientIds: string[]; payload: Record<string, unknown> }> {
+    const adminIds = await readCompanyAdminIds(tx, tenantId);
+    if (adminIds.length === 0) {
+      this.logger.error('Leave notification: company has no active admin', {
         tenantId,
       });
     }
-    return { recipientId: ownerId ?? '', payload: input.payload };
+    return { recipientIds: adminIds, payload: input.payload };
   }
 }

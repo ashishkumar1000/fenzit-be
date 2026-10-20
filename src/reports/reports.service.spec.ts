@@ -12,6 +12,10 @@ import { ReportRegistry } from './registry/report-registry';
 import { ConfigService } from '@nestjs/config';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
+import {
+  memberRow,
+  membersTable,
+} from '../../test/helpers/member-rows-stub';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ReportRequestStatus } from './enums/report-status.enum';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
@@ -83,7 +87,8 @@ describe('ReportsService — retryReport (story 12-7)', () => {
   const ownerUser: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -341,7 +346,8 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
   const ownerUser: RequestUser = {
     userId: 'owner-uuid',
     tenantId: TENANT,
-    role: Role.OWNER,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
     rawJwt: 'mock-jwt',
   };
 
@@ -400,12 +406,16 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
     return { select: jest.fn().mockReturnValue({ eq }) };
   }
 
+  /**
+   * The company-member reader (memberships joined to users). `data` is the
+   * list of matching employee ids, mapped to membership rows.
+   */
   function usersChain(result: { data: unknown; error: unknown }) {
-    const inFn = jest.fn().mockResolvedValue(result);
-    const roleEq = jest.fn().mockReturnValue({ in: inFn });
-    const tenantEq = jest.fn().mockReturnValue({ eq: roleEq });
-    const select = jest.fn().mockReturnValue({ eq: tenantEq });
-    return { select, tenantEq, roleEq, in: inFn };
+    const ids = result.data as Array<{ id: string }> | null;
+    return membersTable({
+      data: ids ? ids.map((r) => memberRow(r.id)) : null,
+      error: result.error,
+    });
   }
 
   /**
@@ -477,7 +487,8 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
   describe('createReport', () => {
     /**
-     * `from` dispatches on table + first chained method. `users` is
+     * `from` dispatches on table + first chained method. `users` (the
+     * company-member read) is
      * opt-in (null by default): a test that passes technicianIds but
      * forgets the users result fails loudly instead of silently hitting
      * an empty membership set.
@@ -498,8 +509,8 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       const enrolmentsQb = opts.enrolments ? inChain(opts.enrolments) : null;
       const officesQb = opts.offices ? inChain(opts.offices) : null;
       const from = jest.fn((table: string) => {
-        if (table === 'users') {
-          if (!usersQb) throw new Error('unexpected users query');
+        if (table === 'memberships') {
+          if (!usersQb) throw new Error('unexpected memberships query');
           return { select: usersQb.select };
         }
         if (table === 'attendance_settings') {
@@ -670,14 +681,24 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
         ],
       });
 
-      expect(from).toHaveBeenCalledWith('users');
-      expect(usersQb.select).toHaveBeenCalledWith('id');
-      expect(usersQb.tenantEq).toHaveBeenCalledWith('tenant_id', TENANT);
-      expect(usersQb.roleEq).toHaveBeenCalledWith('role', Role.TECHNICIAN);
-      expect(usersQb.in).toHaveBeenCalledWith('id', [
-        '00000000-0000-4000-8000-0000000000a2',
-        '00000000-0000-4000-8000-0000000000a1',
-      ]);
+      expect(from).toHaveBeenCalledWith('memberships');
+      // Scoped to this company and to employees; history is kept (a report
+      // may cover a removed employee's past work, so no removed-exclusion).
+      expect(usersQb!.filters).toEqual(
+        expect.arrayContaining([
+          ['eq', 'tenant_id', TENANT],
+          ['eq', 'role', Role.EMPLOYEE],
+          [
+            'in',
+            'user_id',
+            [
+              '00000000-0000-4000-8000-0000000000a2',
+              '00000000-0000-4000-8000-0000000000a1',
+            ],
+          ],
+        ]),
+      );
+      expect(usersQb!.filters).not.toContainEqual(['neq', 'status', 'removed']);
       expect(insertQb.insert).toHaveBeenCalledWith(
         expect.objectContaining({
           params: expect.objectContaining({
@@ -840,7 +861,7 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       );
     });
 
-    it('maps a users-table query error to 500 INTERNAL_SERVER_ERROR', async () => {
+    it('maps a member-read query error to 500 INTERNAL_SERVER_ERROR', async () => {
       mockCreateAdmin({
         users: { data: null, error: { code: 'XX000', message: 'conn' } },
       });

@@ -10,6 +10,7 @@ import { VALIDATION_PIPE_OPTIONS } from '../../src/common/validation-pipe-option
 import { FASTIFY_ROUTER_OPTIONS } from '../../src/common/fastify-adapter-options';
 import { allowBodilessDelete } from '../../src/common/allow-bodiless-delete';
 import { Crew } from './weekly-off-fixture';
+import { accessToken } from './auth-test-utils';
 
 /** The real AppModule with the production pipe, prefix and DELETE parser. */
 export async function bootApp(): Promise<{
@@ -30,12 +31,10 @@ export async function bootApp(): Promise<{
   return { app, jwt: mod.get(JwtService) };
 }
 
-/** Authorization header for a user of a crew's tenant. */
-export const bearerFor = (
-  jwt: JwtService,
-  c: Crew,
-  userId: string,
-  role: 'owner' | 'technician',
-) => ({
-  authorization: `Bearer ${jwt.sign({ sub: userId, tenantId: c.tenant, role })}`,
+/**
+ * Authorization header for a user of a crew's tenant. The login token is
+ * identity only; company and role come from the user's membership row.
+ */
+export const bearerFor = (jwt: JwtService, _c: Crew, userId: string) => ({
+  authorization: `Bearer ${accessToken(jwt, userId)}`,
 });

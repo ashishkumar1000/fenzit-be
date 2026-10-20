@@ -3,8 +3,8 @@
  *
  * The service branch logic is fully unit-covered (`users.service.spec.ts`);
  * this spec pins what those tests cannot see: the Fastify route registration,
- * JWT auth, the roles guard, the global validation pipe (the 422 contract),
- * and the owner/technician profile contracts over the wire — including the
+ * JWT auth, the permissions guard, the global validation pipe (the 422 contract),
+ * and the company admin / employee profile contracts over the wire — including the
  * additive `customerCount` field that arrived with the Home count-lines
  * change (2026-09-20; fenzit-be commit 88e08aa).
  *
@@ -25,23 +25,28 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 
 describe('Users (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
 
-  const TENANT_ID = 'tenant-uuid-users-e2e';
-  const OWNER_ID = 'owner-uuid-users-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
+  const OWNER_ID = '11111111-1111-4111-8111-111111111111';
+  const TECH_ID = '22222222-2222-4222-8222-222222222222';
+  // A signed-in person who has not set up a company yet.
+  const NEW_ID = '44444444-4444-4444-8444-444444444444';
 
   const ownerRow = {
     id: OWNER_ID,
     name: 'Kumar Selvan',
     country_code: '+91',
     phone_number: '9000000000',
-    role: 'owner',
-    status: 'active',
-    tenant_id: TENANT_ID,
   };
+
+  // The employee code and status now live on the membership, not the user.
+  const membershipRow = { employee_code: 'EMP-001', status: 'active' };
 
   const tenantRow = {
     id: TENANT_ID,
@@ -89,6 +94,10 @@ describe('Users (e2e)', () => {
       ]) {
         builder[method] = jest.fn().mockReturnValue(builder);
       }
+      builder.maybeSingle = jest.fn().mockImplementation(async () => ({
+        data: table === 'memberships' ? membershipRow : null,
+        error: null,
+      }));
       builder.single = jest.fn().mockImplementation(async () => {
         if (table === 'users') return { data: ownUserRow, error: null };
         if (table === 'tenants') return { data: tenantRow, error: null };
@@ -103,12 +112,21 @@ describe('Users (e2e)', () => {
       return builder;
     });
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: jest.fn(() => ({ from: mockFrom })) })
-      .compile();
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({
+          create: jest.fn(),
+          createAdmin: jest.fn(() => ({ from: mockFrom })),
+        }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: NEW_ID, tenantId: null, role: null },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -127,27 +145,102 @@ describe('Users (e2e)', () => {
     await app.close();
   });
 
-  function jwt(role: 'owner' | 'technician', tenantId: string | null) {
-    return jwtService.sign({
-      sub: role === 'owner' ? OWNER_ID : 'tech-uuid-users-e2e',
-      tenantId,
-      role,
-    });
+  function jwt(who: 'owner' | 'technician' | 'new') {
+    const ids = { owner: OWNER_ID, technician: TECH_ID, new: NEW_ID };
+    return accessToken(jwtService, ids[who]);
   }
 
+  describe('GET /api/v1/users/me/access', () => {
+    const getAccess = (who: 'owner' | 'technician' | 'new') =>
+      app.inject({
+        method: 'GET',
+        url: '/api/v1/users/me/access',
+        headers: { authorization: `Bearer ${jwt(who)}` },
+      });
+
+    it('owner — 200 with role, company id and platform-admin flag only', async () => {
+      ownUserRow = ownerRow;
+
+      const response = await getAccess('owner');
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({
+        role: 'company_admin',
+        tenant: { id: TENANT_ID },
+        platformAdmin: false,
+      });
+    });
+
+    it('agrees with GET /users/me on role and company for the same person', async () => {
+      ownUserRow = ownerRow;
+
+      const [access, profile] = await Promise.all([
+        getAccess('owner'),
+        app.inject({
+          method: 'GET',
+          url: '/api/v1/users/me',
+          headers: { authorization: `Bearer ${jwt('owner')}` },
+        }),
+      ]);
+
+      const a = JSON.parse(access.body);
+      const p = JSON.parse(profile.body);
+      expect(a.role).toBe(p.role);
+      expect(a.tenant.id).toBe(p.tenant.id);
+      expect(a.platformAdmin).toBe(p.platformAdmin);
+    });
+
+    it('employee — 200 with the employee role and the same company', async () => {
+      ownUserRow = { ...ownerRow, id: TECH_ID };
+
+      const response = await getAccess('technician');
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        role: 'employee',
+        tenant: { id: TENANT_ID },
+        platformAdmin: false,
+      });
+    });
+
+    it('person with no company — 200 with null role and null tenant, never a company id', async () => {
+      ownUserRow = { ...ownerRow, id: NEW_ID };
+
+      const response = await getAccess('new');
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        role: null,
+        tenant: null,
+        platformAdmin: false,
+      });
+    });
+
+    it('returns 401 without a JWT', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/users/me/access',
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+  });
+
   describe('GET /api/v1/users/me', () => {
-    it('owner — 200 with the full profile contract, customerCount included', async () => {
+    it('company admin — 200 with the full profile contract, customerCount included', async () => {
       ownUserRow = ownerRow;
 
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/users/me',
-        headers: { authorization: `Bearer ${jwt('owner', TENANT_ID)}` },
+        headers: { authorization: `Bearer ${jwt('owner')}` },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.role).toBe('owner');
+      expect(body.role).toBe('company_admin');
+      expect(body.platformAdmin).toBe(false);
       expect(body.tenant.companyName).toBe('Fenzit Services');
       // The additive field this spec exists to pin over the wire: an exact
       // tenant-wide total, present as a number even when it is zero.
@@ -184,18 +277,18 @@ describe('Users (e2e)', () => {
       });
     });
 
-    it('technician — 200 with the role-specific shape (skills, no customers)', async () => {
-      ownUserRow = { ...ownerRow, id: 'tech-uuid-users-e2e', role: 'technician' };
+    it('employee — 200 with the role-specific shape (skills, no customers)', async () => {
+      ownUserRow = { ...ownerRow, id: TECH_ID };
 
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/users/me',
-        headers: { authorization: `Bearer ${jwt('technician', TENANT_ID)}` },
+        headers: { authorization: `Bearer ${jwt('technician')}` },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.role).toBe('technician');
+      expect(body.role).toBe('employee');
       expect(body.tenant.companyName).toBe('Fenzit Services');
       expect(body.skills).toEqual([]);
       expect(body.skillIds).toEqual([]);
@@ -204,18 +297,19 @@ describe('Users (e2e)', () => {
       expect(body).not.toHaveProperty('customers');
     });
 
-    it('pre-onboarding owner (no tenant yet) — 200 with the minimal profile', async () => {
-      ownUserRow = { ...ownerRow, tenant_id: null };
+    it('pre-onboarding person (no company yet) — 200 with the minimal profile', async () => {
+      ownUserRow = { ...ownerRow, id: NEW_ID };
 
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/users/me',
-        headers: { authorization: `Bearer ${jwt('owner', null)}` },
+        headers: { authorization: `Bearer ${jwt('new')}` },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.role).toBe('owner');
+      // No company yet, so no role either.
+      expect(body.role).toBeNull();
       expect(body.tenant).toBeNull();
       expect(body.customerCount).toBe(0);
       expect(body.jobCounts).toEqual({
@@ -249,7 +343,7 @@ describe('Users (e2e)', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/users/me?jobsScope=bogus',
-        headers: { authorization: `Bearer ${jwt('owner', TENANT_ID)}` },
+        headers: { authorization: `Bearer ${jwt('owner')}` },
       });
 
       expect(response.statusCode).toBe(422);

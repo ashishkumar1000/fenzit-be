@@ -8,24 +8,37 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { Role } from '../src/common/enums/role.enum';
+import { accessToken, withPeople } from './helpers/auth-test-utils';
 
 describe('Customers (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
 
-  const TENANT_ID = 'tenant-uuid-customers-e2e';
-  const OWNER_ID = 'owner-uuid-customers-e2e';
+  const TENANT_ID = '33333333-3333-4333-8333-333333333333';
+  const OWNER_ID = '11111111-1111-4111-8111-111111111111';
+  const TECH_ID = '22222222-2222-4222-8222-222222222222';
+  // A signed-in person who belongs to no company yet.
+  const VIEWER_ID = '77777777-7777-4777-8777-777777777777';
+  const NO_COMPANY_ID = '00000000-0000-4000-8000-000000000003';
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SupabaseClientFactory)
-      .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin })
-      .compile();
+    const moduleFixture: TestingModule = await withPeople(
+      Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(SupabaseClientFactory)
+        .useValue({ create: jest.fn(), createAdmin: mockCreateAdmin }),
+      [
+        { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
+        { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
+        { userId: VIEWER_ID, tenantId: TENANT_ID, role: Role.VIEWER },
+        { userId: NO_COMPANY_ID, tenantId: null, role: null },
+      ],
+    ).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -44,16 +57,17 @@ describe('Customers (e2e)', () => {
     await app.close();
   });
 
-  function ownerJwt(tenantId: string | null = TENANT_ID) {
-    return jwtService.sign({ sub: OWNER_ID, tenantId, role: 'owner' });
+  function ownerJwt() {
+    return accessToken(jwtService, OWNER_ID);
+  }
+
+  /** A signed-in person who belongs to no company yet. */
+  function noCompanyJwt() {
+    return accessToken(jwtService, NO_COMPANY_ID);
   }
 
   function techJwt() {
-    return jwtService.sign({
-      sub: 'tech-uuid',
-      tenantId: TENANT_ID,
-      role: 'technician',
-    });
+    return accessToken(jwtService, TECH_ID);
   }
 
   const customerRow = {
@@ -390,7 +404,7 @@ describe('Customers (e2e)', () => {
       expect(body.tenantId).toBe(TENANT_ID);
     });
 
-    it('AC4 — should return 403 for Technician JWT', async () => {
+    it('AC4 — should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/customers',
@@ -402,16 +416,28 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('AC5 — should return 400 when owner has no tenantId', async () => {
+    it('AC4 — should return 403 for a viewer token (read-only role)', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/customers',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${accessToken(jwtService, VIEWER_ID)}` },
         payload: validPayload,
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+    });
+
+    it('AC5 — should return 403 for a person with no company', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
+        payload: validPayload,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('AC6 — should return 401 with no JWT', async () => {
@@ -591,7 +617,7 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
     });
 
-    it('AC6 — should return 403 for Technician JWT', async () => {
+    it('AC6 — should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/customers',
@@ -602,15 +628,15 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('AC7 — should return 400 when owner has no tenantId', async () => {
+    it('AC7 — should return 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/customers',
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('AC9 — should return 401 with no JWT', async () => {
@@ -862,7 +888,7 @@ describe('Customers (e2e)', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it('AC7 — should return 403 for Technician JWT', async () => {
+    it('AC7 — should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/customers/${CUSTOMER_ID}`,
@@ -873,7 +899,7 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('AC6/AC7 — Technician + non-UUID id is 403 (RolesGuard runs before ParseUUIDPipe)', async () => {
+    it('AC6/AC7 — an employee + non-UUID id is 403 (PermissionsGuard runs before ParseUUIDPipe)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/customers/not-a-uuid',
@@ -884,15 +910,15 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('AC8 — should return 400 when owner has no tenantId', async () => {
+    it('AC8 — should return 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/customers/${CUSTOMER_ID}`,
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('AC9 — should return 401 with no JWT', async () => {
@@ -1256,7 +1282,7 @@ describe('Customers (e2e)', () => {
       );
     });
 
-    it('AC3/matrix-5 — should return 403 for Technician JWT', async () => {
+    it('AC3/matrix-5 — should return 403 for an employee token', async () => {
       const response = await app.inject({
         method: 'PATCH',
         url: `/api/v1/customers/${PATCH_ID}`,
@@ -1268,7 +1294,7 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('guard-order — Technician + non-UUID id is 403 (RolesGuard runs before ParseUUIDPipe)', async () => {
+    it('guard-order — an employee + non-UUID id is 403 (PermissionsGuard runs before ParseUUIDPipe)', async () => {
       const response = await app.inject({
         method: 'PATCH',
         url: '/api/v1/customers/not-a-uuid',
@@ -1280,20 +1306,16 @@ describe('Customers (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('matrix-7 — should return 400 with the create-path company-setup wording when owner has no tenantId', async () => {
+    it('matrix-7 — should return 403 for a person with no company', async () => {
       const response = await app.inject({
         method: 'PATCH',
         url: `/api/v1/customers/${PATCH_ID}`,
-        headers: { authorization: `Bearer ${ownerJwt(null)}` },
+        headers: { authorization: `Bearer ${noCompanyJwt()}` },
         payload: { name: 'Priya Reddy' },
       });
 
-      expect(response.statusCode).toBe(400);
-      const body = JSON.parse(response.body);
-      expect(body.error_code).toBe('VALIDATION_ERROR');
-      expect(body.message).toBe(
-        'Company setup required before managing customers',
-      );
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('should return 401 with no JWT', async () => {

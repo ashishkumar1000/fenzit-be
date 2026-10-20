@@ -18,7 +18,7 @@
  *              first-half check-in (Midpoint + cut-off = 14:15) is still
  *              short of its instant — a sharp boundary between the two
  *              shifted arms,
- *   - 14:30  → the displaced first-half check-in,
+ *   - 14:15  → the displaced first-half check-in (Midpoint + cut-off),
  *   - 18:00  → nothing still (the punctual check-out is due at EXACTLY
  *              18:30 — the 2026-09-29 ruling: late = 0 → due at Expected
  *              end, not earlier),
@@ -54,6 +54,7 @@ import { randomUUID } from 'crypto';
 import { PgPoolFactory } from '../../src/common/pg/pg-pool.factory';
 import { readDayStatusGrid } from '../../src/common/day-status/grid-reader';
 import { computeDayStatus } from '../../src/common/day-status/day-status.model';
+import { purgeCompanyChildren } from '../helpers/attendance-company-fixture';
 
 jest.setTimeout(120_000);
 
@@ -228,33 +229,35 @@ const leaveRequest = async (
 
 const seedScaffold = async (): Promise<void> => {
   await pool.query('begin');
-  // Each tenant carries its OWN owner user — tenants.owner_id is unique.
+  // Each tenant carries its OWN admin. Users are identity only; each person
+  // then gets a membership (attendance rows point at memberships).
   const probeUsers = [OWNER, B_OWNER, C_OWNER, ...ALL, B_TECH, C_TECH];
   await pool.query(
-    `insert into public.users (id, name, role, status, country_code, phone_number)
-     select u, '19-1 probe person', 'technician', 'active', '+91', ph
+    `insert into public.users (id, name, country_code, phone_number)
+     select u, '19-1 probe person', '+91', ph
        from unnest($1::uuid[], $2::text[]) as t(u, ph)`,
     [probeUsers, probeUsers.map((_, i) => String(930000000 + (Date.now() % 50_000_000) + i))],
   );
   await pool.query(
-    `insert into public.tenants (id, owner_id, company_name, state_code, timezone)
+    `insert into public.tenants (id, created_by, company_name, state_code, timezone)
      values ($1, $2, $3, 'KA', $4),
             ($5, $6, $7, 'KA', $4)`,
     [TENANT, OWNER, `epic-19 probe reminder ${TENANT.slice(0, 8)}`, TZ,
       INCOMPLETE, C_OWNER, `epic-19 probe incomplete ${INCOMPLETE.slice(0, 8)}`],
   );
+  const member = (tenant: string, users: string[], role: string) =>
+    pool.query(
+      `insert into public.memberships (user_id, tenant_id, role, status)
+       select u, $1, $2, 'active' from unnest($3::uuid[]) as t(u)`,
+      [tenant, role, users],
+    );
+  await member(TENANT, [OWNER], 'company_admin');
+  await member(TENANT, ALL, 'employee');
+  await member(INCOMPLETE, [C_OWNER], 'company_admin');
   await pool.query(
     `insert into public.attendance_settings (tenant_id, enabled, setup_completed_at)
      values ($1, true, now()), ($2, true, null)`,
     [TENANT, INCOMPLETE],
-  );
-  await pool.query(
-    'update public.users set tenant_id = $1 where id = any($2::uuid[])',
-    [TENANT, [OWNER, ...ALL]],
-  );
-  await pool.query(
-    "update public.users set role = 'owner' where id = any($1::uuid[])",
-    [[OWNER, B_OWNER, C_OWNER]],
   );
 
   // The crafted probe date: a non-Sunday inside every validity window (the
@@ -272,7 +275,7 @@ const seedScaffold = async (): Promise<void> => {
   // tenant with its own facts, so its reminder arms fire in the same
   // ticks as the first tenant's — independent fan-out, per-tenant keys.
   await pool.query(
-    `insert into public.tenants (id, owner_id, company_name, state_code, timezone)
+    `insert into public.tenants (id, created_by, company_name, state_code, timezone)
      values ($1, $2, $3, 'KA', $4)`,
     [BROKEN, B_OWNER, `epic-19 probe tenant-b ${BROKEN.slice(0, 8)}`, TZ],
   );
@@ -281,10 +284,8 @@ const seedScaffold = async (): Promise<void> => {
      values ($1, true, now())`,
     [BROKEN],
   );
-  await pool.query(
-    'update public.users set tenant_id = $1 where id = $2',
-    [BROKEN, B_TECH],
-  );
+  await member(BROKEN, [B_OWNER], 'company_admin');
+  await member(BROKEN, [B_TECH], 'employee');
   bOfficeId = (
     await pool.query<{ id: string }>(
       `insert into public.attendance_offices (tenant_id, name, latitude, longitude, radius_m)
@@ -317,10 +318,7 @@ const seedScaffold = async (): Promise<void> => {
   // Tenant C mirrors a complete reminder surface (user + assignment + rule
   // + enrolment) — ONLY the setup gate differs, so its absence from the
   // notifications is the AD-25 gate's doing, not an empty fixture's.
-  await pool.query(
-    'update public.users set tenant_id = $1 where id = $2',
-    [INCOMPLETE, C_TECH],
-  );
+  await member(INCOMPLETE, [C_TECH], 'employee');
   await pool.query(
     `insert into public.attendance_offices (tenant_id, name, latitude, longitude, radius_m)
      values ($1, 'C office', 12.9716, 77.5946, 100)`,
@@ -442,69 +440,22 @@ const seedScaffold = async (): Promise<void> => {
 
 const teardownTenants = async (): Promise<void> => {
   const allTenants = [TENANT, BROKEN, INCOMPLETE];
-  // notifications carry no FK (no cascade) — deleted explicitly first, for
-  // all three probe tenants and by the owner's uuid as a name-pattern net.
-  await pool.query(
-    'delete from public.notifications where tenant_id = any($1::uuid[])',
-    [allTenants],
+  // Children (notifications, leave, records, attempts, enrolments + office
+  // assignments together, weekly-off rows...) and memberships go first: the
+  // memberships/tenants keys are RESTRICT. Leftover tenants of an aborted
+  // earlier run are caught by their name pattern.
+  const stale = await pool.query<{ id: string }>(
+    "select id from public.tenants where company_name like 'epic-19 probe%'",
   );
+  const purgeIds = [...new Set([...allTenants, ...stale.rows.map((r) => r.id)])];
+  await purgeCompanyChildren(pool, purgeIds);
   await pool.query(
-    'delete from public.leave_request_days where tenant_id = any($1::uuid[])',
-    [allTenants],
+    'delete from public.tenants where id = any($1::uuid[])',
+    [purgeIds],
   );
-  await pool.query(
-    'delete from public.leave_events where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.leave_requests where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.attendance_corrections where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.attendance_day_overrides where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.attendance_records where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.attendance_attempts where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  // enrolments + assignments go in ONE statement — the coverage trigger is
-  // immediate statement-level on both tables (the 18-1 probe's G2 finding).
-  await pool.query(
-    `with gone as (
-       delete from public.attendance_enrolments where tenant_id = any($1::uuid[]) returning 1
-     )
-     delete from public.attendance_office_assignments where tenant_id = any($1::uuid[])`,
-    [allTenants],
-  );
-  // The weekly-off surfaces RESTRICT user deletes (their composite FKs
-  // reference users (id, tenant_id)) — they go before the users.
-  await pool.query(
-    'delete from public.attendance_weekly_off_overrides where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    'delete from public.attendance_weekly_off_defaults where tenant_id = any($1::uuid[])',
-    [allTenants],
-  );
-  await pool.query(
-    `delete from public.users
-      where tenant_id = any($1::uuid[]) or id = any($2::uuid[])`,
-    [allTenants, [OWNER, B_OWNER, C_OWNER, ...ALL, B_TECH, C_TECH]],
-  );
-  await pool.query(
-    `delete from public.tenants
-      where id = any($1::uuid[]) or company_name like 'epic-19 probe%'`,
-    [allTenants],
-  );
+  await pool.query('delete from public.users where id = any($1::uuid[])', [
+    [OWNER, B_OWNER, C_OWNER, ...ALL, B_TECH, C_TECH],
+  ]);
   const residual = await pool.query<{ n: string }>(
     `select coalesce(sum(n), 0)::text as n from (
        select count(*) n from public.notifications
@@ -652,18 +603,18 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
       `${TENANT}:attendance.reminder_checkout:${E.secondHalf}:${D}`,
     ]);
     // B-BUG-1 boundary: a tick ONE SECOND before a due instant must fire
-    // NOTHING. PG's rounding `::int` cast read 14:29:59 as the 14:30
+    // NOTHING. PG's rounding `::int` cast read 14:14:59 as the 14:15
     // threshold minute and fired the displaced first-half check-in early
     // (bug-bash 2026-10-02, live-proven at 09:14:59 vs a 09:15:00
-    // threshold); the floor()ed clock must hold the second back.
+    // threshold); the floor()ed clock must hold the second back. The
+    // displaced first-half check-in is due at Midpoint (14:00) + cut-off
+    // (15) = 14:15 exactly.
     const beforePre = await keyOf();
-    await tick('14:29:59');
+    await tick('14:14:59');
     expect(await keysSince(beforePre)).toEqual([]);
-    // The displaced first-half check-in is due at Midpoint + cut-off =
-    // 14:15 — a full tick later, the two arms can never collide.
-    const before1430 = await keyOf();
-    await tick('14:30:00');
-    expect(await keysSince(before1430)).toEqual([
+    const before1415 = await keyOf();
+    await tick('14:15:00');
+    expect(await keysSince(before1415)).toEqual([
       `${TENANT}:attendance.reminder_checkin:${E.halfLeave}:${D}`,
     ]);
   });
@@ -777,7 +728,7 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
       expect(status.get(employeeId)).toBe('in_progress');
     }
     // The SQL's check-in reminders minus the sanctioned displaced
-    // first-half shift (its TS status stays 'leave' — the 14:30 arm
+    // first-half shift (its TS status stays 'leave' — the 14:15 arm
     // test pins the shift itself) are exactly the TS
     // not_checked_in_yet rows minus the rule-less employee: AD-22
     // drops no-rule employees from the SQL facts entirely (no rule →
