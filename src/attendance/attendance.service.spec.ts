@@ -1,3 +1,4 @@
+import * as setupReason from './setup-incomplete-reason';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
@@ -469,6 +470,30 @@ describe('AttendanceService — setup routes (story 15-2)', () => {
         422,
         ErrorCode.ATTENDANCE_SETUP_INCOMPLETE,
       );
+    });
+
+    it('sends the reason in the 422 body: the owner reads it, not a generic sentence', async () => {
+      mockAdmin({
+        settings: { data: settingsRow, error: null },
+        rpcError: {
+          code: 'PT422',
+          message: 'attendance setup could not be completed: no employee is enrolled for today.',
+          details: 'tenant t has no tracked employee with an office assignment',
+          hint: 'ATTENDANCE_SETUP_INCOMPLETE',
+        },
+      });
+      const reason = jest
+        .spyOn(setupReason, 'setupIncompleteMessage')
+        .mockResolvedValue('Suresh has not signed in to the app yet. Tracking can start after their first sign-in.');
+
+      const err = await service.completeSetup(ownerUser).catch((e: unknown) => e);
+
+      expect(reason).toHaveBeenCalledWith(expect.anything(), ownerUser.tenantId, expect.objectContaining({ details: expect.stringContaining('no tracked employee') }));
+      expect((err as HttpException).getResponse()).toEqual({
+        error_code: ErrorCode.ATTENDANCE_SETUP_INCOMPLETE,
+        message: 'Suresh has not signed in to the app yet. Tracking can start after their first sign-in.',
+      });
+      reason.mockRestore();
     });
 
     it('maps the RPC PT409 race fallback to 409 ATTENDANCE_SETUP_ALREADY_COMPLETED', async () => {

@@ -11,6 +11,7 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { UpdateSetupStepDto } from './dto/update-setup-step.dto';
+import { setupIncompleteMessage } from './setup-incomplete-reason';
 import {
   AttendanceSettingsRow,
   AttendanceSetupProgressRow,
@@ -174,11 +175,11 @@ export class AttendanceService {
     });
     if (error) {
       if (error.code === PT_SETUP_INCOMPLETE) {
+        const message = await setupIncompleteMessage(admin, tenantId, error);
         throw new HttpException(
           {
             error_code: ErrorCode.ATTENDANCE_SETUP_INCOMPLETE,
-            message:
-              'Setup needs at least one office and one tracked employee with an office assignment',
+            message,
           },
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
