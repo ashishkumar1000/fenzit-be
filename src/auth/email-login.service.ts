@@ -81,15 +81,20 @@ export class EmailLoginService {
       );
     }
 
-    // Count the attempt BEFORE checking the password, so a burst of guesses is
-    // counted as it arrives. A success clears the count below.
-    await this.recordFailure(lockKey, entry);
-
     // Always compare, even for an unknown email, so timing is the same.
     const passwordOk = this.passwordMatches(dto.password);
-    const user = passwordOk ? await this.findUser(email) : null;
+    if (!passwordOk) {
+      await this.recordFailure(lockKey, entry);
+      throw new UnauthorizedException({
+        error_code: ErrorCode.UNAUTHORIZED,
+        message: 'Invalid email or password',
+      });
+    }
 
+    // A database error throws a 500 from here and is NOT counted as a failure.
+    const user = await this.findUser(email);
     if (!user || user.disabled) {
+      await this.recordFailure(lockKey, entry);
       throw new UnauthorizedException({
         error_code: ErrorCode.UNAUTHORIZED,
         message: 'Invalid email or password',

@@ -1111,7 +1111,7 @@ describe('UsersService', () => {
       expect(result.platformAdmin).toBe(false);
     });
 
-    it('falls back to a null code and active status when no membership row is found', async () => {
+    it('reports a null code and a null status when no membership row is found (no access, not active)', async () => {
       mockAdmin({
         ownMembership: { data: null, error: null },
       });
@@ -1119,7 +1119,7 @@ describe('UsersService', () => {
       const result = await service.getMyProfile(ownerUser, {});
 
       expect(result.employeeCode).toBeNull();
-      expect(result.status).toBe('active');
+      expect(result.status).toBeNull();
     });
 
     it('throws 500 when the own-membership read errors', async () => {

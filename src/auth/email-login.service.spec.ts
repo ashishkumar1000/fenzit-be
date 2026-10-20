@@ -1,4 +1,9 @@
-import { HttpException, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  InternalServerErrorException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { EmailLoginService } from './email-login.service';
@@ -61,6 +66,28 @@ const ok = (email = 'a@b.co') => ({
 const bad = (email = 'a@b.co', password = 'nope') => ({ email, password });
 
 describe('EmailLoginService', () => {
+  const originalEcho = process.env['OTP_DEV_ECHO'];
+  beforeEach(() => {
+    // The shortcut is a dev-only route, gated on the same flag as the master OTP.
+    process.env['OTP_DEV_ECHO'] = 'true';
+  });
+  afterEach(() => {
+    if (originalEcho === undefined) delete process.env['OTP_DEV_ECHO'];
+    else process.env['OTP_DEV_ECHO'] = originalEcho;
+  });
+
+  it.each([undefined, '', 'false', ' no '])(
+    'is not found, and never looks the user up, when OTP_DEV_ECHO is %j',
+    async (flag) => {
+      if (flag === undefined) delete process.env['OTP_DEV_ECHO'];
+      else process.env['OTP_DEV_ECHO'] = flag;
+      const { svc, query, auth } = build();
+      await expect(svc.login(ok())).rejects.toBeInstanceOf(NotFoundException);
+      expect(query.maybeSingle).not.toHaveBeenCalled();
+      expect(auth.issueLogin).not.toHaveBeenCalled();
+    },
+  );
+
   it('signs in the existing user and returns the login result', async () => {
     const { svc, auth, query } = build();
     await expect(svc.login(ok())).resolves.toEqual({
@@ -119,10 +146,34 @@ describe('EmailLoginService', () => {
     expect(auth.issueLogin).not.toHaveBeenCalled();
   });
 
-  it('a database error fails closed with the generic 401', async () => {
+  it('a database error is a server error, not a wrong password, and gives no token', async () => {
     const { svc, auth } = build(null, { code: '57P01', message: 'boom' });
-    await expect(svc.login(ok())).rejects.toBeInstanceOf(UnauthorizedException);
+    const err = await svc.login(ok()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InternalServerErrorException);
+    expect((err as InternalServerErrorException).getStatus()).toBe(500);
+    expect((err as InternalServerErrorException).getResponse()).toMatchObject({
+      error_code: 'INTERNAL_SERVER_ERROR',
+    });
     expect(auth.issueLogin).not.toHaveBeenCalled();
+  });
+
+  it('database errors do not count toward the lockout', async () => {
+    const { svc, cache, query } = build(null, { code: '57P01', message: 'boom' });
+    for (let i = 0; i < EMAIL_LOGIN_MAX_FAILURES + 2; i++) {
+      await svc.login(ok()).catch(() => undefined);
+    }
+    expect(cache.set).not.toHaveBeenCalled();
+    // The database comes back: the right password signs in, nothing is locked.
+    query.maybeSingle.mockResolvedValue({ data: USER, error: null });
+    await expect(svc.login(ok())).resolves.toBeDefined();
+  });
+
+  it('a wrong password is counted even when the database is down', async () => {
+    const { svc, cache } = build(null, { code: '57P01', message: 'boom' });
+    for (let i = 0; i < EMAIL_LOGIN_MAX_FAILURES; i++) {
+      await svc.login(bad()).catch(() => undefined);
+    }
+    expect(cache.set).toHaveBeenCalledTimes(EMAIL_LOGIN_MAX_FAILURES);
   });
 
   it('locks the email after the allowed failures, even for the right password', async () => {
