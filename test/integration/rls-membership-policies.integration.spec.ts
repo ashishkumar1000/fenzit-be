@@ -365,15 +365,31 @@ describe('RLS role and membership policies', () => {
       const { data: read } = await employee.from('customers').select('id');
       expect(read).toEqual([{ id: customerId }]);
 
-      // The employee role may update jobs (positive control for the write
-      // policies — otherwise "everything is refused" would also pass).
+      // Jobs: the spec says only a company admin creates and changes a job
+      // (roles-and-access-spec permission table). An employee's update is
+      // filtered by the policy: no error, no rows, nothing changes.
       const { data: jobEdit, error: jobEditError } = await employee
         .from('jobs')
         .update({ description: 'employee edit' })
         .eq('id', jobId)
         .select('id');
       expect(jobEditError).toBeNull();
-      expect(jobEdit).toEqual([{ id: jobId }]);
+      expect(jobEdit).toEqual([]);
+      // The employee can see the job, so the empty result above is the write
+      // policy refusing, not a job the employee cannot reach.
+      const { data: jobSeen } = await employee
+        .from('jobs')
+        .select('id')
+        .eq('id', jobId);
+      expect(jobSeen).toEqual([{ id: jobId }]);
+      const { data: jobStill } = await service
+        .from('jobs')
+        .select('description')
+        .eq('id', jobId)
+        .single();
+      expect((jobStill as { description: string }).description).toBe(
+        'RLS policy job',
+      );
 
       // Company admin: inserts, edits and deletes a customer in their company,
       // but not in another company.
@@ -401,6 +417,34 @@ describe('RLS role and membership policies', () => {
         .eq('id', newId)
         .select('id');
       expect(gone).toEqual([{ id: newId }]);
+      // Jobs: the company admin can change a job in their own company.
+      // (A column the other tests do not assert on.)
+      const { data: jobNote } = await admin
+        .from('jobs')
+        .update({ notes_for_technician: 'admin note' })
+        .eq('id', jobId)
+        .select('id');
+      expect(jobNote).toEqual([{ id: jobId }]);
+      const { data: jobNoted } = await service
+        .from('jobs')
+        .select('notes_for_technician')
+        .eq('id', jobId)
+        .single();
+      expect(jobNoted).toEqual({ notes_for_technician: 'admin note' });
+      // Another company's admin cannot change this company's job.
+      const otherAdmin = apiClient(mintJwt(P.adminD));
+      const { data: foreignJob } = await otherAdmin
+        .from('jobs')
+        .update({ notes_for_technician: 'foreign note' })
+        .eq('id', jobId)
+        .select('id');
+      expect(foreignJob).toEqual([]);
+      const { data: jobAfterForeign } = await service
+        .from('jobs')
+        .select('notes_for_technician')
+        .eq('id', jobId)
+        .single();
+      expect(jobAfterForeign).toEqual({ notes_for_technician: 'admin note' });
     },
   );
 
