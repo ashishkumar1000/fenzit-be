@@ -211,8 +211,4 @@ describe('activity_logs and user_skills policies (real DB)', () => {
       expect(code(f.error)).toBe('42501');
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

@@ -185,8 +185,4 @@ describe('set_user_disabled (real DB)', () => {
       expect(await auditFor(service, c.id.admin)).toEqual([]);
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

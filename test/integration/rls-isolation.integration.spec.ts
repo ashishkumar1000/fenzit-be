@@ -2794,16 +2794,4 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
     },
     30000,
   );
-
-  it('(always) RLS test suite is correctly structured', () => {
-    // This test always runs and verifies the suite is wired correctly.
-    // Real DB tests are skipped automatically when SUPABASE_URL is a stub.
-    if (!IS_REAL_DB) {
-      console.log(
-        'ℹ️  RLS isolation tests skipped: SUPABASE_URL is a stub. ' +
-          'Set real DB credentials to run cross-tenant isolation checks (AR-20).',
-      );
-    }
-    expect(true).toBe(true);
-  });
 });

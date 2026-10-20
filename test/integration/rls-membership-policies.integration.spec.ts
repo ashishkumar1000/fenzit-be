@@ -682,8 +682,4 @@ describe('RLS role and membership policies', () => {
     },
     60000,
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

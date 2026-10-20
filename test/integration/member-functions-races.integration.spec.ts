@@ -175,8 +175,4 @@ describe('member function races (real DB)', () => {
     },
     60000,
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

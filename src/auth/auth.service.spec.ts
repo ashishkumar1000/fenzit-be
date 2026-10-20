@@ -1192,6 +1192,87 @@ describe('AuthService', () => {
       expect(admin.update).not.toHaveBeenCalled();
     });
 
+    /** A query that is awaited directly (the removed-membership read has no maybeSingle). */
+    function awaitedRead(result: { data: unknown; error: unknown }) {
+      const chain: Record<string, unknown> = {};
+      chain['select'] = jest.fn(() => chain);
+      chain['eq'] = jest.fn(() => chain);
+      chain['then'] = (resolve: (v: unknown) => void) => resolve(result);
+      return chain;
+    }
+
+    it('a person whose only membership was removed gets no company and formerMember true, and still signs in', async () => {
+      const otp = await arrangeLiveSession();
+      const users = queryChain({ data: userRow({ id: userId }), error: null });
+      const memberships = [
+        queryChain({ data: null, error: null }), // no live membership
+        awaitedRead({ data: [{ id: 'm-old' }], error: null }), // one removed row
+      ];
+      const admin = {
+        from: jest.fn((table: string) =>
+          table === 'users' ? users : memberships.shift(),
+        ),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      expect(result.token).toBe('member-jwt');
+      expect(result.user).toMatchObject({
+        tenantId: null,
+        role: null,
+        formerMember: true,
+      });
+    });
+
+    it('a failed read of removed memberships is a structured 500 and gives no token', async () => {
+      const otp = await arrangeLiveSession();
+      const users = queryChain({ data: userRow({ id: userId }), error: null });
+      const memberships = [
+        queryChain({ data: null, error: null }),
+        awaitedRead({ data: null, error: { message: 'boom' } }),
+      ];
+      const admin = {
+        from: jest.fn((table: string) =>
+          table === 'users' ? users : memberships.shift(),
+        ),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp }),
+      ).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({
+          error_code: 'INTERNAL_SERVER_ERROR',
+        }),
+      });
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('a failed activation of an invited membership is a structured 500 and gives no token', async () => {
+      const otp = await arrangeLiveSession();
+      const admin = loginAdmin({
+        user: userRow({ id: userId }),
+        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+        activateError: { message: 'write failed' },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      await expect(
+        service.verifyOtp({ otpSessionId: 'session-id', otpCode: otp }),
+      ).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({
+          error_code: 'INTERNAL_SERVER_ERROR',
+        }),
+      });
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
     it('creates an identity-only users row on first sign-in (no role, tenant or status columns)', async () => {
       const otp = await arrangeLiveSession();
       const created = userRow({ id: userId, phone_number: '2222222222' });

@@ -129,6 +129,13 @@ export class MembersService {
     before: string | undefined,
     beforeId?: string,
   ): Promise<AuditLogEntry[]> {
+    if (beforeId && !before) {
+      // The id only refines the timestamp cursor; alone it would be ignored.
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'beforeId needs before',
+      });
+    }
     let query = this.supabaseFactory
       .createAdmin()
       .from('audit_log')
@@ -144,13 +151,6 @@ export class MembersService {
       query = query.eq('tenant_id', caller.tenantId as string);
     } else if (caller.tenantId) {
       query = query.eq('tenant_id', caller.tenantId);
-    }
-    if (beforeId && !before) {
-      // The id only refines the timestamp cursor; alone it would be ignored.
-      throw new BadRequestException({
-        error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'beforeId needs before',
-      });
     }
     if (before) {
       // With beforeId the cursor is (created_at, id), so rows that share one

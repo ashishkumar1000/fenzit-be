@@ -293,8 +293,4 @@ describe('change_member_role (real DB)', () => {
       expect(await roleOf(c.id.emp, c.tenantId)).toBe('viewer');
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

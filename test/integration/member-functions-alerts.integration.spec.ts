@@ -157,8 +157,4 @@ describe('advance_workflow_step alerts (real DB)', () => {
       ).toEqual([c.id.admin]);
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

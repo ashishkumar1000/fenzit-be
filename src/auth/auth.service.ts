@@ -457,9 +457,10 @@ export class AuthService {
         this.logger.error('Failed to activate invited membership:', {
           error: activateError,
         });
-        throw new InternalServerErrorException(
-          'Failed to activate invited user',
-        );
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to sign in',
+        });
       }
     }
     return {

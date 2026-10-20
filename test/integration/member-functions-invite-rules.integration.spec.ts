@@ -231,8 +231,4 @@ describe('invite_member rules (real DB)', () => {
       await setUserFlag(service, P.platformAdmin, { disabled: false });
     }
   });
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

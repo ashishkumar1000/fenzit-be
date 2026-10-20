@@ -147,4 +147,6 @@ export interface EnrolmentOverviewResponse extends AccessStateResponse {
   employeeId: string;
   employeeName: string;
   phone: string;
+  /** `invited` until the person signs in for the first time; only `active` people can be tracked. */
+  memberStatus: 'invited' | 'active';
 }

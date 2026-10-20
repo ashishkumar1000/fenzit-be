@@ -218,8 +218,4 @@ describe('setup_tenant_for_owner (real DB)', () => {
     },
     60000,
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

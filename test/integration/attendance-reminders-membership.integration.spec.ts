@@ -262,8 +262,4 @@ describe('attendance_run_reminders ignores non-active members (real DB)', () => 
       expect(summary?.payload).toMatchObject({ notCheckedInCount: 1 });
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

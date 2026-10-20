@@ -246,8 +246,4 @@ describe('remove_member (real DB)', () => {
       expect((await invite()).error).toBeNull();
     },
   );
-
-  it('(always) suite is wired', () => {
-    expect(true).toBe(true);
-  });
 });

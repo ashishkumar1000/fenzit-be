@@ -407,12 +407,100 @@ describe('EnrolmentsService (story 15-7)', () => {
         employeeName: 'Ravi',
         phone: '+919876543210',
         attendanceAccess: 'active',
+        memberStatus: 'active',
       });
       // Scoped to the caller's company and to employees only (admins are
       // never enrolled), whatever the query shape.
       const members = builders['memberships'][0];
       expect(members.eq).toHaveBeenCalledWith('tenant_id', TENANT);
       expect(members.eq).toHaveBeenCalledWith('role', Role.EMPLOYEE);
+    });
+
+    it('reports an employee who has not signed in yet as invited, so the wizard can hold them back', async () => {
+      const admin = {
+        from: jest.fn((table: string) => {
+          const qb: Record<string, jest.Mock> = {};
+          for (const m of ['select', 'eq', 'neq', 'in', 'order']) {
+            qb[m] = jest.fn().mockReturnValue(qb);
+          }
+          const result =
+            table === 'memberships'
+              ? {
+                  data: [
+                    {
+                      user_id: EMPLOYEE,
+                      role: 'employee',
+                      status: 'invited',
+                      employee_code: 'E-002',
+                      created_at: '2026-10-20T00:00:00Z',
+                      users: {
+                        name: null,
+                        country_code: '+91',
+                        phone_number: '1212121212',
+                      },
+                    },
+                  ],
+                  error: null,
+                }
+              : { data: [], error: null };
+          qb.then = jest.fn((resolve: (v: unknown) => unknown) =>
+            Promise.resolve(resolve(result)),
+          );
+          return qb;
+        }),
+      };
+      const service = new EnrolmentsService(
+        { createAdmin: () => admin } as unknown as SupabaseClientFactory,
+        {} as unknown as PgPoolFactory,
+      );
+
+      const roster = await service.listEnrolments(owner);
+
+      expect(roster).toHaveLength(1);
+      expect(roster[0]?.memberStatus).toBe('invited');
+    });
+
+    it('never marks a removed membership as trackable, even if one reached the roster', async () => {
+      const admin = {
+        from: jest.fn((table: string) => {
+          const qb: Record<string, jest.Mock> = {};
+          for (const m of ['select', 'eq', 'neq', 'in', 'order']) {
+            qb[m] = jest.fn().mockReturnValue(qb);
+          }
+          const result =
+            table === 'memberships'
+              ? {
+                  data: [
+                    {
+                      user_id: EMPLOYEE,
+                      role: 'employee',
+                      status: 'removed',
+                      employee_code: 'E-003',
+                      created_at: '2026-10-20T00:00:00Z',
+                      users: {
+                        name: 'Former',
+                        country_code: '+91',
+                        phone_number: '1313131313',
+                      },
+                    },
+                  ],
+                  error: null,
+                }
+              : { data: [], error: null };
+          qb.then = jest.fn((resolve: (v: unknown) => unknown) =>
+            Promise.resolve(resolve(result)),
+          );
+          return qb;
+        }),
+      };
+      const service = new EnrolmentsService(
+        { createAdmin: () => admin } as unknown as SupabaseClientFactory,
+        {} as unknown as PgPoolFactory,
+      );
+
+      const roster = await service.listEnrolments(owner);
+
+      expect(roster[0]?.memberStatus).toBe('invited');
     });
   });
 });

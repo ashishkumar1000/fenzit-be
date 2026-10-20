@@ -101,6 +101,7 @@ export class EnrolmentsService {
       name: m.name,
       country_code: m.countryCode,
       phone_number: m.phoneNumber,
+      status: m.status,
     }));
     if (technicians.length === 0) {
       return [];
@@ -130,6 +131,8 @@ export class EnrolmentsService {
         employeeId: t.id,
         employeeName: t.name || phone || 'Unknown employee',
         phone,
+        // Fail closed: only an active membership can be tracked.
+        memberStatus: t.status === 'active' ? 'active' : 'invited',
       };
     });
   }
