@@ -5,10 +5,14 @@ export class SendOtpDto {
   // Sign-in by phone supports India only for now. The send route refuses any other
   // dial code here, before any SMS is sent. Widening this list is a deliberate
   // product decision and needs its own change.
-  @ApiProperty({ example: '+91', description: 'Dial code. Only +91 is supported.' })
+  @ApiProperty({
+    example: '+91',
+    description: 'Dial code. Only +91 is supported.',
+  })
   @IsString()
   @Matches(/^\+91$/, {
-    message: 'countryCode must be +91. Only Indian numbers can sign in by phone.',
+    message:
+      'countryCode must be +91. Only Indian numbers can sign in by phone.',
   })
   countryCode: string;
 
@@ -17,6 +21,9 @@ export class SendOtpDto {
     description: 'Indian mobile number without the country code',
   })
   @IsString()
-  @Matches(/^\d{10}$/, { message: 'phoneNumber must be 10 digits' })
+  @Matches(/^[6-9]\d{9}$/, {
+    message:
+      'phoneNumber must be a 10-digit Indian mobile number starting with 6, 7, 8 or 9',
+  })
   phoneNumber: string;
 }

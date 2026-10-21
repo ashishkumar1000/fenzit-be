@@ -184,7 +184,7 @@ describe('Auth Integration Tests (e2e)', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/send',
-        payload: { countryCode: '+91', phoneNumber: '1234567890' },
+        payload: { countryCode: '+91', phoneNumber: '9123456789' },
       });
 
       expect(response.statusCode).toBe(200);
