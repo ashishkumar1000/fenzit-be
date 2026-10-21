@@ -24,6 +24,8 @@ import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { EmailLoginDto } from './dto/email-login.dto';
 import { EmailLoginService } from './email-login.service';
+import { EmailLinkService } from './email-link.service';
+import { LinkEmailDto } from './dto/link-email.dto';
 import { SetupCompanyDto } from './dto/setup-company.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { Can } from '../common/decorators/can.decorator';
@@ -35,6 +37,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly emailLoginService: EmailLoginService,
+    private readonly emailLinkService: EmailLinkService,
   ) {}
 
   @Public()
@@ -150,6 +153,34 @@ export class AuthController {
   })
   async emailLogin(@Body() dto: EmailLoginDto) {
     return this.emailLoginService.login(dto);
+  }
+
+  @Post('email/link')
+  @AnyMember()
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Link an email address to the signed-in user',
+    description:
+      'Any signed-in person, with or without a company. One email belongs to one user; a second user asking for the same email gets 409.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Email linked',
+    schema: { example: { email: 'owner@example.com' } },
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Another user already has this email, or this account already has a different email',
+  })
+  @ApiResponse({ status: 422, description: 'Email is not a valid address' })
+  @ApiResponse({ status: 429, description: 'Too many "already taken" answers for this account' })
+  @ApiResponse({ status: 404, description: 'The signed-in user row was not found' })
+  @ApiResponse({ status: 500, description: 'The email could not be saved' })
+  async linkEmail(@CurrentUser() user: RequestUser, @Body() dto: LinkEmailDto) {
+    return this.emailLinkService.link(user.userId, dto.email);
   }
 
   @Post('invite')

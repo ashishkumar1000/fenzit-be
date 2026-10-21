@@ -83,6 +83,8 @@ interface UserProfileBase {
   id: string;
   employeeCode: string | null;
   name: string | null;
+  /** The linked login email, or null. Used for email sign-in. */
+  email: string | null;
   countryCode: string;
   phoneNumber: string;
   /** The membership status, or null when the person has no company. Null means no access. */
@@ -192,6 +194,7 @@ interface OwnUserRow {
   name: string | null;
   country_code: string;
   phone_number: string;
+  email: string | null;
 }
 
 interface TenantRow {
@@ -272,7 +275,7 @@ export class UsersService {
 
     const { data: ownRow, error: ownError } = await admin
       .from('users')
-      .select('id, name, country_code, phone_number')
+      .select('id, name, country_code, phone_number, email')
       .eq('id', user.userId)
       .single<OwnUserRow>();
 
@@ -314,6 +317,7 @@ export class UsersService {
       id: ownRow.id,
       employeeCode: membership?.employee_code ?? null,
       name: ownRow.name,
+      email: ownRow.email,
       countryCode: ownRow.country_code,
       phoneNumber: ownRow.phone_number,
       status: membership?.status ?? null,

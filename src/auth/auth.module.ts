@@ -8,6 +8,7 @@ import { SmsDeliveryProvider } from './sms-delivery.provider';
 import { MockSmsDeliveryProvider } from './mock-sms-delivery.provider';
 import { Msg91SmsDeliveryProvider } from './msg91-sms-delivery.provider';
 import { EmailLoginService } from './email-login.service';
+import { EmailLinkService } from './email-link.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 
 /**
@@ -63,6 +64,7 @@ export function createSmsDeliveryProvider(
   providers: [
     AuthService,
     EmailLoginService,
+    EmailLinkService,
     {
       provide: OtpSessionStore,
       useClass: InMemoryOtpSessionStore,

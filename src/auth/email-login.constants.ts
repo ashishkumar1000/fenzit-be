@@ -7,9 +7,10 @@
 //
 // Same family as PRE_RELEASE_MASTER_OTP (1039) in auth.service.ts. REMOVE AT
 // GO-LIVE: delete this file, EmailLoginService, its DTO, the controller route
-// and the module provider. Unlike the master OTP this is NOT behind an env
-// flag, so forgetting it leaves a live backdoor — the go-live gate blocks the
-// release until it is gone.
+// and the module provider. The route answers only when OTP_DEV_ECHO=true (the
+// same flag as the master OTP), but that flag is set on dev, so it is not a
+// safety net: forgetting this removal still leaves a live backdoor, and the
+// go-live gate blocks the release until it is gone.
 export const DEV_SHORTCUT_EMAIL_PASSWORD = 'yah00Mail';
 
 /** Wrong-password attempts allowed per email inside the window (mirrors the OTP 5-attempt lockout). */
