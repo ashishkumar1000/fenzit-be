@@ -91,7 +91,8 @@ Request an OTP for a phone number. Returns an `otp_session_id` used to verify.
 The OTP is delivered over SMS by the configured provider (see "OTP delivery"
 above).
 
-**Body:** `{ countryCode: string (dial code, e.g. "+91"), phoneNumber: string (6–15 digits) }`
+**Body:** `{ countryCode: string (must be "+91"), phoneNumber: string (exactly 10 digits, no country code) }`
+Only Indian numbers can sign in by phone. Any other dial code is refused with `422`, before an SMS is sent.
 
 **Responses:**
 - `200` — `{ otp_session_id: UUID, expires_at: ISO8601 }` (the code itself is never in the response)
