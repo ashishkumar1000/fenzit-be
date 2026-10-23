@@ -19,6 +19,7 @@ const body: DashboardResponse = {
     notCheckedIn: 2,
     late: 1,
     onLeave: 1,
+    shortDay: 0,
   },
   offices: [
     {
@@ -26,6 +27,15 @@ const body: DashboardResponse = {
       name: 'HQ',
       tracked: 3,
       checkedIn: 1,
+    },
+  ],
+  employees: [
+    {
+      employeeId: 'e3',
+      employeeName: 'Ravi',
+      officeName: 'HQ',
+      status: 'late',
+      checkInAt: '2026-09-29T03:45:00.000Z',
     },
   ],
   flags: {
@@ -51,7 +61,13 @@ const body: DashboardResponse = {
 
 describe('DashboardResponse — the wire key sets (D5)', () => {
   it('the dashboard body carries exactly the pinned keys at every level', () => {
-    expect(Object.keys(body).sort()).toEqual(['counts', 'date', 'flags', 'offices']);
+    expect(Object.keys(body).sort()).toEqual([
+      'counts',
+      'date',
+      'employees',
+      'flags',
+      'offices',
+    ]);
     expect(Object.keys(body.offices[0]).sort()).toEqual([
       'checkedIn',
       'id',
@@ -63,11 +79,22 @@ describe('DashboardResponse — the wire key sets (D5)', () => {
       'late',
       'notCheckedIn',
       'onLeave',
+      'shortDay',
       'tracked',
     ]);
     expect(Object.keys(body.flags).sort()).toEqual([
       'checkoutMissing',
       'fakeLocationAttempt',
+    ]);
+  });
+
+  it('the pulse rows carry exactly the pinned keys', () => {
+    expect(Object.keys(body.employees[0]).sort()).toEqual([
+      'checkInAt',
+      'employeeId',
+      'employeeName',
+      'officeName',
+      'status',
     ]);
   });
 

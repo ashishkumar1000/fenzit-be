@@ -73,12 +73,37 @@ export interface DashboardOfficeRow {
   checkedIn: number;
 }
 
+/** One tracked employee's today row — the Live Team Pulse list (2026-10).
+ *  `status` mirrors the tile buckets (`late` is a qualifier of checked_in,
+ *  exactly like the count). `checkInAt` is the effective check-in instant
+ *  (ISO) for presence rows — the punch, or a times-only override's
+ *  manual check-in — and null otherwise. */
+export type DashboardEmployeeStatus =
+  | 'checked_in'
+  | 'late'
+  | 'on_leave'
+  | 'short_day'
+  | 'not_checked_in';
+
+export interface DashboardEmployeeRow {
+  employeeId: string;
+  employeeName: string;
+  officeName: string | null;
+  status: DashboardEmployeeStatus;
+  checkInAt: string | null;
+}
+
 export interface DashboardResponse {
   /** The tile date — `attendance_today()`'s tenant-local YYYY-MM-DD. */
   date: string;
   counts: DashboardCounts;
   /** The office registry with today's stats — the office picker's rows. */
   offices: DashboardOfficeRow[];
+  /** Today's per-employee rows — the Live Team Pulse list, sorted
+   *  anomalies-first (late, on leave, short day, checked in, not checked
+   *  in), name ascending within a bucket. Same office filter as the
+   *  tiles. */
+  employees: DashboardEmployeeRow[];
   flags: {
     checkoutMissing: CheckoutMissingFlagRow[];
     fakeLocationAttempt: FakeLocationFlagRow[];

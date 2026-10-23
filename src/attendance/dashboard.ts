@@ -7,7 +7,12 @@ import { tenantToday } from './enrolments.repository';
 import { readDayStatusGrid } from '../common/day-status/grid-reader';
 import { computeDayStatus } from '../common/day-status/day-status.model';
 import { DashboardFlagReads } from './dashboard-flags';
-import type { DashboardResponse, DashboardOfficeRow } from './dashboard-response.model';
+import type {
+  DashboardResponse,
+  DashboardOfficeRow,
+  DashboardEmployeeRow,
+  DashboardEmployeeStatus,
+} from './dashboard-response.model';
 
 /**
  * 19-2's owner dashboard read (spec D5): FR-24's six tiles + the two
@@ -84,6 +89,9 @@ export class DashboardService {
         today,
       );
 
+      // The pulse rows need display names — one light read over the
+      // candidate set (the grid rows carry only ids).
+
       // Tiles: derived ONLY from the engine's outcomes over today's rows —
       // no tile has a second implementation to drift from FR-10.
       const counts = {
@@ -96,6 +104,10 @@ export class DashboardService {
         // rule-7 short-day rows (see the route comment below).
         shortDay: 0,
       };
+      /** The Live Team Pulse rows (2026-10) — collected in the same loop
+       *  as the tiles so a row and its count can never disagree. */
+      const employees: DashboardEmployeeRow[] = [];
+      const employeeNames = await this.readEmployeeNames(tx, employeeIds);
       /** The office registry with today's stats (the picker's subtitles) —
        *  offices with zero tracked employees included (the mock lists
        *  them). */
@@ -182,6 +194,33 @@ export class DashboardService {
           // Late qualifies the CHECKED-IN rows only — a late flag can
           // never read against a not-checked-in or on-leave person.
           if (checkedIn && outcome.isLate) counts.late += 1;
+
+          // The pulse row (2026-10): the same outcome the bucket used,
+          // one wire row per tracked employee.
+          const pulseStatus: DashboardEmployeeStatus = checkedIn
+            ? outcome.isLate
+              ? 'late'
+              : 'checked_in'
+            : ON_LEAVE_STATUSES.has(outcome.status)
+              ? 'on_leave'
+              : outcome.status === 'absent' &&
+                  row.override?.status == null &&
+                  outcome.workedMinutes !== null
+                ? 'short_day'
+                : 'not_checked_in';
+          // A presence row carries an instant by construction (rule 3/7/10
+          // require a punch, or a times-only override supplied one) — the
+          // null guard is for the type, never a real state.
+          const rawCheckIn: Date | string | null =
+            row.record?.checkin_at ?? row.override?.manual_checkin_at ?? null;
+          employees.push({
+            employeeId: row.employeeId,
+            employeeName: employeeNames.get(row.employeeId) ?? 'Unknown employee',
+            officeName: row.ctx.officeName,
+            status: pulseStatus,
+            checkInAt:
+              rawCheckIn == null ? null : new Date(rawCheckIn).toISOString(),
+          });
         }
       }
       const offices: DashboardOfficeRow[] = await this.readOfficeRegistry(
@@ -201,13 +240,41 @@ export class DashboardService {
           officeId ?? null,
         ),
       ]);
+      // Anomalies first — the pulse shows the top N and the owner should
+      // meet the late/on-leave rows before the already-in ones.
+      const statusRank: Record<DashboardEmployeeStatus, number> = {
+        late: 0,
+        on_leave: 1,
+        short_day: 2,
+        checked_in: 3,
+        not_checked_in: 4,
+      };
+      employees.sort(
+        (a, b) =>
+          statusRank[a.status] - statusRank[b.status] ||
+          a.employeeName.localeCompare(b.employeeName),
+      );
       return {
         date: today,
         counts,
         offices,
+        employees,
         flags: { checkoutMissing, fakeLocationAttempt },
       };
     });
+  }
+
+  /** Display names for the pulse rows — one read over the candidate ids. */
+  private async readEmployeeNames(
+    tx: PoolClient,
+    employeeIds: string[],
+  ): Promise<Map<string, string>> {
+    if (employeeIds.length === 0) return new Map();
+    const { rows } = await tx.query<{ id: string; name: string }>(
+      `select id, name from public.users where id = any($1::uuid[])`,
+      [employeeIds],
+    );
+    return new Map(rows.map((r) => [r.id, r.name]));
   }
 
   /**
