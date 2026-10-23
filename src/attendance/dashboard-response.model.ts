@@ -88,9 +88,22 @@ export type DashboardEmployeeStatus =
 export interface DashboardEmployeeRow {
   employeeId: string;
   employeeName: string;
+  /** Display form — country code + number (two people can share a name). */
+  phone: string | null;
   officeName: string | null;
   status: DashboardEmployeeStatus;
   checkInAt: string | null;
+  /** ISO checkout instant — present only after a check-out (or a
+   *  times-only override's manual checkout). */
+  checkoutAt: string | null;
+  /** How far past the office's late cutoff the check-in landed (late
+   *  rows only). */
+  lateMinutes: number | null;
+  /** The engine's worked minutes (short-day and checked-out rows). */
+  workedMinutes: number | null;
+  /** Which half of the day the covering approved leave takes (on-leave
+   *  rows only). */
+  leavePart: 'full_day' | 'first_half' | 'second_half' | null;
 }
 
 export interface DashboardResponse {

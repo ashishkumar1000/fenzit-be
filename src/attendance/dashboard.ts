@@ -107,7 +107,14 @@ export class DashboardService {
       /** The Live Team Pulse rows (2026-10) — collected in the same loop
        *  as the tiles so a row and its count can never disagree. */
       const employees: DashboardEmployeeRow[] = [];
-      const employeeNames = await this.readEmployeeNames(tx, employeeIds);
+      const employeeContacts = await this.readEmployeeContacts(tx, employeeIds);
+      /** The covering approved leave's part, per employee (the on-leave
+       *  rows' detail line). */
+      const leavePartByEmployee = await this.readApprovedLeaveParts(
+        tx,
+        tenantId,
+        today,
+      );
       /** The office registry with today's stats (the picker's subtitles) —
        *  offices with zero tracked employees included (the mock lists
        *  them). */
@@ -196,7 +203,9 @@ export class DashboardService {
           if (checkedIn && outcome.isLate) counts.late += 1;
 
           // The pulse row (2026-10): the same outcome the bucket used,
-          // one wire row per tracked employee.
+          // one wire row per tracked employee — with the detail lines the
+          // list shows: how late, how long worked, when they checked out,
+          // which half of the day their leave covers.
           const pulseStatus: DashboardEmployeeStatus = checkedIn
             ? outcome.isLate
               ? 'late'
@@ -213,13 +222,24 @@ export class DashboardService {
           // null guard is for the type, never a real state.
           const rawCheckIn: Date | string | null =
             row.record?.checkin_at ?? row.override?.manual_checkin_at ?? null;
+          const rawCheckOut: Date | string | null =
+            row.record?.checkout_at ?? row.override?.manual_checkout_at ?? null;
           employees.push({
             employeeId: row.employeeId,
-            employeeName: employeeNames.get(row.employeeId) ?? 'Unknown employee',
+            employeeName: employeeContacts.get(row.employeeId)?.name ?? 'Unknown employee',
+            phone: employeeContacts.get(row.employeeId)?.phone ?? null,
             officeName: row.ctx.officeName,
             status: pulseStatus,
             checkInAt:
               rawCheckIn == null ? null : new Date(rawCheckIn).toISOString(),
+            checkoutAt:
+              rawCheckOut == null ? null : new Date(rawCheckOut).toISOString(),
+            lateMinutes: pulseStatus === 'late' ? outcome.lateMinutes : null,
+            workedMinutes: outcome.workedMinutes,
+            leavePart:
+              pulseStatus === 'on_leave'
+                ? (leavePartByEmployee.get(row.employeeId) ?? null)
+                : null,
           });
         }
       }
@@ -264,17 +284,57 @@ export class DashboardService {
     });
   }
 
-  /** Display names for the pulse rows — one read over the candidate ids. */
-  private async readEmployeeNames(
+  /** The approved leave covering `today`, per employee (the pulse's
+   *  leave-part detail). */
+  private async readApprovedLeaveParts(
+    tx: PoolClient,
+    tenantId: string,
+    today: string,
+  ): Promise<Map<string, 'full_day' | 'first_half' | 'second_half'>> {
+    const { rows } = await tx.query<{
+      employee_id: string;
+      part: 'full_day' | 'first_half' | 'second_half';
+    }>(
+      `select d.employee_id, lr.part
+       from public.leave_request_days d
+       join public.leave_requests lr on lr.id = d.leave_request_id
+       where d.tenant_id = $1::uuid
+         and d.leave_date = $2::date
+         and d.state = 'approved'`,
+      [tenantId, today],
+    );
+    return new Map(rows.map((r) => [r.employee_id, r.part]));
+  }
+
+  /** Display name + phone for the pulse rows — one read over the
+   *  candidate ids (two people can share a name; the phone cannot). */
+  private async readEmployeeContacts(
     tx: PoolClient,
     employeeIds: string[],
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, { name: string; phone: string | null }>> {
     if (employeeIds.length === 0) return new Map();
-    const { rows } = await tx.query<{ id: string; name: string }>(
-      `select id, name from public.users where id = any($1::uuid[])`,
+    const { rows } = await tx.query<{
+      id: string;
+      name: string;
+      country_code: string;
+      phone_number: string;
+    }>(
+      `select id, name, country_code, phone_number
+       from public.users where id = any($1::uuid[])`,
       [employeeIds],
     );
-    return new Map(rows.map((r) => [r.id, r.name]));
+    return new Map(
+      rows.map((r) => [
+        r.id,
+        {
+          name: r.name,
+          phone:
+            r.country_code && r.phone_number
+              ? `${r.country_code} ${r.phone_number}`
+              : null,
+        },
+      ]),
+    );
   }
 
   /**
