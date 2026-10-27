@@ -24,19 +24,23 @@ export interface LookupResult extends Dossier {
   };
 }
 
-/** Splits an E.164-ish number against the known dial codes: the longest
+/** Splits the digits after the '+' against the known dial codes: the longest
  *  matching prefix wins, so '+91 98765 43210' and '+1 212 555 0100' both
- *  resolve. Pure — the dial codes come from the country_codes table. */
+ *  resolve. The table stores dial codes with their own '+' ('+91'), while
+ *  `digits` is the part after the leading '+', so codes are normalised to
+ *  bare digits for the match and restored with the '+' in the result. Pure
+ *  — the dial codes come from the country_codes table. */
 export function splitDialCode(
   digits: string,
   dialCodes: string[],
 ): { countryCode: string; phoneNumber: string } | null {
   const candidates = dialCodes
-    .filter((d) => digits.startsWith(d))
+    .map((code) => (code.startsWith('+') ? code.slice(1) : code))
+    .filter((code) => code.length > 0 && digits.startsWith(code))
     .sort((a, b) => b.length - a.length);
   for (const code of candidates) {
     const rest = digits.slice(code.length);
-    if (/^\d{4,14}$/.test(rest)) return { countryCode: code, phoneNumber: rest };
+    if (/^\d{4,14}$/.test(rest)) return { countryCode: `+${code}`, phoneNumber: rest };
   }
   return null;
 }
