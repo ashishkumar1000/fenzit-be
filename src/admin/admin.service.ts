@@ -24,12 +24,32 @@ export interface LookupResult extends Dossier {
   };
 }
 
-/** Accepts 9876543210, 919876543210 and +91 98765 43210. India-only, like
- *  web login. Null when the input is not an Indian mobile number. */
+/** Splits an E.164-ish number against the known dial codes: the longest
+ *  matching prefix wins, so '+91 98765 43210' and '+1 212 555 0100' both
+ *  resolve. Pure — the dial codes come from the country_codes table. */
+export function splitDialCode(
+  digits: string,
+  dialCodes: string[],
+): { countryCode: string; phoneNumber: string } | null {
+  const candidates = dialCodes
+    .filter((d) => digits.startsWith(d))
+    .sort((a, b) => b.length - a.length);
+  for (const code of candidates) {
+    const rest = digits.slice(code.length);
+    if (/^\d{4,14}$/.test(rest)) return { countryCode: code, phoneNumber: rest };
+  }
+  return null;
+}
+
+/** Accepts the generic full form (`+<dial code> <number>`, spaces and dashes
+ *  ignored) and, for convenience, a bare 10-digit number which defaults to
+ *  +91 — the market the product launches in. Null when nothing matches. */
 export function parsePhone(
   input: string,
+  dialCodes: string[],
 ): { countryCode: string; phoneNumber: string } | null {
-  const digits = input.replace(/[\s()+-]/g, '');
+  const digits = input.replace(/[\s()+.-]/g, '');
+  if (digits.startsWith('+')) return splitDialCode(digits.slice(1), dialCodes);
   if (/^\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits };
   if (/^91\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits.slice(2) };
   return null;
@@ -51,11 +71,11 @@ export class AdminService {
   ) {}
 
   async lookup(phoneInput: string): Promise<LookupResult> {
-    const phone = parsePhone(phoneInput);
+    const phone = parsePhone(phoneInput, await this.dialCodes());
     if (!phone) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Enter a 10-digit Indian mobile number (with optional 91 prefix or +91)',
+        message: 'Enter the full phone number, including the country code (for example +91 98765 43210)',
       });
     }
     const found = await this.pg.withTransaction((tx) => findUserByPhone(tx, phone));
@@ -118,6 +138,22 @@ export class AdminService {
       });
     }
     return { userId, platformAdmin: Boolean(existing.platform_admin) };
+  }
+
+  /** The known dial codes, for splitting a generic +<code><number> input.
+   *  A read-only lookup of the existing country_codes table; if it cannot be
+   *  read the parser still works for +91 and bare 10-digit inputs. */
+  private async dialCodes(): Promise<string[]> {
+    try {
+      const { data, error } = await this.supabaseFactory
+        .createAdmin()
+        .from('country_codes')
+        .select('dial_code');
+      if (error || !data) return ['+91'];
+      return data.map((r: { dial_code: string }) => r.dial_code);
+    } catch {
+      return ['+91'];
+    }
   }
 
   /** The person's first live membership — whose company the dossier's
