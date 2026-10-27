@@ -42,13 +42,14 @@ export function splitDialCode(
 }
 
 /** Accepts the generic full form (`+<dial code> <number>`, spaces and dashes
- *  ignored) and, for convenience, a bare 10-digit number which defaults to
- *  +91 — the market the product launches in. Null when nothing matches. */
+ *  ignored — the leading + survives, it is the signal for the generic path)
+ *  and, for convenience, a bare 10-digit number which defaults to +91 — the
+ *  market the product launches in. Null when nothing matches. */
 export function parsePhone(
   input: string,
   dialCodes: string[],
 ): { countryCode: string; phoneNumber: string } | null {
-  const digits = input.replace(/[\s()+.-]/g, '');
+  const digits = input.replace(/[\s().-]/g, '');
   if (digits.startsWith('+')) return splitDialCode(digits.slice(1), dialCodes);
   if (/^\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits };
   if (/^91\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits.slice(2) };
