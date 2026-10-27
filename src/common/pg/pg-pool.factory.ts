@@ -3,7 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { Pool, PoolClient } from 'pg';
 
 /**
- * Direct Postgres access for the attendance lifecycle writes (15-7).
+ * Direct Postgres access for the attendance lifecycle writes (15-7) and,
+ * since the 2026-10-26 web-admin spec, the AdminModule dossier reads
+ * (raw multi-join SELECT aggregation supabase-js cannot express).
  *
  * Why a raw pool instead of the supabase-js admin client: the AD-8
  * algorithm (delete future → clip covering → insert) and the deferrable

@@ -81,4 +81,8 @@ export enum ErrorCode {
   ATTENDANCE_FUTURE_DATE = 'ATTENDANCE_FUTURE_DATE',
   ATTENDANCE_DATE_NOT_TRACKED = 'ATTENDANCE_DATE_NOT_TRACKED',
   ATTENDANCE_INVALID_RANGE = 'ATTENDANCE_INVALID_RANGE',
+  // Web admin (staff inspect + account flags)
+  /** A platform admin tried to change their own `platform_admin` flag (409) —
+   *  a staff actor cannot demote or promote themselves here. */
+  PLATFORM_ADMIN_SELF = 'PLATFORM_ADMIN_SELF',
 }

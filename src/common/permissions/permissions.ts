@@ -15,6 +15,7 @@ export type Permission =
   | 'member.change_role'
   | 'member.remove'
   | 'user.disable' // platform only
+  | 'user.manage' // platform only — inspect anyone by phone, flip account flags
   | 'audit.read'
   // jobs
   | 'job.read_all'
@@ -42,6 +43,7 @@ export type Permission =
 export const PLATFORM_WIDE_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
   'company.create_own',
   'user.disable',
+  'user.manage',
   'audit.read',
 ]);
 
@@ -67,7 +69,11 @@ const ADMIN_PERMISSIONS: Permission[] = [
 ];
 
 export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> = {
-  [Role.PLATFORM_ADMIN]: new Set<Permission>([...ADMIN_PERMISSIONS, 'user.disable']),
+  [Role.PLATFORM_ADMIN]: new Set<Permission>([
+    ...ADMIN_PERMISSIONS,
+    'user.disable',
+    'user.manage',
+  ]),
   [Role.COMPANY_ADMIN]: new Set<Permission>(ADMIN_PERMISSIONS),
   [Role.EMPLOYEE]: new Set<Permission>([
     'job.read_own',

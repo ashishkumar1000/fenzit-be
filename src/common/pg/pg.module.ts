@@ -7,6 +7,9 @@ import { PgPoolFactory } from './pg-pool.factory';
  * ReportsModule — the report pipeline opens one `withTransaction` per
  * fetch so report fetchers can read the shared day-status grid
  * (common/day-status/grid-reader) through the same transaction discipline.
+ * Since the 2026-10-26 web-admin spec, AdminModule too: the staff dossier
+ * (admin/users/lookup) runs its read-only SELECT aggregation inside one
+ * `withTransaction` for the same statement-timeout discipline.
  */
 @Module({
   providers: [PgPoolFactory],
