@@ -36,3 +36,6 @@ bun.lock
 
 # Supabase CLI local state (project link, CLI version)
 supabase/.temp/
+
+# super CLI purge backups — local-only data dumps with real names/phones
+tmp/

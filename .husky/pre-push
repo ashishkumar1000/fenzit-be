@@ -1,1 +1,3 @@
 bun run typecheck
+bun run typecheck:super
+bun run test:super
