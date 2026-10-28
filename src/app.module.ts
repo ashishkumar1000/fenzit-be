@@ -26,6 +26,7 @@ import { PlacesModule } from './places/places.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
 import { AttendanceModule } from './attendance/attendance.module';
+import { ContactRequestsModule } from './contact-requests/contact-requests.module';
 import { EarlyAccessModule } from './early-access/early-access.module';
 import { CountryCodesModule } from './country-codes/country-codes.module';
 import { AdminModule } from './admin/admin.module';
@@ -177,6 +178,7 @@ import { TelemetryShutdown } from './telemetry';
     ReportsModule,
     AttendanceModule,
     EarlyAccessModule,
+    ContactRequestsModule,
     CountryCodesModule,
     AdminModule,
     MembersModule,
