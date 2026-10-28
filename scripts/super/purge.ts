@@ -472,10 +472,10 @@ export async function preparePurge(db: Db, phoneArg?: string): Promise<PreparedP
       `select u.name, u.phone_number
          from public.tenants t
          join public.users u on u.id = t.created_by
-        where t.id = $2
+        where t.id = $1
           and not exists (select 1 from public.memberships m
                            where m.tenant_id = t.id and m.user_id = t.created_by and m.status = 'active')`,
-      [memberIds, tenantId],
+      [tenantId],
     );
     if (departedFounder.rowCount) {
       const names = (departedFounder.rows as Array<{ name: string | null; phone_number: string }>)

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { findByPhone, likePattern, parsePhone, whoisLines, whoisReport, type Target } from './core';
 import type { Db } from './db';
 import { mintAccessToken } from './accounts';
-import { countPlan, preparePurge } from './purge';
+import { countPlan, EXPECTED_EDGES, preparePurge } from './purge';
 import crypto from 'node:crypto';
 
 /**
@@ -100,6 +100,66 @@ describe('staff rail', () => {
       message = e instanceof Error ? e.message : String(e);
     }
     expect(message).toContain('staff — staff accounts are never touched');
+  });
+});
+
+/**
+ * A stub that enforces Postgres' bind rules: every $N passed must be
+ * referenced by the SQL (an unused one is 42P18), and every $N referenced
+ * must be bound (else 08P01). Plain stubDb never checks this, which is how
+ * the departed-founder bind bug shipped.
+ */
+function bindCheckedDb(plans: QueryPlan[]): Db {
+  const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
+  const db: Db = {
+    driver: 'pg',
+    query: async (text: string, params: unknown[] = []) => {
+      const referenced = [...text.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+      for (let i = 1; i <= params.length; i++) {
+        if (!referenced.includes(i)) throw pgError('42P18', `could not determine data type of parameter $${i}`);
+      }
+      const highest = Math.max(0, ...referenced);
+      if (highest > params.length) throw pgError('08P01', `bind message supplies ${params.length} parameters, but statement requires ${highest}`);
+      const plan = plans.find((p) => p.match(text));
+      return { rows: plan ? plan.rows : [], rowCount: plan ? plan.rows.length : 0 };
+    },
+    transaction: async <T,>(work: (tx: Db) => Promise<T>) => work(db),
+    close: async () => undefined,
+  };
+  return db;
+}
+
+/** Owner target (Happy-Hoye shape) with a clean snapshot, so only the
+ *  company-branch pre-checks decide the outcome. */
+function ownerPlans(overrides: { departedFounder?: Record<string, unknown>[] } = {}): QueryPlan[] {
+  const snapshot = EXPECTED_EDGES.map((edge) => {
+    const [table_name, cols, ref_table, on_delete] = edge.split('|');
+    return { table_name, cols, ref_table, on_delete };
+  });
+  return [
+    { match: (t) => t.includes('pg_constraint'), rows: snapshot },
+    { match: (t) => t.includes('from public.users') && t.includes('where country_code'), rows: [userRow({})] },
+    { match: (t) => t.includes('from public.memberships m') && t.includes('limit 1'), rows: [membershipRow({})] },
+    { match: (t) => t.includes('m.tenant_id <> $2'), rows: [] },
+    { match: (t) => t.includes('select user_id from public.memberships'), rows: [{ user_id: OWNER_ID }] },
+    { match: (t) => t.includes('platform_admin and id = ANY'), rows: [] },
+    { match: (t) => t.includes('t2.created_by = ANY'), rows: [] },
+    { match: (t) => t.includes('not exists'), rows: overrides.departedFounder ?? [] },
+    { match: (t) => t.includes('to_regclass'), rows: [{ reg: 'x' }] },
+    { match: (t) => t.includes('count(*)'), rows: [{ n: 0 }] },
+  ];
+}
+
+describe('preparePurge owner branch (bind contract)', () => {
+  test('a clean company founder prepares a plan without any unbound or unused parameter', async () => {
+    const prepared = await preparePurge(bindCheckedDb(ownerPlans()), '9717331820');
+    expect(prepared.scope).toContain('COMPANY');
+    expect(prepared.plan.length).toBeGreaterThan(0);
+  });
+
+  test('a departed founder is refused with the founder message, not a bind error', async () => {
+    const db = bindCheckedDb(ownerPlans({ departedFounder: [{ name: 'Ashish', phone_number: '9717331820' }] }));
+    await expect(preparePurge(db, '9717331820')).rejects.toThrow("founder (Ashish) no longer has an active membership");
   });
 });
 
