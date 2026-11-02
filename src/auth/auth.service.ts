@@ -261,19 +261,18 @@ export class AuthService {
     );
   }
 
-  async verifyOtp(dto: VerifyOtpDto): Promise<{
-    token: string;
-    user: {
-      userId: string;
-      tenantId: string | null;
-      role: Role | null;
-      name: string | null;
-      platformAdmin: boolean;
-      formerMember: boolean;
-    };
-  }> {
-    const { otpSessionId, otpCode } = dto;
-
+  /**
+   * Checks a code against an open OTP session and returns the session. Used
+   * by login (verifyOtp) and by the public account-deletion request. A wrong
+   * code counts toward the session's lockout. The pre-release master code is
+   * accepted only when `allowPreReleaseMaster` is set, so the deletion route
+   * can never be opened with it.
+   */
+  async checkOtpCode(
+    otpSessionId: string,
+    otpCode: string,
+    allowPreReleaseMaster: boolean,
+  ): Promise<OtpSession> {
     const session = await this.otpSessionStore.get(otpSessionId);
 
     if (!session) {
@@ -292,7 +291,7 @@ export class AuthService {
 
     const isValid =
       (await bcrypt.compare(otpCode, session.otpHash)) ||
-      this.acceptsPreReleaseMasterOtp(otpCode);
+      (allowPreReleaseMaster && this.acceptsPreReleaseMasterOtp(otpCode));
 
     if (!isValid) {
       session.attempts += 1;
@@ -306,16 +305,35 @@ export class AuthService {
         1,
         Math.ceil((session.expiresAt - Date.now()) / 1000),
       );
-      await this.otpSessionStore.set(
-        otpSessionId,
-        session,
-        remainingSeconds,
-      );
+      await this.otpSessionStore.set(otpSessionId, session, remainingSeconds);
       throw new UnauthorizedException({
         error_code: ErrorCode.INVALID_OTP,
         message: 'Invalid OTP code',
       });
     }
+
+    return session;
+  }
+
+  /** Ends an OTP session once its code has been used. */
+  async endOtpSession(otpSessionId: string): Promise<void> {
+    await this.otpSessionStore.delete(otpSessionId);
+  }
+
+  async verifyOtp(dto: VerifyOtpDto): Promise<{
+    token: string;
+    user: {
+      userId: string;
+      tenantId: string | null;
+      role: Role | null;
+      name: string | null;
+      platformAdmin: boolean;
+      formerMember: boolean;
+    };
+  }> {
+    const { otpSessionId, otpCode } = dto;
+
+    const session = await this.checkOtpCode(otpSessionId, otpCode, true);
 
     const adminClient = this.supabaseClientFactory.createAdmin();
     const user = await this.findOrCreateUser(

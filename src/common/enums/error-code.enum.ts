@@ -6,6 +6,8 @@ export enum ErrorCode {
   DUPLICATE_RESOURCE = 'DUPLICATE_RESOURCE',
   /** A photo report was already hidden or dismissed (409). */
   REPORT_ALREADY_RESOLVED = 'REPORT_ALREADY_RESOLVED',
+  /** An account deletion request was already completed or rejected (409). */
+  DELETION_REQUEST_ALREADY_RESOLVED = 'DELETION_REQUEST_ALREADY_RESOLVED',
   /** The invited person is already a member of THIS company (409). Another
    *  company's member gets DUPLICATE_RESOURCE instead. */
   ALREADY_IN_TEAM = 'ALREADY_IN_TEAM',
