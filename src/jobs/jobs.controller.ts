@@ -10,6 +10,7 @@ import {
   HttpCode,
   HttpStatus,
   UseInterceptors,
+  Res,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,6 +28,8 @@ import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { UploadAttachmentDto } from './dto/upload-attachment.dto';
 import { ConfirmAttachmentDto } from './dto/confirm-attachment.dto';
+import { ReportAttachmentDto } from './dto/report-attachment.dto';
+import { AttachmentReportsService } from './attachment-reports.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -40,6 +43,7 @@ export class JobsController {
     private readonly jobsService: JobsService,
     private readonly workflowService: WorkflowService,
     private readonly attachmentsService: AttachmentsService,
+    private readonly attachmentReportsService: AttachmentReportsService,
   ) {}
 
   @Post()
@@ -224,5 +228,35 @@ export class JobsController {
     @Body() dto: ConfirmAttachmentDto,
   ) {
     return this.attachmentsService.confirmUpload(user, id, uploadId, dto);
+  }
+
+  @Post(':id/attachments/:attachmentId/report')
+  @Can('job.read_all', 'job.read_own')
+  @ApiOperation({
+    summary:
+      'Report a job photo for review. Returns 201 for a new report, 200 if this user already reported it.',
+  })
+  @ApiResponse({ status: 201, description: 'Report stored' })
+  @ApiResponse({ status: 200, description: 'Already reported by this user' })
+  @ApiResponse({ status: 400, description: 'Company not set up or malformed id' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Technician, job not assigned to them' })
+  @ApiResponse({ status: 404, description: 'Job or photo not found' })
+  @ApiResponse({ status: 422, description: 'Validation error' })
+  async reportAttachment(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @Body() dto: ReportAttachmentDto,
+    @Res({ passthrough: true }) res: { status(code: number): unknown },
+  ) {
+    const { report, created } = await this.attachmentReportsService.report(
+      user,
+      id,
+      attachmentId,
+      dto,
+    );
+    res.status(created ? HttpStatus.CREATED : HttpStatus.OK);
+    return report;
   }
 }

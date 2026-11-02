@@ -819,6 +819,8 @@ export class JobsService {
         .select('id, attachment_type, r2_key, created_at')
         .eq('job_id', jobId)
         .eq('tenant_id', user.tenantId)
+        // Photos hidden after a report are never shown to anyone.
+        .is('hidden_at', null)
         .order('created_at', { ascending: true }),
     ]);
 

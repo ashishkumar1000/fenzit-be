@@ -4,6 +4,8 @@ export enum ErrorCode {
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   RESOURCE_NOT_FOUND = 'RESOURCE_NOT_FOUND',
   DUPLICATE_RESOURCE = 'DUPLICATE_RESOURCE',
+  /** A photo report was already hidden or dismissed (409). */
+  REPORT_ALREADY_RESOLVED = 'REPORT_ALREADY_RESOLVED',
   /** The invited person is already a member of THIS company (409). Another
    *  company's member gets DUPLICATE_RESOURCE instead. */
   ALREADY_IN_TEAM = 'ALREADY_IN_TEAM',

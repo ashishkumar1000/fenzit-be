@@ -56,7 +56,9 @@ export class SyncService {
       .from('jobs')
       .select(SYNC_JOB_COLUMNS)
       .eq('tenant_id', user.tenantId)
-      .eq('technician_id', user.userId);
+      .eq('technician_id', user.userId)
+      // Photos hidden after a report stay off the device too.
+      .is('attachments.hidden_at', null);
 
     if (lastSyncedAt) {
       query = query.gt('updated_at', lastSyncedAt);

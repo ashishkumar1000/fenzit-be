@@ -77,7 +77,7 @@ describe('SyncService', () => {
 
   function buildChain(data: any[], error: any = null) {
     const chain: any = {};
-    for (const method of ['select', 'eq', 'gt', 'order']) {
+    for (const method of ['select', 'eq', 'gt', 'is', 'order']) {
       chain[method] = jest.fn().mockReturnValue(chain);
     }
     chain.limit = jest.fn().mockResolvedValue({ data, error });

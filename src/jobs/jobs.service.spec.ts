@@ -1165,7 +1165,8 @@ describe('JobsService', () => {
       const attachOrder = jest
         .fn()
         .mockResolvedValue(opts.attachments ?? { data: [], error: null });
-      const attachEq2 = jest.fn().mockReturnValue({ order: attachOrder });
+      const attachIs = jest.fn().mockReturnValue({ order: attachOrder });
+      const attachEq2 = jest.fn().mockReturnValue({ is: attachIs });
       const attachEq1 = jest.fn().mockReturnValue({ eq: attachEq2 });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const chains: Record<string, any> = {};
