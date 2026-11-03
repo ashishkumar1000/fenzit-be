@@ -7,6 +7,7 @@ import { AuthService } from '../auth/auth.service';
 import { VerifyOtpDto } from '../auth/dto/verify-otp.dto';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import type { RequestUser } from '../common/interfaces/request-user.interface';
 
 /**
  * The same answer whether or not an account matches the number, so the page
@@ -57,19 +58,45 @@ export class AccountDeletionService {
     }
 
     if (user) {
-      const { error } = await admin
-        .from('account_deletion_requests')
-        .insert({ user_id: user.id });
-      // A second request while one is open is the same answer, not an error.
-      if (error && error.code !== UNIQUE_VIOLATION) {
-        this.logger.error(
-          `Failed to store deletion request (code=${error.code ?? 'none'})`,
-        );
-        throw this.internal();
-      }
+      await this.fileDeletionRequest(user.id, 'public');
     }
 
     return DELETION_RECEIVED_MESSAGE;
+  }
+
+  /**
+   * Files a deletion request for the signed-in account — the in-app path.
+   * The JWT is the identity proof (RequestUser is built from the database,
+   * never from a client-supplied number), so no OTP round-trip is needed;
+   * the public web flow keeps its code check. Same review afterwards, and
+   * the same one-open-request-per-user idempotency.
+   */
+  async requestForSignedIn(user: RequestUser): Promise<string> {
+    await this.fileDeletionRequest(user.userId, 'signed-in');
+    return DELETION_RECEIVED_MESSAGE;
+  }
+
+  /**
+   * The one insert both filing paths share (public and in-app). A second
+   * request while one is open is the same answer, not an error
+   * (account_deletion_requests_one_open_per_user). Nothing deletes here: a
+   * platform admin reviews the open request.
+   */
+  private async fileDeletionRequest(
+    userId: string,
+    flow: string,
+  ): Promise<void> {
+    const admin = this.supabaseClientFactory.createAdmin();
+    const { error } = await admin
+      .from('account_deletion_requests')
+      .insert({ user_id: userId });
+    if (error && error.code !== UNIQUE_VIOLATION) {
+      // Never log personal data: the flow label is the only context.
+      this.logger.error(
+        `Failed to store ${flow} deletion request (code=${error.code ?? 'none'})`,
+      );
+      throw this.internal();
+    }
   }
 
   private internal(): InternalServerErrorException {
