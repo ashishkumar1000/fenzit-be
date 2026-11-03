@@ -69,7 +69,10 @@ describe('AccountDeletionService', () => {
     const message = await service.requestForSignedIn(signedIn);
 
     expect(from).toHaveBeenCalledWith('account_deletion_requests');
-    expect(insert).toHaveBeenCalledWith({ user_id: signedIn.userId });
+    expect(insert).toHaveBeenCalledWith({
+      user_id: signedIn.userId,
+      source: 'app',
+    });
     expect(message).toBe(DELETION_RECEIVED_MESSAGE);
   });
 
@@ -97,7 +100,7 @@ describe('AccountDeletionService', () => {
       message: 'We could not save your request. Please try again.',
     });
     expect(loggerError).toHaveBeenCalledWith(
-      expect.stringContaining('signed-in deletion request'),
+      expect.stringContaining('app deletion request'),
     );
     expect(loggerError.mock.calls[0][0]).not.toContain(signedIn.userId);
   });
@@ -113,7 +116,7 @@ describe('AccountDeletionService', () => {
       false,
     );
     expect(endOtpSession).toHaveBeenCalledWith(publicDto.otpSessionId);
-    expect(insert).toHaveBeenCalledWith({ user_id: 'user-1' });
+    expect(insert).toHaveBeenCalledWith({ user_id: 'user-1', source: 'web' });
     expect(message).toBe(DELETION_RECEIVED_MESSAGE);
   });
 

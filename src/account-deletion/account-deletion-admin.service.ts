@@ -21,6 +21,8 @@ export interface AccountDeletionQueueItem {
   countryCode: string;
   phoneNumber: string;
   status: string;
+  /** Which surface filed it: the public web page ('web') or the app ('app'). */
+  source: string;
   requestedAt: string;
   reviewedAt: string | null;
 }
@@ -28,6 +30,7 @@ export interface AccountDeletionQueueItem {
 interface QueueRow {
   id: string;
   status: string;
+  source: string;
   created_at: string;
   reviewed_at: string | null;
   users: {
@@ -54,7 +57,7 @@ export class AccountDeletionAdminService {
     const { data, error } = await admin
       .from('account_deletion_requests')
       .select(
-        'id, status, created_at, reviewed_at, users!inner(id, name, country_code, phone_number)',
+        'id, status, source, created_at, reviewed_at, users!inner(id, name, country_code, phone_number)',
       )
       .eq('status', status)
       .order('created_at', { ascending: true })
@@ -71,6 +74,7 @@ export class AccountDeletionAdminService {
       countryCode: row.users.country_code,
       phoneNumber: row.users.phone_number,
       status: row.status,
+      source: row.source,
       requestedAt: row.created_at,
       reviewedAt: row.reviewed_at,
     }));

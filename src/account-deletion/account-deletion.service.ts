@@ -58,7 +58,7 @@ export class AccountDeletionService {
     }
 
     if (user) {
-      await this.fileDeletionRequest(user.id, 'public');
+      await this.fileDeletionRequest(user.id, 'web');
     }
 
     return DELETION_RECEIVED_MESSAGE;
@@ -72,7 +72,7 @@ export class AccountDeletionService {
    * the same one-open-request-per-user idempotency.
    */
   async requestForSignedIn(user: RequestUser): Promise<string> {
-    await this.fileDeletionRequest(user.userId, 'signed-in');
+    await this.fileDeletionRequest(user.userId, 'app');
     return DELETION_RECEIVED_MESSAGE;
   }
 
@@ -80,20 +80,21 @@ export class AccountDeletionService {
    * The one insert both filing paths share (public and in-app). A second
    * request while one is open is the same answer, not an error
    * (account_deletion_requests_one_open_per_user). Nothing deletes here: a
-   * platform admin reviews the open request.
+   * platform admin reviews the open request. `source` records which surface
+   * filed it (the admin queue shows it).
    */
   private async fileDeletionRequest(
     userId: string,
-    flow: string,
+    source: 'web' | 'app',
   ): Promise<void> {
     const admin = this.supabaseClientFactory.createAdmin();
     const { error } = await admin
       .from('account_deletion_requests')
-      .insert({ user_id: userId });
+      .insert({ user_id: userId, source });
     if (error && error.code !== UNIQUE_VIOLATION) {
-      // Never log personal data: the flow label is the only context.
+      // Never log personal data: the source label is the only context.
       this.logger.error(
-        `Failed to store ${flow} deletion request (code=${error.code ?? 'none'})`,
+        `Failed to store ${source} deletion request (code=${error.code ?? 'none'})`,
       );
       throw this.internal();
     }
