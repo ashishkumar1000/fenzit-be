@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ForwardGeocodedPlace,
   PlacesProvider,
   PlaceSuggestion,
   PlacesRegion,
@@ -36,6 +37,10 @@ export const SIMULATE_REVERSE_ERROR_POINT = {
   latitude: 0,
   longitude: 0,
 };
+
+/** Address the mock treats as a forward-geocode provider failure (non-production only). */
+export const SIMULATE_FORWARD_ERROR_ADDRESS =
+  '__simulate_forward_geocode_failure__';
 
 /** Deterministic fixtures keyed by a lowercase substring of the query. */
 const FIXTURE_SUGGESTIONS: Record<string, PlaceSuggestion[]> = {
@@ -240,5 +245,37 @@ export class MockPlacesProvider extends PlacesProvider {
           pincode: match.pincode,
         }
       : { formattedAddress: null, city: null, pincode: null };
+  }
+
+  /**
+   * Deterministic forward geocode for tests: a case-insensitive substring
+   * match against the reverse fixtures' addresses. No match is the null
+   * shape, never a throw. The failure sentinel below only fires outside
+   * production, like the reverse one.
+   */
+  async forwardGeocode(address: string): Promise<ForwardGeocodedPlace> {
+    if (
+      process.env['NODE_ENV'] !== 'production' &&
+      address === SIMULATE_FORWARD_ERROR_ADDRESS
+    ) {
+      throw new Error('Simulated Places forwardGeocode provider failure');
+    }
+
+    const needle = address.trim().toLowerCase();
+    // An empty needle would match every fixture; treat it as not found.
+    const match =
+      needle === ''
+        ? undefined
+        : FIXTURE_REVERSE_ADDRESSES.find((fixture) =>
+            (fixture.formattedAddress ?? '').toLowerCase().includes(needle),
+          );
+    if (!match) {
+      return { formattedAddress: null, latitude: null, longitude: null };
+    }
+    return {
+      formattedAddress: match.formattedAddress,
+      latitude: match.latitude,
+      longitude: match.longitude,
+    };
   }
 }

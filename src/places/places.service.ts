@@ -4,6 +4,7 @@ import {
   PlacesProvider,
   PlaceSuggestion,
   ResolvedPlace,
+  ForwardGeocodedPlace,
   ReverseGeocodedAddress,
 } from './places-provider';
 import { PlacesRateLimitStore } from './places-rate-limit.store';
@@ -31,6 +32,19 @@ export const RESOLVE_RATE_LIMIT_MAX = 10;
 // pan (never per frame), so its budget matches resolve's.
 export const REVERSE_RATE_LIMIT_WINDOW_SECONDS = 60;
 export const REVERSE_RATE_LIMIT_MAX = 10;
+
+// Bulk-import forward geocode budget (CAP-3). Per staff user, not per tenant:
+// a staff member works across many companies, and the limit protects the
+// Google key from a runaway script. Override via PLACES_GEOCODE_RATE_LIMIT_*.
+export interface GeocodeAddressParts {
+  address: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+}
+
+const GEOCODE_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const GEOCODE_RATE_LIMIT_MAX = 60;
 
 export interface AutosuggestResult {
   suggestions: PlaceSuggestion[];
@@ -179,6 +193,82 @@ export class PlacesService {
         upstreamMessage,
       );
     }
+  }
+
+  /**
+   * Forward geocodes a typed address for the staff bulk-import screen
+   * (CAP-3). Staff-only at the controller. Not-found is a 200 with null
+   * coordinates. Budget is per staff user, not per tenant.
+   */
+  async geocodeAddress(
+    user: RequestUser,
+    parts: GeocodeAddressParts,
+  ): Promise<ForwardGeocodedPlace> {
+    // Only parts with text count as filled. The street is what the lookup is
+    // built around: a blank street with a city or PIN must not match a place.
+    const filled = (part: string | undefined): string => (part ?? '').trim();
+    const street = filled(parts.address);
+    // Every filled part goes into one query, so the match uses all the data.
+    const address = [
+      street,
+      filled(parts.city),
+      filled(parts.state),
+      filled(parts.pincode),
+    ]
+      .filter((part) => part !== '')
+      .join(', ');
+    const upstreamMessage =
+      'Unable to find coordinates for this address right now';
+    const budget = this.rateLimitBudget(
+      'PLACES_GEOCODE_RATE_LIMIT_WINDOW_SECONDS',
+      'PLACES_GEOCODE_RATE_LIMIT_MAX',
+      GEOCODE_RATE_LIMIT_WINDOW_SECONDS,
+      GEOCODE_RATE_LIMIT_MAX,
+    );
+
+    await this.enforceRateLimit(
+      `${user.userId}:geocode`,
+      budget.windowSeconds,
+      budget.max,
+      'geocode',
+      upstreamMessage,
+    );
+
+    // Nothing to look up without a street: not found, and no provider call.
+    if (street === '')
+      return { formattedAddress: null, latitude: null, longitude: null };
+
+    let result: ForwardGeocodedPlace;
+    try {
+      result = await this.placesProvider.forwardGeocode(address);
+    } catch (error) {
+      this.throwUpstreamError(
+        'Places provider failed to forward geocode:',
+        error,
+        upstreamMessage,
+      );
+    }
+    // Contract guard (same idea as resolve()): never pass a half or out-of-range
+    // coordinate pair to the client, whatever the provider returned.
+    const { latitude, longitude } = result;
+    const bothNull = latitude === null && longitude === null;
+    const bothValid =
+      typeof latitude === 'number' &&
+      typeof longitude === 'number' &&
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180;
+    if (!bothNull && !bothValid) {
+      this.throwUpstreamError(
+        'Places provider returned invalid forward-geocode coordinates',
+        new Error('invalid forward-geocode coordinates'),
+        upstreamMessage,
+      );
+    }
+    return result;
   }
 
   /**

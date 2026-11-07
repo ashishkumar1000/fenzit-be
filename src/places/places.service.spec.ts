@@ -33,6 +33,7 @@ describe('PlacesService', () => {
       autosuggest: jest.fn(),
       resolve: jest.fn(),
       reverseGeocode: jest.fn(),
+      forwardGeocode: jest.fn(),
     };
 
     const mockRateLimitStore = {

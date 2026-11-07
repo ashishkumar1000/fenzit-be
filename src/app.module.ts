@@ -111,6 +111,17 @@ import { TelemetryShutdown } from './telemetry';
           .positive()
           .max(2147483647)
           .optional(),
+        // Bulk-import forward-geocode budget (staff, per user; CAP-3).
+        PLACES_GEOCODE_RATE_LIMIT_WINDOW_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
+        PLACES_GEOCODE_RATE_LIMIT_MAX: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .optional(),
         // Report module (Epic 12). Presign TTL drives the status endpoint's
         // download links today; the poll interval, job cap and attempt cap
         // are consumed by the generation worker (story 12-3).

@@ -36,6 +36,18 @@ export interface ReverseGeocodedAddress {
 }
 
 /**
+ * Coordinates found for a typed address (bulk customer import, CAP-3). Both
+ * coordinates are `null` together when the address matches nothing — that is
+ * a success with the null shape, never a throw. A transport or provider
+ * failure throws.
+ */
+export interface ForwardGeocodedPlace {
+  formattedAddress: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/**
  * Abstract address-autosuggest provider. `places.module.ts` binds
  * `GooglePlacesProvider` outside tests and `MockPlacesProvider` in tests;
  * both slot in behind this same signature with zero controller/service
@@ -64,4 +76,10 @@ export abstract class PlacesProvider {
     latitude: number,
     longitude: number,
   ): Promise<ReverseGeocodedAddress>;
+
+  /**
+   * Forward geocode a typed address into coordinates (bulk customer import).
+   * Same Geocoding API as `reverseGeocode`, so the same server-side key.
+   */
+  abstract forwardGeocode(address: string): Promise<ForwardGeocodedPlace>;
 }

@@ -22,6 +22,8 @@ export interface DossierUser {
 }
 
 export interface DossierMembership {
+  /** The company (tenant) id. Staff send it as X-Company-Id. */
+  companyId: string;
   company: string;
   role: string;
   status: string;
@@ -199,8 +201,15 @@ function payloadSummary(p: unknown): string | null {
   const o = p as Record<string, unknown>;
   const parts: string[] = [];
   for (const k of [
-    'employeeName', 'officeName', 'leaveDate', 'workDate', 'startDate',
-    'endDate', 'workingDays', 'pendingCount', 'notCheckedInCount',
+    'employeeName',
+    'officeName',
+    'leaveDate',
+    'workDate',
+    'startDate',
+    'endDate',
+    'workingDays',
+    'pendingCount',
+    'notCheckedInCount',
   ]) {
     if (o[k] !== undefined && o[k] !== null) parts.push(String(o[k]));
   }
@@ -262,36 +271,58 @@ export async function buildDossier(
     [id],
   );
   const [
-    webCounts, mems, offices, jobs, attRecent, attCounts, attempts, leave,
-    leaveDays, leaveEvents, skills, invites, authored, notifs, audit, activity,
-    reports, company,
+    webCounts,
+    mems,
+    offices,
+    jobs,
+    attRecent,
+    attCounts,
+    attempts,
+    leave,
+    leaveDays,
+    leaveEvents,
+    skills,
+    invites,
+    authored,
+    notifs,
+    audit,
+    activity,
+    reports,
+    company,
   ] = await Promise.all([
-    soft(tx.query(
-      `select (select count(*) from public.attendance_records where employee_id = $1) as attendance_records,
+    soft(
+      tx.query(
+        `select (select count(*) from public.attendance_records where employee_id = $1) as attendance_records,
               (select count(*) from public.attendance_attempts where employee_id = $1) as attendance_attempts,
               (select count(*) from public.leave_requests where employee_id = $1) as leave_requests,
               (select count(*) from public.report_requests where requested_by = $1) as reports,
               (select count(*) from public.activity_logs where actor_id = $1
                  or job_id in (select id from public.jobs where technician_id = $1)) as activity_rows,
               (select count(*) from public.memberships where invited_by = $1) as invites_sent`,
-      [id],
-    )),
-    soft(tx.query(
-      `select m.role, m.status, m.employee_code, m.created_at, t.company_name, t.created_by,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select m.tenant_id, m.role, m.status, m.employee_code, m.created_at, t.company_name, t.created_by,
               (select u.name from public.users u where u.id = m.invited_by) as invited_by_name
          from public.memberships m join public.tenants t on t.id = m.tenant_id
         where m.user_id = $1 order by m.created_at`,
-      [id],
-    )),
-    soft(tx.query(
-      `select o.name, o.formatted_address, o.radius_m, oa.valid::text as valid
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select o.name, o.formatted_address, o.radius_m, oa.valid::text as valid
          from public.attendance_office_assignments oa
          join public.attendance_offices o on o.id = oa.office_id
         where oa.employee_id = $1 order by o.name`,
-      [id],
-    )),
-    soft(tx.query(
-      `select j.job_number, j.status, j.priority, j.scheduled_start, j.current_step,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select j.job_number, j.status, j.priority, j.scheduled_start, j.current_step,
               j.completed_at, j.service_location,
               (select count(*) from public.attachments where job_id = j.id) as photos,
               c.name as customer, s.name as skill
@@ -300,104 +331,133 @@ export async function buildDossier(
          left join public.skills s on s.id = j.skill_id
         where j.technician_id = $1
         order by j.created_at desc limit 8`,
-      [id],
-    )),
-    soft(tx.query(
-      `select to_char(work_date, 'YYYY-MM-DD') as work_date, checkin_at, checkout_at,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select to_char(work_date, 'YYYY-MM-DD') as work_date, checkin_at, checkout_at,
               checkin_mocked as mocked, checkin_distance_m, checkout_distance_m
          from public.attendance_records where employee_id = $1
         order by work_date desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select (select count(*) from public.attendance_attempts where employee_id = $1) as attempts,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select (select count(*) from public.attendance_attempts where employee_id = $1) as attempts,
               (select count(*) from public.attendance_corrections where employee_id = $1 or actor_id = $1) as corrections,
               (select count(*) from public.attendance_day_overrides where employee_id = $1 or created_by = $1) as overrides,
               (select count(*) from public.attendance_day_overrides where created_by = $1) as overrides_authored,
               (select count(*) from public.attendance_weekly_off_overrides where employee_id = $1) as weekly_off,
               (select count(*) from public.attendance_enrolments where employee_id = $1) as enrolments`,
-      [id],
-    )),
-    soft(tx.query(
-      `select kind, outcome, provider, distance_m, mocked, created_at
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select kind, outcome, provider, distance_m, mocked, created_at
          from public.attendance_attempts where employee_id = $1
         order by created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select to_char(lr.start_date, 'YYYY-MM-DD') as start_date,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select to_char(lr.start_date, 'YYYY-MM-DD') as start_date,
               to_char(lr.end_date, 'YYYY-MM-DD') as end_date, lr.part, lr.reason,
               (select lrd.state from public.leave_request_days lrd
                 where lrd.leave_request_id = lr.id order by lrd.leave_date desc limit 1) as last_state
          from public.leave_requests lr where lr.employee_id = $1
         order by lr.created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select to_char(leave_date, 'YYYY-MM-DD') as leave_date, state
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select to_char(leave_date, 'YYYY-MM-DD') as leave_date, state
          from public.leave_request_days
         where employee_id = $1 order by leave_date desc limit 10`,
-      [id],
-    )),
-    soft(tx.query(
-      `select le.cause, le.reason, le.affected_dates::text as dates, le.created_at,
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select le.cause, le.reason, le.affected_dates::text as dates, le.created_at,
               u.name as actor
          from public.leave_events le left join public.users u on u.id = le.actor_id
         where le.employee_id = $1 order by le.created_at desc limit 8`,
-      [id],
-    )),
-    soft(tx.query(
-      `select s.name from public.user_skills us join public.skills s on s.id = us.skill_id
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select s.name from public.user_skills us join public.skills s on s.id = us.skill_id
         where us.user_id = $1 order by s.name`,
-      [id],
-    )),
-    soft(tx.query(
-      `select u.name, u.phone_number, t.company_name, m.role, m.status
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select u.name, u.phone_number, t.company_name, m.role, m.status
          from public.memberships m
          join public.users u on u.id = m.user_id
          join public.tenants t on t.id = m.tenant_id
         where m.invited_by = $1 order by m.created_at desc limit 8`,
-      [id],
-    )),
-    soft(tx.query(
-      `select to_char(c.work_date, 'YYYY-MM-DD') as work_date, e.name as employee, c.note
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select to_char(c.work_date, 'YYYY-MM-DD') as work_date, e.name as employee, c.note
          from public.attendance_corrections c left join public.users e on e.id = c.employee_id
         where c.actor_id = $1 order by c.created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select event_type, payload, read_at, pushed_at, created_at from public.notifications
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select event_type, payload, read_at, pushed_at, created_at from public.notifications
         where user_id = $1 order by created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select action, (actor_user_id = $1) as is_actor, created_at from public.audit_log
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select action, (actor_user_id = $1) as is_actor, created_at from public.audit_log
         where actor_user_id = $1 or target_user_id = $1 order by created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select a.event_type, j.job_number, a.created_at
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select a.event_type, j.job_number, a.created_at
          from public.activity_logs a left join public.jobs j on j.id = a.job_id
         where a.actor_id = $1 or a.job_id in (select id from public.jobs where technician_id = $1)
         order by a.created_at desc limit 5`,
-      [id],
-    )),
-    soft(tx.query(
-      `select report_type, status, created_at from public.report_requests
+        [id],
+      ),
+    ),
+    soft(
+      tx.query(
+        `select report_type, status, created_at from public.report_requests
         where requested_by = $1 order by created_at desc limit 5`,
-      [id],
-    )),
+        [id],
+      ),
+    ),
     liveMembership
-      ? soft(tx.query(
-        `select (t.created_by = $2) as is_founder, t.address, t.state_code, t.timezone,
+      ? soft(
+          tx.query(
+            `select (t.created_by = $2) as is_founder, t.address, t.state_code, t.timezone,
                 t.gstin, t.upi_vpa,
                 (select count(*) from public.customers where tenant_id = t.id) as customers,
                 (select count(*) from public.jobs where tenant_id = t.id) as jobs,
                 (select count(*) from public.memberships where tenant_id = t.id) as members,
                 (select count(*) from public.attendance_records where tenant_id = t.id) as attendance_rows
            from public.tenants t where t.id = $1`,
-        [liveMembership.tenantId, id],
-      ))
+            [liveMembership.tenantId, id],
+          ),
+        )
       : Promise.resolve({ rows: [] as Row[] }),
   ]);
 
@@ -422,6 +482,7 @@ export async function buildDossier(
       invitesSent: num(wc.invites_sent),
     },
     memberships: (mems.rows as Row[]).map((m) => ({
+      companyId: String(m.tenant_id),
       company: String(m.company_name),
       role: String(m.role),
       status: String(m.status),
@@ -453,8 +514,10 @@ export async function buildDossier(
         workDate: String(r.work_date),
         checkin: iso(r.checkin_at),
         checkout: iso(r.checkout_at),
-        checkinDistance: r.checkin_distance_m == null ? null : num(r.checkin_distance_m),
-        checkoutDistance: r.checkout_distance_m == null ? null : num(r.checkout_distance_m),
+        checkinDistance:
+          r.checkin_distance_m == null ? null : num(r.checkin_distance_m),
+        checkoutDistance:
+          r.checkout_distance_m == null ? null : num(r.checkout_distance_m),
         mocked: Boolean(r.mocked),
       })),
       attempts: (attempts.rows as Row[]).map((a) => ({
@@ -534,18 +597,18 @@ export async function buildDossier(
     company:
       liveMembership && tr
         ? {
-          name: liveMembership.companyName,
-          members: num(tr.members),
-          customers: num(tr.customers),
-          jobs: num(tr.jobs),
-          attendanceRows: num(tr.attendance_rows),
-          address: str(tr.address),
-          state: str(tr.state_code),
-          timezone: str(tr.timezone),
-          isFounder: Boolean(tr.is_founder),
-          gstin: str(tr.gstin),
-          upi: str(tr.upi_vpa),
-        }
+            name: liveMembership.companyName,
+            members: num(tr.members),
+            customers: num(tr.customers),
+            jobs: num(tr.jobs),
+            attendanceRows: num(tr.attendance_rows),
+            address: str(tr.address),
+            state: str(tr.state_code),
+            timezone: str(tr.timezone),
+            isFounder: Boolean(tr.is_founder),
+            gstin: str(tr.gstin),
+            upi: str(tr.upi_vpa),
+          }
         : null,
   };
 }

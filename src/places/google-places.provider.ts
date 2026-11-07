@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ForwardGeocodedPlace,
   PlacesProvider,
   PlaceSuggestion,
   PlacesRegion,
@@ -69,6 +70,9 @@ interface GoogleGeocodeAddressComponent {
 interface GoogleGeocodeResult {
   formatted_address?: string;
   address_components?: GoogleGeocodeAddressComponent[];
+  geometry?: {
+    location?: { lat?: number; lng?: number };
+  };
 }
 
 /** Legacy Geocoding API response. `status` is 'OK' | 'ZERO_RESULTS' | … */
@@ -263,6 +267,56 @@ export class GooglePlacesProvider extends PlacesProvider {
       formattedAddress: result.formatted_address || null,
       city: cityComponent?.long_name || null,
       pincode: pincodeComponent?.long_name || null,
+    };
+  }
+
+  /**
+   * Forward geocode (bulk customer import, CAP-3). Same Legacy Geocoding
+   * endpoint and key placement as `reverseGeocode`; `components=country:IN`
+   * keeps matches inside the one supported region. ZERO_RESULTS is a
+   * success with null coordinates; any other non-OK status throws.
+   */
+  async forwardGeocode(address: string): Promise<ForwardGeocodedPlace> {
+    const url = new URL(GEOCODING_API_URL);
+    url.searchParams.set('address', address);
+    url.searchParams.set('components', 'country:IN');
+    url.searchParams.set('key', this.apiKey);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Google Geocoding request failed with status ${response.status}`,
+      );
+    }
+
+    const body = (await response.json()) as GoogleGeocodeResponse;
+
+    if (body.status === 'ZERO_RESULTS') {
+      return { formattedAddress: null, latitude: null, longitude: null };
+    }
+    if (body.status !== 'OK') {
+      throw new Error(
+        `Google Geocoding forward lookup returned status ${body.status}` +
+          (body.error_message ? `: ${body.error_message}` : ''),
+      );
+    }
+
+    const result = body.results?.[0];
+    const lat = result?.geometry?.location?.lat;
+    const lng = result?.geometry?.location?.lng;
+    if (!result || typeof lat !== 'number' || typeof lng !== 'number') {
+      // OK with no usable geometry reads as not found, never a crash.
+      return { formattedAddress: null, latitude: null, longitude: null };
+    }
+
+    return {
+      formattedAddress: result.formatted_address || null,
+      latitude: lat,
+      longitude: lng,
     };
   }
 }

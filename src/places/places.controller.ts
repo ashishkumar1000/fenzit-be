@@ -20,6 +20,8 @@ import { PlaceIdParamsDto } from './dto/place-id-params.dto';
 import { ResolveQueryDto } from './dto/resolve-query.dto';
 import { ResolvedPlaceDto } from './dto/resolve-response.dto';
 import { ReverseQueryDto } from './dto/reverse-query.dto';
+import { GeocodeQueryDto } from './dto/geocode-query.dto';
+import { GeocodeResponseDto } from './dto/geocode-response.dto';
 import { ReverseGeocodedAddressDto } from './dto/reverse-response.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -99,7 +101,8 @@ export class PlacesController {
   @Can('places.search')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Reverse geocode raw coordinates into an address (map-picker pin row)',
+    summary:
+      'Reverse geocode raw coordinates into an address (map-picker pin row)',
   })
   @ApiResponse({
     status: 200,
@@ -120,10 +123,42 @@ export class PlacesController {
       'Rate limit exceeded — response carries a Retry-After header (seconds to wait before retrying)',
   })
   @ApiResponse({ status: 502, description: 'Places provider upstream error' })
-  reverse(
-    @CurrentUser() user: RequestUser,
-    @Query() query: ReverseQueryDto,
-  ) {
+  reverse(@CurrentUser() user: RequestUser, @Query() query: ReverseQueryDto) {
     return this.placesService.reverse(user, query.lat, query.lng);
+  }
+
+  // Staff-only (user.manage): the bulk-import screen geocodes typed addresses
+  // on the staff member's own account, not on a company's. Owners get 403.
+  @Get('geocode')
+  @Can('user.manage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Forward geocode a typed address into coordinates (staff bulk import)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Coordinates, or all fields null when the address matches nothing',
+    type: GeocodeResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — staff only' })
+  @ApiResponse({
+    status: 422,
+    description: 'Validation error — address empty or too long',
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'Rate limit exceeded — Retry-After header set',
+  })
+  @ApiResponse({ status: 502, description: 'Places provider upstream error' })
+  geocode(@CurrentUser() user: RequestUser, @Query() query: GeocodeQueryDto) {
+    return this.placesService.geocodeAddress(user, {
+      address: query.address,
+      city: query.city,
+      state: query.state,
+      pincode: query.pincode,
+    });
   }
 }

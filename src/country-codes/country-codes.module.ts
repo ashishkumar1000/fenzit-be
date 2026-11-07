@@ -7,5 +7,6 @@ import { CountryCodesService } from './country-codes.service';
   imports: [SupabaseModule],
   controllers: [CountryCodesController],
   providers: [CountryCodesService],
+  exports: [CountryCodesService],
 })
 export class CountryCodesModule {}
