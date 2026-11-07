@@ -1,8 +1,9 @@
 import { ApiPropertyOptional, PartialType } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { trim } from '../../common/utils/trim.transformer';
 import { StructuredAddressDto } from '../../common/dto/structured-address.dto';
+import { MaxCodePoints } from '../../common/validators/max-code-points';
 
 /**
  * Body for `PATCH /api/v1/customers/:id` (SPEC-edit-customer CAP-4).
@@ -31,6 +32,6 @@ export class UpdateCustomerDto extends PartialType(StructuredAddressDto) {
   @Transform(trim)
   @IsString()
   @IsNotEmpty({ message: 'name must not be empty or whitespace' })
-  @MaxLength(120)
+  @MaxCodePoints(120)
   name?: string;
 }

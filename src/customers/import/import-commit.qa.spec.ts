@@ -396,7 +396,7 @@ describe('ImportCommitService (QA)', () => {
   });
 
   describe('log hygiene: no phone number or address in any log line', () => {
-    it('logs only codes and row numbers when every write fails', async () => {
+    it('logs only codes and row numbers when the rows and the final batch update fail', async () => {
       const logged: string[] = [];
       const spies = (['error', 'warn', 'log'] as const).map((level) =>
         jest
@@ -413,8 +413,9 @@ describe('ImportCommitService (QA)', () => {
         { table: 'customers', op: 'insert' },
         { throws: '9123456789 Secret Lane' },
       );
+      // The batch row is written first now, so its failure is the final refresh.
       h.db.failNext(
-        { table: 'import_batches', op: 'insert' },
+        { table: 'import_batches', op: 'update' },
         { throws: '9000000001 77 Secret Lane' },
       );
       await expect(

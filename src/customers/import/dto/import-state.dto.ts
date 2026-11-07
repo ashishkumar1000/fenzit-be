@@ -1,6 +1,7 @@
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { trim } from '../../../common/utils/trim.transformer';
+import { MaxCodePoints } from '../../../common/validators/max-code-points';
 
 /**
  * The import's state cell (up to 100 characters, same as city). Manual create
@@ -11,6 +12,6 @@ export class ImportStateDto {
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxLength(100)
+  @MaxCodePoints(100)
   state?: string;
 }

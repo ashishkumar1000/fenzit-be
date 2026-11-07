@@ -29,12 +29,17 @@ import {
  * comes from the request user, never the body. Every row is re-checked by
  * the same validation the validate endpoint uses.
  *
- * Order of writes: customer rows (each on its own), then the import batch
- * row, then the company audit entry, then the replay record. There is no
- * cross-table transaction through the Supabase client, so a failure partway
- * is reported, and a retry is safe: phone matching turns rows that already
- * saved into updates, not duplicates.
+ * Order of writes: the import batch row (all N rows counted as failed), then
+ * customer rows (each on its own, with the batch counts refreshed every
+ * PROGRESS_EVERY rows and at the end), then the company audit entry, then the
+ * replay record. There is no cross-table transaction through the Supabase
+ * client. A run that dies mid-way therefore leaves a batch row with partial
+ * counts and no audit entry, and its claim stays pending until it goes stale.
+ * A retry is safe: phone matching turns rows that already saved into updates,
+ * not duplicates.
  */
+/** How often the batch row is refreshed while rows are being written. */
+const PROGRESS_EVERY = 25;
 @Injectable()
 export class ImportCommitService {
   private readonly logger = new Logger(ImportCommitService.name);
@@ -78,6 +83,26 @@ export class ImportCommitService {
       await releaseImportKey(admin, tenantId, idempotencyKey, claim.claimToken);
       throw error;
     }
+    // The batch row goes in BEFORE any customer write, so a run that dies
+    // mid-loop is still visible. Until rows are counted, every row is failed.
+    const total = sheet.rows.length;
+    let batchId: string;
+    try {
+      batchId = await this.insertBatch(
+        admin,
+        owner,
+        dto.fileName ?? DEFAULT_IMPORT_FILE_NAME,
+        total,
+      );
+    } catch (error) {
+      // Nothing written yet, so a retry with this key may run again.
+      await releaseImportKey(admin, tenantId, idempotencyKey, claim.claimToken);
+      throw error;
+    }
+
+    // From the first customer write on, the claim is NOT released on error.
+    // The rows are saved, so a retry must wait for the claim to go stale
+    // (a stalled run is taken over and re-run, and its saved rows update).
     const rows: CommitRowResult[] = [];
     for (const row of sheet.rows) {
       rows.push(
@@ -90,15 +115,13 @@ export class ImportCommitService {
               reasons: row.reasons,
             },
       );
+      if (rows.length % PROGRESS_EVERY === 0 && rows.length < total) {
+        await this.syncBatch(admin, owner, batchId, tally(rows, total), false);
+      }
     }
 
-    const summary = tally(rows);
-    const batchId = await this.insertBatch(
-      admin,
-      owner,
-      dto.fileName ?? DEFAULT_IMPORT_FILE_NAME,
-      summary,
-    );
+    const summary = tally(rows, total);
+    await this.syncBatch(admin, owner, batchId, summary, true);
     await this.writeAudit(admin, owner, batchId, summary);
 
     const response: ImportCommitResponse = { batchId, rows, summary };
@@ -106,12 +129,16 @@ export class ImportCommitService {
     return response;
   }
 
-  /** One row per run: who, which company, file name and the three counts. */
+  /**
+   * One row per run: who, which company, file name and the counts. Starts with
+   * every row counted as failed, so created + updated + failed = total holds
+   * from the first moment the row exists.
+   */
   private async insertBatch(
     admin: SupabaseClient,
     owner: RequestUser,
     fileName: string,
-    summary: CommitSummary,
+    total: number,
   ): Promise<string> {
     // A network fault rejects instead of returning an error: both stop the
     // run with the same stated 500.
@@ -123,10 +150,10 @@ export class ImportCommitService {
           tenant_id: owner.tenantId,
           actor_user_id: owner.userId,
           file_name: fileName,
-          row_total: summary.total,
-          created_count: summary.created,
-          updated_count: summary.updated,
-          failed_count: summary.failed,
+          row_total: total,
+          created_count: 0,
+          updated_count: 0,
+          failed_count: total,
         })
         .select('id')
         .single<{ id: string }>();
@@ -140,6 +167,39 @@ export class ImportCommitService {
       throw this.recordFailed();
     }
     return page.data.id;
+  }
+
+  /**
+   * Writes the three counts to the batch row. Mid-run (final = false) a failure
+   * is logged and the run goes on: the next refresh or the final one corrects
+   * the row. The final refresh must land, or the run is reported as failed.
+   */
+  private async syncBatch(
+    admin: SupabaseClient,
+    owner: RequestUser,
+    batchId: string,
+    summary: CommitSummary,
+    final: boolean,
+  ): Promise<void> {
+    let error: { code?: string } | null;
+    try {
+      ({ error } = await admin
+        .from('import_batches')
+        .update({
+          created_count: summary.created,
+          updated_count: summary.updated,
+          failed_count: summary.failed,
+        })
+        .eq('id', batchId)
+        .eq('tenant_id', owner.tenantId));
+    } catch {
+      error = { code: 'network' };
+    }
+    if (!error) return;
+    this.logger.error(
+      `Failed to update import_batches (code=${error.code ?? 'none'}, final=${final})`,
+    );
+    if (final) throw this.recordFailed();
   }
 
   /** Company-level entry for the owner's audit log. Counts only, no values. */
@@ -184,13 +244,15 @@ export class ImportCommitService {
   }
 }
 
-function tally(rows: CommitRowResult[]): CommitSummary {
+/**
+ * Counts so far. Rows not yet written still count as failed, so the three
+ * counts always sum to the total (the batch row's CHECK needs that). Once every
+ * row is in, this is exact.
+ */
+function tally(rows: CommitRowResult[], total: number): CommitSummary {
   const count = (status: CommitRowResult['status']) =>
     rows.filter((r) => r.status === status).length;
-  return {
-    total: rows.length,
-    created: count('created'),
-    updated: count('updated'),
-    failed: count('failed'),
-  };
+  const created = count('created');
+  const updated = count('updated');
+  return { total, created, updated, failed: total - created - updated };
 }

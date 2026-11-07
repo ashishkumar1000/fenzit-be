@@ -10,6 +10,7 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { trim } from '../../common/utils/trim.transformer';
+import { MaxCodePoints } from '../validators/max-code-points';
 
 /**
  * The 8 optional structured-address fields shared by every customer-creation
@@ -29,14 +30,14 @@ export class StructuredAddressDto {
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxLength(255)
+  @MaxCodePoints(255)
   address?: string;
 
   @ApiPropertyOptional({ example: 'Bengaluru', description: 'City' })
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxLength(100)
+  @MaxCodePoints(100)
   city?: string;
 
   @ApiPropertyOptional({
@@ -91,6 +92,6 @@ export class StructuredAddressDto {
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxLength(255)
+  @MaxCodePoints(255)
   addressDetails?: string;
 }
