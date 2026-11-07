@@ -29,6 +29,26 @@ describe('CreateContactRequestDto', () => {
     expect(dto.phone).toBe('+919876543210');
   });
 
+  it('treats a blank phone as no phone at all', async () => {
+    const { dto, fields } = await check({
+      kind: 'call_back',
+      phone: '   ',
+    });
+
+    expect(fields).toEqual([]);
+    expect(dto.phone).toBeUndefined();
+  });
+
+  it('reads a 00 international prefix as a plus sign', async () => {
+    const { dto, fields } = await check({
+      kind: 'call_back',
+      phone: '0044 20 7946 0958',
+    });
+
+    expect(fields).toEqual([]);
+    expect(dto.phone).toBe('+442079460958');
+  });
+
   it('rejects a kind other than call_back or demo', async () => {
     const { fields } = await check({
       kind: 'newsletter',
