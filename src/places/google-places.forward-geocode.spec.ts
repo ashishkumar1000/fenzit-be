@@ -24,7 +24,15 @@ const okBody = (overrides: Record<string, unknown> = {}) => ({
   ],
 });
 
-const nullShape = { formattedAddress: null, latitude: null, longitude: null };
+const nullShape = {
+  formattedAddress: null,
+  latitude: null,
+  longitude: null,
+  approximate: false,
+  city: null,
+  state: null,
+  pincode: null,
+};
 
 describe('GooglePlacesProvider.forwardGeocode (QA)', () => {
   let provider: GooglePlacesProvider;
@@ -132,6 +140,10 @@ describe('GooglePlacesProvider.forwardGeocode (QA)', () => {
         formattedAddress: 'MG Road, Bengaluru, Karnataka 560001, India',
         latitude: 12.9759,
         longitude: 77.6068,
+        approximate: false,
+        city: null,
+        state: null,
+        pincode: null,
       });
     });
 
@@ -147,6 +159,10 @@ describe('GooglePlacesProvider.forwardGeocode (QA)', () => {
         formattedAddress: 'MG Road, Bengaluru, Karnataka 560001, India',
         latitude: 0,
         longitude: 0,
+        approximate: false,
+        city: null,
+        state: null,
+        pincode: null,
       });
     });
 
@@ -196,6 +212,10 @@ describe('GooglePlacesProvider.forwardGeocode (QA)', () => {
         formattedAddress: 'First',
         latitude: 1,
         longitude: 2,
+        approximate: false,
+        city: null,
+        state: null,
+        pincode: null,
       });
     });
   });

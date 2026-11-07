@@ -270,12 +270,24 @@ export class MockPlacesProvider extends PlacesProvider {
             (fixture.formattedAddress ?? '').toLowerCase().includes(needle),
           );
     if (!match) {
-      return { formattedAddress: null, latitude: null, longitude: null };
+      return {
+        formattedAddress: null,
+        latitude: null,
+        longitude: null,
+        approximate: false,
+        city: null,
+        state: null,
+        pincode: null,
+      };
     }
     return {
       formattedAddress: match.formattedAddress,
       latitude: match.latitude,
       longitude: match.longitude,
+      approximate: false,
+      city: match.city ?? null,
+      state: null,
+      pincode: match.pincode ?? null,
     };
   }
 }

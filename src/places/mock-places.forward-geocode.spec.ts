@@ -5,7 +5,15 @@ import {
   SIMULATE_FORWARD_ERROR_ADDRESS,
 } from './mock-places.provider';
 
-const nullShape = { formattedAddress: null, latitude: null, longitude: null };
+const nullShape = {
+  formattedAddress: null,
+  latitude: null,
+  longitude: null,
+  approximate: false,
+  city: null,
+  state: null,
+  pincode: null,
+};
 
 describe('MockPlacesProvider.forwardGeocode (QA)', () => {
   let provider: MockPlacesProvider;
@@ -35,6 +43,10 @@ describe('MockPlacesProvider.forwardGeocode (QA)', () => {
         formattedAddress: 'Koramangala, Bengaluru, Karnataka 560034, India',
         latitude: 12.9352,
         longitude: 77.6245,
+        approximate: false,
+        city: 'Bengaluru',
+        state: null,
+        pincode: '560034',
       });
     });
 

@@ -79,6 +79,17 @@ interface GoogleGeocodeResult {
   };
 }
 
+/** Forward lookup with no usable match: the null shape, never approximate. */
+const NO_FORWARD_MATCH: ForwardGeocodedPlace = {
+  formattedAddress: null,
+  latitude: null,
+  longitude: null,
+  approximate: false,
+  city: null,
+  state: null,
+  pincode: null,
+};
+
 /** Legacy Geocoding API response. `status` is 'OK' | 'ZERO_RESULTS' | … */
 interface GoogleGeocodeResponse {
   status?: string;
@@ -300,7 +311,7 @@ export class GooglePlacesProvider extends PlacesProvider {
     const body = (await response.json()) as GoogleGeocodeResponse;
 
     if (body.status === 'ZERO_RESULTS') {
-      return { formattedAddress: null, latitude: null, longitude: null };
+      return NO_FORWARD_MATCH;
     }
     if (body.status !== 'OK') {
       throw new Error(
@@ -314,22 +325,28 @@ export class GooglePlacesProvider extends PlacesProvider {
     const lng = result?.geometry?.location?.lng;
     if (!result || typeof lat !== 'number' || typeof lng !== 'number') {
       // OK with no usable geometry reads as not found, never a crash.
-      return { formattedAddress: null, latitude: null, longitude: null };
+      return NO_FORWARD_MATCH;
     }
-    // A partial match or an approximate (area-centre) result would save a
-    // customer's pin at the wrong place. Refuse it: the staff member fixes
-    // the address or fills the coordinates by hand.
-    if (
-      result.partial_match === true ||
-      result.geometry?.location_type === 'APPROXIMATE'
-    ) {
-      return { formattedAddress: null, latitude: null, longitude: null };
-    }
+    // A partial match saves a pin at a place the staff member did not type, so
+    // it is refused. An approximate (area-centre) match is returned with
+    // approximate: true, so the screen can flag it for a check.
+    if (result.partial_match === true) return NO_FORWARD_MATCH;
+
+    // Legacy components: locality is the city, administrative_area_level_1 the
+    // state, postal_code the PIN. Empty strings normalise to null.
+    const part = (type: string): string | null =>
+      result.address_components?.find((component) =>
+        component.types?.includes(type),
+      )?.long_name || null;
 
     return {
       formattedAddress: result.formatted_address || null,
       latitude: lat,
       longitude: lng,
+      approximate: result.geometry?.location_type === 'APPROXIMATE',
+      city: part('locality'),
+      state: part('administrative_area_level_1'),
+      pincode: part('postal_code'),
     };
   }
 }

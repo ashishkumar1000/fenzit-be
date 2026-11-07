@@ -23,11 +23,19 @@ const NOT_FOUND: ForwardGeocodedPlace = {
   formattedAddress: null,
   latitude: null,
   longitude: null,
+  approximate: false,
+  city: null,
+  state: null,
+  pincode: null,
 };
 const KORAMANGALA = {
   formattedAddress: 'Koramangala, Bengaluru, Karnataka 560034, India',
   latitude: 12.9352,
   longitude: 77.6245,
+  approximate: false,
+  city: 'Bengaluru',
+  state: null,
+  pincode: '560034',
 };
 
 function service(provider: PlacesProvider): PlacesService {

@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { MaxCodePoints } from '../../common/validators/max-code-points';
 import { trim } from '../../common/utils/trim.transformer';
+import { CUSTOMER_NAME_MAX } from '../../common/constants/customer-field-limits';
 
 /**
  * Forward-geocode query. The server joins every filled part (address, city,
@@ -18,6 +20,16 @@ export class GeocodeQueryDto {
   @MinLength(3)
   @MaxLength(255)
   address: string;
+
+  @ApiPropertyOptional({
+    example: 'Ravi Kumar',
+    description: 'Customer name, sent first in the lookup',
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxCodePoints(CUSTOMER_NAME_MAX)
+  name?: string;
 
   @ApiPropertyOptional({ example: 'Bengaluru', description: 'City (max 100)' })
   @IsOptional()

@@ -42,7 +42,24 @@ export const REVERSE_RATE_LIMIT_MAX = 10;
 // Bulk-import forward geocode budget (CAP-3). Per staff user, not per tenant:
 // a staff member works across many companies, and the limit protects the
 // Google key from a runaway script. Override via PLACES_GEOCODE_RATE_LIMIT_*.
+/** Joins the filled parts with commas. Blank parts are left out. */
+function joinParts(parts: string[]): string {
+  return parts.filter((part) => part !== '').join(', ');
+}
+
+/** The not-found shape, used before any lookup has run. */
+const NO_PLACE: ForwardGeocodedPlace = {
+  formattedAddress: null,
+  latitude: null,
+  longitude: null,
+  approximate: false,
+  city: null,
+  state: null,
+  pincode: null,
+};
+
 export interface GeocodeAddressParts {
+  name?: string;
   address: string;
   city?: string;
   state?: string;
@@ -223,14 +240,20 @@ export class PlacesService {
     const filled = (part: string | undefined): string => (part ?? '').trim();
     const street = filled(parts.address);
     // Every filled part goes into one query, so the match uses all the data.
-    const address = [
+    const state = filled(parts.state);
+    // First try: every filled part, the customer's name included, so the
+    // match uses all the data. If Google finds nothing, retry with just the
+    // street and state, which often matches a locality the name confuses.
+    const fullQuery = joinParts([
+      filled(parts.name),
       street,
       filled(parts.city),
-      filled(parts.state),
+      state,
       filled(parts.pincode),
-    ]
-      .filter((part) => part !== '')
-      .join(', ');
+    ]);
+    const fallbackQuery = joinParts([street, state]);
+    const queries =
+      fallbackQuery === fullQuery ? [fullQuery] : [fullQuery, fallbackQuery];
     const upstreamMessage =
       'Unable to find coordinates for this address right now';
     const budget = this.rateLimitBudget(
@@ -250,17 +273,29 @@ export class PlacesService {
 
     // Nothing to look up without a street: not found, and no provider call.
     if (street === '')
-      return { formattedAddress: null, latitude: null, longitude: null };
+      return {
+        formattedAddress: null,
+        latitude: null,
+        longitude: null,
+        approximate: false,
+        city: null,
+        state: null,
+        pincode: null,
+      };
 
-    let result: ForwardGeocodedPlace;
-    try {
-      result = await this.placesProvider.forwardGeocode(address);
-    } catch (error) {
-      this.throwUpstreamError(
-        'Places provider failed to forward geocode:',
-        error,
-        upstreamMessage,
-      );
+    // One budget unit per staff request, however many lookups it takes.
+    let result: ForwardGeocodedPlace = NO_PLACE;
+    for (const query of queries) {
+      try {
+        result = await this.placesProvider.forwardGeocode(query);
+      } catch (error) {
+        this.throwUpstreamError(
+          'Places provider failed to forward geocode:',
+          error,
+          upstreamMessage,
+        );
+      }
+      if (result.latitude !== null) break;
     }
     // Contract guard (same idea as resolve()): never pass a half or out-of-range
     // coordinate pair to the client, whatever the provider returned.

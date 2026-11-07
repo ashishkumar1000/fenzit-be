@@ -120,7 +120,7 @@ describe('GeocodeQueryDto (QA)', () => {
       });
       expect(dto).not.toHaveProperty('latitude');
       expect(dto).not.toHaveProperty('longitude');
-      const allowed = ['address', 'city', 'state', 'pincode'];
+      const allowed = ['name', 'address', 'city', 'state', 'pincode'];
       expect(Object.keys(dto).filter((key) => !allowed.includes(key))).toEqual(
         [],
       );

@@ -155,6 +155,7 @@ export class PlacesController {
   @ApiResponse({ status: 502, description: 'Places provider upstream error' })
   geocode(@CurrentUser() user: RequestUser, @Query() query: GeocodeQueryDto) {
     return this.placesService.geocodeAddress(user, {
+      name: query.name,
       address: query.address,
       city: query.city,
       state: query.state,

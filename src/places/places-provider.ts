@@ -45,6 +45,12 @@ export interface ForwardGeocodedPlace {
   formattedAddress: string | null;
   latitude: number | null;
   longitude: number | null;
+  /** True when the provider gave only an area centre (no street-level match). */
+  approximate: boolean;
+  /** Filled from the match's address parts; null when the match has no such part. */
+  city: string | null;
+  state: string | null;
+  pincode: string | null;
 }
 
 /**
