@@ -85,7 +85,7 @@ describe('SkillsService', () => {
 
       await service.listGlobalSkills(ownerUser);
 
-      expect(select).toHaveBeenCalledWith('id, name, description, icon');
+      expect(select).toHaveBeenCalledWith('id, name, description, icon, is_fallback');
       expect(eq).toHaveBeenCalledWith('is_active', true);
       expect(order).toHaveBeenCalledWith('sort_order', { ascending: true });
     });

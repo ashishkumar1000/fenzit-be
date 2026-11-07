@@ -52,7 +52,7 @@ export class InviteMemberDto {
     type: [String],
     example: ['550e8400-e29b-41d4-a716-446655440001'],
     description:
-      'Global skills-catalog UUIDs (max 20). Required, at least one, for an employee; optional for other roles.',
+      'Global skills-catalog UUIDs (max 20). Optional for every role; an invite may go out with no skills.',
   })
   @ValidateIf((o: InviteMemberDto) => o.skillIds !== undefined)
   @IsArray()

@@ -154,9 +154,9 @@ columns — otherwise every `GET /notifications` 500s on the unknown column.
 
 Invite a technician by phone number. Creates a `users` row with `status: invited`.
 
-**Body:** `{ phone: string, countryCode: string, skillIds: UUID[] (min 1, max 20, unique) }`
+**Body:** `{ phone: string, countryCode: string, skillIds: UUID[] (optional, may be empty, max 20, unique) }`
 
-`skillIds` are global skills-catalog UUIDs — exactly what `GET /skills` serves.
+`skillIds` are global skills-catalog UUIDs — exactly what `GET /skills` serves. Skills are optional for every role, so an invite may go out with an empty list.
 
 **Responses:**
 - `201` — `{ invite_id: UUID }`

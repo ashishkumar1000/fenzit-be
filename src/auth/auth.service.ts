@@ -527,16 +527,9 @@ export class AuthService {
     }
 
     const role = dto.role ?? Role.EMPLOYEE;
+    // Skills are optional for every role: a technician can be invited with
+    // none and get skills later. An empty list is valid for the RPC below.
     const skillIds = [...new Set(dto.skillIds ?? [])];
-    if (role === Role.EMPLOYEE && skillIds.length === 0) {
-      throw new HttpException(
-        {
-          error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'At least one skill ID is required',
-        },
-        422,
-      );
-    }
 
     const admin = this.supabaseClientFactory.createAdmin();
 
