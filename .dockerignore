@@ -14,3 +14,6 @@ cloudflare-worker
 .env*
 Dockerfile
 render.yaml
+# Render copies Secret Files into the build context root. The Dockerfile only
+# copies named files, but keep the FCM sender key out of the context anyway.
+fenzit-fcm-sender.json

@@ -31,6 +31,7 @@ import { AccountDeletionModule } from './account-deletion/account-deletion.modul
 import { CountryCodesModule } from './country-codes/country-codes.module';
 import { AdminModule } from './admin/admin.module';
 import { MembersModule } from './members/members.module';
+import { PushModule } from './push/push.module';
 import { TelemetryShutdown } from './telemetry';
 
 @Module({
@@ -145,6 +146,29 @@ import { TelemetryShutdown } from './telemetry';
           .positive()
           .max(100)
           .default(1),
+        // Push delivery (SPEC-firebase-integration, CAP-1/2). Default noop:
+        // pushes stay OFF in every environment until the FCM sender service
+        // account is mounted and the var is flipped explicitly (staged
+        // rollout — the backend deploys before any app build that sends
+        // tokens). An explicit fcm REQUIRES GOOGLE_APPLICATION_CREDENTIALS
+        // at boot — a bad flip is a boot error, never a runtime push outage.
+        PUSH_DELIVERY_PROVIDER: Joi.string().valid('noop', 'fcm').optional(),
+        GOOGLE_APPLICATION_CREDENTIALS: Joi.string()
+          .when('PUSH_DELIVERY_PROVIDER', {
+            is: 'fcm',
+            then: Joi.string().required(),
+          })
+          .optional(),
+        PUSH_SWEEP_INTERVAL_SECONDS: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483)
+          .default(5),
+        PUSH_MAX_AGE_MINUTES: Joi.number()
+          .integer()
+          .positive()
+          .max(2147483647)
+          .default(15),
       }),
       validationOptions: {
         abortEarly: false,
@@ -182,6 +206,7 @@ import { TelemetryShutdown } from './telemetry';
     CountryCodesModule,
     AdminModule,
     MembersModule,
+    PushModule,
   ],
   controllers: [HealthController],
   providers: [

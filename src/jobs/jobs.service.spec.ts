@@ -311,8 +311,12 @@ describe('JobsService', () => {
   });
 
   it('creates a job (newCustomer path) via findOrCreateByPhone and skips customer validation', async () => {
+    // Mock fidelity (job.assigned amendment): the real CustomerResponse
+    // always carries `name`, and createJob now hands it to the assignment
+    // notification so the newCustomer path needs NO customers-table read.
     customersService.findOrCreateByPhone.mockResolvedValue({
       id: 'cust-new',
+      name: 'New Customer',
       createdVia: 'job_creation',
     });
     const { from, rpc } = mockAdmin({});

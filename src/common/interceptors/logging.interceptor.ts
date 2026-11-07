@@ -50,7 +50,7 @@ export class LoggingInterceptor implements NestInterceptor {
         session_id: correlation?.sessionId ?? request.sessionId ?? null,
         user_id: request.user?.userId ?? null,
         tenant_id: request.user?.tenantId ?? null,
-        route: `${request.method} ${request.url}`,
+        route: `${request.method} ${redactRouteSecrets(request.url)}`,
         http_status: httpStatus,
         duration_ms: durationMs,
         // Client metadata headers (server-driven-config spec, CAP-3): which
@@ -72,4 +72,17 @@ function headerOrNull(
   const value = request.headers[name];
   if (Array.isArray(value)) return (value[0] as string) ?? null;
   return (value as string) ?? null;
+}
+
+/**
+ * Device tokens (FCM registration tokens) are server-side credentials and ride
+ * in the DELETE path. Never let the raw token reach the access log: replace the
+ * path segment after /device-tokens/ with a placeholder. The query string is
+ * dropped too so a future query-carried secret cannot leak either.
+ */
+export function redactRouteSecrets(url: string): string {
+  const path = url.split('?')[0] ?? url;
+  return path.replace(/^(\/api\/v1)?\/device-tokens\/[^/]+/, (m) =>
+    m.replace(/\/device-tokens\/[^/]+$/, '/device-tokens/:token'),
+  );
 }

@@ -26,6 +26,7 @@ import { StorageService } from '../storage/storage.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
+import { insertJobAssignedNotification } from './job-notifications';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobPriority } from './enums/job-priority.enum';
@@ -285,6 +286,9 @@ export class JobsService {
     const admin = this.supabaseClientFactory.createAdmin();
 
     // Resolve the customer id (link/create via dedup, or validate existing).
+    // The new-customer path hands back the full row, so the assignment
+    // notification's payload can carry the name without re-reading.
+    let knownCustomerName: string | null = null;
     let customerId: string;
     if (dto.newCustomer) {
       const customer = await this.customersService.findOrCreateByPhone(
@@ -292,6 +296,7 @@ export class JobsService {
         dto.newCustomer,
       );
       customerId = customer.id;
+      knownCustomerName = customer.name ?? null;
     } else {
       customerId = dto.customerId as string;
       const { data, error } = await admin
@@ -418,6 +423,20 @@ export class JobsService {
       });
     }
 
+    // Job assignment is a notification (user decision 2026-11-07): the new
+    // technician hears about the job through the bell (and, with push live,
+    // the OS). Skip when the acting user IS the technician (assigning work
+    // to yourself must not ring your own bell); the helper is log-and-drop,
+    // so a failed insert never fails the job write or this response.
+    if (rows[0].technician_id !== owner.userId) {
+      await insertJobAssignedNotification(
+        admin,
+        rows[0],
+        rows[0].technician_id,
+        knownCustomerName,
+      );
+    }
+
     return this.toResponse(
       // The RPC returns bare job rows; re-fetch with the skill/template embeds
       // so the create response carries the full read shape (Story 4.5).
@@ -488,6 +507,27 @@ export class JobsService {
     }
 
     const admin = this.supabaseClientFactory.createAdmin();
+
+    // The CURRENT technician, read before the RPC so the assignment
+    // notification below fires only on an actual CHANGE (a no-op PATCH
+    // carrying the incumbent's id must not ring their bell). null means
+    // the pre-read failed or found nothing — the notification is skipped
+    // (a missed bell is recoverable — the job list still shows the truth;
+    // a spurious one is not retractable).
+    let previousTechnicianId: string | null = null;
+    if (dto.technicianId) {
+      const { data: current, error } = await admin
+        .from('jobs')
+        .select('technician_id')
+        .eq('id', jobId)
+        .eq('tenant_id', owner.tenantId)
+        .maybeSingle<{ technician_id: string }>();
+      if (error) {
+        this.logger.error('Failed to read the job before update:', { error });
+      } else {
+        previousTechnicianId = current?.technician_id ?? null;
+      }
+    }
 
     // AC#7 — when reassigning, the new technician must belong to the tenant and be
     // a technician. Mirrors createJob's technician validation exactly.
@@ -579,6 +619,23 @@ export class JobsService {
         error_code: ErrorCode.RESOURCE_NOT_FOUND,
         message: 'Job not found',
       });
+    }
+
+    // Job assignment is a notification (user decision 2026-11-07): a
+    // reassignment to a DIFFERENT technician notifies the new one only —
+    // never the acting admin, never the previous technician, never a
+    // no-op reassign. Log-and-drop, like the create path.
+    if (
+      dto.technicianId &&
+      previousTechnicianId !== null &&
+      dto.technicianId !== previousTechnicianId &&
+      rows[0].technician_id !== owner.userId
+    ) {
+      await insertJobAssignedNotification(
+        admin,
+        rows[0],
+        rows[0].technician_id,
+      );
     }
 
     return this.toResponse(

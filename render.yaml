@@ -55,3 +55,16 @@ services:
         value: mock
       - key: MSG91_AUTH_KEY
         sync: false
+      # Firebase push (SPEC-firebase-integration). Unset = noop (nothing is
+      # sent). Cutover, in order: the device_tokens migration is on
+      # production; this code is deployed; the fenzit-fcm-sender
+      # service-account JSON is attached as the Secret File
+      # `fenzit-fcm-sender.json` (mounted at /etc/secrets/ — readable because
+      # the container's `bun` user is uid/gid 1000); then set
+      # GOOGLE_APPLICATION_CREDENTIALS to /etc/secrets/fenzit-fcm-sender.json
+      # and PUSH_DELIVERY_PROVIDER to fcm. fcm without the path refuses to
+      # boot. Never the project-wide firebase-adminsdk key; never in git.
+      - key: PUSH_DELIVERY_PROVIDER
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        sync: false
