@@ -46,14 +46,18 @@ export interface Step {
 }
 
 /**
- * 2026-10-26 snapshot of every RESTRICT / NO-ACTION foreign key that
+ * 2026-11-07 snapshot of every RESTRICT / NO-ACTION foreign key that
  * references users, memberships, tenants, jobs or customers. Compared
  * sorted (column order in pg_constraint differs between environments) and
  * CASCADE edges are ignored — they can never block a delete.
  * Checked, not trusted: any mismatch aborts the run.
  */
 export const EXPECTED_EDGES: readonly string[] = [
+  'account_deletion_requests|reviewed_by|users|r',
+  'account_deletion_requests|user_id|users|r',
   'activity_logs|actor_id|users|a',
+  'attachment_reports|reporter_id|users|r',
+  'attachment_reports|reviewed_by|users|r',
   'attendance_attempts|employee_id,tenant_id|memberships|r',
   'attendance_corrections|actor_id|users|r',
   'attendance_corrections|employee_id,tenant_id|memberships|r',
@@ -89,6 +93,8 @@ export const EXPECTED_EDGES: readonly string[] = [
   'notifications|tenant_id|tenants|a',
   'notifications|user_id|users|a',
   'report_requests|requested_by|users|r',
+  'skill_requests|requested_by|users|r',
+  'skill_requests|tenant_id|tenants|r',
   'tenants|created_by|users|r',
 ].sort();
 
@@ -125,6 +131,9 @@ export function personPlan(userId: string): Step[] {
     one('attendance_office_assignments', 'employee_id = $1'),
     one('attendance_onboarding', 'employee_id = $1'),
     one('attendance_weekly_off_overrides', 'employee_id = $1'),
+    // Photo reports this person filed, plus reports on their jobs' photos
+    // (those photos go below). reporter_id RESTRICTs the users delete.
+    { table: 'attachment_reports', where: 'reporter_id = $1 OR attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where technician_id = $1))', params: [u] },
     // The job's attachments CASCADE away with the job — delete and back them
     // up explicitly, or a restore brings the job back without its photos.
     { table: 'attachment_uploads', where: 'job_id in (select id from public.jobs where technician_id = $1)', params: [u] },
@@ -132,6 +141,8 @@ export function personPlan(userId: string): Step[] {
     one('jobs', 'technician_id = $1'),
     one('notifications', 'user_id = $1'),
     one('report_requests', 'requested_by = $1'),
+    one('skill_requests', 'requested_by = $1'),
+    one('account_deletion_requests', 'user_id = $1'),
     one('user_skills', 'user_id = $1'),
     { table: 'memberships', where: 'invited_by = $1', params: [u], updateSet: 'invited_by = NULL' },
     one('memberships', 'user_id = $1'),
@@ -175,7 +186,14 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     ct('attendance_weekly_off_overrides', 'employee_id = ANY($1::uuid[])'),
     ct('notifications', 'user_id = ANY($1::uuid[])'),
     ct('report_requests', 'requested_by = ANY($1::uuid[])'),
+    ct('skill_requests', 'requested_by = ANY($1::uuid[])'),
+    // Account-deletion requests have no tenant_id, so no ct() twin: every
+    // member's request goes, wherever they belong.
+    { table: 'account_deletion_requests', where: 'user_id = ANY($1::uuid[])', params: [m] },
     ct('activity_logs', 'actor_id = ANY($1::uuid[])'),
+    // Photo reports by members, or on the cross-tenant jobs' photos, go with
+    // the photos (explicitly, so the backup holds them).
+    ct('attachment_reports', 'reporter_id = ANY($1::uuid[]) or attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where technician_id = ANY($1::uuid[])))'),
     // The cross-tenant jobs' attachments CASCADE away with them — delete and
     // back them up explicitly, or a restore brings those jobs back without
     // their photos.
@@ -183,6 +201,7 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     ct('attachments', 'job_id in (select id from public.jobs where technician_id = ANY($1::uuid[]))'),
     ct('jobs', 'technician_id = ANY($1::uuid[])'),
     byTenant('activity_logs'),
+    byTenant('attachment_reports'),
     byTenant('attachment_uploads'),
     byTenant('attachments'),
     byTenant('notifications'),
@@ -209,6 +228,7 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     byTenant('jobs'),
     byTenant('customers'),
     byTenant('report_requests'),
+    byTenant('skill_requests'),
     byTenant('idempotency_log'),
     byTenant('job_sequences'),
     byTenant('employee_sequences'),
@@ -410,6 +430,18 @@ export interface PreparedPurge {
   total: number;
 }
 
+/** Counts the account-deletion and photo-report requests these people REVIEWED.
+ *  Their reviewed_by column cannot be NULLed without breaking the table's
+ *  review-consistency CHECK, so any hit blocks the purge. Runs before logins go. */
+export async function reviewedRequestCount(db: Db, ids: string[]): Promise<number> {
+  const { rows } = await db.query(
+    `select (select count(*) from public.account_deletion_requests where reviewed_by = ANY($1::uuid[]))
+          + (select count(*) from public.attachment_reports where reviewed_by = ANY($1::uuid[])) as n`,
+    [ids],
+  );
+  return Number(rows[0].n);
+}
+
 /** Resolves the phone to a person and builds the full purge plan with counts. Throws on drift or refusals. */
 export async function preparePurge(db: Db, phoneArg?: string): Promise<PreparedPurge> {
   if (!phoneArg) throw new Error('usage: super purge <phone>');
@@ -441,6 +473,9 @@ export async function preparePurge(db: Db, phoneArg?: string): Promise<PreparedP
       );
     }
     const memberIds = await memberIdsOfTenant(db, tenantId);
+    if ((await reviewedRequestCount(db, memberIds)) > 0) {
+      throw new Error(`Members of "${target.membership.companyName}" reviewed account-deletion or photo-report requests. This tool cannot clear those review records — resolve that first.`);
+    }
     const staffMembers = await db.query(
       `select name, phone_number from public.users where platform_admin and id = ANY($1::uuid[])`,
       [memberIds],
@@ -494,6 +529,9 @@ export async function preparePurge(db: Db, phoneArg?: string): Promise<PreparedP
       missingTables,
       total: counts.reduce((n, c) => n + c.n, 0),
     };
+  }
+  if ((await reviewedRequestCount(db, [target.id])) > 0) {
+    throw new Error(`${describe(target)} reviewed account-deletion or photo-report requests. This tool cannot clear those review records — resolve that first.`);
   }
   const blocker = await db.query('select 1 from public.tenants where created_by = $1', [target.id]);
   if (blocker.rowCount) {

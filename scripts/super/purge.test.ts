@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { EXPECTED_EDGES, companyPlan, personPlan } from './purge';
+import { EXPECTED_EDGES, companyPlan, personPlan, reviewedRequestCount } from './purge';
+import type { Db } from './db';
 
 /**
  * The purge plans are the dangerous core of the tool: one wrong step and
@@ -172,5 +173,102 @@ describe('EXPECTED_EDGES snapshot hygiene', () => {
     const sorted = [...EXPECTED_EDGES].sort();
     expect(EXPECTED_EDGES).toEqual(sorted);
     expect(new Set(EXPECTED_EDGES).size).toBe(EXPECTED_EDGES.length);
+  });
+
+  test('snapshot includes the edges of the 2026-11 tables (account deletion, photo reports, skill requests)', () => {
+    for (const edge of [
+      'account_deletion_requests|reviewed_by|users|r',
+      'account_deletion_requests|user_id|users|r',
+      'attachment_reports|reporter_id|users|r',
+      'attachment_reports|reviewed_by|users|r',
+      'skill_requests|requested_by|users|r',
+      'skill_requests|tenant_id|tenants|r',
+    ]) {
+      expect(EXPECTED_EDGES, edge).toContain(edge);
+    }
+  });
+});
+
+describe('reviewed-request refusal', () => {
+  const stubDb = (n: string, seen: unknown[][]) =>
+    ({
+      query: async (_text: string, params?: unknown[]) => {
+        seen.push(params ?? []);
+        return { rows: [{ n }], rowCount: 1 };
+      },
+    }) as unknown as Db;
+
+  test('a person who reviewed any request counts as blocked (sum of both tables)', async () => {
+    const seen: unknown[][] = [];
+    expect(await reviewedRequestCount(stubDb('2', seen), ['u1'])).toBe(2);
+    expect(seen[0]).toEqual([['u1']]);
+  });
+
+  test('no reviews means no block', async () => {
+    expect(await reviewedRequestCount(stubDb('0', []), ['u1'])).toBe(0);
+  });
+});
+
+describe('2026-11 tables are purged with their people and company', () => {
+  test('person plan removes the person\'s own requests and photo reports before users', () => {
+    const plan = personPlan('u');
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    const adr = plan.find((s) => s.table === 'account_deletion_requests');
+    const sk = plan.find((s) => s.table === 'skill_requests');
+    const rep = plan.find((s) => s.table === 'attachment_reports');
+    for (const step of [adr, sk, rep]) {
+      expect(step).toBeDefined();
+      expect(plan.indexOf(step!)).toBeLessThan(usersAt);
+    }
+    expect(adr!.where).toBe('user_id = $1');
+    expect(sk!.where).toBe('requested_by = $1');
+    expect(rep!.where).toContain('reporter_id = $1');
+    // Reports on the person's job photos go too — they would cascade away silently otherwise.
+    expect(rep!.where).toContain('attachment_id in (select id from public.attachments');
+    // ...and only on photos of THIS person's jobs, never on the whole platform.
+    expect(rep!.where).toContain('job_id in (select id from public.jobs where technician_id = $1)');
+  });
+
+  test('person photo reports are backed up before the job attachments cascade them away', () => {
+    const plan = personPlan('u');
+    const repAt = plan.findIndex((s) => s.table === 'attachment_reports');
+    const attAt = plan.findIndex((s) => s.table === 'attachments');
+    expect(repAt).toBeGreaterThan(-1);
+    expect(repAt).toBeLessThan(attAt);
+  });
+
+  test('company plan: members\' requests go across every company; the company\'s own rows go by tenant', () => {
+    const plan = companyPlan('t', ['m1', 'm2']);
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    const adr = plan.find((s) => s.table === 'account_deletion_requests');
+    expect(adr).toBeDefined();
+    expect(adr!.where).toBe('user_id = ANY($1::uuid[])');
+    expect(adr!.params).toEqual([['m1', 'm2']]);
+    // No tenant_id column on this table, so it must not be given a tenant twin.
+    expect(plan.filter((s) => s.table === 'account_deletion_requests')).toHaveLength(1);
+
+    const skOwn = plan.find((s) => s.table === 'skill_requests' && s.where === 'tenant_id = $1');
+    const skCross = plan.find((s) => s.table === 'skill_requests' && s.where.includes('tenant_id <> $2'));
+    expect(skOwn).toBeDefined();
+    expect(skCross).toBeDefined();
+    expect(skCross!.params).toEqual([['m1', 'm2'], 't']);
+
+    const repOwn = plan.find((s) => s.table === 'attachment_reports' && s.where === 'tenant_id = $1');
+    const repCross = plan.find((s) => s.table === 'attachment_reports' && s.where.includes('tenant_id <> $2'));
+    expect(repOwn).toBeDefined();
+    expect(repCross).toBeDefined();
+    // The cross-tenant step is scoped to the members (reporter, or the photo of a member's job) — never "all other tenants".
+    expect(repCross!.where).toContain('reporter_id = ANY($1::uuid[])');
+    expect(repCross!.where).toContain('technician_id = ANY($1::uuid[])');
+    expect(repCross!.params).toEqual([['m1', 'm2'], 't']);
+
+    // Every new step is gone before users; own-tenant reports go before the
+    // tenant's attachments (so the receipt counts them rather than a cascade).
+    for (const step of [adr, skOwn, skCross, repOwn, repCross]) {
+      expect(plan.indexOf(step!)).toBeLessThan(usersAt);
+    }
+    const attOwnAt = plan.findIndex((s) => s.table === 'attachments' && s.where === 'tenant_id = $1');
+    expect(attOwnAt).toBeGreaterThan(-1);
+    expect(plan.indexOf(repOwn!)).toBeLessThan(attOwnAt);
   });
 });
