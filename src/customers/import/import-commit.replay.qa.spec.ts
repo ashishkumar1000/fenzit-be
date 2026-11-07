@@ -256,6 +256,7 @@ describe('ImportCommitService replay and idempotency (QA)', () => {
       ]);
       expect(h.db.rows.idempotency_log[0].response_body).toEqual({
         requestHash: expect.any(String),
+        claimToken: expect.any(String),
         response: out,
       });
     });

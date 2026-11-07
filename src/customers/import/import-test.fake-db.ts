@@ -244,11 +244,11 @@ export class FakeDb {
   private matching(call: FakeCall): Row[] {
     return this.rows[call.table].filter((row) =>
       call.filters.every((f) => {
-        if (f.kind === 'eq') return row[f.column] === f.value;
-        if (f.kind === 'in')
-          return (f.value as unknown[]).includes(row[f.column]);
-        if (f.kind === 'lt') return String(row[f.column]) < String(f.value);
-        return String(row[f.column]) > String(f.value);
+        const value = readColumn(row, f.column);
+        if (f.kind === 'eq') return value === f.value;
+        if (f.kind === 'in') return (f.value as unknown[]).includes(value);
+        if (f.kind === 'lt') return String(value) < String(f.value);
+        return String(value) > String(f.value);
       }),
     );
   }
@@ -262,6 +262,13 @@ export class FakeDb {
     if (rows.length !== 1) return { data: null, error: { code: 'PGRST116' } };
     return { data: rows[0], error: null };
   }
+}
+
+/** Reads a column, or a JSON key with PostgREST's `col->>key` form. */
+function readColumn(row: Row, column: string): unknown {
+  const [col, key] = column.split('->>');
+  if (key === undefined) return row[column];
+  return (row[col] as Record<string, unknown> | undefined)?.[key];
 }
 
 function clone<T extends Row>(row: T): T {

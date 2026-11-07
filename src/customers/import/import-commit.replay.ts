@@ -4,7 +4,7 @@ import {
   Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import {
@@ -24,6 +24,8 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
  */
 interface StoredClaim {
   requestHash: string;
+  /** Identifies the run that owns the claim; only that run may finish or release it. */
+  claimToken: string;
   response?: ImportCommitResponse; // absent while the run is in progress
 }
 
@@ -34,7 +36,8 @@ interface ClaimRow {
 }
 
 export type ImportClaim =
-  { kind: 'claimed' } | { kind: 'replay'; response: ImportCommitResponse };
+  | { kind: 'claimed'; claimToken: string }
+  | { kind: 'replay'; response: ImportCommitResponse };
 
 /** Fingerprint of what the staff member sent. Same key + same sheet = same run. */
 export function hashImportRequest(dto: {
@@ -70,9 +73,10 @@ export async function claimImportKey(
   now: number = Date.now(),
 ): Promise<ImportClaim> {
   const row = await readClaim(admin, tenantId, key);
+  const claimToken = randomUUID();
   if (!row) {
-    await insertClaim(admin, tenantId, key, requestHash, now);
-    return { kind: 'claimed' };
+    await insertClaim(admin, tenantId, key, requestHash, claimToken, now);
+    return { kind: 'claimed', claimToken };
   }
 
   const age = now - Date.parse(row.created_at);
@@ -80,8 +84,17 @@ export async function claimImportKey(
   const limit = finished ? WINDOW_MS : STALE_CLAIM_MS;
 
   if (age >= limit) {
-    await takeOver(admin, tenantId, key, row.id, requestHash, now, limit);
-    return { kind: 'claimed' };
+    await takeOver(
+      admin,
+      tenantId,
+      key,
+      row.id,
+      requestHash,
+      claimToken,
+      now,
+      limit,
+    );
+    return { kind: 'claimed', claimToken };
   }
   if (row.response_body.requestHash !== requestHash) throw keyReused();
   if (!finished || !row.response_body.response) throw inProgress();
@@ -93,7 +106,7 @@ export async function completeImportKey(
   admin: SupabaseClient,
   tenantId: string,
   key: string,
-  requestHash: string,
+  claim: { requestHash: string; claimToken: string },
   response: ImportCommitResponse,
 ): Promise<void> {
   // Never throws: the rows are already written, so the caller still gets the
@@ -102,10 +115,11 @@ export async function completeImportKey(
   try {
     ({ error } = await admin
       .from('idempotency_log')
-      .update({ response_body: { requestHash, response } })
+      .update({ response_body: { ...claim, response } })
       .eq('key', key)
       .eq('tenant_id', tenantId)
-      .eq('scope', IMPORT_COMMIT_SCOPE));
+      .eq('scope', IMPORT_COMMIT_SCOPE)
+      .eq('response_body->>claimToken', claim.claimToken));
   } catch {
     error = { code: 'network' };
   }
@@ -124,6 +138,7 @@ export async function releaseImportKey(
   admin: SupabaseClient,
   tenantId: string,
   key: string,
+  claimToken: string,
 ): Promise<void> {
   try {
     await admin
@@ -131,7 +146,8 @@ export async function releaseImportKey(
       .update({ created_at: new Date(0).toISOString() })
       .eq('key', key)
       .eq('tenant_id', tenantId)
-      .eq('scope', IMPORT_COMMIT_SCOPE);
+      .eq('scope', IMPORT_COMMIT_SCOPE)
+      .eq('response_body->>claimToken', claimToken);
   } catch {
     logger.error('Failed to release idempotency_log claim');
   }
@@ -173,6 +189,7 @@ async function insertClaim(
   tenantId: string,
   key: string,
   requestHash: string,
+  claimToken: string,
   now: number,
 ): Promise<void> {
   let error: { code?: string } | null;
@@ -181,7 +198,7 @@ async function insertClaim(
       key,
       tenant_id: tenantId,
       scope: IMPORT_COMMIT_SCOPE,
-      response_body: { requestHash } satisfies StoredClaim,
+      response_body: { requestHash, claimToken } satisfies StoredClaim,
       created_at: new Date(now).toISOString(),
     }));
   } catch {
@@ -203,6 +220,7 @@ async function takeOver(
   key: string,
   id: string,
   requestHash: string,
+  claimToken: string,
   now: number,
   limitMs: number,
 ): Promise<void> {
@@ -212,7 +230,7 @@ async function takeOver(
     page = await admin
       .from('idempotency_log')
       .update({
-        response_body: { requestHash } satisfies StoredClaim,
+        response_body: { requestHash, claimToken } satisfies StoredClaim,
         created_at: new Date(now).toISOString(),
       })
       .eq('id', id)

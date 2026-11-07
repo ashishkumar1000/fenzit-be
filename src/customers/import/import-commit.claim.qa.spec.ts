@@ -6,7 +6,11 @@ import {
   IDEMPOTENCY_KEY,
   Harness,
 } from './import-test.harness';
-import { hashImportRequest } from './import-commit.replay';
+import {
+  claimImportKey,
+  completeImportKey,
+  hashImportRequest,
+} from './import-commit.replay';
 
 /** QA: the claim lifecycle on X-Idempotency-Key (claim before writes, release, takeover). */
 const MIN = 60 * 1000;
@@ -123,6 +127,67 @@ describe('ImportCommitService claim lifecycle (QA)', () => {
       expect(h.db.rows.customers).toEqual([]);
       expect(h.db.rows.import_batches).toEqual([]);
       expect(h.db.auditRows).toEqual([]);
+    });
+  });
+
+  describe('a stalled run that wakes up after another run took over', () => {
+    it('cannot overwrite the new run answer, because it no longer owns the claim', async () => {
+      const admin = h.db.client() as never;
+      const hash = hashImportRequest(dto());
+      const old = await claimImportKey(
+        admin,
+        COMPANY_A,
+        IDEMPOTENCY_KEY,
+        hash,
+        Date.now() - 11 * MIN,
+      );
+      expect(old.kind).toBe('claimed');
+      // The first run stalled for over 10 minutes, so a second request takes over.
+      const fresh = await claimImportKey(
+        admin,
+        COMPANY_A,
+        IDEMPOTENCY_KEY,
+        hash,
+      );
+      expect(fresh.kind).toBe('claimed');
+      if (old.kind !== 'claimed' || fresh.kind !== 'claimed') return;
+      expect(fresh.claimToken).not.toBe(old.claimToken);
+
+      const stale = {
+        batchId: 'stale-run',
+        rows: [],
+        summary: { total: 0, created: 0, updated: 0, failed: 0 },
+      };
+      const current = {
+        batchId: 'new-run',
+        rows: [],
+        summary: { total: 0, created: 0, updated: 0, failed: 0 },
+      };
+      await completeImportKey(
+        admin,
+        COMPANY_A,
+        IDEMPOTENCY_KEY,
+        { requestHash: hash, claimToken: old.claimToken },
+        stale,
+      );
+      await completeImportKey(
+        admin,
+        COMPANY_A,
+        IDEMPOTENCY_KEY,
+        { requestHash: hash, claimToken: fresh.claimToken },
+        current,
+      );
+      await completeImportKey(
+        admin,
+        COMPANY_A,
+        IDEMPOTENCY_KEY,
+        { requestHash: hash, claimToken: old.claimToken },
+        stale,
+      );
+
+      expect(h.db.rows.idempotency_log[0].response_body).toMatchObject({
+        response: { batchId: 'new-run' },
+      });
     });
   });
 });

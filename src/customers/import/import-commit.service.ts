@@ -68,13 +68,14 @@ export class ImportCommitService {
       requestHash,
     );
     if (claim.kind === 'replay') return claim.response;
+    const owned = { requestHash, claimToken: claim.claimToken };
 
     let sheet: Awaited<ReturnType<ImportValidateService['validate']>>;
     try {
       sheet = await this.importValidate.validate(owner, dto);
     } catch (error) {
       // Nothing written yet, so a retry with this key may run again.
-      await releaseImportKey(admin, tenantId, idempotencyKey);
+      await releaseImportKey(admin, tenantId, idempotencyKey, claim.claimToken);
       throw error;
     }
     const rows: CommitRowResult[] = [];
@@ -101,13 +102,7 @@ export class ImportCommitService {
     await this.writeAudit(admin, owner, batchId, summary);
 
     const response: ImportCommitResponse = { batchId, rows, summary };
-    await completeImportKey(
-      admin,
-      tenantId,
-      idempotencyKey,
-      requestHash,
-      response,
-    );
+    await completeImportKey(admin, tenantId, idempotencyKey, owned, response);
     return response;
   }
 
