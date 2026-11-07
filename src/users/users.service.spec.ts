@@ -11,6 +11,7 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { CustomersService } from '../customers/customers.service';
 import { JobsService } from '../jobs/jobs.service';
+import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import {
@@ -171,6 +172,10 @@ describe('UsersService', () => {
         { provide: SupabaseClientFactory, useValue: mockFactory },
         { provide: CustomersService, useValue: customersService },
         { provide: JobsService, useValue: jobsService },
+        {
+          provide: StorageService,
+          useValue: { presignReadUrl: jest.fn().mockResolvedValue('https://signed.example/avatar') },
+        },
       ],
     }).compile();
 
@@ -227,6 +232,20 @@ describe('UsersService', () => {
       inIds,
       eqTenant,
     };
+  }
+
+  // tenant_business_types: select(...).eq(...).eq(...).returns() — the awaited
+  // chain resolves to an empty pick list (no business types chosen).
+  function tenantBusinessTypesTableHandler() {
+    const builder: Record<string, unknown> = {};
+    for (const m of ['select', 'eq', 'returns']) {
+      builder[m] = jest.fn(() => builder);
+    }
+    builder.then = (
+      resolve: (v: unknown) => unknown,
+      reject?: (e: unknown) => unknown,
+    ) => Promise.resolve({ data: [], error: null }).then(resolve, reject);
+    return builder;
   }
 
   function tenantsTableHandler(result: DbResult) {
@@ -370,6 +389,7 @@ describe('UsersService', () => {
       if (table === 'users') return usersHandler;
       if (table === 'memberships') return membershipsHandler;
       if (table === 'tenants') return tenantsTableHandler(tenant);
+      if (table === 'tenant_business_types') return tenantBusinessTypesTableHandler();
       if (table === 'user_skills') return skillsHandler;
       if (table === 'customers') return customersHandler;
       if (table === 'attendance_access_state') {
@@ -473,6 +493,8 @@ describe('UsersService', () => {
         address: '12 MG Road',
         stateCode: 'MH',
         upiVpa: null,
+        // No business types picked yet: the list is present, and empty.
+        businessTypes: [],
       });
       expectCompany(result);
       expect(result.technicianCount).toBe(1);

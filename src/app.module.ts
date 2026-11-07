@@ -18,6 +18,7 @@ import { SkillsModule } from './skills/skills.module';
 import { CustomersModule } from './customers/customers.module';
 import { JobsModule } from './jobs/jobs.module';
 import { UsersModule } from './users/users.module';
+import { CompanyModule } from './company/company.module';
 import { StorageModule } from './storage/storage.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SupabaseModule } from './supabase/supabase.module';
@@ -194,6 +195,7 @@ import { TelemetryShutdown } from './telemetry';
     CustomersModule,
     JobsModule,
     UsersModule,
+    CompanyModule,
     StorageModule,
     WebhooksModule,
     SyncModule,

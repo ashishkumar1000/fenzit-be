@@ -29,6 +29,12 @@ import {
 import { JobStatus } from '../jobs/enums/job-status.enum';
 import { GetProfileQueryDto } from './dto/get-profile-query.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { StorageService } from '../storage/storage.service';
+import {
+  BusinessTypeItem,
+  loadTenantBusinessTypes,
+} from '../company/business-types.repo';
+import { AVATAR_READ_TTL_SECONDS } from './avatar.constants';
 
 // The shared job SELECT from jobs.service.ts (skill/template embeds included,
 // Story 4.5) — imported, not re-declared, so every JobResponse producer can
@@ -50,6 +56,8 @@ export interface TenantSummary {
   address: string | null;
   stateCode: string;
   upiVpa: string | null;
+  /** The company's picked business types, in display order. */
+  businessTypes: BusinessTypeItem[];
 }
 
 // Story 3.7 — dashboard counts on the job timeline. The three day-buckets
@@ -89,6 +97,8 @@ interface UserProfileBase {
   phoneNumber: string;
   /** The membership status, or null when the person has no company. Null means no access. */
   status: string | null;
+  /** Short-lived link to the person's own photo, or null when none is set. */
+  avatarUrl: string | null;
   tenant: TenantSummary | null;
   /** Fenzit staff flag (website admin tools). */
   platformAdmin: boolean;
@@ -195,6 +205,7 @@ interface OwnUserRow {
   country_code: string;
   phone_number: string;
   email: string | null;
+  avatar_key: string | null;
 }
 
 interface TenantRow {
@@ -250,6 +261,7 @@ export class UsersService {
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly customersService: CustomersService,
     private readonly jobsService: JobsService,
+    private readonly storageService: StorageService,
   ) {}
 
   /**
@@ -275,7 +287,7 @@ export class UsersService {
 
     const { data: ownRow, error: ownError } = await admin
       .from('users')
-      .select('id, name, country_code, phone_number, email')
+      .select('id, name, country_code, phone_number, email, avatar_key')
       .eq('id', user.userId)
       .single<OwnUserRow>();
 
@@ -321,6 +333,12 @@ export class UsersService {
       countryCode: ownRow.country_code,
       phoneNumber: ownRow.phone_number,
       status: membership?.status ?? null,
+      avatarUrl: ownRow.avatar_key
+        ? await this.storageService.presignReadUrl(
+            ownRow.avatar_key,
+            AVATAR_READ_TTL_SECONDS,
+          )
+        : null,
       tenant: null,
       platformAdmin: user.platformAdmin,
     };
@@ -371,6 +389,7 @@ export class UsersService {
       address: tenantRow.address,
       stateCode: tenantRow.state_code,
       upiVpa: tenantRow.upi_vpa,
+      businessTypes: await loadTenantBusinessTypes(admin, tenantId),
     };
 
     if (user.role === Role.EMPLOYEE) {

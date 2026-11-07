@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -64,6 +65,55 @@ export class StorageService {
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       { expiresIn: ttlSeconds },
     );
+  }
+
+  /**
+   * Presigned read URL with NO existence check — for keys the backend already
+   * confirmed (e.g. a profile photo stored after its upload was verified).
+   * Signing is local, so this adds no network call to the caller.
+   */
+  async presignReadUrl(key: string, ttlSeconds: number): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      { expiresIn: ttlSeconds },
+    );
+  }
+
+  /**
+   * Size and content type of a stored object, or null when no object exists
+   * at the key. Used to check an upload really arrived and is the right size.
+   */
+  async getObjectMeta(key: string): Promise<{
+    contentLength: number;
+    contentType: string | undefined;
+  } | null> {
+    try {
+      const head = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return {
+        contentLength: head.ContentLength ?? 0,
+        contentType: head.ContentType,
+      };
+    } catch (err) {
+      const status = (err as { $metadata?: { httpStatusCode?: number } })
+        .$metadata?.httpStatusCode;
+      if (status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Best-effort delete. A failure is logged, never thrown: the caller's
+   *  change has already been saved, and a stray object is harmless. */
+  async deleteObject(key: string): Promise<void> {
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (err) {
+      this.logger.warn(`Could not delete object: key=${key}`, err);
+    }
   }
 
   private async verifyObjectExists(key: string): Promise<void> {
