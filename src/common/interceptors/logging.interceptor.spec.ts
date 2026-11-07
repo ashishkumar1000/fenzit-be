@@ -1,6 +1,6 @@
 import { ExecutionContext } from '@nestjs/common';
 import { of, throwError } from 'rxjs';
-import { LoggingInterceptor } from './logging.interceptor';
+import { LoggingInterceptor, redactRouteSecrets } from './logging.interceptor';
 
 const makeContext = (
   extras: {
@@ -125,5 +125,55 @@ describe('LoggingInterceptor', () => {
         done();
       },
     });
+  });
+});
+
+describe('redactRouteSecrets', () => {
+  it('replaces a device token in the DELETE path with a placeholder', () => {
+    expect(redactRouteSecrets('/api/v1/device-tokens/abc123secret')).toBe(
+      '/api/v1/device-tokens/:token',
+    );
+  });
+
+  it('handles the path without the api prefix', () => {
+    expect(redactRouteSecrets('/device-tokens/abc123secret')).toBe(
+      '/device-tokens/:token',
+    );
+  });
+
+  it('drops the query string on every route (a future query secret cannot leak)', () => {
+    expect(redactRouteSecrets('/api/v1/jobs/123?token=secret&x=1')).toBe(
+      '/api/v1/jobs/123',
+    );
+  });
+
+  it('redacts an encoded token that contains an escaped slash', () => {
+    expect(redactRouteSecrets('/api/v1/device-tokens/a%2Fb%2Fc')).toBe(
+      '/api/v1/device-tokens/:token',
+    );
+  });
+
+  it('leaves the list route untouched (no token segment to redact)', () => {
+    expect(redactRouteSecrets('/api/v1/device-tokens')).toBe(
+      '/api/v1/device-tokens',
+    );
+  });
+
+  it('does not invent a placeholder for an empty trailing segment', () => {
+    expect(redactRouteSecrets('/api/v1/device-tokens/')).toBe(
+      '/api/v1/device-tokens/',
+    );
+  });
+
+  it('leaves unrelated routes with the same word in the middle untouched', () => {
+    expect(redactRouteSecrets('/api/v1/jobs/device-tokens-report')).toBe(
+      '/api/v1/jobs/device-tokens-report',
+    );
+  });
+
+  it('keeps a trailing path after the token, redacting only the token segment', () => {
+    expect(redactRouteSecrets('/api/v1/device-tokens/secret/extra')).toBe(
+      '/api/v1/device-tokens/:token/extra',
+    );
   });
 });

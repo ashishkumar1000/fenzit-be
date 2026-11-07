@@ -88,6 +88,28 @@ const isCount = (v: unknown): v is number =>
 const isIsoDate = (v: unknown): v is string =>
   typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
+/**
+ * What the owner reads for each workflow step: a plain sentence about the
+ * person ("Ravi is on the way"), never the step's number or key. Keys are
+ * the default template's; a tenant's own step key gets the generic line.
+ */
+const JOB_STEP_VERB: Record<string, string> = {
+  on_my_way: 'is on the way',
+  arrived: 'has arrived at the site',
+  in_progress: 'has started the work',
+  photos_uploaded: 'has uploaded the photos',
+  signature_captured: 'has collected the customer signature',
+  completed: 'has completed the job',
+};
+
+function jobStepSentence(step: string, technician: string | null): string {
+  const who = technician ?? 'The technician';
+  const verb = Object.hasOwn(JOB_STEP_VERB, step)
+    ? JOB_STEP_VERB[step]
+    : 'updated the job';
+  return `${who} ${verb}`;
+}
+
 /** Humanize an unknown event type: `leave_applied` → "Leave applied". */
 function humanizeEventType(eventType: string): string {
   const text = eventType.replace(/[._]/g, ' ').trim();
@@ -553,21 +575,31 @@ export function pushCopyForEvent(
     };
   }
   // Job events not in the table: event_type is the workflow step key,
-  // payload carries {job_number, step, technician_name}; the card title
-  // line is "{technician} · {job_number}" (fallback in the table).
-  // Workflow steps are Jobs channel, PUBLIC.
+  // payload carries {job_number, step, technician_name, customer_name?}; the
+  // title leads with the job number. Workflow steps are Jobs channel, PUBLIC.
   if (isText(payload['job_number'])) {
-    const technician = isText(payload['technician_name'])
-      ? truncate(payload['technician_name'], TITLE_NAME_CAP)
-      : null;
-    const title =
-      technician !== null
-        ? `${technician} · ${payload['job_number']}`
-        : PUSH_COPY.fallback.jobCardTitle;
+    // Padded or blank names are trimmed here: a blank name reads as no name.
+    const trimmedTechnician = isText(payload['technician_name'])
+      ? payload['technician_name'].trim()
+      : '';
+    const technician =
+      trimmedTechnician.length > 0
+        ? truncate(trimmedTechnician, TITLE_NAME_CAP)
+        : null;
     const step = isText(payload['step']) ? payload['step'] : eventType;
+    // The customer's name, when the row carries one, follows the job number
+    // in the title ("JB-2026-0011 · Asha Traders"); without it the title is
+    // the job number alone.
+    const customer = isText(payload['customer_name'])
+      ? truncate(payload['customer_name'], TITLE_NAME_CAP)
+      : null;
     return {
-      title,
-      body: humanizeOrFallback(step, step),
+      // The job number leads; the body says what the person just did.
+      title:
+        customer !== null
+          ? `${payload['job_number']} · ${customer}`
+          : `${payload['job_number']}`,
+      body: jobStepSentence(step, technician),
       channel: PUSH_CHANNEL.jobs,
       visibility: 'PUBLIC',
     };

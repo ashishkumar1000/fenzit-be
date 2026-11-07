@@ -306,7 +306,7 @@ export class PushSweepService implements OnModuleInit, OnModuleDestroy {
   }
 
   private retryDelayMs(attempt: number): number {
-    // 1s after the first failure, 2s after the second, ±500ms jitter.
+    // 1s after the first failure, 2s after the second, plus 0–499ms of jitter.
     const base = 1000 * 2 ** (attempt - 1);
     return base + Math.floor(Math.random() * 500);
   }

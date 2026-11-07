@@ -188,7 +188,8 @@ export class LeaveController {
       throw new HttpException(
         {
           error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'Something went wrong. Please try once more.',
+          message:
+            'This request has no valid request ID. Update the app and try again.',
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

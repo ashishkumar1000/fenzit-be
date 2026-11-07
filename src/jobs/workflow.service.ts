@@ -267,6 +267,9 @@ export class WorkflowService {
       });
     }
 
+    // Owner notices for this advance are written by advance_workflow_step
+    // itself (every active company admin except the actor, one row each,
+    // event_type = the step key). No second write here.
     return this.jobsService.toResponse(
       // The RPC returns bare job rows; re-fetch with the skill/template embeds
       // so the advance response carries the full read shape (Story 4.5). The

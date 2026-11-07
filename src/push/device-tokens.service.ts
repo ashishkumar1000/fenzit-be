@@ -89,9 +89,10 @@ export class DeviceTokensService {
     this.logger.error(
       `Failed to ${op} device token (code=${readErrorCode(err)})`,
       {
+        // Never the error object: a Postgres constraint error carries the row
+        // (token included) in err.detail. The error code is all we log.
         userId,
         tokenPrefix: token.slice(0, 12),
-        err,
       },
     );
   }

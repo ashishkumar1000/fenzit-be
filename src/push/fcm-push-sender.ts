@@ -156,25 +156,29 @@ function toFcmMessage(message: PushMessage): Message {
       ...(message.body.length > 0 ? { body: message.body } : {}),
     },
     data: message.data,
-    ...(message.channel || message.visibility
-      ? {
-          android: {
-            notification: {
-              ...(message.channel ? { channelId: message.channel } : {}),
-              ...(message.visibility
-                ? {
-                    // The SDK spells visibility lowercase; the copy layer
-                    // speaks the UX table's uppercase vocabulary.
-                    visibility: message.visibility.toLowerCase() as
-                      'public' | 'private',
-                  }
-                : {}),
-            },
-          },
-        }
-      : {}),
+    // A named click action so a tap on a CLOSED app launches MainActivity
+    // with the push's data in the intent (the app declares a matching
+    // intent-filter). Without it, a cold tap opens the plain launcher intent
+    // and the app cannot tell which notification was tapped.
+    android: {
+      notification: {
+        clickAction: PUSH_TAP_CLICK_ACTION,
+        ...(message.channel ? { channelId: message.channel } : {}),
+        ...(message.visibility
+          ? {
+              // The SDK spells visibility lowercase; the copy layer
+              // speaks the UX table's uppercase vocabulary.
+              visibility: message.visibility.toLowerCase() as
+                'public' | 'private',
+            }
+          : {}),
+      },
+    },
   };
 }
+
+/** Must match the app's intent-filter action in AndroidManifest.xml. */
+export const PUSH_TAP_CLICK_ACTION = 'com.fenzit.PUSH_TAP';
 
 function readString(source: unknown, key: string): string | null {
   const value = (source as Record<string, unknown> | null)?.[key];

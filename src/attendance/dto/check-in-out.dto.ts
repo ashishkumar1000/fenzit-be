@@ -44,7 +44,7 @@ export class CheckInOutDto {
     nullable: true,
   })
   @IsOptional()
-  @IsBoolean({ message: 'Something went wrong. Please try once more.' })
+  @IsBoolean({ message: 'Could not read the location check. Please try again.' })
   mocked?: boolean | null = null;
 
   @ApiPropertyOptional({
@@ -75,6 +75,6 @@ export class CheckInOutDto {
       'Confirms cancelling a full-day active leave for today (FR-9); without it the check-in answers leave_confirmation_required',
   })
   @IsOptional()
-  @IsBoolean({ message: 'Something went wrong. Please try once more.' })
+  @IsBoolean({ message: 'Confirm the leave cancellation to check in.' })
   confirmLeaveCancel?: boolean;
 }
