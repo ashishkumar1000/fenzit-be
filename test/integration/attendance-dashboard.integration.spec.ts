@@ -265,10 +265,14 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
         return v;
       },
     } as unknown as ConfigService);
-    dashboard = new DashboardService(pg, new DashboardFlagReads());
-    monthly = new MonthlyService(pg, {
-      createAdmin: () => admin,
-    } as unknown as SupabaseClientFactory);
+    dashboard = new DashboardService(pg, new DashboardFlagReads(), {
+      presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+    } as never);
+    monthly = new MonthlyService(
+      pg,
+      { createAdmin: () => admin } as unknown as SupabaseClientFactory,
+      { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never,
+    );
 
     // ---- owner → tenant → technicians → settings → office + rule ----
     must(
@@ -637,12 +641,14 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
         employeeName: 'probe tech 2',
         workDate: d2,
         officeName: 'dashboard probe office',
+        avatarUrl: null,
       },
       {
         employeeId: TECHS.B,
         employeeName: 'probe tech 2',
         workDate: d1,
         officeName: 'dashboard probe office',
+        avatarUrl: null,
       },
     ]);
     // Fake-location: unacknowledged attempts grouped per employee-date,
@@ -654,6 +660,7 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
         workDate: d1,
         officeName: 'dashboard probe office',
         attemptCount: 2,
+        avatarUrl: null,
       },
       {
         employeeId: TECHS.B,
@@ -661,6 +668,7 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
         workDate: d1,
         officeName: 'dashboard probe office',
         attemptCount: 1,
+        avatarUrl: null,
       },
     ]);
 

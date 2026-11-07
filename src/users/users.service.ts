@@ -8,6 +8,10 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { listCompanyMembers } from '../common/members/company-members';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
@@ -85,6 +89,8 @@ export interface TechnicianSummary {
   skills: string[];
   skillIds: string[];
   createdAt: string;
+  /** Short-lived link to the technician's photo, or null when none is set. */
+  avatarUrl: string | null;
 }
 
 interface UserProfileBase {
@@ -173,6 +179,8 @@ export interface ProfileTechnicianEmbed {
   countryCode: string;
   phoneNumber: string;
   skills: string[];
+  /** Short-lived link to the technician's photo, or null when none is set. */
+  avatarUrl: string | null;
 }
 
 export interface ProfileCustomerEmbed {
@@ -494,6 +502,10 @@ export class UsersService {
       });
     }
 
+    const avatarUrls = await presignAvatarUrls(
+      this.storageService,
+      members.map((m) => m.avatarKey),
+    );
     return members.map((m) => ({
       id: m.userId,
       employeeCode: m.employeeCode,
@@ -504,6 +516,7 @@ export class UsersService {
       skills: (m.skills ?? []).map((sk) => sk.name),
       skillIds: (m.skills ?? []).map((sk) => sk.id),
       createdAt: m.createdAt,
+      avatarUrl: avatarUrlFor(avatarUrls, m.avatarKey),
     }));
   }
 
@@ -717,6 +730,7 @@ export class UsersService {
             name: m.name,
             country_code: m.countryCode,
             phone_number: m.phoneNumber,
+            avatar_key: m.avatarKey,
           })),
           error: null as unknown,
         }),
@@ -750,6 +764,7 @@ export class UsersService {
       name: string | null;
       country_code: string;
       phone_number: string;
+      avatar_key: string | null;
     };
     type EmbedSkillRow = { user_id: string } & UserSkillsEmbedRow;
     type EmbedCustomerRow = {
@@ -774,6 +789,10 @@ export class UsersService {
     }
     const customersById = new Map(
       ((customersRes.data ?? []) as EmbedCustomerRow[]).map((c) => [c.id, c]),
+    );
+    const avatarUrls = await presignAvatarUrls(
+      this.storageService,
+      [...usersById.values()].map((u) => u.avatar_key),
     );
 
     // A missing users/customers row under an FK can only be a mid-page
@@ -807,6 +826,7 @@ export class UsersService {
           countryCode: tech?.country_code ?? '',
           phoneNumber: tech?.phone_number ?? '',
           skills: skillsByUser.get(row.technician_id) ?? [],
+          avatarUrl: avatarUrlFor(avatarUrls, tech?.avatar_key),
         },
         customer: {
           id: row.customer_id,

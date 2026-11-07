@@ -23,6 +23,14 @@ tokens minted by `GET /api/v1/auth/realtime-token` are socket-only).
 - **Time:** All timestamps are UTC `TIMESTAMPTZ`; date filtering for jobs uses **IST day**
   (`src/common/utils/ist-day-range.util.ts`, timezone `Asia/Kolkata`).
 - **Rate limiting:** Applied to OTP send endpoint (returns 429).
+- **Profile photos (`avatarUrl`):** On the endpoints listed in the sections
+  below that mention photos (not every response that names a person), the
+  field is `avatarUrl: string | null` — a read link that expires after one
+  hour, or `null` when no photo is set or the link could not be made. The
+  storage key is never returned. Clients show initials when it is `null` and
+  fall back to initials when the image fails to load. Photos are uploaded with
+  `POST /users/me/avatar/upload-url` then `PUT /users/me/avatar`. Team members
+  also carry it on `GET /members` (`avatarUrl` on each member).
 
 ### OTP verification
 
@@ -191,6 +199,10 @@ screen.
 #### `GET /api/v1/users/me` `[Bearer JWT, Role: owner | technician]`
 
 Role-branched profile payload — the app's primary boot call.
+
+- **Photos:** `technicians[].avatarUrl` (owner) and
+  `jobs.data[].technician.avatarUrl` (both roles); the caller's own photo is
+  `avatarUrl` at the top level. See Conventions › Profile photos.
 
 - **Both roles carry `employeeCode: string | null`** (2026-10-15,
   SPEC-human-readable-ids): the caller's per-tenant human reference
@@ -482,6 +494,8 @@ assume every row is scheduled for today.
 - `422` — Validation error
 
 #### `GET /api/v1/jobs/:id` `[Bearer JWT, Role: owner | technician]`
+
+- **Photo:** `technician.avatarUrl` (photo link or `null`).
 
 Full job detail: technician & customer profiles, activity log, attachments. The
 embedded customer profile is
@@ -952,7 +966,7 @@ success (204). Never a hard delete.
 - `401` / `403` — as above
 - `404` — `ATTENDANCE_OFFICE_NOT_FOUND`
 - `409` — `ATTENDANCE_OFFICE_ARCHIVE_BLOCKED`; the body carries
-  `blockers: [{ employeeId, employeeName }]`
+  `blockers: [{ employeeId, employeeName, avatarUrl }]`
 - `500` — before Story 15-7's tables exist the blocker check fails loud
 
 #### `GET /api/v1/attendance/offices/:id/archive/preview` `[Bearer JWT, Role: owner]`
@@ -960,7 +974,7 @@ success (204). Never a hard delete.
 AD-24 preview: who blocks archiving this office — the same
 `attendance_office_archive_blockers` read the archive write's 409 body uses.
 
-**Response:** `{ officeId, blockers: [{ employeeId, employeeName }] }`
+**Response:** `{ officeId, blockers: [{ employeeId, employeeName, avatarUrl }] }`
 (empty list = free to archive)
 
 **Responses:**
@@ -1039,10 +1053,12 @@ clipped at `effectiveFrom`, the new range is `[effectiveFrom, ∞)`.
 
 #### `GET /api/v1/attendance/weekly-offs/overrides` `[Bearer JWT, Role: owner]`
 
+Each row also carries `avatarUrl` (the employee's photo link, or `null`).
+
 Per-employee overrides with current/pending picks. Employees without an
 override row are absent — they read the tenant default.
 
-**Response 200:** `[{ employeeId, employeeName, current: { days, validFrom, validTo } | null, next: … | null }]`
+**Response 200:** `[{ employeeId, employeeName, avatarUrl, current: { days, validFrom, validTo } | null, next: … | null }]`
 
 **Responses:**
 - `200` — possibly empty list
@@ -1058,7 +1074,7 @@ Saving exactly the same `days` (an empty array included) from a later date that 
 **Body:** `{ days: number[], effectiveFrom?: 'YYYY-MM-DD' }`
 
 **Responses:**
-- `200` — `{ employeeId, employeeName, current, next }`
+- `200` — `{ employeeId, employeeName, avatarUrl, current, next }`
 - `400` — `VALIDATION_ERROR` (malformed employee id / no tenant)
 - `404` — `ATTENDANCE_EMPLOYEE_NOT_FOUND` (employee not a tenant member) or `ATTENDANCE_TENANT_NOT_FOUND`
 - `422` — `ATTENDANCE_NO_WORKING_DAYS` (7-day selection), `ATTENDANCE_EMPLOYEE_NOT_ACTIVE` (employee is invited, not active) or `VALIDATION_ERROR` (malformed `effectiveFrom`)
@@ -1071,7 +1087,7 @@ override dates keep their override; from `effectiveFrom` the employee
 reads the tenant default. Idempotent (no covering range → no-op).
 
 **Responses:**
-- `200` — post-removal state: `{ employeeId, employeeName, current, next }`
+- `200` — post-removal state: `{ employeeId, employeeName, avatarUrl, current, next }`
 - `400` / `404` — as above
 - `422` — `VALIDATION_ERROR` (malformed `effectiveFrom` query)
 
@@ -1140,7 +1156,7 @@ list until 15-7 lands** (the tracked-employee query is behind the same
 overlapping the date arrive with Epic 17** (this route's extension point;
 the holiday-inside-leave notification ACs are re-tested there).
 
-**Response 200:** `{ date, affectedEmployees: [{ employeeId, employeeName }] }`
+**Response 200:** `{ date, affectedEmployees: [{ employeeId, employeeName, avatarUrl }] }`
 
 **Responses:**
 - `200` — empty list pre-15-7 (never a 42P01)
@@ -1220,7 +1236,7 @@ import).
 
 #### `GET /api/v1/attendance/enrolments` `[Bearer JWT, Role: owner]`
 
-The roster: one row per technician — `{ employeeId, employeeName, phone,
+The roster: one row per technician — `{ employeeId, employeeName, phone, avatarUrl,
 attendanceEnabled, attendanceAccess, attendanceStartDate, attendanceEndedOn,
 enabledAt, onboardedAt, officeId, officeName }` (state from the view; names from
 users). Empty only when the tenant has no technicians (200 `[]`, never
@@ -1610,7 +1626,8 @@ recompute from current weekly-off/holiday facts.
 
 - `GET …/leave?status?&employeeId?&cursor&limit` → `PaginatedResponse`
   (cursor scope `leave-owner-list`); `status=pending` is the queue; the
-  filter matches the DERIVED status.
+  filter matches the DERIVED status. Each row carries `employeeName`,
+  `employeeCode` and `employeeAvatarUrl` (photo link or `null`).
 - `GET …/leave/:id/preview` → revoke split (as above).
 - `POST …/leave/:id/approve` / `POST …/leave/:id/reject` (`{ reason? }` —
   empty valid) → `200` refreshed view; own retry `200`, conflict `409
@@ -1832,6 +1849,8 @@ one implementation; a dashboard/calendar/summary cell can never disagree):**
 
 #### `GET /api/v1/attendance/dashboard?officeId=` `[Bearer JWT, Role: owner]`
 
+- **Photos:** `employees[].avatarUrl` (the Live Team Pulse rows) and each row of `flags.checkoutMissing` and `flags.fakeLocationAttempt` carries `avatarUrl`.
+
 FR-24, today only (no date params). Tiles: `tracked` (grid rows where the
 engine tracks today), `checkedIn` (a presence grade — in_progress |
 present | half_day | worked_on_holiday; includes a rule-1 status-only
@@ -1862,7 +1881,7 @@ check-out and no adjudicating override (engine rule 8's exact set,
 override-only days included; clears when a correction lands);
 `fakeLocationAttempt` — unacknowledged `mocked` attempts grouped per
 employee-date with `attemptCount` (clears on acknowledge, AD-10). Rows:
-`{ employeeId, employeeName, workDate, officeName }` (+ `attemptCount`),
+`{ employeeId, employeeName, avatarUrl, workDate, officeName }` (+ `attemptCount`),
 ascending by workDate then name. A parity probe in the integration suite
 pins flag-set ↔ engine markers.
 
@@ -1870,6 +1889,8 @@ pins flag-set ↔ engine markers.
 `VALIDATION_ERROR`; `500` fail-loud.
 
 #### `GET /api/v1/attendance/monthly?from=&to=&officeId=` `[Bearer JWT, Role: owner]`
+
+- **Photos:** each `employees[]` row carries `avatarUrl`.
 
 FR-25 — one summary row per tracked employee with any day in the range
 (history-only/disabled employees included, FR-28; dates after disable read
@@ -1879,7 +1900,7 @@ today's covering assignment office (unknown → `200` empty roster, never
 `404`). Office in each row = the assignment covering TODAY (the roster's
 current office). Sorting: resolved name, then id.
 
-**Response:** `{ from, to, today, employees: [{ employeeId, employeeName,
+**Response:** `{ from, to, today, employees: [{ employeeId, employeeName, avatarUrl,
 officeId, officeName, summary }] }` with
 `summary: { daysWorked, halfDays, lateCount, leave, weeklyOffs, holidays,
 workedOnHoliday, absent, checkoutMissing }` — Σ/count of the engine's

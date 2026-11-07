@@ -54,6 +54,8 @@ export interface LeaveRequestView {
   employeeName?: string;
   /** Per-tenant human reference (EMP-001) — owner list reads only, display only. */
   employeeCode?: string;
+  /** Short-lived link to the employee's photo — list reads only; null when none is set. */
+  employeeAvatarUrl?: string | null;
   startDate: string;
   endDate: string;
   part: LeavePart;

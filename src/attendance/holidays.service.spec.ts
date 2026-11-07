@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
 import { HolidaysService } from './holidays.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -92,10 +93,14 @@ describe('HolidaysService (story 15-5)', () => {
 
   function mockAdmin(opts: {
     holidays?: RpcResult[];
+    /** Company-member reads (the impact list's photo keys). */
+    members?: RpcResult[];
     rpc?: Record<string, RpcResult[]>;
   } = {}) {
     const holidaysQb = flexQb({ data: [], error: null });
     for (const r of opts.holidays ?? []) holidaysQb.queue.push(r);
+    const membersQb = flexQb({ data: [], error: null });
+    for (const r of opts.members ?? []) membersQb.queue.push(r);
 
     const rpcs = new Map<string, ReturnType<typeof rpcQueue>>();
     for (const [name, results] of Object.entries(opts.rpc ?? {})) {
@@ -106,6 +111,8 @@ describe('HolidaysService (story 15-5)', () => {
       switch (table) {
         case 'holidays':
           return holidaysQb.qb;
+        case 'memberships':
+          return membersQb.qb;
         default:
           throw new Error(`unexpected table ${table}`);
       }
@@ -132,6 +139,14 @@ describe('HolidaysService (story 15-5)', () => {
       providers: [
         HolidaysService,
         { provide: SupabaseClientFactory, useValue: mockFactory },
+        {
+          provide: StorageService,
+          useValue: {
+            presignReadUrl: jest.fn((key: string) =>
+              Promise.resolve(`https://signed.example/${key}`),
+            ),
+          },
+        },
       ],
     }).compile();
 
@@ -380,6 +395,50 @@ describe('HolidaysService (story 15-5)', () => {
   });
 
   describe('getImpact', () => {
+    it('gives each affected employee a photo link, and null when they have none', async () => {
+      const q = mockAdmin({
+        members: [
+          {
+            data: [
+              {
+                user_id: 'emp-1',
+                role: 'employee',
+                status: 'active',
+                employee_code: 'E-1',
+                created_at: '2026-09-01T00:00:00Z',
+                users: {
+                  name: 'Ravi Kumar',
+                  country_code: '+91',
+                  phone_number: '9000000001',
+                  disabled: false,
+                  avatar_key: 'avatars/emp-1/p.jpg',
+                },
+              },
+            ],
+            error: null,
+          },
+        ],
+      });
+      q.rpcs.set('attendance_holiday_impact', rpcQueue({
+        data: [
+          { employee_id: 'emp-1', employee_name: 'Ravi Kumar' },
+          { employee_id: 'emp-2', employee_name: 'Priya Sharma' },
+        ],
+        error: null,
+      }));
+
+      const result = await service.getImpact(ownerUser, { date: '2026-10-02' });
+
+      expect(result.affectedEmployees).toEqual([
+        {
+          employeeId: 'emp-1',
+          employeeName: 'Ravi Kumar',
+          avatarUrl: 'https://signed.example/avatars/emp-1/p.jpg',
+        },
+        { employeeId: 'emp-2', employeeName: 'Priya Sharma', avatarUrl: null },
+      ]);
+    });
+
     it('maps the preview rows to camelCase', async () => {
       const q = mockAdmin();
       q.rpcs.set('attendance_holiday_impact', rpcQueue({
@@ -395,8 +454,8 @@ describe('HolidaysService (story 15-5)', () => {
       ).resolves.toEqual({
         date: '2026-10-02',
         affectedEmployees: [
-          { employeeId: 'emp-1', employeeName: 'Ravi Kumar' },
-          { employeeId: 'emp-2', employeeName: 'Priya Sharma' },
+          { employeeId: 'emp-1', employeeName: 'Ravi Kumar', avatarUrl: null },
+          { employeeId: 'emp-2', employeeName: 'Priya Sharma', avatarUrl: null },
         ],
       });
       expect(q.rpc).toHaveBeenCalledWith('attendance_holiday_impact', {
@@ -440,7 +499,7 @@ describe('HolidaysService (story 15-5)', () => {
     });
   });
 
-  it('is injectable with just the Supabase factory (no other providers)', () => {
+  it('is injectable with only the Supabase factory and storage (no other providers)', () => {
     expect(service).toBeDefined();
   });
 });

@@ -28,6 +28,7 @@ import { MonthlyController } from './monthly.controller';
 import { ReminderJobMetricsBinder } from './reminder-metrics';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PgModule } from '../common/pg/pg.module';
+import { StorageModule } from '../storage/storage.module';
 
 /**
  * Attendance module (Epic 15, Story 15-2) — foundation. Routes and helpers
@@ -40,7 +41,7 @@ import { PgModule } from '../common/pg/pg.module';
  * etc.
  */
 @Module({
-  imports: [SupabaseModule, PgModule],
+  imports: [SupabaseModule, PgModule, StorageModule],
   controllers: [
     AttendanceController,
     OfficesController,

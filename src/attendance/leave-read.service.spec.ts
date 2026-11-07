@@ -88,7 +88,13 @@ function serviceOver(tx: PoolClient): LeaveReadService {
     withTransaction: async <T>(work: (client: PoolClient) => Promise<T>) =>
       work(tx),
   };
-  return new LeaveReadService(pool as unknown as PgPoolFactory);
+  return new LeaveReadService(
+    pool as unknown as PgPoolFactory,
+    {
+      presignReadUrl: (key: string) =>
+        Promise.resolve(`https://signed.example/${key}`),
+    } as never,
+  );
 }
 
 describe('LeaveReadService listTransact wiring', () => {
@@ -102,6 +108,27 @@ describe('LeaveReadService listTransact wiring', () => {
       (...args: Parameters<typeof repoActual.readPageSpanFacts>) =>
         repoActual.readPageSpanFacts(...args),
     );
+  });
+
+  it('gives each listed request its employee photo link, and null when they have no photo', async () => {
+    const tx = txWithRows([[], [{ valid: '[2026-01-01,)', days: [6] }], []]);
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({ avatar_key: 'avatars/emp/p.jpg' }),
+    ]);
+    mockFindDaysForRequests.mockResolvedValue(new Map([[ROW_ID, []]]));
+
+    const withPhoto = await serviceOver(tx).listForOwner(ownerUser(), {
+      limit: 20,
+    });
+    expect(withPhoto.data[0].employeeAvatarUrl).toBe(
+      'https://signed.example/avatars/emp/p.jpg',
+    );
+
+    mockListLeaveRequests.mockResolvedValue([listRow({ avatar_key: null })]);
+    const noPhoto = await serviceOver(tx).listForOwner(ownerUser(), {
+      limit: 20,
+    });
+    expect(noPhoto.data[0].employeeAvatarUrl).toBeNull();
   });
 
   it('derives workingDays through the REAL batch: the Saturday weekly off is excluded, and the spans are keyed by row.employee_id', async () => {

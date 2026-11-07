@@ -8,6 +8,8 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
+import { avatarUrlsByUserId } from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import {
   CreateHolidayDto,
   HolidayDateQueryDto,
@@ -45,14 +47,22 @@ export interface HolidayResponse {
 /** GET /attendance/holidays/impact — the AD-24 preview body. */
 export interface HolidayImpactResponse {
   date: string;
-  affectedEmployees: { employeeId: string; employeeName: string }[];
+  affectedEmployees: {
+    employeeId: string;
+    employeeName: string;
+    /** Short-lived link to the employee's photo, or null when none is set. */
+    avatarUrl: string | null;
+  }[];
 }
 
 @Injectable()
 export class HolidaysService {
   private readonly logger = new Logger(HolidaysService.name);
 
-  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseClientFactory: SupabaseClientFactory,
+    private readonly storageService: StorageService,
+  ) {}
 
   /**
    * GET /attendance/holidays — tenant-scoped, ascending by date; the FE
@@ -167,14 +177,23 @@ export class HolidaysService {
     if (error) {
       this.throwRpcError(error, 'Failed to preview holiday impact');
     }
+    const rows = (data ?? []) as {
+      employee_id: string;
+      employee_name: string;
+    }[];
+    const avatarUrls = await avatarUrlsByUserId(
+      this.storageService,
+      admin,
+      tenantId,
+      rows.map((row) => row.employee_id),
+    );
     return {
       date: query.date,
-      affectedEmployees: (data ?? []).map(
-        (row: { employee_id: string; employee_name: string }) => ({
-          employeeId: row.employee_id,
-          employeeName: row.employee_name,
-        }),
-      ),
+      affectedEmployees: rows.map((row) => ({
+        employeeId: row.employee_id,
+        employeeName: row.employee_name,
+        avatarUrl: avatarUrls.get(row.employee_id) ?? null,
+      })),
     };
   }
 

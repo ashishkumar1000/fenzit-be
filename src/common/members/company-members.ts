@@ -16,6 +16,11 @@ export interface CompanyMember {
   role: MembershipRole;
   status: 'invited' | 'active' | 'removed';
   createdAt: string;
+  /**
+   * Storage key of the person's photo, or null. Internal: callers turn it into
+   * a short-lived link (see member-avatars.ts) and never return the key itself.
+   */
+  avatarKey: string | null;
   /** Present only when `withSkills` was requested. */
   skills?: Array<{ id: string; name: string }>;
 }
@@ -39,6 +44,7 @@ interface MemberRow {
     country_code: string;
     phone_number: string;
     disabled: boolean;
+    avatar_key: string | null;
     user_skills?: Array<{
       skills: { id: string; name: string } | Array<{ id: string; name: string }> | null;
     }> | null;
@@ -57,8 +63,8 @@ export async function listCompanyMembers(
     return [];
   }
   const userCols = filter.withSkills
-    ? 'name, country_code, phone_number, disabled, user_skills(skills(id, name))'
-    : 'name, country_code, phone_number, disabled';
+    ? 'name, country_code, phone_number, disabled, avatar_key, user_skills(skills(id, name))'
+    : 'name, country_code, phone_number, disabled, avatar_key';
 
   let qb = admin
     .from('memberships')
@@ -91,6 +97,7 @@ export async function listCompanyMembers(
       role: row.role,
       status: row.status,
       createdAt: row.created_at,
+      avatarKey: row.users!.avatar_key ?? null,
       ...(filter.withSkills
         ? {
             skills: (row.users!.user_skills ?? []).flatMap((us) =>

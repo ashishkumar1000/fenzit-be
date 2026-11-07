@@ -50,6 +50,10 @@ function expectCompany(
 
 describe('UsersService', () => {
   let service: UsersService;
+  /** Signs a key as `https://signed.example/<key>`; tests read its calls. */
+  const presignSpy = jest.fn((key: string) =>
+    Promise.resolve(`https://signed.example/${key}`),
+  );
   let supabaseClientFactory: jest.Mocked<SupabaseClientFactory>;
   let customersService: { listCustomers: jest.Mock; countCustomers: jest.Mock };
   let jobsService: { toResponse: jest.Mock };
@@ -174,7 +178,7 @@ describe('UsersService', () => {
         { provide: JobsService, useValue: jobsService },
         {
           provide: StorageService,
-          useValue: { presignReadUrl: jest.fn().mockResolvedValue('https://signed.example/avatar') },
+          useValue: { presignReadUrl: presignSpy },
         },
       ],
     }).compile();
@@ -430,6 +434,58 @@ describe('UsersService', () => {
     };
   }
 
+  describe('getMyProfile — photo links', () => {
+    beforeEach(() => {
+      presignSpy.mockClear();
+    });
+
+    it('gives each owner-roster technician with a photo a link, and null to one without', async () => {
+      customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
+      customersService.countCustomers.mockResolvedValue(0);
+      mockAdmin({
+        technicians: {
+          data: [
+            memberRow('tech-a', { name: 'Asha', avatarKey: 'avatars/tech-a/p.jpg' }),
+            memberRow('tech-b', { name: 'Bina' }),
+          ],
+          error: null,
+        },
+        jobsList: { data: [], error: null },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      expectCompany(result);
+      expect(result.technicians[0].avatarUrl).toBe(
+        'https://signed.example/avatars/tech-a/p.jpg',
+      );
+      expect(result.technicians[1].avatarUrl).toBeNull();
+    });
+
+    it('signs a technician photo only once even when that technician has many roster rows', async () => {
+      customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
+      customersService.countCustomers.mockResolvedValue(0);
+      mockAdmin({
+        technicians: {
+          data: [
+            memberRow('tech-a', { avatarKey: 'avatars/tech-a/p.jpg' }),
+            memberRow('tech-a-dup', { avatarKey: 'avatars/tech-a/p.jpg' }),
+          ],
+          error: null,
+        },
+        jobsList: { data: [], error: null },
+      });
+
+      await service.getMyProfile(ownerUser, {});
+
+      expect(presignSpy).toHaveBeenCalledTimes(1);
+      expect(presignSpy).toHaveBeenCalledWith(
+        'avatars/tech-a/p.jpg',
+        expect.any(Number),
+      );
+    });
+  });
+
   describe('getMyProfile — owner', () => {
     it('returns the full owner profile: tenant, technicians, technicianCount, customers, jobs, jobCounts', async () => {
       const { listBuilders, membershipsHandler } = mockAdmin({
@@ -533,6 +589,7 @@ describe('UsersService', () => {
             countryCode: '',
             phoneNumber: '',
             skills: [],
+            avatarUrl: null,
           },
           customer: {
             id: 'cust-1',
@@ -907,6 +964,7 @@ describe('UsersService', () => {
             countryCode: '',
             phoneNumber: '',
             skills: [],
+            avatarUrl: null,
           },
           customer: {
             id: 'cust-1',
@@ -1218,6 +1276,7 @@ describe('UsersService', () => {
           countryCode: '+91',
           phoneNumber: '9111111111',
           skills: ['Plumbing', 'Electrical'],
+          avatarUrl: null,
         });
         expect(row.customer).toEqual({
           id: 'cust-1',
@@ -1314,6 +1373,7 @@ describe('UsersService', () => {
         countryCode: '+91',
         phoneNumber: '9111111111',
         skills: [],
+        avatarUrl: null,
       });
       expect(result.jobs.data[0].customer.id).toBe('cust-1');
     });
@@ -1337,7 +1397,35 @@ describe('UsersService', () => {
         countryCode: '',
         phoneNumber: '',
         skills: [],
+        avatarUrl: null,
       });
+    });
+
+    it('gives a job row its technician a link to their photo', async () => {
+      mockAdmin({
+        jobsList: {
+          data: [jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z')],
+          error: null,
+        },
+        batchUsers: {
+          data: [
+            memberRow('tech-uuid', {
+              name: 'Ravi',
+              countryCode: '+91',
+              phoneNumber: '9111111111',
+              avatarKey: 'avatars/tech-uuid/p.jpg',
+            }),
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      expectCompany(result);
+      expect(result.jobs.data[0].technician.avatarUrl).toBe(
+        'https://signed.example/avatars/tech-uuid/p.jpg',
+      );
     });
 
     it('keeps the customer embed present (id-only fallback) when the customers row is missing', async () => {

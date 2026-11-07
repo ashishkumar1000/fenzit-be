@@ -6,6 +6,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import {
@@ -54,7 +59,10 @@ import {
 export class WeeklyOffsService {
   private readonly logger = new Logger(WeeklyOffsService.name);
 
-  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseClientFactory: SupabaseClientFactory,
+    private readonly storageService: StorageService,
+  ) {}
 
   /**
    * GET /attendance/weekly-offs — the selection valid today (null = all 7
@@ -112,9 +120,13 @@ export class WeeklyOffsService {
       return [];
     }
 
-    const names = await readEmployeeNames(admin, tenantId, [
+    const people = await readEmployeeNames(admin, tenantId, [
       ...new Set(rows.map((r) => r.employee_id as string)),
     ]);
+    const avatarUrls = await presignAvatarUrls(
+      this.storageService,
+      [...people.values()].map((p) => p.avatarKey),
+    );
 
     const byEmployee = new Map<string, WeeklyOffRow[]>();
     for (const row of rows) {
@@ -127,12 +139,16 @@ export class WeeklyOffsService {
     }
 
     return [...byEmployee.entries()]
-      .map(([employeeId, employeeRows]) => ({
-        employeeId,
-        employeeName: names.get(employeeId) ?? 'Unknown employee',
-        current: toViewOrNull(pickCurrentWeeklyOff(employeeRows, today)),
-        next: toViewOrNull(pickNextWeeklyOff(employeeRows, today)),
-      }))
+      .map(([employeeId, employeeRows]) => {
+        const person = people.get(employeeId);
+        return {
+          employeeId,
+          employeeName: person?.name ?? 'Unknown employee',
+          avatarUrl: avatarUrlFor(avatarUrls, person?.avatarKey),
+          current: toViewOrNull(pickCurrentWeeklyOff(employeeRows, today)),
+          next: toViewOrNull(pickNextWeeklyOff(employeeRows, today)),
+        };
+      })
       .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
   }
 
@@ -191,10 +207,15 @@ export class WeeklyOffsService {
   ): Promise<WeeklyOffOverrideResponse> {
     const today = await resolveTenantToday(admin, tenantId);
     const rows = await readOverrides(admin, tenantId, employeeId);
-    const names = await readEmployeeNames(admin, tenantId, [employeeId]);
+    const people = await readEmployeeNames(admin, tenantId, [employeeId]);
+    const person = people.get(employeeId);
+    const avatarUrls = await presignAvatarUrls(this.storageService, [
+      person?.avatarKey,
+    ]);
     return {
       employeeId,
-      employeeName: names.get(employeeId) ?? 'Unknown employee',
+      employeeName: person?.name ?? 'Unknown employee',
+      avatarUrl: avatarUrlFor(avatarUrls, person?.avatarKey),
       current: toViewOrNull(pickCurrentWeeklyOff(rows, today)),
       next: toViewOrNull(pickNextWeeklyOff(rows, today)),
     };

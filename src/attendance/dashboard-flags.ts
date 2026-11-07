@@ -32,9 +32,18 @@ export interface RawFlagRow {
   employee_id: string;
   work_date: string;
   employee_name: string;
+  avatar_key: string | null;
   office_name: string | null;
   attempt_count: string;
 }
+
+/** A flag row as read: the photo's storage key, turned into a link by the service. */
+export type FlagRead<T extends { avatarUrl: string | null }> = Omit<
+  T,
+  'avatarUrl'
+> & {
+  avatarKey: string | null;
+};
 
 /**
  * The officeId filter BODY: the employee whose covering assignment office
@@ -70,12 +79,13 @@ export class DashboardFlagReads {
     tenantId: string,
     today: string,
     officeId: string | null,
-  ): Promise<CheckoutMissingFlagRow[]> {
+  ): Promise<FlagRead<CheckoutMissingFlagRow>[]> {
     return tx
       .query<RawFlagRow>(
         `select d.employee_id, d.work_date::text,
                 coalesce(nullif(u.name, ''), u.country_code || u.phone_number,
                          'Unknown employee') as employee_name,
+                u.avatar_key,
                 oact.name as office_name, '' as attempt_count
          from (
            select r.employee_id, r.work_date,
@@ -137,6 +147,7 @@ export class DashboardFlagReads {
         r.rows.map((row) => ({
           employeeId: row.employee_id,
           employeeName: row.employee_name,
+          avatarKey: row.avatar_key,
           workDate: row.work_date,
           officeName: row.office_name,
         })),
@@ -155,12 +166,13 @@ export class DashboardFlagReads {
     today: string,
     timezone: string,
     officeId: string | null,
-  ): Promise<FakeLocationFlagRow[]> {
+  ): Promise<FlagRead<FakeLocationFlagRow>[]> {
     return tx
       .query<RawFlagRow>(
         `select f.employee_id, f.work_date::text,
                 coalesce(nullif(u.name, ''), u.country_code || u.phone_number,
                          'Unknown employee') as employee_name,
+                u.avatar_key,
                 o.name as office_name,
                 f.attempt_count
          from (
@@ -200,6 +212,7 @@ export class DashboardFlagReads {
         r.rows.map((row) => ({
           employeeId: row.employee_id,
           employeeName: row.employee_name,
+          avatarKey: row.avatar_key,
           workDate: row.work_date,
           officeName: row.office_name,
           attemptCount: Number(row.attempt_count),

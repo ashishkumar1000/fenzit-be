@@ -22,6 +22,7 @@ interface EmployeeRow {
   name: string | null;
   country_code: string | null;
   phone_number: string | null;
+  avatar_key: string | null;
 }
 
 /** All the tenant's default ranges (fetch-and-pick happens in the model). */
@@ -82,12 +83,18 @@ export async function readOverrides(
   return data ?? [];
 }
 
-/** id → display name for the override views (admin client, tenant filter). */
+/** A person's display name and the storage key of their photo (if any). */
+export interface EmployeeDisplay {
+  name: string;
+  avatarKey: string | null;
+}
+
+/** id → display name and photo key for the override views (admin client, tenant filter). */
 export async function readEmployeeNames(
   admin: Admin,
   tenantId: string,
   employeeIds: string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, EmployeeDisplay>> {
   if (employeeIds.length === 0) {
     return new Map();
   }
@@ -104,6 +111,7 @@ export async function readEmployeeNames(
       name: m.name,
       country_code: m.countryCode,
       phone_number: m.phoneNumber,
+      avatar_key: m.avatarKey,
     }));
   } catch (err) {
     logger.error('Failed to read employee names for weekly off', err instanceof Error ? err.stack : String(err));
@@ -111,18 +119,19 @@ export async function readEmployeeNames(
     // review: the thrown message misattributed it to the overrides table).
     throw internalError('Failed to read employee names');
   }
-  const names = new Map<string, string>();
+  const names = new Map<string, EmployeeDisplay>();
   for (const row of rows) {
     // Same display fallback as the RPCs (20260927000003): name, then the
     // reassembled E.164 number (users.phone was split long ago). The dial
     // code already carries its '+' — country_codes.dial_code is FK-enforced
     // and stores '+91', so no prefix is added here.
-    names.set(
-      row.id,
-      row.name ||
+    names.set(row.id, {
+      name:
+        row.name ||
         `${row.country_code ?? ''}${row.phone_number ?? ''}` ||
         'Unknown employee',
-    );
+      avatarKey: row.avatar_key,
+    });
   }
   return names;
 }

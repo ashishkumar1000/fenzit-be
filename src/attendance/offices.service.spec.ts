@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException, NotFoundException } from '@nestjs/common';
 import { OfficesService } from './offices.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -133,6 +134,8 @@ describe('OfficesService (story 15-3)', () => {
     opts: {
       offices?: RpcResult[];
       rules?: RpcResult[];
+      /** Company-member reads (the blockers' photo keys). */
+      members?: RpcResult[];
       rpc?: Record<string, RpcResult[]>;
     } = {},
   ) {
@@ -140,6 +143,8 @@ describe('OfficesService (story 15-3)', () => {
     for (const r of opts.offices ?? []) officesQb.queue.push(r);
     const rulesQb = flexQb({ data: [], error: null });
     for (const r of opts.rules ?? []) rulesQb.queue.push(r);
+    const membersQb = flexQb({ data: [], error: null });
+    for (const r of opts.members ?? []) membersQb.queue.push(r);
 
     const rpcs = new Map<string, ReturnType<typeof rpcQueue>>();
     for (const [name, results] of Object.entries(opts.rpc ?? {})) {
@@ -152,6 +157,8 @@ describe('OfficesService (story 15-3)', () => {
           return officesQb.qb;
         case 'attendance_office_rules':
           return rulesQb.qb;
+        case 'memberships':
+          return membersQb.qb;
         default:
           throw new Error(`unexpected table ${table}`);
       }
@@ -186,6 +193,14 @@ describe('OfficesService (story 15-3)', () => {
       providers: [
         OfficesService,
         { provide: SupabaseClientFactory, useValue: mockFactory },
+        {
+          provide: StorageService,
+          useValue: {
+            presignReadUrl: jest.fn((key: string) =>
+              Promise.resolve(`https://signed.example/${key}`),
+            ),
+          },
+        },
       ],
     }).compile();
 
@@ -893,8 +908,72 @@ describe('OfficesService (story 15-3)', () => {
         service.getArchiveBlockers(ownerUser, OFFICE_ID),
       ).resolves.toEqual({
         officeId: OFFICE_ID,
-        blockers: [{ employeeId: 'emp-1', employeeName: 'Ravi Kumar' }],
+        blockers: [{ employeeId: 'emp-1', employeeName: 'Ravi Kumar', avatarUrl: null }],
       });
+    });
+
+    it('gives each blocker a photo link, and null when they have none', async () => {
+      const q = seeded(
+        mockAdmin({
+          offices: [{ data: officeRow, error: null }],
+          members: [
+            {
+              data: [
+                {
+                  user_id: 'emp-1',
+                  role: 'employee',
+                  status: 'active',
+                  employee_code: 'E-1',
+                  created_at: '2026-09-01T00:00:00Z',
+                  users: {
+                    name: 'Ravi Kumar',
+                    country_code: '+91',
+                    phone_number: '9000000001',
+                    disabled: false,
+                    avatar_key: 'avatars/emp-1/p.jpg',
+                  },
+                },
+                {
+                  user_id: 'emp-2',
+                  role: 'employee',
+                  status: 'active',
+                  employee_code: 'E-2',
+                  created_at: '2026-09-01T00:00:00Z',
+                  users: {
+                    name: 'Priya Sharma',
+                    country_code: '+91',
+                    phone_number: '9000000002',
+                    disabled: false,
+                    avatar_key: null,
+                  },
+                },
+              ],
+              error: null,
+            },
+          ],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_office_archive_blockers',
+        rpcQueue({
+          data: [
+            { employee_id: 'emp-1', employee_name: 'Ravi Kumar' },
+            { employee_id: 'emp-2', employee_name: 'Priya Sharma' },
+          ],
+          error: null,
+        }),
+      );
+
+      const result = await service.getArchiveBlockers(ownerUser, OFFICE_ID);
+
+      expect(result.blockers).toEqual([
+        {
+          employeeId: 'emp-1',
+          employeeName: 'Ravi Kumar',
+          avatarUrl: 'https://signed.example/avatars/emp-1/p.jpg',
+        },
+        { employeeId: 'emp-2', employeeName: 'Priya Sharma', avatarUrl: null },
+      ]);
     });
 
     it('returns 404 when the office does not exist (read before the preview)', async () => {
@@ -929,7 +1008,7 @@ describe('OfficesService (story 15-3)', () => {
     });
   });
 
-  it('is injectable with just the Supabase factory (no other providers)', () => {
+  it('is injectable with only the Supabase factory and storage (no other providers)', () => {
     expect(service).toBeDefined();
   });
   describe('office pin address (formatted_address)', () => {

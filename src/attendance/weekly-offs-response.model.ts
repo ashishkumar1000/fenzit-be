@@ -48,6 +48,8 @@ export interface WeeklyOffDefaultResponse {
 export interface WeeklyOffOverrideResponse {
   employeeId: string;
   employeeName: string;
+  /** Short-lived link to the employee's photo, or null when none is set. */
+  avatarUrl: string | null;
   current: WeeklyOffView | null;
   next: WeeklyOffView | null;
 }

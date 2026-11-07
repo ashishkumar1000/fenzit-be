@@ -10,6 +10,8 @@ import {
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
+import { avatarUrlsByUserId } from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import { CreateOfficeDto } from './dto/create-office.dto';
 import { UpdateOfficeDto } from './dto/update-office.dto';
 import {
@@ -44,7 +46,10 @@ type Admin = ReturnType<SupabaseClientFactory['createAdmin']>;
 export class OfficesService {
   private readonly logger = new Logger(OfficesService.name);
 
-  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseClientFactory: SupabaseClientFactory,
+    private readonly storageService: StorageService,
+  ) {}
 
   /**
    * FR-5 list. The rule valid on today is picked from the office's few
@@ -346,12 +351,21 @@ export class OfficesService {
     if (error) {
       this.throwRpcError(error, 'Failed to read archive blockers');
     }
-    return (data ?? []).map(
-      (row: { employee_id: string; employee_name: string }) => ({
-        employeeId: row.employee_id,
-        employeeName: row.employee_name,
-      }),
+    const rows = (data ?? []) as {
+      employee_id: string;
+      employee_name: string;
+    }[];
+    const avatarUrls = await avatarUrlsByUserId(
+      this.storageService,
+      admin,
+      user.tenantId as string,
+      rows.map((row) => row.employee_id),
     );
+    return rows.map((row) => ({
+      employeeId: row.employee_id,
+      employeeName: row.employee_name,
+      avatarUrl: avatarUrls.get(row.employee_id) ?? null,
+    }));
   }
 
   /**

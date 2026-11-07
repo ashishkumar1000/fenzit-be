@@ -1,3 +1,4 @@
+import { StorageService } from '../storage/storage.service';
 import 'reflect-metadata';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { EnrolmentsService } from './enrolments.service';
@@ -17,6 +18,13 @@ import { ErrorCode } from '../common/enums/error-code.enum';
  */
 
 const TENANT = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000e2';
+
+/** Signs a key as `https://signed.example/<key>`, so a test can see the link. */
+const storageStub = {
+  presignReadUrl: jest.fn((key: string) =>
+    Promise.resolve(`https://signed.example/${key}`),
+  ),
+} as unknown as StorageService;
 const EMPLOYEE = 'a0000000-0000-4000-8000-0000000000e1';
 const OFFICE = 'b0000000-0000-4000-8000-0000000000e2';
 const OFFICE_2 = 'b0000000-0000-4000-8000-0000000000e3';
@@ -169,6 +177,7 @@ function serviceWith(txOptions: TxOptions, viewRows: unknown[] = [VIEW_ROW]) {
       withTransaction: (work: (client: unknown) => Promise<unknown>) =>
         work(tx),
     } as unknown as PgPoolFactory,
+    storageStub,
   );
   return { service, writes, tx };
 }
@@ -397,11 +406,74 @@ describe('EnrolmentsService (story 15-7)', () => {
       const service = new EnrolmentsService(
         { createAdmin: () => admin } as unknown as SupabaseClientFactory,
         {} as unknown as PgPoolFactory,
+        storageStub,
       );
 
       const roster = await service.listEnrolments(owner);
 
       expect(roster).toHaveLength(1);
+      expect(roster[0]).toMatchObject({
+        employeeId: EMPLOYEE,
+        employeeName: 'Ravi',
+        phone: '+919876543210',
+        attendanceAccess: 'active',
+        memberStatus: 'active',
+      });
+      // Scoped to the caller's company and to employees only (admins are
+      // never enrolled), whatever the query shape.
+      const members = builders['memberships'][0];
+      expect(members.eq).toHaveBeenCalledWith('tenant_id', TENANT);
+      expect(members.eq).toHaveBeenCalledWith('role', Role.EMPLOYEE);
+    });
+
+    it('gives a roster row its employee photo link', async () => {
+      const builders: Record<string, Record<string, jest.Mock>[]> = {};
+      const admin = {
+        from: jest.fn((table: string) => {
+          const qb: Record<string, jest.Mock> = {};
+          for (const m of ['select', 'eq', 'neq', 'in', 'order']) {
+            qb[m] = jest.fn().mockReturnValue(qb);
+          }
+          (builders[table] ??= []).push(qb);
+          // The roster reads company members: memberships rows with the
+          // user's identity embedded.
+          const result =
+            table === 'memberships'
+              ? {
+                  data: [
+                    {
+                      user_id: EMPLOYEE,
+                      role: 'employee',
+                      status: 'active',
+                      employee_code: 'E-001',
+                      created_at: '2026-09-01T00:00:00Z',
+                      users: {
+                        name: 'Ravi',
+                        country_code: '+91',
+                        phone_number: '9876543210',
+                        avatar_key: 'avatars/emp/p.jpg',
+                      },
+                    },
+                  ],
+                  error: null,
+                }
+              : { data: [VIEW_ROW], error: null };
+          qb.then = jest.fn((resolve: (v: unknown) => unknown) =>
+            Promise.resolve(resolve(result)),
+          );
+          return qb;
+        }),
+      };
+      const service = new EnrolmentsService(
+        { createAdmin: () => admin } as unknown as SupabaseClientFactory,
+        {} as unknown as PgPoolFactory,
+        storageStub,
+      );
+
+      const roster = await service.listEnrolments(owner);
+
+      expect(roster).toHaveLength(1);
+      expect(roster[0].avatarUrl).toBe('https://signed.example/avatars/emp/p.jpg');
       expect(roster[0]).toMatchObject({
         employeeId: EMPLOYEE,
         employeeName: 'Ravi',
@@ -452,6 +524,7 @@ describe('EnrolmentsService (story 15-7)', () => {
       const service = new EnrolmentsService(
         { createAdmin: () => admin } as unknown as SupabaseClientFactory,
         {} as unknown as PgPoolFactory,
+        storageStub,
       );
 
       const roster = await service.listEnrolments(owner);
@@ -496,6 +569,7 @@ describe('EnrolmentsService (story 15-7)', () => {
       const service = new EnrolmentsService(
         { createAdmin: () => admin } as unknown as SupabaseClientFactory,
         {} as unknown as PgPoolFactory,
+        storageStub,
       );
 
       const roster = await service.listEnrolments(owner);

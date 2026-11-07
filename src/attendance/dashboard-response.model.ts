@@ -46,6 +46,8 @@ export interface DashboardCounts {
 export interface CheckoutMissingFlagRow {
   employeeId: string;
   employeeName: string;
+  /** Short-lived link to the employee's photo, or null when none is set. */
+  avatarUrl: string | null;
   /** Tenant-local `YYYY-MM-DD`. */
   workDate: string;
   /** The office of the assignment covering the FLAG date (may have moved). */
@@ -56,6 +58,8 @@ export interface CheckoutMissingFlagRow {
 export interface FakeLocationFlagRow {
   employeeId: string;
   employeeName: string;
+  /** Short-lived link to the employee's photo, or null when none is set. */
+  avatarUrl: string | null;
   /** Tenant-local `YYYY-MM-DD` of the attempts. */
   workDate: string;
   officeName: string | null;
@@ -88,6 +92,8 @@ export type DashboardEmployeeStatus =
 export interface DashboardEmployeeRow {
   employeeId: string;
   employeeName: string;
+  /** Short-lived link to the employee's photo, or null when none is set. */
+  avatarUrl: string | null;
   /** Display form — country code + number (two people can share a name). */
   phone: string | null;
   officeName: string | null;

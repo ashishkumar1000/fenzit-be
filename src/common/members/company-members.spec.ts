@@ -114,8 +114,25 @@ describe('listCompanyMembers', () => {
       role: 'viewer',
       status: 'invited',
       createdAt: '2026-10-01T00:00:00Z',
+      avatarKey: null,
     });
     expect(member).not.toHaveProperty('skills');
+  });
+
+  it('carries the photo key through, and null when the person has no photo', async () => {
+    const { admin } = stub({
+      data: [
+        row({
+          user_id: 'u-photo',
+          users: identity({ avatar_key: 'avatars/u-photo/p.jpg' }),
+        }),
+        row({ user_id: 'u-plain' }),
+      ],
+      error: null,
+    });
+    const [withPhoto, plain] = await listCompanyMembers(admin, 'tenant-A');
+    expect(withPhoto.avatarKey).toBe('avatars/u-photo/p.jpg');
+    expect(plain.avatarKey).toBeNull();
   });
 
   it('flattens skills whether the embed comes back as an object, an array or null', async () => {

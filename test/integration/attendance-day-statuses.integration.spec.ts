@@ -222,7 +222,7 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
       createAdmin: () => admin,
     } as unknown as SupabaseClientFactory);
     leaveService = new LeaveService(pg);
-    leaveRead = new LeaveReadService(pg);
+    leaveRead = new LeaveReadService(pg, { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never);
 
     // A seeding failure must never leave the throwaway tenant behind: the
     // delete cascades every scaffold row (review G2-P14). seedScaffold is

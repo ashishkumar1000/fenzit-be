@@ -3,6 +3,7 @@ import {
   ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
+import { StorageService } from '../storage/storage.service';
 import { MembersService } from './members.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
@@ -35,13 +36,23 @@ function queryStub(result: DbResult) {
 
 function build(opts: { query?: DbResult; rpc?: DbResult } = {}) {
   const query = queryStub(opts.query ?? { data: [], error: null });
-  const rpc = jest.fn().mockResolvedValue(opts.rpc ?? { data: null, error: null });
+  const rpc = jest
+    .fn()
+    .mockResolvedValue(opts.rpc ?? { data: null, error: null });
   const admin = { from: jest.fn(() => query.builder), rpc };
   const factory = {
     createAdmin: jest.fn(() => admin),
   } as unknown as jest.Mocked<SupabaseClientFactory>;
-  const service = new MembersService(factory);
-  return { service, rpc, from: admin.from, query };
+  const storage = {
+    presignReadUrl: jest.fn((key: string) =>
+      Promise.resolve(`https://signed.example/${key}`),
+    ),
+  };
+  const service = new MembersService(
+    factory,
+    storage as unknown as StorageService,
+  );
+  return { service, rpc, from: admin.from, query, storage };
 }
 
 const companyAdmin: RequestUser = {
@@ -64,6 +75,101 @@ const platformAdmin: RequestUser = {
 const bodyOf = (e: unknown) => (e as { getResponse(): unknown }).getResponse();
 
 describe('MembersService', () => {
+  describe('list — photo links', () => {
+    function memberRowWithPhoto(userId: string, avatarKey: string | null) {
+      return {
+        user_id: userId,
+        role: 'employee',
+        status: 'active',
+        employee_code: 'EMP-0001',
+        created_at: '2026-06-20T00:00:00Z',
+        users: {
+          name: `Name ${userId}`,
+          country_code: '+91',
+          phone_number: '9000000000',
+          disabled: false,
+          avatar_key: avatarKey,
+        },
+      };
+    }
+
+    it('gives a person with a photo a link, and a person without one null', async () => {
+      const { service } = build({
+        query: {
+          data: [
+            memberRowWithPhoto('u-1', 'avatars/u-1/a.jpg'),
+            memberRowWithPhoto('u-2', null),
+          ],
+          error: null,
+        },
+      });
+
+      const members = await service.list(companyAdmin);
+
+      expect(members[0].avatarUrl).toBe(
+        'https://signed.example/avatars/u-1/a.jpg',
+      );
+      expect(members[1].avatarUrl).toBeNull();
+    });
+
+    it('never returns the raw storage key as a field', async () => {
+      const { service, storage } = build({
+        query: {
+          data: [memberRowWithPhoto('u-1', 'avatars/u-1/secret-key.jpg')],
+          error: null,
+        },
+      });
+
+      // A presigned link carries its object path by design, so this test
+      // uses an opaque link and checks that the key is not a field of its own.
+      storage.presignReadUrl.mockResolvedValueOnce(
+        'https://signed.example/opaque',
+      );
+
+      const members = await service.list(companyAdmin);
+
+      expect(JSON.stringify(members)).not.toContain('secret-key');
+      expect(members[0]).not.toHaveProperty('avatarKey');
+    });
+
+    it('signs a photo shared by several rows once, not once per row', async () => {
+      const { service, storage } = build({
+        query: {
+          data: [
+            memberRowWithPhoto('u-1', 'avatars/u-1/a.jpg'),
+            memberRowWithPhoto('u-1-dup', 'avatars/u-1/a.jpg'),
+          ],
+          error: null,
+        },
+      });
+
+      await service.list(companyAdmin);
+
+      expect(storage.presignReadUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it('still lists everyone when one photo fails to sign: that person gets null, the rest keep theirs', async () => {
+      const { service, storage } = build({
+        query: {
+          data: [
+            memberRowWithPhoto('u-1', 'avatars/u-1/broken.jpg'),
+            memberRowWithPhoto('u-2', 'avatars/u-2/ok.jpg'),
+          ],
+          error: null,
+        },
+      });
+      storage.presignReadUrl.mockRejectedValueOnce(new Error('signing failed'));
+
+      const members = await service.list(companyAdmin);
+
+      expect(members).toHaveLength(2);
+      expect(members[0].avatarUrl).toBeNull();
+      expect(members[1].avatarUrl).toBe(
+        'https://signed.example/avatars/u-2/ok.jpg',
+      );
+    });
+  });
+
   describe('changeRole', () => {
     it('sends the caller, company, member and new role to the database function', async () => {
       const { service, rpc } = build({
@@ -103,7 +209,9 @@ describe('MembersService', () => {
         .changeRole(companyAdmin, 'member-1', 'viewer' as never)
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(InternalServerErrorException);
-      expect(bodyOf(err)).toMatchObject({ error_code: 'INTERNAL_SERVER_ERROR' });
+      expect(bodyOf(err)).toMatchObject({
+        error_code: 'INTERNAL_SERVER_ERROR',
+      });
     });
 
     it('turns the last-admin refusal into a 409 with its own code', async () => {
@@ -153,9 +261,11 @@ describe('MembersService', () => {
           error: { code: 'PT404', hint: 'RESOURCE_NOT_FOUND', message: 'x' },
         },
       });
-      await expect(service.remove(companyAdmin, 'ghost')).rejects.toMatchObject({
-        status: 404,
-      });
+      await expect(service.remove(companyAdmin, 'ghost')).rejects.toMatchObject(
+        {
+          status: 404,
+        },
+      );
     });
   });
 
@@ -248,8 +358,14 @@ describe('MembersService', () => {
     it('orders newest first, with id as the tie-breaker', async () => {
       const { service, query } = build();
       await service.auditLog(companyAdmin, undefined, undefined);
-      expect(query.calls).toContainEqual(['order', ['created_at', { ascending: false }]]);
-      expect(query.calls).toContainEqual(['order', ['id', { ascending: false }]]);
+      expect(query.calls).toContainEqual([
+        'order',
+        ['created_at', { ascending: false }],
+      ]);
+      expect(query.calls).toContainEqual([
+        'order',
+        ['id', { ascending: false }],
+      ]);
     });
 
     it('rejects a beforeId sent without before, rather than ignoring it', async () => {
@@ -334,7 +450,9 @@ describe('MembersService', () => {
         .auditLog(companyAdmin, undefined, undefined)
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(InternalServerErrorException);
-      expect(bodyOf(err)).toMatchObject({ error_code: 'INTERNAL_SERVER_ERROR' });
+      expect(bodyOf(err)).toMatchObject({
+        error_code: 'INTERNAL_SERVER_ERROR',
+      });
     });
   });
 });

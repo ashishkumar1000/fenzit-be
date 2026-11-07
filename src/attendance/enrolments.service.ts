@@ -11,6 +11,11 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { listCompanyMembers } from '../common/members/company-members';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import {
@@ -74,6 +79,7 @@ export class EnrolmentsService {
   constructor(
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly pgPoolFactory: PgPoolFactory,
+    private readonly storageService: StorageService,
   ) {}
 
   /**
@@ -102,7 +108,12 @@ export class EnrolmentsService {
       country_code: m.countryCode,
       phone_number: m.phoneNumber,
       status: m.status,
+      avatarKey: m.avatarKey,
     }));
+    const avatarUrls = await presignAvatarUrls(
+      this.storageService,
+      technicians.map((t) => t.avatarKey),
+    );
     if (technicians.length === 0) {
       return [];
     }
@@ -131,6 +142,7 @@ export class EnrolmentsService {
         employeeId: t.id,
         employeeName: t.name || phone || 'Unknown employee',
         phone,
+        avatarUrl: avatarUrlFor(avatarUrls, t.avatarKey),
         // Fail closed: only an active membership can be tracked.
         memberStatus: t.status === 'active' ? 'active' : 'invited',
       };

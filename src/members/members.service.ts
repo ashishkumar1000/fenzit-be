@@ -13,6 +13,17 @@ import {
   listCompanyMembers,
 } from '../common/members/company-members';
 import { memberRpcException } from '../common/members/member-rpc-error';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
+
+/** A person of the company as the members list serves them: no raw storage key. */
+export type MemberView = Omit<CompanyMember, 'avatarKey'> & {
+  /** Short-lived link to the person's photo, or null when none is set. */
+  avatarUrl: string | null;
+};
 
 export interface AuditLogEntry {
   id: string;
@@ -37,15 +48,26 @@ const DEFAULT_AUDIT_LIMIT = 50;
 export class MembersService {
   private readonly logger = new Logger(MembersService.name);
 
-  constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseFactory: SupabaseClientFactory,
+    private readonly storageService: StorageService,
+  ) {}
 
-  async list(caller: RequestUser): Promise<CompanyMember[]> {
+  async list(caller: RequestUser): Promise<MemberView[]> {
     try {
-      return await listCompanyMembers(
+      const members = await listCompanyMembers(
         this.supabaseFactory.createAdmin(),
         caller.tenantId as string,
         { includeRemoved: false },
       );
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        members.map((m) => m.avatarKey),
+      );
+      return members.map(({ avatarKey, ...member }) => ({
+        ...member,
+        avatarUrl: avatarUrlFor(avatarUrls, avatarKey),
+      }));
     } catch (error) {
       this.logger.error('Failed to list members:', { error });
       throw new InternalServerErrorException({

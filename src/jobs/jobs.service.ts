@@ -13,6 +13,10 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { findCompanyMember } from '../common/members/company-members';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
@@ -93,6 +97,8 @@ interface TechnicianProfile {
   countryCode: string;
   phoneNumber: string;
   skills: string[];
+  /** Short-lived link to the technician's photo, or null when none is set. */
+  avatarUrl: string | null;
 }
 
 interface CustomerProfile {
@@ -178,6 +184,7 @@ interface TechnicianRow {
   name: string;
   country_code: string;
   phone_number: string;
+  avatar_key: string | null;
 }
 
 interface CustomerProfileRow {
@@ -845,6 +852,7 @@ export class JobsService {
                 name: m.name,
                 country_code: m.countryCode,
                 phone_number: m.phoneNumber,
+                avatar_key: m.avatarKey,
               } as TechnicianRow)
             : null,
           error: null as unknown,
@@ -961,6 +969,12 @@ export class JobsService {
       }),
     );
 
+    const technicianAvatarKey = techRes.data?.avatar_key ?? null;
+    const technicianAvatarUrl = avatarUrlFor(
+      await presignAvatarUrls(this.storageService, [technicianAvatarKey]),
+      technicianAvatarKey,
+    );
+
     return this.toDetailResponse(
       row,
       techRes.data,
@@ -968,6 +982,7 @@ export class JobsService {
       custRes.data,
       activityLog,
       attachments,
+      technicianAvatarUrl,
     );
   }
 
@@ -978,6 +993,7 @@ export class JobsService {
     customer: CustomerProfileRow,
     activityLog: ActivityLogEntry[],
     attachments: JobAttachmentResponse[],
+    technicianAvatarUrl: string | null,
   ): JobDetailResponse {
     return {
       ...this.toResponse(row),
@@ -987,6 +1003,7 @@ export class JobsService {
         countryCode: technician.country_code,
         phoneNumber: technician.phone_number,
         skills,
+        avatarUrl: technicianAvatarUrl,
       },
       customer: {
         id: customer.id,

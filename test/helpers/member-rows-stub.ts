@@ -17,6 +17,7 @@ export interface StubMemberRow {
     name: string | null;
     country_code: string;
     phone_number: string;
+    avatar_key: string | null;
     user_skills?: unknown;
   } | null;
 }
@@ -33,6 +34,7 @@ export function memberRow(
     countryCode?: string;
     phoneNumber?: string;
     skills?: Array<{ id: string; name: string }>;
+    avatarKey?: string | null;
   } = {},
 ): StubMemberRow {
   return {
@@ -45,6 +47,7 @@ export function memberRow(
       name: over.name === undefined ? `Name ${userId}` : over.name,
       country_code: over.countryCode ?? '+91',
       phone_number: over.phoneNumber ?? '9000000000',
+      avatar_key: over.avatarKey ?? null,
       ...(over.skills
         ? { user_skills: over.skills.map((skills) => ({ skills })) }
         : {}),

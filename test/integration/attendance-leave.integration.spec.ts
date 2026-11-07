@@ -203,11 +203,16 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     } as unknown as ConfigService;
     servicePool = new PgPoolFactory(config);
     leave = new LeaveService(servicePool);
-    leaveRead = new LeaveReadService(servicePool);
+    leaveRead = new LeaveReadService(servicePool, {
+      presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+    } as never);
     checkIn = new CheckInOutService(servicePool);
     enrolments = new EnrolmentsService(
       { createAdmin: () => admin } as never,
       servicePool,
+      {
+        presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+      } as never,
     );
 
     // ---- fixtures: tenant, owner, techs, office, rules, enrolments ----

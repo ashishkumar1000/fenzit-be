@@ -848,6 +848,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     const enrolments = new EnrolmentsService(
       new SupabaseClientFactory(config),
       servicePool,
+      { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never,
     );
     const dto = Object.assign(new ReassignOfficeDto(), {
       officeId: OFFICE_B,

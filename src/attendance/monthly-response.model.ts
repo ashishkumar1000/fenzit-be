@@ -10,6 +10,8 @@ import type { MonthlyEmployeeSummary } from '../common/day-status/monthly-summar
 export interface EmployeeMonthlyRow {
   employeeId: string;
   employeeName: string;
+  /** Short-lived link to the employee's photo, or null when none is set. */
+  avatarUrl: string | null;
   /** The roster's CURRENT office — the assignment covering today. */
   officeId: string | null;
   officeName: string | null;

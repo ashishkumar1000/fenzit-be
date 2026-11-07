@@ -13,6 +13,11 @@ import {
 } from '../common/day-status/grid-reader';
 import { pickWeeklyOffDays, type WeeklyOffRow } from './me-summary.model';
 import { summariseEmployeeMonth } from '../common/day-status/monthly-summary.model';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import type {
   EmployeeMonthlyRow,
   HolidayRow,
@@ -47,6 +52,7 @@ const MONTHLY_MAX_SPAN_DAYS = 31;
 interface EmployeeMetaRow {
   employee_id: string;
   employee_name: string;
+  avatar_key: string | null;
   office_id: string | null;
   office_name: string | null;
 }
@@ -96,6 +102,7 @@ export class MonthlyService {
   constructor(
     private readonly pg: PgPoolFactory,
     private readonly supabaseClientFactory: SupabaseClientFactory,
+    private readonly storageService: StorageService,
   ) {}
 
   forOwner(
@@ -138,9 +145,14 @@ export class MonthlyService {
         list.push(row);
         byEmployee.set(row.employeeId, list);
       }
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        metas.map((m) => m.avatar_key),
+      );
       const employees: EmployeeMonthlyRow[] = metas.map((meta) => ({
         employeeId: meta.employee_id,
         employeeName: meta.employee_name,
+        avatarUrl: avatarUrlFor(avatarUrls, meta.avatar_key),
         officeId: meta.office_id,
         officeName: meta.office_name,
         summary: summariseEmployeeMonth(
@@ -211,6 +223,7 @@ export class MonthlyService {
               e.employee_id,
               coalesce(nullif(u.name, ''), u.country_code || u.phone_number,
                        'Unknown employee') as employee_name,
+              u.avatar_key,
               a.office_id, o.name as office_name
        from public.attendance_enrolments e
        join public.users u on u.id = e.employee_id

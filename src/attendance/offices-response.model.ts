@@ -77,7 +77,12 @@ export interface OfficeDetailResponse {
 /** GET /attendance/offices/:id/archive/preview and the archive 409 body. */
 export interface ArchiveBlockersResponse {
   officeId: string;
-  blockers: { employeeId: string; employeeName: string }[];
+  blockers: {
+    employeeId: string;
+    employeeName: string;
+    /** Short-lived link to the employee's photo, or null when none is set. */
+    avatarUrl: string | null;
+  }[];
 }
 
 /** "[2026-09-26,)" → "2026-09-26" / "[2026-09-26,2026-09-27)" → upper. */

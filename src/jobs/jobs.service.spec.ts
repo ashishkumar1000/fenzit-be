@@ -164,6 +164,7 @@ describe('JobsService', () => {
       getPresignedReadUrl: jest
         .fn()
         .mockResolvedValue('https://r2.example.com/read'),
+      presignReadUrl: jest.fn((key: string) => Promise.resolve(`https://signed.example/${key}`)),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -1217,6 +1218,28 @@ describe('JobsService', () => {
       };
     }
 
+    it('gives the job technician a link to their photo', async () => {
+      mockDetailAdmin({
+        technician: {
+          data: [
+            memberRow('tech-1', {
+              name: 'Ravi',
+              countryCode: '+91',
+              phoneNumber: '9990001111',
+              avatarKey: 'avatars/tech-1/p.jpg',
+            }),
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      expect(result.technician.avatarUrl).toBe(
+        'https://signed.example/avatars/tech-1/p.jpg',
+      );
+    });
+
     it('returns the full job detail with nested profiles, activity log, and empty attachments (owner)', async () => {
       mockDetailAdmin({});
 
@@ -1230,6 +1253,7 @@ describe('JobsService', () => {
         countryCode: '+91',
         phoneNumber: '9990001111',
         skills: ['AC Repair', 'Plumbing'],
+        avatarUrl: null,
       });
       expect(result.customer).toEqual({
         id: 'cust-1',

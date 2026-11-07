@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
 import { WeeklyOffsService } from './weekly-offs.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -48,6 +49,7 @@ function member(
   name: string | null,
   countryCode: string,
   phoneNumber: string,
+  avatarKey: string | null = null,
 ) {
   return {
     user_id: id,
@@ -55,7 +57,12 @@ function member(
     status: 'active',
     employee_code: 'E-001',
     created_at: '2026-09-01T00:00:00Z',
-    users: { name, country_code: countryCode, phone_number: phoneNumber },
+    users: {
+      name,
+      country_code: countryCode,
+      phone_number: phoneNumber,
+      avatar_key: avatarKey,
+    },
   };
 }
 
@@ -192,6 +199,14 @@ describe('WeeklyOffsService (story 15-5)', () => {
       providers: [
         WeeklyOffsService,
         { provide: SupabaseClientFactory, useValue: mockFactory },
+        {
+          provide: StorageService,
+          useValue: {
+            presignReadUrl: jest.fn((key: string) =>
+              Promise.resolve(`https://signed.example/${key}`),
+            ),
+          },
+        },
       ],
     }).compile();
 
@@ -436,6 +451,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       expect(result[0]).toEqual({
         employeeId: empA,
         employeeName: 'Alpha Singh',
+        avatarUrl: null,
         // A future-only override has nothing covering today.
         current: null,
         next: { days: [1], validFrom: '2026-10-05', validTo: null },
@@ -445,6 +461,38 @@ describe('WeeklyOffsService (story 15-5)', () => {
       expect(q.usersQb.qb.eq).toHaveBeenCalledWith('tenant_id', TENANT_ID);
       expect(q.usersQb.qb.in).toHaveBeenCalledWith('user_id', [empB, empA]);
       expect(q.usersQb.qb.neq).not.toHaveBeenCalled();
+    });
+
+    it('gives an override its employee a photo link, and null when they have none', async () => {
+      const empA = '00000000-0000-4000-8000-0000000000ea';
+      const empB = '00000000-0000-4000-8000-0000000000eb';
+      seeded(mockAdmin({
+        overrides: [
+          {
+            data: [
+              { ...overrideRow, employee_id: empA, valid: '[2026-10-05,)', days: [1] },
+              { ...overrideRow, employee_id: empB, days: [5] },
+            ],
+            error: null,
+          },
+        ],
+        users: [
+          {
+            data: [
+              member(empA, 'Alpha Singh', '+91', '9999900001', 'avatars/a/p.jpg'),
+              member(empB, 'Zeta Kumar', '+91', '9999900002'),
+            ],
+            error: null,
+          },
+        ],
+      }));
+
+      const result = await service.listOverrides(ownerUser);
+
+      expect(result.find((r) => r.employeeId === empA)?.avatarUrl).toBe(
+        'https://signed.example/avatars/a/p.jpg',
+      );
+      expect(result.find((r) => r.employeeId === empB)?.avatarUrl).toBeNull();
     });
 
     it('falls back to the reassembled E.164 number, then Unknown employee', async () => {
@@ -505,6 +553,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       await expect(service.setOverride(ownerUser, EMPLOYEE_ID, dto)).resolves.toEqual({
         employeeId: EMPLOYEE_ID,
         employeeName: 'Ravi Kumar',
+        avatarUrl: null,
         current: { days: [5], validFrom: '2026-09-25', validTo: null },
         next: null,
       });
@@ -553,6 +602,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       await expect(service.setOverride(ownerUser, EMPLOYEE_ID, { days: [] })).resolves.toEqual({
         employeeId: EMPLOYEE_ID,
         employeeName: 'Ravi',
+        avatarUrl: null,
         current: { days: [], validFrom: '2026-09-25', validTo: null },
         next: null,
       });
@@ -576,6 +626,7 @@ describe('WeeklyOffsService (story 15-5)', () => {
       ).resolves.toEqual({
         employeeId: EMPLOYEE_ID,
         employeeName: 'Ravi Kumar',
+        avatarUrl: null,
         current: null,
         next: null,
       });

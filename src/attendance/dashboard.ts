@@ -7,11 +7,18 @@ import { tenantToday } from './enrolments.repository';
 import { readDayStatusGrid } from '../common/day-status/grid-reader';
 import { computeDayStatus } from '../common/day-status/day-status.model';
 import { DashboardFlagReads } from './dashboard-flags';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 import type {
+  CheckoutMissingFlagRow,
   DashboardResponse,
   DashboardOfficeRow,
   DashboardEmployeeRow,
   DashboardEmployeeStatus,
+  FakeLocationFlagRow,
 } from './dashboard-response.model';
 
 /**
@@ -73,6 +80,7 @@ export class DashboardService {
   constructor(
     private readonly pg: PgPoolFactory,
     private readonly flags: DashboardFlagReads,
+    private readonly storageService: StorageService,
   ) {}
 
   today(owner: RequestUser, officeId?: string): Promise<DashboardResponse> {
@@ -108,6 +116,10 @@ export class DashboardService {
        *  as the tiles so a row and its count can never disagree. */
       const employees: DashboardEmployeeRow[] = [];
       const employeeContacts = await this.readEmployeeContacts(tx, employeeIds);
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        [...employeeContacts.values()].map((c) => c.avatarKey),
+      );
       /** The covering approved leave's part, per employee (the on-leave
        *  rows' detail line). */
       const leavePartByEmployee = await this.readApprovedLeaveParts(
@@ -228,6 +240,7 @@ export class DashboardService {
             employeeId: row.employeeId,
             employeeName: employeeContacts.get(row.employeeId)?.name ?? 'Unknown employee',
             phone: employeeContacts.get(row.employeeId)?.phone ?? null,
+            avatarUrl: avatarUrlFor(avatarUrls, employeeContacts.get(row.employeeId)?.avatarKey),
             officeName: row.ctx.officeName,
             status: pulseStatus,
             checkInAt:
@@ -250,7 +263,7 @@ export class DashboardService {
       );
 
       const tz = await this.flags.readTimezone(tx, tenantId);
-      const [checkoutMissing, fakeLocationAttempt] = await Promise.all([
+      const [checkoutMissingRead, fakeLocationRead] = await Promise.all([
         this.flags.readCheckoutMissing(tx, tenantId, today, officeId ?? null),
         this.flags.readFakeLocation(
           tx,
@@ -260,6 +273,22 @@ export class DashboardService {
           officeId ?? null,
         ),
       ]);
+      const flagAvatarUrls = await presignAvatarUrls(this.storageService, [
+        ...checkoutMissingRead.map((r) => r.avatarKey),
+        ...fakeLocationRead.map((r) => r.avatarKey),
+      ]);
+      const checkoutMissing: CheckoutMissingFlagRow[] = checkoutMissingRead.map(
+        ({ avatarKey, ...row }) => ({
+          ...row,
+          avatarUrl: avatarUrlFor(flagAvatarUrls, avatarKey),
+        }),
+      );
+      const fakeLocationAttempt: FakeLocationFlagRow[] = fakeLocationRead.map(
+        ({ avatarKey, ...row }) => ({
+          ...row,
+          avatarUrl: avatarUrlFor(flagAvatarUrls, avatarKey),
+        }),
+      );
       // Anomalies first — the pulse shows the top N and the owner should
       // meet the late/on-leave rows before the already-in ones.
       const statusRank: Record<DashboardEmployeeStatus, number> = {
@@ -311,15 +340,16 @@ export class DashboardService {
   private async readEmployeeContacts(
     tx: PoolClient,
     employeeIds: string[],
-  ): Promise<Map<string, { name: string; phone: string | null }>> {
+  ): Promise<Map<string, { name: string; phone: string | null; avatarKey: string | null }>> {
     if (employeeIds.length === 0) return new Map();
     const { rows } = await tx.query<{
       id: string;
       name: string;
       country_code: string;
       phone_number: string;
+      avatar_key: string | null;
     }>(
-      `select id, name, country_code, phone_number
+      `select id, name, country_code, phone_number, avatar_key
        from public.users where id = any($1::uuid[])`,
       [employeeIds],
     );
@@ -332,6 +362,7 @@ export class DashboardService {
             r.country_code && r.phone_number
               ? `${r.country_code} ${r.phone_number}`
               : null,
+          avatarKey: r.avatar_key,
         },
       ]),
     );

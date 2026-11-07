@@ -48,6 +48,11 @@ import {
   validateApplyShape,
 } from './leave-validation';
 import { ApplyLeaveDto } from './dto/leave.dto';
+import {
+  avatarUrlFor,
+  presignAvatarUrls,
+} from '../common/members/member-avatars';
+import { StorageService } from '../storage/storage.service';
 
 const ME_LIST_SCOPE: CursorScope = 'leave-me-list';
 const OWNER_LIST_SCOPE: CursorScope = 'leave-owner-list';
@@ -70,7 +75,10 @@ export interface LeaveListQuery {
  */
 @Injectable()
 export class LeaveReadService {
-  constructor(private readonly pg: PgPoolFactory) {}
+  constructor(
+    private readonly pg: PgPoolFactory,
+    private readonly storageService: StorageService,
+  ) {}
 
   /** 17-5's live working-day count — the apply validation, persist:false. */
   previewApply(
@@ -369,6 +377,10 @@ export class LeaveReadService {
       pickWeeklyOffDays,
       isoWeekdayOf,
     );
+    const avatarUrls = await presignAvatarUrls(
+      this.storageService,
+      pageRows.map((r) => r.avatar_key),
+    );
     const data: LeaveRequestView[] = [];
     for (const row of pageRows) {
       const days: LeaveDayRow[] = daysByRequest.get(row.id) ?? [];
@@ -391,6 +403,7 @@ export class LeaveReadService {
         status: row.derived_status,
         employeeName: row.employee_name ?? undefined,
         employeeCode: row.employee_code ?? undefined,
+        employeeAvatarUrl: avatarUrlFor(avatarUrls, row.avatar_key),
       });
     }
     return { data, nextCursor, hasMore };
