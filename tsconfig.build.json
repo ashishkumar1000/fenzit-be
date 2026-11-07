@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "scripts", "**/*spec.ts", "cloudflare-worker"]
+  "exclude": ["node_modules", "test", "dist", "scripts", "**/*spec.ts", "**/import-test.*.ts", "cloudflare-worker"]
 }

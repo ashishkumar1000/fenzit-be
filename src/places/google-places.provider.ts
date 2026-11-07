@@ -70,8 +70,12 @@ interface GoogleGeocodeAddressComponent {
 interface GoogleGeocodeResult {
   formatted_address?: string;
   address_components?: GoogleGeocodeAddressComponent[];
+  /** Set when Google matched only part of the typed address. */
+  partial_match?: boolean;
   geometry?: {
     location?: { lat?: number; lng?: number };
+    /** ROOFTOP and RANGE_INTERPOLATED are precise; APPROXIMATE is an area centre. */
+    location_type?: string;
   };
 }
 
@@ -310,6 +314,15 @@ export class GooglePlacesProvider extends PlacesProvider {
     const lng = result?.geometry?.location?.lng;
     if (!result || typeof lat !== 'number' || typeof lng !== 'number') {
       // OK with no usable geometry reads as not found, never a crash.
+      return { formattedAddress: null, latitude: null, longitude: null };
+    }
+    // A partial match or an approximate (area-centre) result would save a
+    // customer's pin at the wrong place. Refuse it: the staff member fixes
+    // the address or fills the coordinates by hand.
+    if (
+      result.partial_match === true ||
+      result.geometry?.location_type === 'APPROXIMATE'
+    ) {
       return { formattedAddress: null, latitude: null, longitude: null };
     }
 

@@ -11,6 +11,7 @@ import {
 import { Transform } from 'class-transformer';
 import { trim } from '../../common/utils/trim.transformer';
 import { MaxCodePoints } from '../validators/max-code-points';
+import { CUSTOMER_ADDRESS_MAX } from '../constants/customer-field-limits';
 
 /**
  * The 8 optional structured-address fields shared by every customer-creation
@@ -30,7 +31,7 @@ export class StructuredAddressDto {
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxCodePoints(255)
+  @MaxCodePoints(CUSTOMER_ADDRESS_MAX)
   address?: string;
 
   @ApiPropertyOptional({ example: 'Bengaluru', description: 'City' })

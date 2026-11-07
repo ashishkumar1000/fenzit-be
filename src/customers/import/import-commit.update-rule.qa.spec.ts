@@ -56,7 +56,7 @@ describe('ImportCommitService update rule (QA)', () => {
     h.db.rows.customers.find((c) => c.id === id) as Record<string, unknown>;
 
   describe('blank cells never clear a stored value', () => {
-    it('keeps city, state, pincode, coordinates and details when the sheet leaves them blank', async () => {
+    it('keeps city, state, pincode and details when the sheet leaves them blank; a changed address clears the old pin', async () => {
       const out = await commit([
         goodRow({
           name: 'New Name',
@@ -76,9 +76,11 @@ describe('ImportCommitService update rule (QA)', () => {
         city: 'Pune',
         state: 'Maharashtra',
         pincode: '411001',
-        latitude: 18.5,
-        longitude: 73.8,
         address_details: 'Flat 1',
+        // The address changed and no new coordinates came in: the old pin is
+        // for the old address, so it is cleared (decided 2026-11-08).
+        latitude: null,
+        longitude: null,
       });
     });
 

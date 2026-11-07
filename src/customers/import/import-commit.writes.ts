@@ -15,7 +15,10 @@ const logger = new Logger('ImportCommitWrites');
  * a phone match can never change it. A blank cell is null after validation
  * and is left out, so it never clears a stored value.
  */
-function fieldsTheRowFills(values: ImportRowValues): Record<string, unknown> {
+function fieldsTheRowFills(
+  values: ImportRowValues,
+  addressChanged: boolean,
+): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   const set = (column: string, value: unknown) => {
     if (value !== null) patch[column] = value;
@@ -30,8 +33,37 @@ function fieldsTheRowFills(values: ImportRowValues): Record<string, unknown> {
   if (values.latitude !== null && values.longitude !== null) {
     patch.latitude = values.latitude;
     patch.longitude = values.longitude;
+  } else if (addressChanged) {
+    // The stored pin belongs to the old address. Blank coordinates still never
+    // clear a stored value, except this one: a pin for the wrong place sends a
+    // technician to the wrong door, so it is cleared and the staff member
+    // fetches the location again.
+    patch.latitude = null;
+    patch.longitude = null;
   }
   return patch;
+}
+
+/**
+ * True when the row sets an address that differs from the stored one. A blank
+ * address never counts as a change. Null when the stored row cannot be read.
+ */
+async function addressChangedFor(
+  admin: SupabaseClient,
+  tenantId: string,
+  row: ImportRowResult,
+  customerId: string,
+): Promise<boolean | null> {
+  const address = row.normalised.address;
+  if (address === null) return false;
+  const { data, error } = await admin
+    .from('customers')
+    .select('address')
+    .eq('id', customerId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle<{ address: string | null }>();
+  if (error || !data) return null;
+  return (data.address ?? '') !== address;
 }
 
 function failedRow(rowIndex: number, reason: ImportRowReason): CommitRowResult {
@@ -96,10 +128,15 @@ async function updateExisting(
   row: ImportRowResult,
   customerId: string,
 ): Promise<CommitRowResult> {
+  const changed = await addressChangedFor(admin, tenantId, row, customerId);
+  if (changed === null) {
+    logger.warn(`Import row not updated (row=${row.rowIndex}, code=read)`);
+    return failedRow(row.rowIndex, reasonFor('row', 'ROW_SAVE_FAILED'));
+  }
   // tenant_id in the filter: a row can only ever touch its own company.
   const { data, error } = await admin
     .from('customers')
-    .update(fieldsTheRowFills(row.normalised))
+    .update(fieldsTheRowFills(row.normalised, changed))
     .eq('id', customerId)
     .eq('tenant_id', tenantId)
     .select('id')

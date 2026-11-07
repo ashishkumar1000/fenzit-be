@@ -16,6 +16,7 @@ import {
   completeImportKey,
   hashImportRequest,
   releaseImportKey,
+  touchImportKey,
 } from './import-commit.replay';
 import {
   CommitRowResult,
@@ -37,8 +38,16 @@ import {
  * counts and no audit entry, and its claim stays pending until it goes stale.
  * A retry is safe: phone matching turns rows that already saved into updates,
  * not duplicates.
+ *
+ * Once rows are saved, a failure to write the batch counts or the audit entry
+ * is logged, not returned as a 500: the customers are already in, so the run
+ * still completes and its answer is stored for replay. A missing audit line
+ * or count is logged for follow-up.
  */
-/** How often the batch row is refreshed while rows are being written. */
+/**
+ * How often the batch row is refreshed and the claim kept fresh while rows
+ * are being written.
+ */
 const PROGRESS_EVERY = 25;
 @Injectable()
 export class ImportCommitService {
@@ -116,12 +125,19 @@ export class ImportCommitService {
             },
       );
       if (rows.length % PROGRESS_EVERY === 0 && rows.length < total) {
-        await this.syncBatch(admin, owner, batchId, tally(rows, total), false);
+        await this.syncBatch(
+          admin,
+          owner,
+          batchId,
+          tally(rows, total),
+          'running',
+        );
+        await touchImportKey(admin, tenantId, idempotencyKey, claim.claimToken);
       }
     }
 
     const summary = tally(rows, total);
-    await this.syncBatch(admin, owner, batchId, summary, true);
+    await this.syncBatch(admin, owner, batchId, summary, 'completed');
     await this.writeAudit(admin, owner, batchId, summary);
 
     const response: ImportCommitResponse = { batchId, rows, summary };
@@ -154,6 +170,7 @@ export class ImportCommitService {
           created_count: 0,
           updated_count: 0,
           failed_count: total,
+          status: 'running',
         })
         .select('id')
         .single<{ id: string }>();
@@ -170,16 +187,16 @@ export class ImportCommitService {
   }
 
   /**
-   * Writes the three counts to the batch row. Mid-run (final = false) a failure
-   * is logged and the run goes on: the next refresh or the final one corrects
-   * the row. The final refresh must land, or the run is reported as failed.
+   * Writes the three counts (and, on the final refresh, status 'completed') to
+   * the batch row. Never throws: rows are already saved by the time this runs.
+   * A failure is logged, and the next refresh or the final one corrects the row.
    */
   private async syncBatch(
     admin: SupabaseClient,
     owner: RequestUser,
     batchId: string,
     summary: CommitSummary,
-    final: boolean,
+    status: 'running' | 'completed',
   ): Promise<void> {
     let error: { code?: string } | null;
     try {
@@ -189,6 +206,7 @@ export class ImportCommitService {
           created_count: summary.created,
           updated_count: summary.updated,
           failed_count: summary.failed,
+          status,
         })
         .eq('id', batchId)
         .eq('tenant_id', owner.tenantId));
@@ -197,12 +215,15 @@ export class ImportCommitService {
     }
     if (!error) return;
     this.logger.error(
-      `Failed to update import_batches (code=${error.code ?? 'none'}, final=${final})`,
+      `Failed to update import_batches (code=${error.code ?? 'none'})`,
     );
-    if (final) throw this.recordFailed();
   }
 
-  /** Company-level entry for the owner's audit log. Counts only, no values. */
+  /**
+   * Company-level entry for the owner's audit log. Counts only, no values.
+   * A run that imported nothing writes no entry: there is no change to record.
+   * Never throws: see the note on the class.
+   */
   private async writeAudit(
     admin: SupabaseClient,
     owner: RequestUser,
@@ -210,6 +231,7 @@ export class ImportCommitService {
     summary: CommitSummary,
   ): Promise<void> {
     const imported = summary.created + summary.updated;
+    if (imported === 0) return;
     let error: { code?: string } | null;
     try {
       ({ error } = await admin.rpc('write_audit_row', {
@@ -231,7 +253,6 @@ export class ImportCommitService {
       this.logger.error(
         `Failed to write import audit entry (code=${error.code ?? 'none'})`,
       );
-      throw this.recordFailed();
     }
   }
 

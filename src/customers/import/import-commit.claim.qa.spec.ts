@@ -79,7 +79,7 @@ describe('ImportCommitService claim lifecycle (QA)', () => {
   });
 
   describe('a finished answer older than 24 hours', () => {
-    it('is expired, so the same key runs the import again', async () => {
+    it('is kept, so the same key replays it and writes nothing', async () => {
       seedClaim(25 * HOUR, {
         requestHash: hashImportRequest(dto()),
         response: {
@@ -89,8 +89,23 @@ describe('ImportCommitService claim lifecycle (QA)', () => {
         },
       });
       const out = await commit();
-      expect(out.batchId).not.toBe('old');
-      expect(h.db.rows.customers).toHaveLength(1);
+      expect(out.batchId).toBe('old');
+      expect(h.db.rows.customers).toEqual([]);
+      expect(h.db.writes()).toEqual([]);
+    });
+
+    it('a different sheet under the same key is still refused as key reused (422)', async () => {
+      seedClaim(25 * HOUR, {
+        requestHash: hashImportRequest(dto()),
+        response: {
+          batchId: 'old',
+          rows: [],
+          summary: { total: 0, created: 0, updated: 0, failed: 0 },
+        },
+      });
+      const changed = sheet();
+      changed[0] = { ...changed[0], name: 'Someone else' };
+      await expect(commit(changed)).rejects.toMatchObject({ status: 422 });
     });
   });
 

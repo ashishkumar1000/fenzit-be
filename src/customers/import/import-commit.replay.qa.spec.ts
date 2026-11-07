@@ -73,7 +73,7 @@ describe('ImportCommitService replay and idempotency (QA)', () => {
     });
   });
 
-  describe('replay window (24 hours)', () => {
+  describe('a finished answer is kept (no expiry)', () => {
     const seedReplay = (ageMs: number, tenant = COMPANY_A) =>
       h.db.seed('idempotency_log', {
         key: IDEMPOTENCY_KEY,
@@ -101,11 +101,15 @@ describe('ImportCommitService replay and idempotency (QA)', () => {
       expect(h.db.rows.customers).toEqual([]);
     });
 
-    it('runs the import again once the stored answer is more than 24 hours old', async () => {
+    it('still replays the stored answer after 24 hours: a finished answer is kept, not re-run', async () => {
       seedReplay(24 * HOUR + 1000);
-      const out = await commit(sheet());
-      expect(out.batchId).not.toBe('old-batch');
-      expect(h.db.rows.customers).toHaveLength(2);
+      await expect(commit(sheet())).resolves.toMatchObject({
+        batchId: 'old-batch',
+      });
+      expect(h.db.rows.customers).toEqual([]);
+      expect(h.db.writes().filter((c) => c.table === 'import_batches')).toEqual(
+        [],
+      );
     });
   });
 

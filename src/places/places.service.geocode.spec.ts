@@ -191,11 +191,27 @@ describe('PlacesService.geocodeAddress (QA)', () => {
       expect(key).not.toContain(staffUser.tenantId as string);
     });
 
-    it('should key the budget by userId even when the staff user has no tenant', async () => {
+    it('refuses a staff user with no company before any lookup or budget use', async () => {
+      placesProvider.forwardGeocode.mockResolvedValue(found);
+
+      await expect(
+        service.geocodeAddress(
+          { ...staffUser, tenantId: null },
+          {
+            address: 'x',
+          },
+        ),
+      ).rejects.toMatchObject({ status: 400 });
+
+      expect(placesProvider.forwardGeocode).not.toHaveBeenCalled();
+      expect(rateLimitStore.increment).not.toHaveBeenCalled();
+    });
+
+    it('keys the budget by userId for a staff user with a company', async () => {
       countIs(1);
       placesProvider.forwardGeocode.mockResolvedValue(found);
 
-      await service.geocodeAddress({ ...staffUser, tenantId: null }, 'x');
+      await service.geocodeAddress(staffUser, { address: 'Koramangala' });
 
       expect(rateLimitStore.increment).toHaveBeenCalledWith(
         `${staffUser.userId}:geocode`,

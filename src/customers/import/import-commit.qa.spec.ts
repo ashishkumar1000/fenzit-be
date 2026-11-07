@@ -141,7 +141,7 @@ describe('ImportCommitService (QA)', () => {
       });
     });
 
-    it('writes "imported 0 customers" when nothing saved, still with a batch record', async () => {
+    it('writes no audit entry when nothing saved, but still keeps a batch record', async () => {
       const out = await commit([goodRow({ name: '' })]);
       expect(out.summary).toEqual({
         total: 1,
@@ -149,9 +149,8 @@ describe('ImportCommitService (QA)', () => {
         updated: 0,
         failed: 1,
       });
-      expect(h.db.auditRows[0].p_action).toBe(
-        'Fenzit staff imported 0 customers',
-      );
+      // Nothing changed, so there is nothing for the owner's audit log.
+      expect(h.db.auditRows).toEqual([]);
       expect(h.db.rows.import_batches).toHaveLength(1);
     });
 
@@ -367,31 +366,27 @@ describe('ImportCommitService (QA)', () => {
       });
     });
 
-    it('an audit write error returns 500 with the stated message, and the batch row is kept', async () => {
+    it('an audit write error does not fail the run: the customer is saved, the batch row is kept, and the answer is returned', async () => {
       h.db.failNext(
         { rpcName: 'write_audit_row' },
         { error: { code: 'P0001', message: 'audit down' } },
       );
-      await expect(commit([goodRow()])).rejects.toMatchObject({
-        status: 500,
-        response: {
-          error_code: 'INTERNAL_SERVER_ERROR',
-          message: RECORD_FAILED,
-        },
-      });
+      const out = await commit([goodRow()]);
+      expect(out.summary.created).toBe(1);
       expect(h.db.rows.import_batches).toHaveLength(1);
       expect(customersFor(COMPANY_A)).toHaveLength(1);
+      expect(h.db.auditRows).toEqual([]);
     });
 
-    it('an audit write that rejects (network) returns the same stated 500', async () => {
+    it('an audit write that rejects (network) does not fail the run either', async () => {
       h.db.failNext(
         { rpcName: 'write_audit_row' },
         { throws: 'socket hang up' },
       );
-      await expect(commit([goodRow()])).rejects.toMatchObject({
-        status: 500,
-        response: { message: RECORD_FAILED },
+      await expect(commit([goodRow()])).resolves.toMatchObject({
+        summary: { created: 1 },
       });
+      expect(customersFor(COMPANY_A)).toHaveLength(1);
     });
   });
 
@@ -418,12 +413,11 @@ describe('ImportCommitService (QA)', () => {
         { table: 'import_batches', op: 'update' },
         { throws: '9000000001 77 Secret Lane' },
       );
-      await expect(
-        commit([
-          goodRow({ phone: '9876543210' }),
-          goodRow({ phone: '9123456789', name: 'X' }),
-        ]),
-      ).rejects.toBeDefined();
+      // The run completes: the rows are saved and only the final batch refresh fails.
+      await commit([
+        goodRow({ phone: '9876543210' }),
+        goodRow({ phone: '9123456789', name: 'X' }),
+      ]);
       spies.forEach((spy) => spy.mockRestore());
       const all = logged.join('\n');
       // Guard against a vacuous pass: the spies must have caught the log lines.

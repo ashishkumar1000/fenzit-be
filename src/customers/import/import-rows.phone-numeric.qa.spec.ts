@@ -122,14 +122,13 @@ describe('import phone cell as a number, and trunk zero (QA)', () => {
       ]);
     });
 
-    it('leaves a phone WITH a dial code untouched: +91 09876543210 keeps its 0 and is accepted', () => {
-      // Not stripped. The national part is 11 digits, inside 6-15, so it is
-      // valid as typed. The brief expected a refusal; the rule as decided
-      // accepts it, and the stored number keeps the leading 0.
+    it('drops the trunk 0 after a dial code: +91 09876543210 is stored as +91 9876543210', () => {
+      // A trunk 0 after a dial code is never part of the international number.
+      // Decided 2026-11-08: strip it, so the stored number is valid.
       const d = check('+91 09876543210');
       expect(d.reasons).toEqual([]);
       expect(d.values.countryCode).toBe('+91');
-      expect(d.values.phoneNumber).toBe('09876543210');
+      expect(d.values.phoneNumber).toBe('9876543210');
     });
   });
 });

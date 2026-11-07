@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   PlacesProvider,
@@ -204,6 +210,14 @@ export class PlacesService {
     user: RequestUser,
     parts: GeocodeAddressParts,
   ): Promise<ForwardGeocodedPlace> {
+    // Staff act on a company's customers, so the request must name one (the
+    // X-Company-Id header, honoured for platform admins by the guard).
+    if (!user.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing customers',
+      });
+    }
     // Only parts with text count as filled. The street is what the lookup is
     // built around: a blank street with a city or PIN must not match a place.
     const filled = (part: string | undefined): string => (part ?? '').trim();

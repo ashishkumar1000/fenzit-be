@@ -315,19 +315,25 @@ describe('ImportCommitService batch progress (QA)', () => {
       expect(h.db.auditRows).toHaveLength(1);
     });
 
-    it('a failed final refresh returns the stated 500, keeps the saved rows, skips the audit entry and keeps the claim', async () => {
+    it('a failed final refresh does not fail the run: the rows are saved, the audit entry is written, and the answer is stored for replay', async () => {
       h.db.failNext(
         { table: 'import_batches', op: 'update' },
         { error: { code: 'XX000' } },
       );
-      await expect(commit(rowsOf(3))).rejects.toMatchObject({
-        status: 500,
-        response: { message: RECORD_FAILED },
-      });
+      const first = await commit(rowsOf(3));
+      expect(first.rows.map((r) => r.status)).toEqual([
+        'created',
+        'created',
+        'created',
+      ]);
       expect(h.db.rows.customers).toHaveLength(3);
-      expect(h.db.auditRows).toEqual([]);
-      // Rows are saved, so the claim is kept: a retry is refused, not re-run.
-      await expect(commit(rowsOf(3))).rejects.toMatchObject({ status: 409 });
+      expect(h.db.auditRows).toHaveLength(1);
+      // The run completed, so the same key replays its answer and writes nothing.
+      const writesBefore = h.db.writes().length;
+      await expect(commit(rowsOf(3))).resolves.toMatchObject({
+        batchId: first.batchId,
+      });
+      expect(h.db.writes()).toHaveLength(writesBefore);
     });
   });
 });

@@ -7,6 +7,10 @@ import { parsePhone } from './import-rows.phone';
 import { hasInvalidCoordinates } from '../../common/utils/validate-coordinates';
 import { codePointCount } from '../../common/validators/max-code-points';
 import {
+  CUSTOMER_ADDRESS_MAX,
+  CUSTOMER_NAME_MAX,
+} from '../../common/constants/customer-field-limits';
+import {
   ImportRowDraft,
   ImportRowFlag,
   ImportRowField,
@@ -17,8 +21,8 @@ import {
   reasonFor,
 } from './import-rows.types';
 
-const NAME_MAX_LENGTH = 120;
-const ADDRESS_MAX_LENGTH = 255;
+const NAME_MAX_LENGTH = CUSTOMER_NAME_MAX;
+const ADDRESS_MAX_LENGTH = CUSTOMER_ADDRESS_MAX;
 const DECIMAL_PATTERN = /^-?\d+(\.\d+)?$/;
 
 function parseName(raw: unknown): Parsed<string> {

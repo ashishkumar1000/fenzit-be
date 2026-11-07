@@ -13,8 +13,6 @@ import {
 } from './import-commit.types';
 
 const logger = new Logger('ImportCommitReplay');
-/** Same 24-hour window as the idempotency interceptor. */
-const WINDOW_MS = 24 * 60 * 60 * 1000;
 /** A run still "in progress" after this long is treated as abandoned. */
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 
@@ -32,7 +30,7 @@ interface StoredClaim {
 interface ClaimRow {
   id: string;
   created_at: string;
-  response_body: StoredClaim;
+  response_body: unknown;
 }
 
 export type ImportClaim =
@@ -47,7 +45,7 @@ export function hashImportRequest(dto: {
 }): string {
   return createHash('sha256')
     .update(
-      JSON.stringify({
+      stableStringify({
         rows: dto.rows,
         defaultCountryCode: dto.defaultCountryCode ?? null,
         fileName: dto.fileName ?? null,
@@ -57,13 +55,36 @@ export function hashImportRequest(dto: {
 }
 
 /**
+ * JSON with object keys sorted at every depth, so the same sheet hashes the
+ * same however its keys were ordered when it was sent.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`,
+      );
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
  * Claims the key BEFORE any write, so two requests with the same key cannot
  * both run the import. Outcomes:
- *   - no live claim            -> claimed (this request runs the import)
- *   - finished, same sheet     -> replay (return the first answer, write nothing)
- *   - finished or running, different sheet -> 422 key reused
- *   - still running (< 10 min) -> 409 in progress
- *   - expired / abandoned      -> taken over and claimed
+ *   - no live claim               -> claimed (this request runs the import)
+ *   - finished, same sheet        -> replay (return the first answer, write nothing)
+ *   - finished, different sheet   -> 422 key reused
+ *   - running, different sheet    -> 422 key reused (unless it is stale)
+ *   - running, same sheet, fresh  -> 409 in progress
+ *   - running, stale (> 10 min)   -> taken over and claimed
+ * A finished answer is kept for good: it is never taken over, so a retry
+ * after any delay replays it instead of writing a second batch and audit.
  */
 export async function claimImportKey(
   admin: SupabaseClient,
@@ -79,26 +100,47 @@ export async function claimImportKey(
     return { kind: 'claimed', claimToken };
   }
 
+  const stored = readStored(row);
+  const finished = stored.response !== undefined;
   const age = now - Date.parse(row.created_at);
-  const finished = row.response_body.response !== undefined;
-  const limit = finished ? WINDOW_MS : STALE_CLAIM_MS;
 
-  if (age >= limit) {
-    await takeOver(
-      admin,
-      tenantId,
-      key,
-      row.id,
-      requestHash,
-      claimToken,
-      now,
-      limit,
-    );
+  if (!finished && age >= STALE_CLAIM_MS) {
+    await takeOver(admin, tenantId, key, row.id, requestHash, claimToken, now);
     return { kind: 'claimed', claimToken };
   }
-  if (row.response_body.requestHash !== requestHash) throw keyReused();
-  if (!finished || !row.response_body.response) throw inProgress();
-  return { kind: 'replay', response: row.response_body.response };
+  if (stored.requestHash !== requestHash) throw keyReused();
+  if (!finished || !stored.response) throw inProgress();
+  return { kind: 'replay', response: stored.response };
+}
+
+/**
+ * Keeps the running claim fresh while rows are written, so a slow but live
+ * run is never taken over. Only the owning run (claimToken) can refresh it.
+ * Never throws: a missed refresh only means the claim may go stale sooner.
+ */
+export async function touchImportKey(
+  admin: SupabaseClient,
+  tenantId: string,
+  key: string,
+  claimToken: string,
+  now: number = Date.now(),
+): Promise<void> {
+  try {
+    const { error } = await admin
+      .from('idempotency_log')
+      .update({ created_at: new Date(now).toISOString() })
+      .eq('key', key)
+      .eq('tenant_id', tenantId)
+      .eq('scope', IMPORT_COMMIT_SCOPE)
+      .eq('response_body->>claimToken', claimToken);
+    if (error) {
+      logger.warn(
+        `Failed to refresh idempotency_log claim (code=${error.code ?? 'none'})`,
+      );
+    }
+  } catch {
+    logger.warn('Failed to refresh idempotency_log claim');
+  }
 }
 
 /** Stores the answer once the rows, batch and audit are written. */
@@ -151,6 +193,20 @@ export async function releaseImportKey(
   } catch {
     logger.error('Failed to release idempotency_log claim');
   }
+}
+
+/** Reads the stored claim. A malformed row is a server fault, never a guess. */
+function readStored(row: ClaimRow): StoredClaim {
+  const body = row.response_body as Partial<StoredClaim> | null;
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    typeof body.requestHash !== 'string'
+  ) {
+    logger.error(`idempotency_log row ${row.id} has an unreadable claim`);
+    throw claimFailed();
+  }
+  return body as StoredClaim;
 }
 
 async function readClaim(
@@ -213,7 +269,7 @@ async function insertClaim(
   }
 }
 
-/** Takes over an expired or abandoned claim, only if it is still that old. */
+/** Takes over a stale running claim, only if it is still that old. */
 async function takeOver(
   admin: SupabaseClient,
   tenantId: string,
@@ -222,9 +278,8 @@ async function takeOver(
   requestHash: string,
   claimToken: string,
   now: number,
-  limitMs: number,
 ): Promise<void> {
-  const cutoff = new Date(now - limitMs).toISOString();
+  const cutoff = new Date(now - STALE_CLAIM_MS).toISOString();
   let page: { data: { id: string } | null; error: { code?: string } | null };
   try {
     page = await admin

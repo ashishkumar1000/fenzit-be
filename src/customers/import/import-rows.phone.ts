@@ -3,6 +3,8 @@ import { Parsed, failed, isBlank } from './import-rows.parse';
 
 /** Same rule as CreateCustomerDto.phoneNumber. */
 const PHONE_NUMBER_PATTERN = /^\d{6,15}$/;
+/** Digits in a typical national number (India, US and UK all use 10). */
+const USUAL_NATIONAL_DIGITS = 10;
 
 export interface PhoneValue {
   countryCode: string;
@@ -28,7 +30,10 @@ function parseDigitsWithDialCode(
     return failed('phone', 'PHONE_UNKNOWN_COUNTRY_CODE');
   }
   for (const code of candidates) {
-    const rest = digits.slice(code.length);
+    // A trunk "0" after a dial code (+91 09876543210) is never part of the
+    // international number, so it is dropped rather than stored.
+    const afterCode = digits.slice(code.length);
+    const rest = afterCode.startsWith('0') ? afterCode.slice(1) : afterCode;
     if (PHONE_NUMBER_PATTERN.test(rest)) {
       return {
         value: { countryCode: `+${code}`, phoneNumber: rest, ownCode: true },
@@ -73,6 +78,17 @@ export function parsePhone(
   // "0" goes. "00" was already read as an international prefix above.
   const national = /^0\d/.test(cleaned) ? cleaned.slice(1) : cleaned;
   if (!PHONE_NUMBER_PATTERN.test(national)) {
+    return failed('phone', 'PHONE_INVALID');
+  }
+  // A longer number that starts with the default dial code (919876543210 with
+  // +91) is a full international number typed without its "+". Storing it
+  // under the default code doubles the code, so refuse it and ask for the
+  // "+" or the national number instead.
+  const defaultDigits = opts.defaultCountryCode.slice(1);
+  if (
+    national.length > USUAL_NATIONAL_DIGITS &&
+    national.startsWith(defaultDigits)
+  ) {
     return failed('phone', 'PHONE_INVALID');
   }
   return {
