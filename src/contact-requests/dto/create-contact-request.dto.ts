@@ -8,7 +8,7 @@ import {
   MaxLength,
   ValidateBy,
 } from 'class-validator';
-import { normalizePhone } from '../../early-access/dto/create-early-access.dto';
+import { normalizePhone } from '../../common/utils/normalize-phone';
 
 export const CONTACT_REQUEST_KINDS = ['call_back', 'demo'] as const;
 export type ContactRequestKind = (typeof CONTACT_REQUEST_KINDS)[number];

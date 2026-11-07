@@ -28,7 +28,6 @@ import { ReportsModule } from './reports/reports.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { ContactRequestsModule } from './contact-requests/contact-requests.module';
 import { AccountDeletionModule } from './account-deletion/account-deletion.module';
-import { EarlyAccessModule } from './early-access/early-access.module';
 import { CountryCodesModule } from './country-codes/country-codes.module';
 import { AdminModule } from './admin/admin.module';
 import { MembersModule } from './members/members.module';
@@ -178,7 +177,6 @@ import { TelemetryShutdown } from './telemetry';
     NotificationsModule,
     ReportsModule,
     AttendanceModule,
-    EarlyAccessModule,
     ContactRequestsModule,
     AccountDeletionModule,
     CountryCodesModule,
