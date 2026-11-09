@@ -152,6 +152,8 @@ export interface DossierCompany {
   isFounder: boolean;
   gstin: string | null;
   upi: string | null;
+  /** Subscription end (UTC ISO), or null when no date is set. */
+  validityUntil: string | null;
 }
 
 export interface Dossier {
@@ -449,7 +451,7 @@ export async function buildDossier(
       ? soft(
           tx.query(
             `select (t.created_by = $2) as is_founder, t.address, t.state_code, t.timezone,
-                t.gstin, t.upi_vpa,
+                t.gstin, t.upi_vpa, t.validity_until,
                 (select count(*) from public.customers where tenant_id = t.id) as customers,
                 (select count(*) from public.jobs where tenant_id = t.id) as jobs,
                 (select count(*) from public.memberships where tenant_id = t.id) as members,
@@ -608,6 +610,7 @@ export async function buildDossier(
             isFounder: Boolean(tr.is_founder),
             gstin: str(tr.gstin),
             upi: str(tr.upi_vpa),
+            validityUntil: iso(tr.validity_until),
           }
         : null,
   };
