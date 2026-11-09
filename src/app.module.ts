@@ -9,6 +9,8 @@ import { AppConfigModule } from './app-config/app-config.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
+import { SubscriptionExpiryGuard } from './common/guards/subscription-expiry.guard';
+import { AdminConfigModule } from './admin-config/admin-config.module';
 import { MembershipResolver } from './common/auth/membership-resolver';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { PlatformAuditInterceptor } from './common/interceptors/platform-audit.interceptor';
@@ -220,6 +222,7 @@ import { TelemetryShutdown } from './telemetry';
     AdminModule,
     MembersModule,
     PushModule,
+    AdminConfigModule,
   ],
   controllers: [HealthController],
   providers: [
@@ -239,6 +242,12 @@ import { TelemetryShutdown } from './telemetry';
     {
       provide: APP_GUARD,
       useClass: PermissionsGuard,
+    },
+    {
+      // After JwtAuthGuard and PermissionsGuard: an owner's write in an expired
+      // company gets 402 SUBSCRIPTION_EXPIRED (CAP-2).
+      provide: APP_GUARD,
+      useClass: SubscriptionExpiryGuard,
     },
     {
       // First interceptor: validates/generates the correlation context so

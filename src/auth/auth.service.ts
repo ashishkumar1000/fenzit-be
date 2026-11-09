@@ -27,6 +27,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { MembershipRole, Role } from '../common/enums/role.enum';
 import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
 import { memberRpcException } from '../common/members/member-rpc-error';
+import { startCompanyValidity } from './tenant-validity';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 
 export interface TenantResponse {
@@ -644,6 +645,21 @@ export class AuthService {
     }
 
     const row = rows[0];
+
+    // New company: subscription runs 90 days from now (CAP-3). A failure here
+    // fails the setup; the owner retries and the repeat call sets it.
+    try {
+      await startCompanyValidity(admin, row['id'] as string);
+    } catch (validityError: unknown) {
+      this.logger.error('Failed to set the company validity:', {
+        error: validityError,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to set up company',
+      });
+    }
+
     const tenant: TenantResponse = {
       id: row['id'] as string,
       createdBy: row['created_by'] as string,

@@ -47,7 +47,11 @@ export class UsersController {
       'name, phone, address, city) summaries. jobsScope=today narrows the ' +
       'jobs page to the current IST day window, sorted soonest-first.',
   })
-  @ApiResponse({ status: 200, description: 'Role-specific profile payload' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Role-specific profile payload. Includes subscription.validUntil (UTC ISO-8601 end of the company subscription, or null with no company).',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 400, description: 'Malformed cursor' })
   @ApiResponse({ status: 422, description: 'Invalid jobsScope value' })

@@ -91,4 +91,7 @@ export enum ErrorCode {
   /** A platform admin tried to change their own `platform_admin` flag (409) —
    *  a staff actor cannot demote or promote themselves here. */
   PLATFORM_ADMIN_SELF = 'PLATFORM_ADMIN_SELF',
+  /** The company's subscription has ended: an owner's write is refused (402).
+   *  Reads, technicians and platform admins are never blocked by it. */
+  SUBSCRIPTION_EXPIRED = 'SUBSCRIPTION_EXPIRED',
 }

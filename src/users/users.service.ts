@@ -108,6 +108,11 @@ interface UserProfileBase {
   tenant: TenantSummary | null;
   /** Fenzit staff flag (website admin tools). */
   platformAdmin: boolean;
+  /**
+   * The company's subscription end (UTC ISO-8601), or null with no company.
+   * Shared by every role: the app decides who sees the roadblock.
+   */
+  subscription: { validUntil: string | null };
 }
 
 /**
@@ -223,6 +228,7 @@ interface TenantRow {
   address: string | null;
   state_code: string;
   upi_vpa: string | null;
+  validity_until: string | null;
 }
 
 // PostgREST embeds a to-one/to-many related resource; normalize both possible
@@ -349,6 +355,7 @@ export class UsersService {
         : null,
       tenant: null,
       platformAdmin: user.platformAdmin,
+      subscription: { validUntil: null },
     };
 
     // No company yet (a new sign-up, a removed member, or a platform admin who
@@ -375,7 +382,9 @@ export class UsersService {
 
     const { data: tenantRow, error: tenantError } = await admin
       .from('tenants')
-      .select('id, company_name, gstin, address, state_code, upi_vpa')
+      .select(
+        'id, company_name, gstin, address, state_code, upi_vpa, validity_until',
+      )
       .eq('id', tenantId)
       .single<TenantRow>();
 
@@ -389,6 +398,11 @@ export class UsersService {
         message: 'Failed to fetch profile',
       });
     }
+    base.subscription = {
+      validUntil: tenantRow.validity_until
+        ? new Date(tenantRow.validity_until).toISOString()
+        : null,
+    };
 
     const tenant: TenantSummary = {
       id: tenantRow.id,

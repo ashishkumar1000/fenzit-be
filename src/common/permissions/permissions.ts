@@ -37,7 +37,10 @@ export type Permission =
   | 'leave.create_on_behalf'
   | 'leave.own'
   // lookups
-  | 'places.search';
+  | 'places.search'
+  // app roadblocks (platform only, super admin)
+  | 'app_config.manage'
+  | 'tenant.validity.manage';
 
 /** Permissions that make sense without a company (everything else needs one). */
 export const PLATFORM_WIDE_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
@@ -45,6 +48,8 @@ export const PLATFORM_WIDE_PERMISSIONS: ReadonlySet<Permission> = new Set<Permis
   'user.disable',
   'user.manage',
   'audit.read',
+  'app_config.manage',
+  'tenant.validity.manage',
 ]);
 
 const ADMIN_PERMISSIONS: Permission[] = [
@@ -73,6 +78,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
     ...ADMIN_PERMISSIONS,
     'user.disable',
     'user.manage',
+    'app_config.manage',
+    'tenant.validity.manage',
   ]),
   [Role.COMPANY_ADMIN]: new Set<Permission>(ADMIN_PERMISSIONS),
   [Role.EMPLOYEE]: new Set<Permission>([

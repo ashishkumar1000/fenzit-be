@@ -51,6 +51,12 @@ describe('Company Onboarding (e2e)', () => {
             rpc: mockRpc,
             from: jest.fn().mockReturnValue({
               upsert: jest.fn().mockResolvedValue({ error: null }),
+              // startCompanyValidity: update(...).eq(...).is(...)
+              update: jest.fn().mockReturnValue({
+                eq: jest.fn().mockReturnValue({
+                  is: jest.fn().mockResolvedValue({ error: null }),
+                }),
+              }),
             }),
           }),
         }),

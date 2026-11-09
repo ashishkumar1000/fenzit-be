@@ -16,6 +16,7 @@ import {
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { AnyMember } from '../common/decorators/any-member.decorator';
+import { AllowExpiredSubscription } from '../common/decorators/allow-expired-subscription.decorator';
 import { DeviceTokensService } from './device-tokens.service';
 import { RegisterDeviceTokenDto } from './dto/register-device-token.dto';
 import { DeviceTokenParamDto } from './dto/device-token-param.dto';
@@ -58,7 +59,10 @@ export class DeviceTokensController {
     await this.deviceTokensService.register(user, dto);
   }
 
+  // Logout must work for an owner of an expired company (CAP-2), so this
+  // one DELETE is exempt from the 402 guard. Registration (POST) is not.
   @Delete(':token')
+  @AllowExpiredSubscription()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: "Delete the caller's own token row (idempotent)",

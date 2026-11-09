@@ -79,6 +79,15 @@ const userRow = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+// startCompanyValidity writes tenants.update(...).eq(...).is(...).
+const validityWrite = () => ({
+  update: jest.fn().mockReturnValue({
+    eq: jest.fn().mockReturnValue({
+      is: jest.fn().mockResolvedValue({ error: null }),
+    }),
+  }),
+});
+
 describe('AuthService', () => {
   let service: AuthService;
   let otpSessionStore: jest.Mocked<OtpSessionStore>;
@@ -559,6 +568,7 @@ describe('AuthService', () => {
         }),
         from: jest.fn().mockReturnValue({
           insert: jest.fn().mockResolvedValue({ error: null }),
+          ...validityWrite(),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
@@ -583,7 +593,9 @@ describe('AuthService', () => {
           data: [{ ...rpcRow, inserted: true }],
           error: null,
         }),
-        from: jest.fn().mockReturnValue({ update }),
+        from: jest.fn((table: string) =>
+          table === 'users' ? { update } : validityWrite(),
+        ),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
@@ -607,6 +619,7 @@ describe('AuthService', () => {
         }),
         from: jest.fn().mockReturnValue({
           insert: jest.fn().mockResolvedValue({ error: null }),
+          ...validityWrite(),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
@@ -624,9 +637,11 @@ describe('AuthService', () => {
           data: [{ ...rpcRow, inserted: true }],
           error: null,
         }),
-        from: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnValue({ eq }),
-        }),
+        from: jest.fn((table: string) =>
+          table === 'users'
+            ? { update: jest.fn().mockReturnValue({ eq }) }
+            : validityWrite(),
+        ),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
@@ -646,7 +661,7 @@ describe('AuthService', () => {
           data: [{ ...rpcRow, inserted: false }],
           error: null,
         }),
-        from: jest.fn(),
+        from: jest.fn().mockReturnValue(validityWrite()),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
@@ -731,6 +746,7 @@ describe('AuthService', () => {
         }),
         from: jest.fn().mockReturnValue({
           insert: jest.fn().mockResolvedValue({ error: null }),
+          ...validityWrite(),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
@@ -759,6 +775,7 @@ describe('AuthService', () => {
         }),
         from: jest.fn().mockReturnValue({
           insert: jest.fn().mockResolvedValue({ error: null }),
+          ...validityWrite(),
         }),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
