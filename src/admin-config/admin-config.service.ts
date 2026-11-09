@@ -94,8 +94,9 @@ export class AdminConfigService {
   /**
    * Writes all roadblock keys in one upsert (one statement, so it is
    * all-or-nothing). The legacy keys min_supported_version and
-   * force_update_message are kept equal to the Android values, because old
-   * app binaries still read them.
+   * force_update_message are no longer written: they used to copy the Android
+   * values, which blocked iOS builds with Android's rule. Old binaries that
+   * still read them see the value left in the database.
    */
   async saveAppRoadblocks(
     actorId: string,
@@ -111,8 +112,6 @@ export class AdminConfigService {
       [KEYS.ios.storeUrl, dto.ios.storeUrl],
       [KEYS.support.email, dto.support.email],
       [KEYS.support.phone, dto.support.phone],
-      ['min_supported_version', dto.android.minVersion],
-      ['force_update_message', dto.android.message],
     ];
     const rows = pairs.map(([key, value]) => ({ key, value, updated_at: now }));
 
