@@ -31,6 +31,8 @@ export interface DossierMembership {
   invitedBy: string | null;
   joined: string | null;
   isFounder: boolean;
+  /** This company's subscription end (UTC ISO), or null when no date is set. */
+  validityUntil: string | null;
 }
 
 export interface DossierOffice {
@@ -307,6 +309,7 @@ export async function buildDossier(
     soft(
       tx.query(
         `select m.tenant_id, m.role, m.status, m.employee_code, m.created_at, t.company_name, t.created_by,
+              t.validity_until,
               (select u.name from public.users u where u.id = m.invited_by) as invited_by_name
          from public.memberships m join public.tenants t on t.id = m.tenant_id
         where m.user_id = $1 order by m.created_at`,
@@ -492,6 +495,7 @@ export async function buildDossier(
       invitedBy: str(m.invited_by_name),
       joined: iso(m.created_at),
       isFounder: m.created_by === id,
+      validityUntil: iso(m.validity_until),
     })),
     offices: (offices.rows as Row[]).map((o) => ({
       name: String(o.name),
