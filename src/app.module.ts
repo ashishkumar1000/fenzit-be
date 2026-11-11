@@ -68,6 +68,13 @@ import { TelemetryShutdown } from './telemetry';
             then: Joi.string().required(),
           })
           .optional(),
+        // Invite SMS (story 21-1): secret key for the keyed hash that counts
+        // invite SMS per phone number (the 5-per-hour cap). Required in
+        // production so a missing key stops boot. Never logged, never in code.
+        INVITE_SMS_HASH_KEY: Joi.string()
+          .min(32)
+          .when('NODE_ENV', { is: 'production', then: Joi.required() })
+          .optional(),
         // Unused by MockPlacesProvider today — required now so boot-time
         // validation and the env contract are already in place for the
         // deferred GooglePlacesProvider (see places module).

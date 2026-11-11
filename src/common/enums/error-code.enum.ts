@@ -94,4 +94,14 @@ export enum ErrorCode {
   /** The company's subscription has ended: an owner's write is refused (402).
    *  Reads, technicians and platform admins are never blocked by it. */
   SUBSCRIPTION_EXPIRED = 'SUBSCRIPTION_EXPIRED',
+  // Invite SMS resend (spec-invite-sms-download-link, story 21-2)
+  /** The caller is not a company admin of this company (403). */
+  NOT_COMPANY_ADMIN = 'NOT_COMPANY_ADMIN',
+  /** No invited membership with that ID in the caller's company (404). Also
+   *  the answer for another company's membership, so nothing is revealed. */
+  INVITE_NOT_FOUND = 'INVITE_NOT_FOUND',
+  /** The membership is no longer `invited` (409). */
+  INVITE_NOT_PENDING = 'INVITE_NOT_PENDING',
+  /** The per-phone cap of invite SMS in the rolling window was reached (429). */
+  INVITE_SMS_LIMIT_REACHED = 'INVITE_SMS_LIMIT_REACHED',
 }

@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { AuthService, REALTIME_TOKEN_TTL_SECONDS } from './auth.service';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
+import { InviteSmsService } from './invite-sms/invite-sms.service';
 import {
   SmsDeliveryProvider,
   SmsDeliveryError,
@@ -94,6 +95,7 @@ describe('AuthService', () => {
   let smsDeliveryProvider: jest.Mocked<SmsDeliveryProvider>;
   let supabaseClientFactory: jest.Mocked<SupabaseClientFactory>;
   let jwtService: jest.Mocked<JwtService>;
+  let inviteSmsService: { sendInviteSms: jest.Mock };
 
   beforeEach(async () => {
     const mockOtpSessionStore = {
@@ -116,6 +118,12 @@ describe('AuthService', () => {
       signAsync: jest.fn(),
     };
 
+    // Invite SMS is covered by its own tests (story 21-1 test list); here it
+    // only has to exist so AuthService can be built.
+    const mockInviteSmsService = {
+      sendInviteSms: jest.fn().mockResolvedValue('not_configured'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -123,6 +131,7 @@ describe('AuthService', () => {
         { provide: SmsDeliveryProvider, useValue: mockSmsDeliveryProvider },
         { provide: SupabaseClientFactory, useValue: mockSupabaseClientFactory },
         { provide: JwtService, useValue: mockJwtService },
+        { provide: InviteSmsService, useValue: mockInviteSmsService },
       ],
     }).compile();
 
@@ -131,6 +140,7 @@ describe('AuthService', () => {
     smsDeliveryProvider = module.get(SmsDeliveryProvider);
     supabaseClientFactory = module.get(SupabaseClientFactory);
     jwtService = module.get(JwtService);
+    inviteSmsService = module.get(InviteSmsService);
   });
 
   describe('sendOtp', () => {
@@ -848,12 +858,28 @@ describe('AuthService', () => {
         rpcResult: { data: null, error: { code, message: 'x', hint } },
       });
 
+    // Decision 2 (2026-11-11): a capped invite SMS is reported as refused_cap.
+    // The invite is still created and returned.
+    it('should return sms_status refused_cap when the cap stopped the invite SMS', async () => {
+      const mockAdmin = makeMockAdmin({});
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      inviteSmsService.sendInviteSms.mockResolvedValueOnce('refused_cap');
+
+      expect(await service.inviteMember(adminUser, dto)).toEqual({
+        invite_id: 'invite-uuid',
+        employee_code: 'EMP-0001',
+        sms_status: 'refused_cap',
+      });
+    });
+
     it('should create an invite through the invite_member function and return invite_id + employee_code (201 path)', async () => {
       const mockAdmin = makeMockAdmin({});
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       expect(await service.inviteMember(adminUser, dto)).toEqual({
         invite_id: 'invite-uuid',
         employee_code: 'EMP-0001',
+        // Story 21-1: the template is still the placeholder, so no SMS is sent.
+        sms_status: 'not_configured',
       });
       // Story 4.2 — validation runs against the global catalog, not tenant_skills,
       // and only active skills are assignable.

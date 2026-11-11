@@ -28,6 +28,10 @@ import { MembershipRole, Role } from '../common/enums/role.enum';
 import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import { startCompanyValidity } from './tenant-validity';
+import {
+  InviteSmsService,
+  InviteSmsStatus,
+} from './invite-sms/invite-sms.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 
 export interface TenantResponse {
@@ -97,6 +101,7 @@ export class AuthService {
     private readonly smsDeliveryProvider: SmsDeliveryProvider,
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly jwtService: JwtService,
+    private readonly inviteSmsService: InviteSmsService,
   ) {}
 
   async sendOtp(
@@ -519,7 +524,11 @@ export class AuthService {
   async inviteMember(
     caller: RequestUser,
     dto: InviteMemberDto,
-  ): Promise<{ invite_id: string; employee_code: string }> {
+  ): Promise<{
+    invite_id: string;
+    employee_code: string;
+    sms_status: InviteSmsStatus;
+  }> {
     if (!caller.tenantId) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
@@ -598,9 +607,22 @@ export class AuthService {
       this.logger.error('invite_member returned no rows');
       throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to create invite' });
     }
+    // The invite is already saved. The SMS step never rolls it back and never
+    // throws; its outcome is returned as sms_status.
+    const membershipUserId = row['member_user_id'] as string;
+    const smsStatus = await this.inviteSmsService.sendInviteSms({
+      tenantId: caller.tenantId,
+      membershipUserId,
+      countryCode: dto.countryCode,
+      phoneNumber: dto.phoneNumber,
+      name: dto.name,
+      role,
+    });
     return {
-      invite_id: row['member_user_id'] as string,
+      invite_id: membershipUserId,
       employee_code: row['member_employee_code'] as string,
+      // refused_cap: the invite stands, no text went, and Resend answers 429.
+      sms_status: smsStatus,
     };
   }
 

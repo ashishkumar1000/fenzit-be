@@ -14,6 +14,7 @@ export type Permission =
   | 'member.read'
   | 'member.change_role'
   | 'member.remove'
+  | 'invite_sms.resend' // company admin of this company only (story 21-2)
   | 'user.disable' // platform only
   | 'user.manage' // platform only — inspect anyone by phone, flip account flags
   | 'audit.read'
@@ -81,7 +82,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
     'app_config.manage',
     'tenant.validity.manage',
   ]),
-  [Role.COMPANY_ADMIN]: new Set<Permission>(ADMIN_PERMISSIONS),
+  // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
+  [Role.COMPANY_ADMIN]: new Set<Permission>([...ADMIN_PERMISSIONS, 'invite_sms.resend']),
   [Role.EMPLOYEE]: new Set<Permission>([
     'job.read_own',
     'job.advance',

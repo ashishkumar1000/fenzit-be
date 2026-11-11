@@ -13,7 +13,24 @@
  * wording ever changes, it is re-registered as a NEW template and gets a
  * NEW ID — update the ID and the copy here together, never one alone.
  */
+/**
+ * Placeholder until the owner supplies the approved DLT template ID for the
+ * invite SMS. While the T-INVITE value equals this, invite SMS sending is OFF
+ * and every invite returns sms_status `not_configured`. Never ship a real
+ * send with this value.
+ */
+export const INVITE_TEMPLATE_PLACEHOLDER = 'PENDING_DLT_APPROVAL';
+
 export const SMS_TEMPLATES = {
+  /**
+   * T-INVITE — invite SMS with the download link (spec-invite-sms-download-link,
+   * story 21-1). One template for all roles. DLT variables are named, so the
+   * registered copy must use these exact names (`##name##`, `##company##`,
+   * `##role##`):
+   *   `Hi ##name##, you are added to ##company## as ##role##. Get the app at fenzit.com/app/download and log in with this number. - Fenzit Technology`
+   * Still a placeholder: the approved MSG91 panel ID is not supplied yet.
+   */
+  'T-INVITE': INVITE_TEMPLATE_PLACEHOLDER,
   /**
    * T1 — OTP login (all users). Sender ID FENZIT; DLT registry template ID
    * 1277179042535914512. Approved copy (rendered server-side by MSG91 from

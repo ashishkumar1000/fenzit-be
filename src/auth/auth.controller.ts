@@ -191,11 +191,12 @@ export class AuthController {
   @ApiResponse({
     status: 201,
     description:
-      'Invite created — an invited membership for the person, with their employee code',
+      'Invite created — an invited membership for the person, with their employee code. sms_status says what happened to the invite SMS: sent, failed (the invite is kept), refused_cap (the 5-per-hour limit for this number stopped the text; the invite is kept) or not_configured (sending is switched off).',
     schema: {
       example: {
         invite_id: '550e8400-e29b-41d4-a716-446655440000',
         employee_code: 'EMP-002',
+        sms_status: 'sent',
       },
     },
   })
