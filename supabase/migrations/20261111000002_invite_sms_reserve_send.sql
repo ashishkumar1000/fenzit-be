@@ -8,7 +8,8 @@
 --     send. At the cap, it writes nothing and returns null, and the caller must
 --     not send.
 --   The backend deletes that counter row again if the send fails, so a failed
---   send does not count (owner decision 2026-11-10).
+--   send does not count (owner decision 2026-11-10). A timeout keeps its row,
+--   because the SMS may have arrived (owner decision 2026-11-11).
 --
 -- Race safety: the advisory lock is taken for this phone before the count, and
 -- it is held until the function's transaction ends. Two resends for the same

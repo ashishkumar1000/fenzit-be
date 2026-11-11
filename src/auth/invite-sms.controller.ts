@@ -5,9 +5,11 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiHeader,
   ApiOperation,
   ApiParam,
   ApiResponse,
@@ -15,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AnyMember } from '../common/decorators/any-member.decorator';
+import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { InviteSmsResendService } from './invite-sms/invite-sms-resend.service';
 
@@ -36,6 +39,16 @@ export class InviteSmsController {
   @AnyMember()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.CREATED)
+  // Optional X-Idempotency-Key (UUID v4). A repeat with the same key replays the
+  // stored answer and sends nothing, so a double-tap cannot send twice. Best
+  // effort: two requests that arrive at the same instant can both get through,
+  // but the per-phone cap still holds, because the slot reservation is atomic.
+  @UseInterceptors(IdempotencyInterceptor)
+  @ApiHeader({
+    name: 'X-Idempotency-Key',
+    required: false,
+    description: 'Optional UUID v4. Reuse it only for a retry of the same tap.',
+  })
   @ApiOperation({
     summary: 'Send the invite SMS again (company admin only)',
     description:

@@ -5,8 +5,11 @@
 --   invite_sms_audit    one row per invite SMS attempt. Holds the MASKED phone
 --                       (for example +91 ******3210), the outcome and the time.
 --                       It never holds the full number or any hash.
---   invite_sms_counter  one row per SMS that was actually sent. Holds a keyed
---                       hash of the full number (HMAC-SHA256, key from the
+--   invite_sms_counter  one row per cap slot in use. A slot is reserved before the
+--                       send, and deleted again if the send fails. A timeout keeps
+--                       its slot, because the SMS may have arrived. A row is
+--                       therefore also present while a send is in flight. Holds a
+--                       keyed hash of the full number (HMAC-SHA256, key from the
 --                       INVITE_SMS_HASH_KEY secret). Masked numbers are never
 --                       used for counting, because two numbers can share a mask.
 --

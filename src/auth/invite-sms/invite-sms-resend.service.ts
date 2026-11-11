@@ -120,7 +120,9 @@ export class InviteSmsResendService {
       throw new HttpException(
         {
           error_code: ErrorCode.INVITE_SMS_LIMIT_REACHED,
-          message: `This phone number has already had ${INVITE_SMS_CAP_PER_PHONE} invite texts in the last ${INVITE_SMS_CAP_WINDOW_MINUTES} minutes, so no text was sent. Try again later.`,
+          // Neutral on purpose: the count covers every company, so the message
+          // must not say whose invites used it up.
+          message: `No text was sent. This number has reached its limit of ${INVITE_SMS_CAP_PER_PHONE} invite texts in the last ${INVITE_SMS_CAP_WINDOW_MINUTES} minutes. Try again later.`,
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );

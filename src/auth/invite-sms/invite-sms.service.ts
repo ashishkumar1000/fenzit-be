@@ -105,7 +105,14 @@ export class InviteSmsService {
         err instanceof SmsDeliveryError
           ? `${err.outcome}, vendor type ${err.vendorType ?? 'none'}`
           : `unexpected ${err instanceof Error ? err.name : 'error'}`;
-      this.logger.warn(`Invite SMS not sent to ${masked}: ${reason}`);
+      // A vendor rejection or timeout is a normal delivery outcome (warn). Any
+      // other error is a fault in our own code or config, such as a missing
+      // INVITE_SMS_HASH_KEY, so it is logged as an error to stand out.
+      if (err instanceof SmsDeliveryError) {
+        this.logger.warn(`Invite SMS not sent to ${masked}: ${reason}`);
+      } else {
+        this.logger.error(`Invite SMS not sent to ${masked}: ${reason}`);
+      }
       // A failed send does not count toward the cap (owner decision 2026-11-10),
       // except a timeout: the SMS may have been delivered, so its slot stays
       // used (owner decision 2026-11-11).

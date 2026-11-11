@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { SmsDeliveryError } from '../sms-delivery.provider';
 import { InviteSmsService, InviteSmsRequest } from './invite-sms.service';
 
@@ -212,5 +213,80 @@ describe('InviteSmsService: one person, one cap slot', () => {
     const h = harness({});
     h.auditInsert.mockRejectedValueOnce(new Error('network down'));
     await expect(h.service.sendInviteSms(REQUEST)).resolves.toBe('sent');
+  });
+});
+
+// Story 21-2 gaps at service level (review 2026-11-11): the net cap slots a
+// phone uses across a failed send and a retry, and that no full number leaks
+// into the audit row or the logs. The window reset and the parallel race need
+// a real database and are covered by the e2e suite, not here.
+describe('InviteSmsService: failed sends, retries and masking', () => {
+  const FULL = REQUEST.phoneNumber;
+
+  /** Slots taken minus slots released: the number of cap rows that remain. */
+  const netSlots = (h: Harness) =>
+    h.rpc.mock.calls.length - h.counterDeleteEq.mock.calls.length;
+
+  it('a failed send then a successful resend leaves one cap slot, not two', async () => {
+    const send = jest
+      .fn()
+      .mockRejectedValueOnce(new SmsDeliveryError('vendor said no', 'error'))
+      .mockResolvedValueOnce(undefined);
+    const h = harness({ send });
+
+    await expect(h.service.sendInviteSms(REQUEST)).resolves.toBe('failed');
+    await expect(h.service.sendInviteSms(REQUEST)).resolves.toBe('sent');
+
+    expect(netSlots(h)).toBe(1);
+    expect(h.auditInsert.mock.calls.map(c => c[0].outcome)).toEqual([
+      'failed',
+      'sent',
+    ]);
+  });
+
+  it('a timeout keeps its slot, so a retry after a timeout counts two', async () => {
+    const send = jest
+      .fn()
+      .mockRejectedValueOnce(new SmsDeliveryError('timed out', 'timeout'))
+      .mockResolvedValueOnce(undefined);
+    const h = harness({ send });
+
+    await h.service.sendInviteSms(REQUEST);
+    await h.service.sendInviteSms(REQUEST);
+
+    expect(netSlots(h)).toBe(2);
+  });
+
+  it('asks the cap function for the 5-per-60-minute limit, not a caller value', async () => {
+    const h = harness({});
+    await h.service.sendInviteSms(REQUEST);
+    expect(h.rpc).toHaveBeenCalledWith(
+      'invite_sms_reserve_send',
+      expect.objectContaining({ p_max: 5, p_window_minutes: 60 }),
+    );
+  });
+
+  it('writes the masked number to the audit row and never the full number', async () => {
+    const h = harness({});
+    await h.service.sendInviteSms(REQUEST);
+    const row = h.auditInsert.mock.calls[0][0];
+    expect(row.phone_masked).toBe('+91 ******3210');
+    expect(JSON.stringify(row)).not.toContain(FULL);
+  });
+
+  it('logs a failed send with the masked number only', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const h = harness({
+        send: jest.fn().mockRejectedValue(new SmsDeliveryError('nope', 'error')),
+      });
+      await h.service.sendInviteSms(REQUEST);
+      expect(warn).toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(FULL);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
 import { Role } from '../src/common/enums/role.enum';
 import { accessToken, withPeople } from './helpers/auth-test-utils';
+import { withOpenSubscription } from './helpers/open-subscription-admin';
 
 describe('Member Invitation (e2e)', () => {
   let app: NestFastifyApplication;
@@ -33,7 +34,7 @@ describe('Member Invitation (e2e)', () => {
         .overrideProvider(SupabaseClientFactory)
         .useValue({
           create: jest.fn(),
-          createAdmin: mockCreateAdmin,
+          createAdmin: () => withOpenSubscription(mockCreateAdmin()),
         }),
       [
         { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
@@ -125,7 +126,13 @@ describe('Member Invitation (e2e)', () => {
 
       expect(response.statusCode).toBe(201);
       const body = JSON.parse(response.body);
-      expect(body).toEqual({ invite_id: NEW_USER_ID, employee_code: 'EMP-002' });
+      // sms_status is part of the 21-1 contract. The DLT template is still the
+      // placeholder, so sending is off and the status is not_configured.
+      expect(body).toEqual({
+        invite_id: NEW_USER_ID,
+        employee_code: 'EMP-002',
+        sms_status: 'not_configured',
+      });
       // The company comes from the caller's membership, never the request.
       expect(admin.rpc).toHaveBeenCalledWith('invite_member', {
         p_caller: OWNER_ID,
@@ -191,7 +198,13 @@ describe('Member Invitation (e2e)', () => {
       expect(body.error_code).toBe('DUPLICATE_RESOURCE');
     });
 
-    it('AC3 — should return 422 when skillIds is an empty array', async () => {
+    // Changed 2026-11-11: skills are optional (commit d9fa073), so an empty
+    // skillIds list is now a valid invite. The old "422 for an empty array"
+    // expectation described a rule that no longer exists.
+    it('AC3 — should accept an empty skillIds list (skills are optional)', async () => {
+      const admin = makeInviteMock({ rpcData: inviteRow });
+      mockCreateAdmin.mockReturnValue(admin);
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/invite',
@@ -204,9 +217,11 @@ describe('Member Invitation (e2e)', () => {
         },
       });
 
-      expect(response.statusCode).toBe(422);
-      const body = JSON.parse(response.body);
-      expect(body.error_code).toBe('VALIDATION_ERROR');
+      expect(response.statusCode).toBe(201);
+      expect(admin.rpc).toHaveBeenCalledWith(
+        'invite_member',
+        expect.objectContaining({ p_skill_ids: [] }),
+      );
     });
 
     it('AC4 — should return 422 when skillIds contains a non-UUID string', async () => {
@@ -341,7 +356,7 @@ describe('Member Invitation (e2e)', () => {
     const invitedUser = {
       id: INVITED_USER_ID,
       country_code: '+91',
-      phone_number: '2222222222',
+      phone_number: '9222222222',
       name: 'Ravi Kumar',
       platform_admin: false,
       disabled: false,
@@ -397,7 +412,7 @@ describe('Member Invitation (e2e)', () => {
       const sendResponse = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp/send',
-        payload: { countryCode: '+91', phoneNumber: '2222222222' },
+        payload: { countryCode: '+91', phoneNumber: '9222222222' },
       });
       expect(sendResponse.statusCode).toBe(200);
       const sendBody = JSON.parse(sendResponse.body);
