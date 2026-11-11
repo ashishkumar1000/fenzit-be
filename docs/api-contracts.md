@@ -1429,8 +1429,13 @@ state conflicts → `stale_fix` (`fixAgeMs > 30000`, AD-20) →
 radius, distance computed server-side) → `mocked`. Weekly offs and
 holidays do NOT block check-in (FR-7 — the app confirms before calling).
 
-**Rate limit (AD-15):** only `too_far`/`low_accuracy`/`mocked`/`stale_fix`
-count. The 5th counted rejection within 10 minutes sets `blocked_until` =
+**Rate limit (AD-15):** only `low_accuracy`/`mocked`/`stale_fix` count —
+`too_far` is recorded but deliberately excluded (2026-11-10): retrying
+from closer is normal behaviour, and blocking a legitimate employee for
+it bought nothing. The 70th counted rejection within 10 minutes (raised
+from 5 on 2026-11-10 — `low_accuracy`/`mocked`/`stale_fix` skew
+abuse-shaped, and the 70 budget keeps an honest bad-GPS streak from ever
+locking anyone out) sets `blocked_until` =
 its time + 10 min; further attempts record `rate_limited` (not counted)
 and get `429` + `Retry-After`. The window is shared by check-in and
 check-out.

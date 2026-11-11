@@ -1,0 +1,32 @@
+Fenzit BE release 0.0.2 — attendance rate-limit rebalance (2026-11-11)
+
+Rate limit (AD-15)
+- Counted-rejection threshold raised 5 → 70 (RATE_MAX_COUNTED). Owner call:
+  "more attempts allowed". The 10-minute window and 10-minute block are
+  unchanged.
+- too_far is DECOUNTED: a distance rejection is still recorded on the
+  attempt row (reports and history keep it), but it no longer feeds the
+  rate budget. Walking closer to the office and retrying is normal
+  behaviour and can never lock anyone out.
+- What still counts: low_accuracy, mocked, stale_fix — and 70 of those in
+  10 minutes means sustained deliberate abuse, not a fumbling employee.
+
+Tests
+- Unit: arming at the 70th counted rejection, the 69th does NOT arm, the
+  budget's outcome array is pinned to exactly low_accuracy/mocked/stale_fix,
+  and a too_far rejection never even consults the budget.
+- Integration (real DB): the AD-13 mocked-alert journey primes the budget
+  with clearly-marked synthetic rows so the 3rd mocked attempt is exactly
+  the 70th counted — alert and block arm together, no 65 extra round-trips.
+- Suite: 146/146 suites, 2,519/2,519 tests green; attendance integration
+  19/19 against the real database.
+
+Also in this release
+- auth spec aligned to the shipped optional-skills-at-invite contract
+  (skills became optional in d9fa073; the old "rejects with 422" test was
+  stale and red on main).
+- docs/api-contracts.md updated for the new threshold and decounting.
+
+Deploy order: backend first (this repo), then the app (fenzit-app 1.4.0).
+The app's OLD build stays compatible: it only ever saw 429s with
+Retry-After, which it already renders.

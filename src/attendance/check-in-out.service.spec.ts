@@ -508,7 +508,47 @@ describe('CheckInOutService — check-in (16-1)', () => {
     ).toBe(false);
   });
 
-  it('the 5th counted rejection in the window arms blocked_until (AD-15)', async () => {
+  it('the 70th counted rejection in the window arms blocked_until (AD-15; RATE_MAX_COUNTED 5→70, owner decision 2026-11-10)', async () => {
+    const tx = fakeTx(
+      routerWith({ 'outcome = any': { rows: [{ n: '69' }], rowCount: 1 } }),
+    );
+    const svc = serviceWith(tx);
+
+    const err = await rejectionOf(
+      svc.checkIn(tech, dto({ accuracyM: 150 }), CHECKIN_KEY),
+    );
+    expect(err.getStatus()).toBe(422);
+
+    // The budget judges ONLY the counted outcomes — never too_far.
+    const countQuery = tx.queries.find((q) => q.sql.includes('outcome = any'));
+    expect(countQuery?.params?.[1]).toEqual(['low_accuracy', 'mocked', 'stale_fix']);
+
+    const attemptInsert = tx.queries.find((q) =>
+      q.sql.includes('insert into public.attendance_attempts'),
+    );
+    const blockedUntil = attemptInsert?.params?.[13] as string | null;
+    expect(blockedUntil).not.toBeNull();
+    expect(new Date(blockedUntil as string).getTime()).toBeGreaterThan(
+      Date.now(),
+    );
+  });
+
+  it('the 69th counted rejection does NOT arm the block (an accidental lockout is unreachable — only sustained abuse arms it)', async () => {
+    const tx = fakeTx(
+      routerWith({ 'outcome = any': { rows: [{ n: '68' }], rowCount: 1 } }),
+    );
+    const svc = serviceWith(tx);
+
+    await rejectionOf(
+      svc.checkIn(tech, dto({ accuracyM: 150 }), CHECKIN_KEY),
+    );
+    const attemptInsert = tx.queries.find((q) =>
+      q.sql.includes('insert into public.attendance_attempts'),
+    );
+    expect(attemptInsert?.params?.[13]).toBeNull();
+  });
+
+  it('too_far is recorded but never counted toward the block (AD-15)', async () => {
     const tx = fakeTx(
       routerWith({ 'outcome = any': { rows: [{ n: '4' }], rowCount: 1 } }),
     );
@@ -522,34 +562,18 @@ describe('CheckInOutService — check-in (16-1)', () => {
       ),
     );
     expect(err.getStatus()).toBe(422);
-
-    const attemptInsert = tx.queries.find((q) =>
-      q.sql.includes('insert into public.attendance_attempts'),
-    );
-    const blockedUntil = attemptInsert?.params?.[13] as string | null;
-    expect(blockedUntil).not.toBeNull();
-    expect(new Date(blockedUntil as string).getTime()).toBeGreaterThan(
-      Date.now(),
-    );
-  });
-
-  it('the 4th counted rejection does NOT arm the block', async () => {
-    const tx = fakeTx(
-      routerWith({ 'outcome = any': { rows: [{ n: '3' }], rowCount: 1 } }),
-    );
-    const svc = serviceWith(tx);
-
-    await rejectionOf(
-      svc.checkIn(
-        tech,
-        dto({ latitude: 28.6139, longitude: 77.209 }),
-        CHECKIN_KEY,
-      ),
-    );
+    expect(attemptOutcomeOf(tx)).toBe('too_far');
     const attemptInsert = tx.queries.find((q) =>
       q.sql.includes('insert into public.attendance_attempts'),
     );
     expect(attemptInsert?.params?.[13]).toBeNull();
+    // Pin the EXCLUSION itself: a too_far rejection never even CONSULTS the
+    // rate budget — the ladder decounted it before the count query would
+    // run. Re-adding 'too_far' to COUNTED_OUTCOMES routes this rejection
+    // through the budget and fails here.
+    expect(
+      tx.queries.filter((q) => q.sql.includes('outcome = any')),
+    ).toHaveLength(0);
   });
 });
 

@@ -504,7 +504,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     // Not a counted outcome — the AD-15 budget stays at zero.
     const c = await pool.query(
       `select count(*)::int as n from public.attendance_attempts
-       where employee_id = $1 and outcome = any(array['too_far','low_accuracy','mocked','stale_fix'])`,
+       where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
       [TECH_MAIN],
     );
     expect(c.rows[0].n).toBe(0);
@@ -630,10 +630,33 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
   });
 
   maybeIt('the 3rd mocked attempt of the month alerts the owner exactly once (AD-13)', async () => {
-    // Budget plan on TECH_RATE: too_far(1) + low_accuracy(2) are already
-    // recorded, so mocked #1..#3 are counted 3..5 — the 3rd mocked is
-    // exactly the 5th counted rejection (alert + block arm together, the
-    // strictest ordering the two budgets can produce).
+    // Budget plan on TECH_RATE: the earlier too_far rejection is recorded
+    // but NOT counted; low_accuracy presses are counted. Prime the counted
+    // budget to 67 with clearly-marked synthetic rows so the 3rd mocked
+    // lands EXACTLY on the 70th counted rejection (RATE_MAX_COUNTED,
+    // owner decision 2026-11-10) — alert + block arm together, the
+    // strictest ordering the two budgets can produce — without 65 more
+    // real round-trips.
+    const counted = await pool.query(
+      `select count(*)::int as n from public.attendance_attempts
+       where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
+      [TECH_RATE],
+    );
+    const toPrime = 67 - counted.rows[0].n;
+    if (toPrime > 0) {
+      await pool.query(
+        `insert into public.attendance_attempts
+           (tenant_id, employee_id, request_id, kind, outcome, latitude, longitude,
+            accuracy_m, distance_m, radius_m, mocked, provider, fix_age_ms, attempted_at)
+         select $1, $2, ('11111111-1111-4111-8111-' || lpad(i::text, 12, '0'))::uuid,
+                'check_in', 'stale_fix', $3, $4, 8, 3, 100, false, 'fused', 31000,
+                now() - make_interval(secs => ($6 - i)::int)
+         from generate_series(1, $5) as i`,
+        // Offsets derived from toPrime so every primed row is in the PAST
+        // regardless of how many rows the priming needs.
+        [TENANT, TECH_RATE, DELHI.latitude, DELHI.longitude, toPrime, toPrime],
+      );
+    }
     let alerts = await admin
       .from('notifications')
       .select('*')
@@ -641,7 +664,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       .eq('event_type', 'attendance.fake_location');
     expect(alerts.data).toHaveLength(0);
 
-    // Mocked #1 and #2 (counted 3 and 4): no alert, no block.
+    // Mocked #1 and #2 (counted 68 and 69): no alert, no block.
     for (let i = 0; i < 2; i++) {
       await expect(
         service.checkIn(
@@ -664,7 +687,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       .eq('event_type', 'attendance.fake_location');
     expect(alerts.data).toHaveLength(0);
 
-    // Mocked #3 (the 5th counted rejection → also arms the block).
+    // Mocked #3 (the 70th counted rejection → also arms the block).
     const err = await service
       .checkIn(
         { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
@@ -693,7 +716,7 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     expect(alert.entity_type).toBe('attendance');
     expect(alert.entity_id).toBe(TECH_RATE);
 
-    // The same attempt row also carries the armed block (5th counted).
+    // The same attempt row also carries the armed block (70th counted).
     const blocked = await pool.query(
       `select blocked_until from public.attendance_attempts
        where employee_id = $1 and blocked_until is not null`,
@@ -721,13 +744,14 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       (err.getResponse() as Record<string, unknown>)['retryAfterSeconds'],
     ).toBeGreaterThan(0);
     expect(await attemptCount(TECH_RATE, 'rate_limited')).toBe(1);
-    // Counted budget unchanged at 5 (rate_limited rows do not count).
+    // Counted budget pinned at 70 (the primed rows + the three mocks;
+    // the block armed on the 70th) — rate_limited rows do not count.
     const c = await pool.query(
       `select count(*)::int as n from public.attendance_attempts
-       where employee_id = $1 and outcome = any(array['too_far','low_accuracy','mocked','stale_fix'])`,
+       where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
       [TECH_RATE],
     );
-    expect(c.rows[0].n).toBe(5);
+    expect(c.rows[0].n).toBe(70);
   });
 
   maybeIt('after the window passes the employee can check in again', async () => {

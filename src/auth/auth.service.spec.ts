@@ -901,17 +901,20 @@ describe('AuthService', () => {
       });
     });
 
-    it('rejects an employee with no skills (missing or empty) with 422 before any database call', async () => {
+    it('skills are OPTIONAL at invite: any role invites with missing or empty skillIds — empty p_skill_ids, no skills lookup', async () => {
       const mockAdmin = makeMockAdmin({});
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       const { skillIds: _skillIds, ...noSkills } = dto;
       void _skillIds;
       for (const candidate of [noSkills, { ...dto, skillIds: [] }]) {
-        await expect(
-          service.inviteMember(adminUser, candidate),
-        ).rejects.toMatchObject({ status: 422 });
+        await service.inviteMember(adminUser, candidate);
       }
-      expect(mockAdmin.rpc).not.toHaveBeenCalled();
+      // Optional skills means no catalog lookup and no rejection — the
+      // invite lands with an empty skill set.
+      expect(mockAdmin.from).not.toHaveBeenCalled();
+      expect(mockAdmin.rpc).toHaveBeenCalledTimes(2);
+      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({ p_skill_ids: [] });
+      expect(mockAdmin.rpc.mock.calls[1][1]).toMatchObject({ p_skill_ids: [] });
     });
 
     it('removes duplicate skill IDs before validating and sending', async () => {
