@@ -171,3 +171,46 @@ describe('InviteSmsService.sendInviteSms', () => {
     );
   });
 });
+
+// Cap bypass and audit safety (review 2026-11-11). Each typed spelling of one
+// Indian number must share one cap slot, and a rejected audit write must not
+// turn a sent text into a thrown error.
+describe('InviteSmsService: one person, one cap slot', () => {
+  const SPELLINGS = ['9876543210', '09876543210', '919876543210', '098765 43210'];
+
+  it.each(SPELLINGS)('hashes %s to the same cap key as the plain number', async typed => {
+    const plain = harness({});
+    await plain.service.sendInviteSms(REQUEST);
+    const h = harness({});
+    await h.service.sendInviteSms({ ...REQUEST, phoneNumber: typed });
+    expect(h.rpc.mock.calls[0][1].p_phone_hash).toBe(
+      plain.rpc.mock.calls[0][1].p_phone_hash,
+    );
+  });
+
+  it('sends the text to the canonical number, not the typed spelling', async () => {
+    const h = harness({});
+    await h.service.sendInviteSms({ ...REQUEST, phoneNumber: '09876543210' });
+    expect(h.send).toHaveBeenCalledWith(
+      '+919876543210',
+      expect.any(String),
+      expect.any(Object),
+    );
+  });
+
+  it('a different number still gets its own cap key', async () => {
+    const a = harness({});
+    await a.service.sendInviteSms(REQUEST);
+    const b = harness({});
+    await b.service.sendInviteSms({ ...REQUEST, phoneNumber: '9123456780' });
+    expect(b.rpc.mock.calls[0][1].p_phone_hash).not.toBe(
+      a.rpc.mock.calls[0][1].p_phone_hash,
+    );
+  });
+
+  it('a rejected audit write after a sent text still returns sent', async () => {
+    const h = harness({});
+    h.auditInsert.mockRejectedValueOnce(new Error('network down'));
+    await expect(h.service.sendInviteSms(REQUEST)).resolves.toBe('sent');
+  });
+});

@@ -1,4 +1,4 @@
-import { fitCompanyName } from './invite-sms-text';
+import { canonicalSubscriberNumber, fitCompanyName, maskPhone } from './invite-sms-text';
 
 // Story 21-1, decision 2026-11-11 (CAP-5): company name in the invite SMS.
 describe('fitCompanyName', () => {
@@ -57,5 +57,30 @@ describe('fitCompanyName', () => {
   it('never returns more than 20 characters for any input', () => {
     const long = 'Abcdefghijklmnopqrstuvwxyz0123456789';
     expect(fitCompanyName(long).length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe('canonicalSubscriberNumber and maskPhone', () => {
+  it.each([
+    ['9876543210', '9876543210'],
+    ['09876543210', '9876543210'],
+    ['919876543210', '9876543210'],
+    ['098765 43210', '9876543210'],
+    ['000987654321', '987654321'],
+  ])('canonicalises +91 %s to %s', (typed, expected) => {
+    expect(canonicalSubscriberNumber('+91', typed)).toBe(expected);
+  });
+
+  it('keeps the typed digits when stripping would leave under 6 digits', () => {
+    expect(canonicalSubscriberNumber('+91', '000000')).toBe('000000');
+  });
+
+  it('does not strip 91 for a non-Indian dial code', () => {
+    expect(canonicalSubscriberNumber('+1', '919876543210')).toBe('919876543210');
+  });
+
+  it('masks without a negative repeat for a very short number', () => {
+    expect(() => maskPhone('+91', '123')).not.toThrow();
+    expect(maskPhone('+91', '123')).toBe('+91 123');
   });
 });

@@ -87,6 +87,22 @@ export function roleWord(role: MembershipRole): RoleWord {
  */
 export function maskPhone(countryCode: string, phoneNumber: string): string {
   const lastFour = phoneNumber.slice(-4);
-  const stars = '*'.repeat(phoneNumber.length - 4);
+  const stars = '*'.repeat(Math.max(0, phoneNumber.length - 4));
   return `${countryCode} ${stars}${lastFour}`;
+}
+
+/**
+ * The one spelling of a subscriber number used for the cap hash, the send and
+ * the audit mask. Keeps digits only, drops leading zeros (trunk prefix), and for
+ * +91 drops a repeated country code ("919876543210" → "9876543210"). If that
+ * would leave fewer than 6 digits, the typed digits are kept, so validation's
+ * minimum still holds and the mask never sees a short number.
+ */
+export function canonicalSubscriberNumber(countryCode: string, phoneNumber: string): string {
+  const typed = phoneNumber.replace(/\D/g, '');
+  let digits = typed.replace(/^0+/, '');
+  if (countryCode === '+91' && digits.length === 12 && digits.startsWith('91')) {
+    digits = digits.slice(2);
+  }
+  return digits.length >= 6 ? digits : typed;
 }

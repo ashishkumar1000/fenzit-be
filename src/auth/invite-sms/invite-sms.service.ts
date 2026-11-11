@@ -13,6 +13,7 @@ import {
 } from '../../common/constants/sms-templates';
 import { MembershipRole } from '../../common/enums/role.enum';
 import {
+  canonicalSubscriberNumber,
   fitCompanyName,
   fitFirstName,
   maskPhone,
@@ -62,7 +63,13 @@ export class InviteSmsService {
    * Sends one invite SMS, counted against the per-phone cap (CAP-2). Used by
    * the invite path and by the resend endpoint, so both share one cap.
    */
-  async sendInviteSms(req: InviteSmsRequest): Promise<InviteSmsStatus> {
+  async sendInviteSms(input: InviteSmsRequest): Promise<InviteSmsStatus> {
+    // One canonical number for the mask, the cap hash and the send. Without
+    // this, "09876543210" and "9876543210" count as two people (cap bypass).
+    const req: InviteSmsRequest = {
+      ...input,
+      phoneNumber: canonicalSubscriberNumber(input.countryCode, input.phoneNumber),
+    };
     const admin = this.supabaseClientFactory.createAdmin();
     const masked = maskPhone(req.countryCode, req.phoneNumber);
 
@@ -145,14 +152,19 @@ export class InviteSmsService {
     maskedPhone: string,
     outcome: AuditOutcome,
   ): Promise<void> {
-    const { error } = await admin.from('invite_sms_audit').insert({
-      membership_user_id: req.membershipUserId,
-      tenant_id: req.tenantId,
-      phone_masked: maskedPhone,
-      outcome,
-    });
-    if (error) {
-      this.logger.error(`Invite SMS audit row not written (${outcome})`);
+    // Never throws: a failed audit write must not turn a delivered invite into a 500.
+    try {
+      const { error } = await admin.from('invite_sms_audit').insert({
+        membership_user_id: req.membershipUserId,
+        tenant_id: req.tenantId,
+        phone_masked: maskedPhone,
+        outcome,
+      });
+      if (error) {
+        this.logger.error(`Invite SMS audit row not written (${outcome})`);
+      }
+    } catch {
+      this.logger.error(`Invite SMS audit row not written (${outcome}): write threw`);
     }
   }
 
