@@ -29,9 +29,25 @@ const owner: RequestUser = {
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const ROW = [{ id: JOB_ID, status: 'pending_approval' }];
 
-function serviceWith(rpcResult: { data: unknown; error: unknown }) {
+// The pre-read (story 5) and the employee-creator check (story 4 guard) both
+// read through from(); a pending job with no creator is the default fixture.
+function serviceWith(
+  rpcResult: { data: unknown; error: unknown },
+  preRead: Record<string, unknown> = {
+    id: JOB_ID,
+    status: 'pending_approval',
+    created_by: null,
+  },
+) {
   const rpc = jest.fn().mockResolvedValue(rpcResult);
-  const factory = { createAdmin: jest.fn(() => ({ rpc })) };
+  const from = jest.fn(() => {
+    const maybeSingle = jest
+      .fn()
+      .mockResolvedValue({ data: preRead, error: null });
+    const eq: jest.Mock = jest.fn(() => ({ eq, maybeSingle }));
+    return { select: jest.fn(() => ({ eq })) };
+  });
+  const factory = { createAdmin: jest.fn(() => ({ rpc, from })) };
   const service = new JobsService(factory as never, {} as never, {} as never);
   jest
     .spyOn(service as never, 'refetchWithEmbeds' as never)
@@ -143,5 +159,61 @@ describe('JobsService.updateJob: owner edits to pending and other jobs (story 4)
       .catch((e: unknown) => e);
     expect((err as HttpException).getStatus()).toBe(422);
     expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP-5 guard)', () => {
+  // Table-aware admin: the job pre-read and the creator's membership role.
+  function serviceForDecided(status: string, creatorRole: string | null) {
+    const rpc = jest.fn().mockResolvedValue({
+      data: [{ id: JOB_ID, status }],
+      error: null,
+    });
+    const from = jest.fn((table: string) => {
+      const maybeSingle = jest.fn().mockResolvedValue(
+        table === 'jobs'
+          ? { data: { id: JOB_ID, status, created_by: 'emp-1' }, error: null }
+          : { data: creatorRole === null ? null : { role: creatorRole }, error: null },
+      );
+      const eq: jest.Mock = jest.fn(() => ({ eq, maybeSingle }));
+      return { select: jest.fn(() => ({ eq })) };
+    });
+    const factory = { createAdmin: jest.fn(() => ({ rpc, from })) };
+    const service = new JobsService(factory as never, {} as never, {} as never);
+    jest
+      .spyOn(service as never, 'refetchWithEmbeds' as never)
+      .mockResolvedValue({ id: JOB_ID } as never);
+    jest
+      .spyOn(service as never, 'toResponse' as never)
+      .mockReturnValue({ id: JOB_ID } as never);
+    return { service, rpc };
+  }
+
+  it.each(['scheduled', 'completed', 'rejected'])(
+    'an edit to an employee job that is %s: 409 JOB_NOT_MODIFIABLE, nothing saved',
+    async (status) => {
+      const { service, rpc } = serviceForDecided(status, 'employee');
+      await expect(
+        service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto),
+      ).rejects.toBeInstanceOf(HttpException);
+      expect(rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a cancel of a decided employee job is not an edit, so it still goes through', async () => {
+    const { service, rpc } = serviceForDecided('scheduled', 'employee');
+    await service.updateJob(owner, JOB_ID, {
+      status: 'cancelled',
+    } as UpdateJobDto);
+    expect(rpc).toHaveBeenCalledWith(
+      'update_job_with_log',
+      expect.objectContaining({ p_cancel: true }),
+    );
+  });
+
+  it('an owner-created job is still editable after it is scheduled', async () => {
+    const { service, rpc } = serviceForDecided('scheduled', 'company_admin');
+    await service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto);
+    expect(rpc).toHaveBeenCalled();
   });
 });

@@ -73,6 +73,13 @@ export function membersTable(
       return node;
     });
   }
+  // A single-row read (maybeSingle) answers with the first row, or null.
+  node['maybeSingle'] = jest.fn(() =>
+    Promise.resolve({
+      data: resolved.data?.[0] ?? null,
+      error: resolved.error,
+    }),
+  );
   node['then'] = (
     ok: (v: unknown) => unknown,
     fail: (e: unknown) => unknown,

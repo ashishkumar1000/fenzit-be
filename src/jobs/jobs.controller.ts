@@ -48,6 +48,9 @@ export class JobsController {
   ) {}
 
   @Post()
+  // Optional X-Idempotency-Key: a double tap on submit replays the first answer
+  // instead of creating a second pending job (CAP-2).
+  @UseInterceptors(IdempotencyInterceptor)
   // An owner creates any job; an employee creates only their own, and only when the
   // owner has switched job creation on for them (checked in the service, CAP-2).
   @Can('job.write', 'job.create_own')

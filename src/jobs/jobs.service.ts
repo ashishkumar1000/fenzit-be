@@ -34,6 +34,8 @@ import { DecidePendingJobDto } from './dto/decide-pending-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { insertJobAssignedNotification } from './job-notifications';
 import {
+  editLockedForOwner,
+  isEmployeeCreator,
   alertCreatorOfCancel,
   alertCreatorOfDecision,
   alertCreatorOfEdit,
@@ -650,6 +652,34 @@ export class JobsService {
       this.logger.error('Failed to read the job before update:', { err });
     }
     const previousTechnicianId: string | null = before?.technician_id ?? null;
+
+    // Story 4 / CAP-5: once the owner has decided an employee's job, field edits
+    // are refused. Only a pending job takes edits. Owner-created jobs keep their
+    // existing flow, and cancel is not an edit. The check fails closed: if the job
+    // cannot be read, an edit is refused rather than guessed at.
+    if (!isCancel) {
+      if (!before) {
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Could not check the job. Try again.',
+        });
+      }
+      const creatorIsEmployee = await isEmployeeCreator(
+        admin,
+        owner.tenantId,
+        before.created_by ?? null,
+      );
+      if (editLockedForOwner(before.status, creatorIsEmployee)) {
+        throw new HttpException(
+          {
+            error_code: ErrorCode.JOB_NOT_MODIFIABLE,
+            message:
+              'An employee job can only be edited while it is pending approval',
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+    }
 
     // AC#7 — when reassigning, the new technician must belong to the tenant and be
     // a technician. Mirrors createJob's technician validation exactly.

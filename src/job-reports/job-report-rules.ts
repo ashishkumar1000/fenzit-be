@@ -15,7 +15,11 @@
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type ApprovalOutcome =
-  'pending' | 'rejected' | 'approved' | 'auto_approved';
+  | 'pending'
+  | 'rejected'
+  | 'approved'
+  | 'auto_approved'
+  | 'cancelled';
 
 export interface ReportJob {
   id: string;
@@ -52,9 +56,15 @@ export function creatorKind(
   return 'employee';
 }
 
+/**
+ * A cancelled job has its own bucket. The database stamps decided_at on a
+ * cancelled pending job, and that stamp cannot be told apart from an approved
+ * job that was later cancelled, so neither counts as approved or auto-approved.
+ */
 export function outcomeOf(job: ReportJob): ApprovalOutcome {
   if (job.status === 'pending_approval') return 'pending';
   if (job.status === 'rejected') return 'rejected';
+  if (job.status === 'cancelled') return 'cancelled';
   if (job.decidedAt !== null) return 'approved';
   return 'auto_approved';
 }
@@ -91,6 +101,7 @@ export interface OutcomeCounts {
   autoApproved: number;
   rejected: number;
   pending: number;
+  cancelled: number;
 }
 
 export function countOutcomes(jobs: ReportJob[]): OutcomeCounts {
@@ -100,6 +111,7 @@ export function countOutcomes(jobs: ReportJob[]): OutcomeCounts {
     autoApproved: 0,
     rejected: 0,
     pending: 0,
+    cancelled: 0,
   };
   for (const job of jobs) {
     switch (outcomeOf(job)) {
@@ -114,6 +126,9 @@ export function countOutcomes(jobs: ReportJob[]): OutcomeCounts {
         break;
       case 'pending':
         c.pending += 1;
+        break;
+      case 'cancelled':
+        c.cancelled += 1;
         break;
     }
   }

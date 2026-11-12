@@ -12,6 +12,7 @@ import { JobReportsService } from './job-reports.service';
 import { ApprovalQueueService } from './approval-queue.service';
 import { JobReportRangeDto } from './dto/job-report-range.dto';
 import { ApprovalQueueQueryDto } from './dto/approval-queue-query.dto';
+import { OwnPendingQueryDto } from './dto/own-pending-query.dto';
 
 @ApiTags('Job reports')
 @ApiBearerAuth()
@@ -66,6 +67,19 @@ export class JobReportsController {
 @Controller('approval-queue')
 export class ApprovalQueueController {
   constructor(private readonly approvalQueueService: ApprovalQueueService) {}
+
+  // Employee: the caller's own pending jobs. The id comes from the token, never the URL.
+  @Get('mine')
+  @Can('job.read_own')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'My pending jobs: jobs I created that wait for owner approval, oldest first',
+  })
+  @ApiResponse({ status: 200, description: 'Cursor-paginated pending jobs' })
+  @ApiResponse({ status: 403, description: 'Not an employee of this company' })
+  listMine(@CurrentUser() user: RequestUser, @Query() query: OwnPendingQueryDto) {
+    return this.approvalQueueService.listOwn(user, query);
+  }
 
   @Get()
   @Can('job.approve')

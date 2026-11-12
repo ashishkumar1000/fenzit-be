@@ -1,3 +1,4 @@
+import { InternalServerErrorException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { JobsService } from './jobs.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -349,20 +350,21 @@ describe('pending-job alerts wired into JobsService (story 5)', () => {
     expect(alerts.alertCreatorOfCancel).not.toHaveBeenCalled();
   });
 
-  it('a failed pre-read: the save still succeeds and no alert is sent', async () => {
-    updateAdminWith({
+  it('a failed pre-read: the edit is refused (fail closed) and nothing is saved or alerted', async () => {
+    const rpc = updateAdminWith({
       preReadError: { message: 'read down' },
       rpcRows: [jobRow('pending_approval', { priority: 'urgent' })],
-    });
+    }).rpc;
 
     await expect(
       service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto),
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(rpc).not.toHaveBeenCalled();
     expect(alerts.alertCreatorOfEdit).not.toHaveBeenCalled();
     expect(alerts.alertCreatorOfCancel).not.toHaveBeenCalled();
   });
 
-  it('a pre-read that throws: the save still succeeds and no alert is sent', async () => {
+  it('a pre-read that throws: the edit is refused (fail closed) and nothing is saved', async () => {
     const admin = updateAdminWith({
       rpcRows: [jobRow('pending_approval', { priority: 'urgent' })],
     });
@@ -372,7 +374,8 @@ describe('pending-job alerts wired into JobsService (story 5)', () => {
 
     await expect(
       service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto),
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(admin.rpc).not.toHaveBeenCalled();
     expect(alerts.alertCreatorOfEdit).not.toHaveBeenCalled();
   });
 

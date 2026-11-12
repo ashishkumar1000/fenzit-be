@@ -48,10 +48,35 @@ export class ApprovalQueueService {
 
   constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
 
+  /** Owner queue: every pending job in the company, with optional filters. */
   async list(
     user: RequestUser,
     query: ApprovalQueueQueryDto,
     now: Date = new Date(),
+  ): Promise<PaginatedResponse<ApprovalQueueItem>> {
+    return this.page(user, query, now, {
+      employeeId: query.employeeId,
+      olderThanHours: query.olderThanHours,
+    });
+  }
+
+  /**
+   * Employee's own pending jobs (CAP-4, CAP-9). Forced to the caller's id, so
+   * an employee can never list another employee's pending work.
+   */
+  async listOwn(
+    user: RequestUser,
+    query: { cursor?: string; limit?: number },
+    now: Date = new Date(),
+  ): Promise<PaginatedResponse<ApprovalQueueItem>> {
+    return this.page(user, query, now, { employeeId: user.userId });
+  }
+
+  private async page(
+    user: RequestUser,
+    query: { cursor?: string; limit?: number },
+    now: Date,
+    filter: { employeeId?: string; olderThanHours?: number },
   ): Promise<PaginatedResponse<ApprovalQueueItem>> {
     const tenantId = requireCompany(user);
     const admin = this.supabaseClientFactory.createAdmin();
@@ -64,9 +89,9 @@ export class ApprovalQueueService {
       .eq('tenant_id', tenantId)
       .eq('status', 'pending_approval');
 
-    if (query.employeeId) qb = qb.eq('created_by', query.employeeId);
-    if (query.olderThanHours !== undefined) {
-      const cutoff = new Date(now.getTime() - query.olderThanHours * HOUR_MS);
+    if (filter.employeeId) qb = qb.eq('created_by', filter.employeeId);
+    if (filter.olderThanHours !== undefined) {
+      const cutoff = new Date(now.getTime() - filter.olderThanHours * HOUR_MS);
       qb = qb.lt('created_at', cutoff.toISOString());
     }
 

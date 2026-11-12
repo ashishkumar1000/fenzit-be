@@ -97,17 +97,16 @@ describe('outcomeOf: the four employee-job outcomes', () => {
       'auto_approved',
     );
   });
-  it('an approved job later cancelled or completed stays approved, not auto', () => {
+  it('a completed job stays approved', () => {
     expect(
-      outcomeOf(
-        job({ createdBy: EMP_A, status: 'completed', decidedAt: HOURS(0) }),
-      ),
+      outcomeOf(job({ createdBy: EMP_A, status: 'completed', decidedAt: HOURS(0) })),
     ).toBe('approved');
+  });
+  it('a cancelled job is its own bucket, whether it was pending or approved', () => {
     expect(
-      outcomeOf(
-        job({ createdBy: EMP_A, status: 'cancelled', decidedAt: HOURS(0) }),
-      ),
-    ).toBe('approved');
+      outcomeOf(job({ createdBy: EMP_A, status: 'cancelled', decidedAt: HOURS(0) })),
+    ).toBe('cancelled');
+    expect(outcomeOf(job({ createdBy: EMP_A, status: 'cancelled' }))).toBe('cancelled');
   });
 });
 
@@ -127,10 +126,11 @@ describe('counts add up', () => {
       rejected: 1,
       approved: 1,
       autoApproved: 1,
+      cancelled: 0,
     });
-    expect(c.pending + c.rejected + c.approved + c.autoApproved).toBe(
-      c.created,
-    );
+    expect(
+      c.pending + c.rejected + c.approved + c.autoApproved + c.cancelled,
+    ).toBe(c.created);
   });
   it('an empty window reports zeros, not nulls', () => {
     expect(countOutcomes([])).toEqual({
@@ -139,6 +139,7 @@ describe('counts add up', () => {
       rejected: 0,
       approved: 0,
       autoApproved: 0,
+      cancelled: 0,
     });
   });
 });

@@ -295,3 +295,37 @@ export function changedEditFields(
   }
   return changed;
 }
+
+/**
+ * Story 4 / CAP-5: an employee's job takes owner edits only while it is pending.
+ * Owner-created jobs (creator is the owner, or unset on old rows) are not locked.
+ */
+export function editLockedForOwner(
+  status: string,
+  creatorIsEmployee: boolean,
+): boolean {
+  return creatorIsEmployee && status !== 'pending_approval';
+}
+
+/**
+ * Is this job's creator an employee of the company? Reads the membership
+ * directly so a removed or disabled employee still counts as an employee, and a
+ * creator with no membership at all (a platform admin) does not.
+ */
+export async function isEmployeeCreator(
+  admin: SupabaseClient,
+  tenantId: string,
+  createdBy: string | null,
+): Promise<boolean> {
+  if (createdBy === null) return false;
+  const { data, error } = await admin
+    .from('memberships')
+    .select('role')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', createdBy)
+    .maybeSingle<{ role: string }>();
+  if (error) {
+    throw error;
+  }
+  return data?.role === 'employee';
+}
