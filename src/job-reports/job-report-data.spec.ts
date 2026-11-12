@@ -80,12 +80,23 @@ describe('pageAllRows: no silent 1000-row cut', () => {
   it('an empty result returns an empty list', async () => {
     expect(await pageAllRows(make(0), 1000)).toEqual([]);
   });
-  it('a read error is thrown, never returned as a partial total', async () => {
+  it('a read error on the first page is thrown, never returned as an empty total', async () => {
     await expect(
       pageAllRows(
         () => Promise.resolve({ data: null, error: { message: 'boom' } }),
         10,
       ),
-    ).rejects.toBeDefined();
+    ).rejects.toThrow('page read failed');
+  });
+  it('a read error after a full page is thrown, never a partial total', async () => {
+    const pages = [
+      { data: Array.from({ length: 10 }, (_, i) => i), error: null },
+      { data: null, error: new Error('db timeout') },
+    ];
+    let call = 0;
+    await expect(
+      pageAllRows(() => Promise.resolve(pages[call++]), 10),
+    ).rejects.toThrow('db timeout');
+    expect(call).toBe(2);
   });
 });
