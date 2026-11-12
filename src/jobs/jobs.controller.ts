@@ -24,6 +24,7 @@ import { WorkflowService } from './workflow.service';
 import { AttachmentsService } from './attachments.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
+import { DecidePendingJobDto } from './dto/decide-pending-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { UploadAttachmentDto } from './dto/upload-attachment.dto';
@@ -47,7 +48,9 @@ export class JobsController {
   ) {}
 
   @Post()
-  @Can('job.write')
+  // An owner creates any job; an employee creates only their own, and only when the
+  // owner has switched job creation on for them (checked in the service, CAP-2).
+  @Can('job.write', 'job.create_own')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create a job for a customer and assign it to a technician',
@@ -102,6 +105,29 @@ export class JobsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.jobsService.getJobDetail(user, id);
+  }
+
+  @Post(':id/approval')
+  @Can('job.approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Owner approves or rejects a pending employee job (reject may give a reason)',
+  })
+  @ApiResponse({ status: 200, description: 'The job after the decision' })
+  @ApiResponse({ status: 400, description: 'Decision or reason not valid' })
+  @ApiResponse({ status: 403, description: 'Not a company admin of this company' })
+  @ApiResponse({ status: 404, description: 'Job not found in this company' })
+  @ApiResponse({
+    status: 409,
+    description: 'JOB_NOT_PENDING — already approved or rejected',
+  })
+  decidePendingJob(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DecidePendingJobDto,
+  ) {
+    return this.jobsService.decidePendingJob(user, id, dto);
   }
 
   @Patch(':id')

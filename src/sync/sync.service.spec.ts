@@ -77,7 +77,7 @@ describe('SyncService', () => {
 
   function buildChain(data: any[], error: any = null) {
     const chain: any = {};
-    for (const method of ['select', 'eq', 'gt', 'is', 'order']) {
+    for (const method of ['select', 'eq', 'neq', 'not', 'gt', 'is', 'order']) {
       chain[method] = jest.fn().mockReturnValue(chain);
     }
     chain.limit = jest.fn().mockResolvedValue({ data, error });
@@ -291,5 +291,23 @@ describe('SyncService', () => {
       status: 500,
       message: 'Sync query failed',
     });
+  });
+
+  // CAP-4 / CAP-7: a job waiting for approval, or one the owner rejected, is not
+  // on the device. Both are filtered in the query, so they never reach the payload.
+  it('excludes pending and rejected jobs from the device query (CAP-4, CAP-7)', async () => {
+    const chain = buildChain([]);
+    const { service } = mockFactory(chain);
+
+    await service.sync(user);
+
+    expect(chain.not).toHaveBeenCalledWith(
+      'status',
+      'in',
+      '(pending_approval,rejected)',
+    );
+    // Still scoped to the caller's own jobs in their company.
+    expect(chain.eq).toHaveBeenCalledWith('tenant_id', 'tenant-1');
+    expect(chain.eq).toHaveBeenCalledWith('technician_id', 'tech-1');
   });
 });

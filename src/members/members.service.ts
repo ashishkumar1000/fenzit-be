@@ -110,6 +110,52 @@ export class MembersService {
     };
   }
 
+  /**
+   * Owner sets an employee's two job switches (CAP-1). One database call does
+   * the check, the change and its audit row together.
+   */
+  async setJobSettings(
+    caller: RequestUser,
+    memberUserId: string,
+    settings: { canCreateJobs: boolean; jobApprovalRequired: boolean },
+  ): Promise<{
+    userId: string;
+    canCreateJobs: boolean;
+    jobApprovalRequired: boolean;
+  }> {
+    const { data, error } = await this.supabaseFactory
+      .createAdmin()
+      .rpc('set_member_job_settings', {
+        p_caller: caller.userId,
+        p_tenant_id: caller.tenantId,
+        p_member_user_id: memberUserId,
+        p_can_create_jobs: settings.canCreateJobs,
+        p_job_approval_required: settings.jobApprovalRequired,
+      });
+    if (error) {
+      throw this.mapError(error, 'Failed to update the job settings');
+    }
+    const row = (
+      data as Array<{
+        member_id: string;
+        can_create_jobs: boolean;
+        job_approval_required: boolean;
+      }> | null
+    )?.[0];
+    if (!row) {
+      this.logger.error('set_member_job_settings returned no row');
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to update the job settings',
+      });
+    }
+    return {
+      userId: memberUserId,
+      canCreateJobs: row.can_create_jobs,
+      jobApprovalRequired: row.job_approval_required,
+    };
+  }
+
   async remove(caller: RequestUser, memberUserId: string): Promise<void> {
     const { error } = await this.supabaseFactory
       .createAdmin()

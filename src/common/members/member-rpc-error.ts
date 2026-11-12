@@ -29,6 +29,12 @@ export function memberRpcException(error: RpcError): HttpException | null {
           message: 'This number belongs to Fenzit staff and cannot join a company',
         });
       }
+      if (error.hint === ErrorCode.NOT_AN_EMPLOYEE) {
+        return new BadRequestException({
+          error_code: ErrorCode.NOT_AN_EMPLOYEE,
+          message: 'Job settings can only be set for an Employee',
+        });
+      }
       return new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
         message: 'The request is not valid',

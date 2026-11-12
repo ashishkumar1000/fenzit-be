@@ -21,6 +21,7 @@ import { Can } from '../common/decorators/can.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { ChangeRoleDto } from './dto/change-role.dto';
+import { JobSettingsDto } from './dto/job-settings.dto';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { MembersService } from './members.service';
 
@@ -58,6 +59,26 @@ export class MembersController {
     @Body() dto: ChangeRoleDto,
   ) {
     return this.membersService.changeRole(user, userId, dto.role);
+  }
+
+  @Patch('members/:userId/job-settings')
+  @Can('member.job_settings')
+  @ApiOperation({
+    summary:
+      "Set an employee's job switches: may create jobs, and whether owner approval is needed",
+  })
+  @ApiResponse({ status: 400, description: 'NOT_AN_EMPLOYEE — the person is not an employee' })
+  @ApiResponse({ status: 403, description: 'Not a company admin of this company' })
+  @ApiResponse({ status: 404, description: 'The person is not an active member of this company' })
+  setJobSettings(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: JobSettingsDto,
+  ) {
+    return this.membersService.setJobSettings(user, userId, {
+      canCreateJobs: dto.canCreateJobs,
+      jobApprovalRequired: dto.jobApprovalRequired,
+    });
   }
 
   @Delete('members/:userId')

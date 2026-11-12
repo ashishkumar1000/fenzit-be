@@ -627,7 +627,7 @@ describe('JobsService', () => {
     // resolves to { data, error }. Returned so tests can inspect call args.
     function listChain(result: { data: unknown; error: unknown }) {
       const builder: Record<string, jest.Mock> = {};
-      for (const m of ['select', 'eq', 'gte', 'lt', 'in', 'or', 'order']) {
+      for (const m of ['select', 'eq', 'neq', 'not', 'gte', 'lt', 'in', 'or', 'order']) {
         builder[m] = jest.fn().mockReturnValue(builder);
       }
       builder.limit = jest.fn().mockResolvedValue(result);
@@ -892,14 +892,16 @@ describe('JobsService', () => {
         expect(builder.order).toHaveBeenCalledWith('id', { ascending: true });
       });
 
-      it('history: completed+cancelled only, most recent planned date first', async () => {
+      it('history: completed, cancelled and rejected only, most recent planned date first', async () => {
         const { builder } = mockListAdmin({ data: [], error: null });
 
         await service.listJobs(owner, { scope: JobListScope.HISTORY });
 
+        // rejected joined history with story 3 (CAP-7: kept in the creator's history).
         expect(builder.in).toHaveBeenCalledWith('status', [
           'completed',
           'cancelled',
+          'rejected',
         ]);
         expect(builder.gte).not.toHaveBeenCalled();
         expect(builder.lt).not.toHaveBeenCalled();
@@ -922,6 +924,7 @@ describe('JobsService', () => {
         expect(builder.in).toHaveBeenCalledWith('status', [
           'completed',
           'cancelled',
+          'rejected',
         ]);
         expect(builder.in).toHaveBeenCalledWith('status', ['completed']);
       });
@@ -1470,11 +1473,12 @@ describe('JobsService', () => {
       });
     });
 
-    it('throws 403 when a technician requests a job not assigned to them', async () => {
+    // CAP-7: another employee's job answers exactly like a missing one.
+    it('throws 404 when a technician requests a job not assigned to them', async () => {
       mockDetailAdmin({});
 
       await expect(service.getJobDetail(techOther, 'job-uuid')).rejects.toThrow(
-        ForbiddenException,
+        NotFoundException,
       );
     });
 

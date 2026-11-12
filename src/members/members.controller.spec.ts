@@ -12,6 +12,7 @@ import { Role } from '../common/enums/role.enum';
 const REQUIRED: Record<string, string[]> = {
   list: ['member.read'],
   changeRole: ['member.change_role'],
+  setJobSettings: ['member.job_settings'],
   remove: ['member.remove'],
   disable: ['user.disable'],
   enable: ['user.disable'],

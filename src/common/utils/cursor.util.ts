@@ -19,6 +19,7 @@ export type CursorScope =
   | 'profile-jobs-today'
   | 'notifications-list'
   | 'reports-list'
+  | 'approval-queue'
   | 'leave-me-list'
   | 'leave-owner-list'
   | 'day-corrections-owner'

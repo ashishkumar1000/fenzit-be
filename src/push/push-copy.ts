@@ -1,5 +1,6 @@
 import { ATTENDANCE_NOTIFICATION_EVENT } from '../attendance/notification-events';
 import { JOB_ASSIGNED_EVENT } from '../jobs/job-notifications';
+import { PENDING_JOB_EVENT } from '../jobs/pending-job-notifications';
 import {
   REPORT_FAILED_EVENT,
   REPORT_READY_EVENT,
@@ -101,6 +102,16 @@ const JOB_STEP_VERB: Record<string, string> = {
   signature_captured: 'has collected the customer signature',
   completed: 'has completed the job',
 };
+
+/** "JB-… · Customer" for the pending-job pushes; each part drops when absent. */
+function pendingJobLine(p: Record<string, unknown>): string {
+  return joinMiddleDot(
+    isText(p['job_number']) ? p['job_number'] : null,
+    isText(p['customer_name'])
+      ? truncate(p['customer_name'], BODY_NAME_CAP)
+      : null,
+  );
+}
 
 function jobStepSentence(step: string, technician: string | null): string {
   const who = technician ?? 'The technician';
@@ -498,6 +509,49 @@ const PUSH_COPY: {
             : null,
           formatScheduledTime(p['scheduled_start']),
         ),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+
+    // Pending-job approval (story 5). Payload: job_number, customer_name,
+    // employee_name (submitted only), reason (rejected; never shown in a push).
+    // Wording says "Employee", never "Technician".
+    [PENDING_JOB_EVENT.SUBMITTED]: {
+      title: 'Job awaiting approval',
+      body: (p) =>
+        joinMiddleDot(
+          isText(p['job_number']) ? p['job_number'] : null,
+          isText(p['customer_name'])
+            ? truncate(p['customer_name'], BODY_NAME_CAP)
+            : null,
+          isText(p['employee_name'])
+            ? truncate(p['employee_name'], BODY_NAME_CAP)
+            : null,
+        ),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+    [PENDING_JOB_EVENT.APPROVED]: {
+      title: 'Job approved',
+      body: (p) => pendingJobLine(p),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+    [PENDING_JOB_EVENT.REJECTED]: {
+      title: 'Job not approved',
+      body: (p) => pendingJobLine(p),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+    [PENDING_JOB_EVENT.CANCELLED]: {
+      title: 'Pending job cancelled',
+      body: (p) => pendingJobLine(p),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+    [PENDING_JOB_EVENT.EDITED]: {
+      title: 'Owner edited your job',
+      body: (p) => pendingJobLine(p),
       channel: PUSH_CHANNEL.jobs,
       visibility: 'PUBLIC',
     },

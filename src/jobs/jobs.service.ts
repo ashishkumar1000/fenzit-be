@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -29,8 +30,18 @@ import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
+import { DecidePendingJobDto } from './dto/decide-pending-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
 import { insertJobAssignedNotification } from './job-notifications';
+import {
+  alertCreatorOfCancel,
+  alertCreatorOfDecision,
+  alertCreatorOfEdit,
+  alertOwnersOfSubmission,
+  changedEditFields,
+  type JobBeforeUpdate,
+} from './pending-job-notifications';
+import { resolveEmployeeSubmission } from './employee-submission';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { JobPriority } from './enums/job-priority.enum';
@@ -292,6 +303,14 @@ export class JobsService {
 
     const admin = this.supabaseClientFactory.createAdmin();
 
+    // CAP-2/3/4 — an employee's own job. Refused before any customer is written.
+    // Owners get null: their jobs are never pending.
+    const submission = await resolveEmployeeSubmission(
+      admin,
+      owner,
+      dto.technicianId,
+    );
+
     // Resolve the customer id (link/create via dedup, or validate existing).
     // The new-customer path hands back the full row, so the assignment
     // notification's payload can carry the name without re-reading.
@@ -400,6 +419,8 @@ export class JobsService {
       p_notes_for_technician: dto.notesForTechnician ?? null,
       p_actor_id: owner.userId,
       p_year: istYear,
+      p_created_by: owner.userId,
+      p_pending_approval: submission?.pendingApproval ?? false,
     });
 
     if (error) {
@@ -430,6 +451,12 @@ export class JobsService {
       });
     }
 
+    // Pending-approval submission (story 5): the owners hear about it. Written
+    // after the RPC commits; log-and-drop, so it never fails the create.
+    if (rows[0].status === JobStatus.PENDING_APPROVAL) {
+      void alertOwnersOfSubmission(admin, rows[0], owner.userId);
+    }
+
     // Job assignment is a notification (user decision 2026-11-07): the new
     // technician hears about the job through the bell (and, with push live,
     // the OS). Skip when the acting user IS the technician (assigning work
@@ -448,6 +475,86 @@ export class JobsService {
       // The RPC returns bare job rows; re-fetch with the skill/template embeds
       // so the create response carries the full read shape (Story 4.5).
       await this.refetchWithEmbeds(admin, rows[0].id, owner.tenantId, rows[0]),
+    );
+  }
+
+  /**
+   * CAP-5 — the owner approves or rejects a pending employee job. The database
+   * does the check, the change and the activity row in one locked step; a second
+   * decision comes back as JOB_NOT_PENDING (409).
+   */
+  async decidePendingJob(
+    owner: RequestUser,
+    jobId: string,
+    dto: DecidePendingJobDto,
+  ): Promise<JobResponse> {
+    if (!owner.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before deciding jobs',
+      });
+    }
+    const admin = this.supabaseClientFactory.createAdmin();
+    const { data, error } = await admin.rpc('decide_pending_job', {
+      p_caller: owner.userId,
+      p_tenant_id: owner.tenantId,
+      p_job_id: jobId,
+      p_decision: dto.decision,
+      p_reason: dto.reason ?? null,
+    });
+
+    if (error) {
+      const e = error as { code?: string; hint?: string | null };
+      if (e.code === 'PT409' && e.hint === ErrorCode.JOB_NOT_PENDING) {
+        throw new ConflictException({
+          error_code: ErrorCode.JOB_NOT_PENDING,
+          message: 'This job has already been approved or rejected',
+        });
+      }
+      if (e.code === 'PT403') {
+        throw new ForbiddenException({
+          error_code: ErrorCode.FORBIDDEN,
+          message: 'You do not have permission to do that',
+        });
+      }
+      if (e.code === 'PT404') {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'Job not found',
+        });
+      }
+      if (e.code === 'PT400') {
+        throw new BadRequestException({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'The request is not valid',
+        });
+      }
+      this.logger.error('decide_pending_job RPC failed:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to decide the job',
+      });
+    }
+
+    const rows = data as JobRow[] | null;
+    if (!rows || rows.length === 0) {
+      this.logger.error('decide_pending_job returned no rows');
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to decide the job',
+      });
+    }
+    // Creator hears about the decision (story 5). After the RPC commits.
+    void alertCreatorOfDecision(
+      admin,
+      rows[0],
+      owner.userId,
+      dto.decision,
+      dto.reason ?? null,
+    );
+
+    return this.toResponse(
+      await this.refetchWithEmbeds(admin, jobId, owner.tenantId, rows[0]),
     );
   }
 
@@ -521,20 +628,28 @@ export class JobsService {
     // the pre-read failed or found nothing — the notification is skipped
     // (a missed bell is recoverable — the job list still shows the truth;
     // a spurious one is not retractable).
-    let previousTechnicianId: string | null = null;
-    if (dto.technicianId) {
+    // The same read tells the pending-job alerts (story 5) whether the job was
+    // pending before this save and which fields really change.
+    // A failed read here only loses the alerts; the save itself still goes ahead.
+    let before: JobBeforeUpdate | null = null;
+    try {
       const { data: current, error } = await admin
         .from('jobs')
-        .select('technician_id')
+        .select(
+          'id, tenant_id, job_number, customer_id, created_by, status, technician_id, description, scheduled_start, scheduled_end, notes_for_technician, priority',
+        )
         .eq('id', jobId)
         .eq('tenant_id', owner.tenantId)
-        .maybeSingle<{ technician_id: string }>();
+        .maybeSingle<JobBeforeUpdate>();
       if (error) {
         this.logger.error('Failed to read the job before update:', { error });
       } else {
-        previousTechnicianId = current?.technician_id ?? null;
+        before = current ?? null;
       }
+    } catch (err: unknown) {
+      this.logger.error('Failed to read the job before update:', { err });
     }
+    const previousTechnicianId: string | null = before?.technician_id ?? null;
 
     // AC#7 — when reassigning, the new technician must belong to the tenant and be
     // a technician. Mirrors createJob's technician validation exactly.
@@ -562,8 +677,9 @@ export class JobsService {
       }
     }
 
-    // Atomic edit/reassign/cancel + activity log (AR-10). The scheduled-only guard
-    // lives inside the RPC (SELECT … FOR UPDATE) to be TOCTOU-safe; updated_at is
+    // Atomic edit/reassign/cancel + activity log (AR-10). The status guard (scheduled
+    // or pending only) and the per-field audit row live inside the RPC (SELECT … FOR
+    // UPDATE) to be TOCTOU-safe; updated_at is
     // set explicitly there (no DB trigger). A null param leaves the column as-is.
     const { data, error } = await admin.rpc('update_job_with_log', {
       p_job_id: jobId,
@@ -595,10 +711,15 @@ export class JobsService {
       // i.e. a one-sided edit (only start or only end) pushes the stored window
       // past the unchanged bound, which the both-present app check can't catch.
       if (code === 'PT422') {
+        // Same SQLSTATE, told apart by hint: a pending job's assignee is locked.
+        const pendingLock =
+          (error as { hint?: string }).hint === 'PENDING_ASSIGNEE_LOCKED';
         throw new HttpException(
           {
             error_code: ErrorCode.VALIDATION_ERROR,
-            message: 'scheduledEnd must not be before scheduledStart',
+            message: pendingLock
+              ? 'A pending job stays with its creator until it is approved'
+              : 'scheduledEnd must not be before scheduledStart',
           },
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
@@ -643,6 +764,17 @@ export class JobsService {
         rows[0],
         rows[0].technician_id,
       );
+    }
+
+    // Pending-job alerts (story 5), after the RPC commits. Only a job that was
+    // and still is pending alerts the creator; a real change makes one alert.
+    if (before?.status === JobStatus.PENDING_APPROVAL) {
+      if (isCancel && rows[0].status === JobStatus.CANCELLED) {
+        void alertCreatorOfCancel(admin, rows[0], owner.userId);
+      } else if (!isCancel && rows[0].status === JobStatus.PENDING_APPROVAL) {
+        const changed = changedEditFields(before, dto);
+        void alertCreatorOfEdit(admin, rows[0], owner.userId, changed);
+      }
     }
 
     return this.toResponse(
@@ -692,6 +824,13 @@ export class JobsService {
     // a caller status filter below is intersected with them (empty results are
     // legitimate — the FE never sends such combinations).
     if (scope === JobListScope.TODAY) {
+      // A job waiting for owner approval is not work yet, so it is never on the
+      // day's list (CAP-4). The approval views show it instead (later stories).
+      qb = qb.not(
+        'status',
+        'in',
+        `(${JobStatus.PENDING_APPROVAL},${JobStatus.REJECTED})`,
+      );
       // An in-progress job is active work regardless of which IST day its slot
       // was scheduled in — it must not vanish from the technician's list when
       // the slot crosses midnight IST. So for technicians on the default view,
@@ -722,7 +861,12 @@ export class JobsService {
         .lt('scheduled_start', range.start.toISOString())
         .in('status', [JobStatus.SCHEDULED, JobStatus.IN_PROGRESS]);
     } else {
-      qb = qb.in('status', [JobStatus.COMPLETED, JobStatus.CANCELLED]);
+      // A rejected job stays in the creator's history for good (CAP-7).
+      qb = qb.in('status', [
+        JobStatus.COMPLETED,
+        JobStatus.CANCELLED,
+        JobStatus.REJECTED,
+      ]);
     }
 
     // AC #2 — repeatable status filter (all scopes; intersects with the scope's
@@ -828,12 +972,13 @@ export class JobsService {
       });
     }
 
-    // 2) Ownership gate — an employee may only view jobs assigned to them
-    //    (AC#4). Resolved AFTER the 404 so a cross-tenant job is never 403.
+    // 2) Ownership gate — an employee may only view jobs assigned to them. A job
+    //    that is someone else's answers exactly like a missing one (CAP-7): not
+    //    found, never a hint that it exists.
     if (user.role === Role.EMPLOYEE && row.technician_id !== user.userId) {
-      throw new ForbiddenException({
-        error_code: ErrorCode.FORBIDDEN,
-        message: 'Forbidden',
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Job not found',
       });
     }
 

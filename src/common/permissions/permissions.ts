@@ -13,6 +13,7 @@ export type Permission =
   | 'member.invite'
   | 'member.read'
   | 'member.change_role'
+  | 'member.job_settings' // company admin of this company only (CAP-1)
   | 'member.remove'
   | 'invite_sms.resend' // company admin of this company only (story 21-2)
   | 'user.disable' // platform only
@@ -22,6 +23,8 @@ export type Permission =
   | 'job.read_all'
   | 'job.read_own'
   | 'job.write'
+  | 'job.create_own' // an employee's own job, when the owner allows it (CAP-2)
+  | 'job.approve' // company admin of this company only: approve or reject (CAP-5)
   | 'job.advance' // own workflow steps and attachments
   | 'job.sync' // own jobs to the app
   // customers and reports
@@ -83,9 +86,16 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
     'tenant.validity.manage',
   ]),
   // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
-  [Role.COMPANY_ADMIN]: new Set<Permission>([...ADMIN_PERMISSIONS, 'invite_sms.resend']),
+  // member.job_settings and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
+  [Role.COMPANY_ADMIN]: new Set<Permission>([
+    ...ADMIN_PERMISSIONS,
+    'invite_sms.resend',
+    'member.job_settings',
+    'job.approve',
+  ]),
   [Role.EMPLOYEE]: new Set<Permission>([
     'job.read_own',
+    'job.create_own',
     'job.advance',
     'job.sync',
     'customer.read',

@@ -325,7 +325,7 @@ describe('UsersService', () => {
         }
 
         const builder: Record<string, jest.Mock> = {};
-        for (const m of ['eq', 'or', 'order', 'gte', 'lt']) {
+        for (const m of ['eq', 'or', 'not', 'order', 'gte', 'lt']) {
           builder[m] = jest.fn().mockReturnValue(builder);
         }
         builder.limit = jest.fn().mockResolvedValue(listResult);
@@ -393,7 +393,8 @@ describe('UsersService', () => {
       if (table === 'users') return usersHandler;
       if (table === 'memberships') return membershipsHandler;
       if (table === 'tenants') return tenantsTableHandler(tenant);
-      if (table === 'tenant_business_types') return tenantBusinessTypesTableHandler();
+      if (table === 'tenant_business_types')
+        return tenantBusinessTypesTableHandler();
       if (table === 'user_skills') return skillsHandler;
       if (table === 'customers') return customersHandler;
       if (table === 'attendance_access_state') {
@@ -401,13 +402,15 @@ describe('UsersService', () => {
         // awaited chain resolves to the queued result.
         const builder: Record<string, jest.Mock> = {};
         for (const m of ['select', 'eq', 'maybeSingle']) {
-          builder[m] = jest.fn().mockImplementation(() =>
-            m === 'maybeSingle'
-              ? Promise.resolve(
-                  opts.accessState ?? { data: null, error: null },
-                )
-              : builder,
-          );
+          builder[m] = jest
+            .fn()
+            .mockImplementation(() =>
+              m === 'maybeSingle'
+                ? Promise.resolve(
+                    opts.accessState ?? { data: null, error: null },
+                  )
+                : builder,
+            );
         }
         return builder;
       }
@@ -445,7 +448,10 @@ describe('UsersService', () => {
       mockAdmin({
         technicians: {
           data: [
-            memberRow('tech-a', { name: 'Asha', avatarKey: 'avatars/tech-a/p.jpg' }),
+            memberRow('tech-a', {
+              name: 'Asha',
+              avatarKey: 'avatars/tech-a/p.jpg',
+            }),
             memberRow('tech-b', { name: 'Bina' }),
           ],
           error: null,
@@ -519,9 +525,9 @@ describe('UsersService', () => {
       const memberSelects = membershipsHandler.select.mock.calls.map(
         (c: unknown[]) => c[0] as string,
       );
-      expect(memberSelects.find((s) => s.startsWith('employee_code'))).toContain(
-        'status',
-      );
+      expect(
+        memberSelects.find((s) => s.startsWith('employee_code')),
+      ).toContain('status');
       expect(memberSelects.find((s) => s.includes('user_skills'))).toContain(
         'employee_code',
       );
@@ -563,9 +569,11 @@ describe('UsersService', () => {
       expect(result.technicians[0].skills.sort()).toEqual(
         ['Plumbing', 'Electrical', 'Wiring'].sort(),
       );
-      expect(result.technicians[0].skillIds.sort()).toEqual(
-        ['skill-1', 'skill-2', 'skill-3'],
-      );
+      expect(result.technicians[0].skillIds.sort()).toEqual([
+        'skill-1',
+        'skill-2',
+        'skill-3',
+      ]);
       expect(result.customers).toBe(emptyCustomersPage);
       // 2026-09-30 — the owner branch carries the attendance mirror too (the
       // tenant flag gates the Home entry point). The mock's view read
@@ -1054,8 +1062,10 @@ describe('UsersService', () => {
     });
 
     it('never queries technicians or customers for a technician caller', async () => {
-      mockAdmin({ ownRow: { data: ownTechnicianRow, error: null },
-        ownMembership: { data: technicianMembership, error: null } });
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
 
       await service.getMyProfile(technicianUser, {});
 
@@ -1225,45 +1235,47 @@ describe('UsersService', () => {
     const range = getIstDayRange();
 
     it('embeds technician and customer summaries on every owner job row, resolved with batched queries', async () => {
-      const { membershipsHandler, skillsHandler, customersHandler } = mockAdmin({
-        jobsList: {
-          data: [
-            jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z'),
-            jobRow('j2', 'in_progress', '2026-06-21T07:00:00Z'),
-          ],
-          error: null,
+      const { membershipsHandler, skillsHandler, customersHandler } = mockAdmin(
+        {
+          jobsList: {
+            data: [
+              jobRow('j1', 'scheduled', '2026-06-21T04:00:00Z'),
+              jobRow('j2', 'in_progress', '2026-06-21T07:00:00Z'),
+            ],
+            error: null,
+          },
+          batchUsers: {
+            data: [
+              memberRow('tech-uuid', {
+                name: 'Ravi',
+                countryCode: '+91',
+                phoneNumber: '9111111111',
+              }),
+            ],
+            error: null,
+          },
+          batchSkills: {
+            data: [
+              { user_id: 'tech-uuid', skills: { name: 'Plumbing' } },
+              { user_id: 'tech-uuid', skills: [{ name: 'Electrical' }] },
+            ],
+            error: null,
+          },
+          batchCustomers: {
+            data: [
+              {
+                id: 'cust-1',
+                name: 'Sharma Residency',
+                country_code: '+91',
+                phone_number: '9333333333',
+                address: '12 MG Road',
+                city: 'Pune',
+              },
+            ],
+            error: null,
+          },
         },
-        batchUsers: {
-          data: [
-            memberRow('tech-uuid', {
-              name: 'Ravi',
-              countryCode: '+91',
-              phoneNumber: '9111111111',
-            }),
-          ],
-          error: null,
-        },
-        batchSkills: {
-          data: [
-            { user_id: 'tech-uuid', skills: { name: 'Plumbing' } },
-            { user_id: 'tech-uuid', skills: [{ name: 'Electrical' }] },
-          ],
-          error: null,
-        },
-        batchCustomers: {
-          data: [
-            {
-              id: 'cust-1',
-              name: 'Sharma Residency',
-              country_code: '+91',
-              phone_number: '9333333333',
-              address: '12 MG Road',
-              city: 'Pune',
-            },
-          ],
-          error: null,
-        },
-      });
+      );
 
       const result = await service.getMyProfile(ownerUser, {});
 
@@ -1466,8 +1478,9 @@ describe('UsersService', () => {
     });
 
     it('skips the batched embed queries entirely for an empty jobs page', async () => {
-      const { membershipsHandler, skillsHandler, customersHandler } =
-        mockAdmin({});
+      const { membershipsHandler, skillsHandler, customersHandler } = mockAdmin(
+        {},
+      );
 
       const result = await service.getMyProfile(ownerUser, {});
 
@@ -1560,7 +1573,7 @@ describe('UsersService', () => {
       expect(result.jobs.nextCursor).toBeNull();
     });
 
-    it("jobsScope='today' adds the IST day window on scheduled_start and sorts ASC, with no status filter", async () => {
+    it("jobsScope='today' adds the IST day window on scheduled_start and sorts ASC, and leaves out pending and rejected jobs", async () => {
       const { listBuilders } = mockAdmin({});
 
       await service.getMyProfile(ownerUser, { jobsScope: 'today' });
@@ -1575,6 +1588,12 @@ describe('UsersService', () => {
       expect(list.lt).toHaveBeenCalledWith(
         'scheduled_start',
         range.end.toISOString(),
+      );
+      // Pending and rejected jobs are never on the Today list (CAP-4, CAP-7).
+      expect(list.not).toHaveBeenCalledWith(
+        'status',
+        'in',
+        '(pending_approval,rejected)',
       );
       // No status filter — parity with GET /jobs?scope=today: the FE drops
       // completed/cancelled rows from display, the payload stays honest.

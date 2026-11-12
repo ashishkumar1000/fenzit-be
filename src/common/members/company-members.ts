@@ -21,6 +21,9 @@ export interface CompanyMember {
    * a short-lived link (see member-avatars.ts) and never return the key itself.
    */
   avatarKey: string | null;
+  /** Job switches (CAP-1). Meaningful for employees; false / true for others. */
+  canCreateJobs: boolean;
+  jobApprovalRequired: boolean;
   /** Present only when `withSkills` was requested. */
   skills?: Array<{ id: string; name: string }>;
 }
@@ -39,6 +42,8 @@ interface MemberRow {
   status: CompanyMember['status'];
   employee_code: string;
   created_at: string;
+  can_create_jobs: boolean;
+  job_approval_required: boolean;
   users: {
     name: string | null;
     country_code: string;
@@ -69,7 +74,7 @@ export async function listCompanyMembers(
   let qb = admin
     .from('memberships')
     .select(
-      `user_id, role, status, employee_code, created_at, ${USER_EMBED}(${userCols})`,
+      `user_id, role, status, employee_code, created_at, can_create_jobs, job_approval_required, ${USER_EMBED}(${userCols})`,
     )
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: true });
@@ -98,6 +103,8 @@ export async function listCompanyMembers(
       status: row.status,
       createdAt: row.created_at,
       avatarKey: row.users!.avatar_key ?? null,
+      canCreateJobs: row.can_create_jobs,
+      jobApprovalRequired: row.job_approval_required,
       ...(filter.withSkills
         ? {
             skills: (row.users!.user_skills ?? []).flatMap((us) =>

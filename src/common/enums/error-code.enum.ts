@@ -104,4 +104,8 @@ export enum ErrorCode {
   INVITE_NOT_PENDING = 'INVITE_NOT_PENDING',
   /** The per-phone cap of invite SMS in the rolling window was reached (429). */
   INVITE_SMS_LIMIT_REACHED = 'INVITE_SMS_LIMIT_REACHED',
+  /** Job settings were set on a person who is not an employee (400). */
+  NOT_AN_EMPLOYEE = 'NOT_AN_EMPLOYEE',
+  /** The owner tried to approve or reject a job that already left pending (409). */
+  JOB_NOT_PENDING = 'JOB_NOT_PENDING',
 }

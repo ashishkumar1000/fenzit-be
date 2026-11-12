@@ -241,6 +241,20 @@ describe('Jobs (e2e)', () => {
     return { select: jest.fn().mockReturnValue(node) };
   }
 
+  // The subscription guard reads select().eq().maybeSingle() on tenants before an
+  // owner write. A null validity_until means "nothing to enforce" (open access).
+  function tenantChain(validityUntil: string | null = null) {
+    const maybeSingle = jest.fn().mockResolvedValue({
+      data: { validity_until: validityUntil },
+      error: null,
+    });
+    return {
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({ maybeSingle }),
+      }),
+    };
+  }
+
   // Like singleChain but the terminal resolves through either .single() or
   // .maybeSingle() — the job read is consumed by BOTH terminators now (detail
   // fetch → single; the Story 4.5 post-RPC embed re-fetch → maybeSingle).
@@ -311,6 +325,7 @@ describe('Jobs (e2e)', () => {
       opts.jobRefetch,
     );
     const from = jest.fn((table: string) => {
+      if (table === 'tenants') return tenantChain();
       if (table === 'customers')
         return singleChain(opts.customer ?? customerOk, 2);
       if (table === 'memberships')
@@ -394,6 +409,7 @@ describe('Jobs (e2e)', () => {
 
       const from = jest.fn((table: string) => {
         if (table === 'customers') return { select: selectLookup, insert };
+        if (table === 'tenants') return tenantChain();
         if (table === 'memberships') return membersChain(technicianOk);
         if (table === 'skills') return skillsChain(skillOk);
         // The post-RPC embed re-fetch (Story 4.5) reads jobs via
@@ -664,7 +680,17 @@ describe('Jobs (e2e)', () => {
     // GET path terminal is `.limit()` (awaited → { data, error }), not `.single()`.
     function listChain(result: { data: unknown; error: unknown }) {
       const builder: Record<string, jest.Mock> = {};
-      for (const m of ['select', 'eq', 'gte', 'lt', 'in', 'or', 'order']) {
+      // `not` is the pending/rejected hide filter (story 5 list scopes, CAP-4).
+      for (const m of [
+        'select',
+        'eq',
+        'gte',
+        'lt',
+        'in',
+        'or',
+        'not',
+        'order',
+      ]) {
         builder[m] = jest.fn().mockReturnValue(builder);
       }
       builder.limit = jest.fn().mockResolvedValue(result);
@@ -947,9 +973,11 @@ describe('Jobs (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // Rejected jobs stay in history with no expiry (spec-employee-created-jobs, CAP-7).
       expect(builder.in).toHaveBeenCalledWith('status', [
         'completed',
         'cancelled',
+        'rejected',
       ]);
       expect(builder.order).toHaveBeenCalledWith('scheduled_start', {
         ascending: false,
@@ -1145,10 +1173,12 @@ describe('Jobs (e2e)', () => {
           return { select: jest.fn().mockReturnValue({ eq: eq1 }) };
         }
         if (table === 'attachments') {
+          // Photos hidden after a report are excluded: eq, eq, is(hidden_at), order.
           const order = jest
             .fn()
             .mockResolvedValue(opts.attachments ?? { data: [], error: null });
-          const eq2 = jest.fn().mockReturnValue({ order });
+          const is = jest.fn().mockReturnValue({ order });
+          const eq2 = jest.fn().mockReturnValue({ is });
           const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
           return { select: jest.fn().mockReturnValue({ eq: eq1 }) };
         }
@@ -1169,11 +1199,14 @@ describe('Jobs (e2e)', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.jobNumber).toBe('JB-2026-0001');
+      // avatarUrl is part of the member/technician response contract (commit 27c5647);
+      // this member has no photo, so it is null.
       expect(body.technician).toEqual({
         id: TECH_ID,
         name: 'Ravi',
         countryCode: '+91',
         phoneNumber: '9990001111',
+        avatarUrl: null,
         skills: ['AC Repair'],
       });
       expect(body.customer).toEqual({
@@ -1267,7 +1300,9 @@ describe('Jobs (e2e)', () => {
       });
     });
 
-    it('AC4 — returns 403 FORBIDDEN when a technician requests a job not theirs', async () => {
+    // Another employee's job is "not found", not "forbidden": the job must not
+    // reveal that it exists (spec-employee-created-jobs, CAP-3 visibility).
+    it('AC4 — returns 404 when a technician requests a job not theirs', async () => {
       mockDetail({}); // default jobRow.technician_id = TECH_ID (not OTHER_TECH_ID)
 
       const response = await app.inject({
@@ -1276,8 +1311,8 @@ describe('Jobs (e2e)', () => {
         headers: { authorization: `Bearer ${techJwt()}` },
       });
 
-      expect(response.statusCode).toBe(403);
-      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body).error_code).toBe('RESOURCE_NOT_FOUND');
     });
 
     it('AC2/AC3 — returns 404 RESOURCE_NOT_FOUND for a missing / cross-tenant job', async () => {

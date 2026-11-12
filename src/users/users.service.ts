@@ -650,6 +650,12 @@ export class UsersService {
     }
 
     if (isToday) {
+      // A job waiting for owner approval or rejected is never on the day list (CAP-4, CAP-7).
+      qb = qb.not(
+        'status',
+        'in',
+        `(${JobStatus.PENDING_APPROVAL},${JobStatus.REJECTED})`,
+      );
       // Zero new IST arithmetic — copy of the jobs-list today window,
       // including its in_progress OR branch for the technician's own view: an
       // active job must not vanish from the profile's Today page when its slot

@@ -15,6 +15,7 @@ import {
   normalizeSkillEmbed,
 } from '../jobs/workflow-template.model';
 import { JOB_COLUMNS } from '../jobs/jobs.service';
+import { JobStatus } from '../jobs/enums/job-status.enum';
 
 // Composed from the shared JOB_COLUMNS (Story 4.5) so a future job column can
 // never silently miss the sync payload — only the sync-specific relation
@@ -57,6 +58,8 @@ export class SyncService {
       .select(SYNC_JOB_COLUMNS)
       .eq('tenant_id', user.tenantId)
       .eq('technician_id', user.userId)
+      // A job waiting for owner approval is not on the device yet (CAP-4).
+      .not('status', 'in', `(${JobStatus.PENDING_APPROVAL},${JobStatus.REJECTED})`)
       // Photos hidden after a report stay off the device too.
       .is('attachments.hidden_at', null);
 

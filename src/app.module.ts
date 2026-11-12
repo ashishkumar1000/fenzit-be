@@ -19,6 +19,7 @@ import { AuthModule } from './auth/auth.module';
 import { SkillsModule } from './skills/skills.module';
 import { CustomersModule } from './customers/customers.module';
 import { JobsModule } from './jobs/jobs.module';
+import { JobReportsModule } from './job-reports/job-reports.module';
 import { UsersModule } from './users/users.module';
 import { CompanyModule } from './company/company.module';
 import { StorageModule } from './storage/storage.module';
@@ -214,6 +215,7 @@ import { TelemetryShutdown } from './telemetry';
     SkillsModule,
     CustomersModule,
     JobsModule,
+    JobReportsModule,
     UsersModule,
     CompanyModule,
     StorageModule,
