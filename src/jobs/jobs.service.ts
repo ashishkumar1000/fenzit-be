@@ -88,6 +88,13 @@ export interface JobResponse {
   priority: JobPriority;
   description: string | null;
   notesForTechnician: string | null;
+  // Epic 22 — who created the job (creator = owner for owner-created jobs,
+  // the employee for employee-created ones) and, for a decided pending job,
+  // when it was decided and why it was rejected. Clients show the rejection
+  // reason on the job itself; it is never a secret within the job's audience.
+  createdBy: string | null;
+  decidedAt: string | null;
+  rejectionReason: string | null;
   createdAt: string;
   updatedAt: string;
   // Story 4.5 — the job's skill (id + display name) and stamped template ride
@@ -180,6 +187,13 @@ export interface JobRow {
   priority: JobPriority;
   description: string | null;
   notes_for_technician: string | null;
+  // Epic 22 — creator and decision fields on every job read (additive). All
+  // nullable: owner-created jobs predate created_by stamps, and undecided
+  // jobs have no decision. Rejection reason rides the row so the creator can
+  // read it on the job itself, not only via notifications/reports.
+  created_by: string | null;
+  decided_at: string | null;
+  rejection_reason: string | null;
   created_at: string;
   updated_at: string;
   // NOT NULL under the FK (the create RPC stamps it) — typed nullable to keep
@@ -242,7 +256,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // degrade to null response fields, never silently drop the job row.
 // Exported so sibling services reuse the same literal.
 export const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_at, updated_at, skill_id, skills(id, name), workflow_templates(version, steps)';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_by, decided_at, rejection_reason, created_at, updated_at, skill_id, skills(id, name), workflow_templates(version, steps)';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -1248,6 +1262,11 @@ export class JobsService {
       priority: row.priority,
       description: row.description,
       notesForTechnician: row.notes_for_technician,
+      // Epic 22 — `?? null` keeps write-path fallback rows (bare RPC returns
+      // without these columns) mapping to null instead of dropping the keys.
+      createdBy: row.created_by ?? null,
+      decidedAt: row.decided_at ?? null,
+      rejectionReason: row.rejection_reason ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       skill: normalizeSkillEmbed<JobSkillResponse>(row.skills),

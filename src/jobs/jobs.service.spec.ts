@@ -812,6 +812,11 @@ describe('JobsService', () => {
         priority: 'normal',
         description: null,
         notesForTechnician: null,
+        // Epic 22 — creator/decision fields ride every job read; nulls on a
+        // plain owner-created scheduled job.
+        createdBy: null,
+        decidedAt: null,
+        rejectionReason: null,
         createdAt: '2026-06-21T00:00:00Z',
         updatedAt: '2026-06-21T00:00:00Z',
         // Story 4.5 — every list row carries the same skill/template shape.
