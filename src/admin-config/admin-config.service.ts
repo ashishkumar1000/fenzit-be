@@ -1,10 +1,18 @@
 import {
+  BadGatewayException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import {
+  compareVersionNames,
+  PlayConsoleVersionService,
+  PlayUnavailableError,
+} from '../play-console/play-console-version.service';
 import { AppRoadblocksConfigDto } from './dto/app-roadblocks-config.dto';
 
 /** The app_config keys behind the roadblock screens, per platform. */
@@ -52,7 +60,10 @@ export interface AppRoadblocksConfigView {
 export class AdminConfigService {
   private readonly logger = new Logger(AdminConfigService.name);
 
-  constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseFactory: SupabaseClientFactory,
+    private readonly playConsole: PlayConsoleVersionService,
+  ) {}
 
   /** Reads straight from the table (not the app's cache), so the form shows the truth. */
   async getAppRoadblocks(): Promise<AppRoadblocksConfigView> {
@@ -102,6 +113,13 @@ export class AdminConfigService {
     actorId: string,
     dto: AppRoadblocksConfigDto,
   ): Promise<AppRoadblocksConfigView> {
+    // The Android minimum must not be above the version live on Google Play.
+    // Checked only when it changes, so unrelated edits never depend on Play.
+    const stored = await this.getAppRoadblocks();
+    if (dto.android.minVersion !== stored.android.minVersion) {
+      await this.assertNotAboveLivePlayVersion(dto.android.minVersion);
+    }
+
     const now = new Date().toISOString();
     const pairs: Array<[string, string]> = [
       [KEYS.android.minVersion, dto.android.minVersion],
@@ -132,5 +150,39 @@ export class AdminConfigService {
       `Roadblock config saved by ${actorId}; keys: ${pairs.map(([k]) => k).join(', ')}`,
     );
     return this.getAppRoadblocks();
+  }
+
+  /**
+   * Refuses an Android minimum that is newer than the live Play version: users
+   * would be locked out with no build to update to. Play unreachable → 502, so
+   * the admin retries; nothing is saved on a guess.
+   */
+  private async assertNotAboveLivePlayVersion(
+    minVersion: string,
+  ): Promise<void> {
+    let live: string;
+    try {
+      live = await this.playConsole.latestLiveAndroidVersion();
+    } catch (error) {
+      const reason =
+        error instanceof PlayUnavailableError
+          ? error.message
+          : `unexpected ${(error as Error).name}`;
+      this.logger.error(`Play version check failed: ${reason}`);
+      throw new BadGatewayException({
+        error_code: ErrorCode.PLAY_UPSTREAM_ERROR,
+        message:
+          "Can't check Google Play right now. Try saving again in a minute.",
+      });
+    }
+    if (compareVersionNames(minVersion, live) > 0) {
+      throw new HttpException(
+        {
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: `Version ${minVersion} isn't live on Google Play yet. The latest live Android version is ${live}.`,
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
   }
 }
