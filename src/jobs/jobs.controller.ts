@@ -73,7 +73,7 @@ export class JobsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'List jobs: scope=today (default, IST day, date-reanchorable) | upcoming | overdue | history; filters by status and technician',
+      'List jobs: scope=today (default, IST day, date-reanchorable) | upcoming | overdue | history | all (every status, newest created first); filters by status and technician',
   })
   @ApiResponse({ status: 200, description: 'Cursor-paginated job list' })
   @ApiResponse({ status: 400, description: 'Company not set up / bad cursor' })

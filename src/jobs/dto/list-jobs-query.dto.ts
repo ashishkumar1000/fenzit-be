@@ -77,7 +77,7 @@ export class ListJobsQueryDto {
   @ApiPropertyOptional({
     enum: JobListScope,
     description:
-      'Timeline scope: today (default, IST day window), upcoming (tomorrow onward, scheduled), overdue (pre-today, scheduled/in_progress), history (completed/cancelled). Mutually exclusive with date except today.',
+      'Timeline scope: today (default, IST day window), upcoming (tomorrow onward, scheduled), overdue (pre-today, scheduled/in_progress), history (completed/cancelled), all (every status, newest created first). Mutually exclusive with date except today.',
   })
   @IsOptional()
   @Transform(trim)

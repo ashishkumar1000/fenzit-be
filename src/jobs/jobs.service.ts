@@ -280,6 +280,10 @@ const JOBS_CURSOR_SCOPE_BY_SCOPE: Record<JobListScope, CursorScope> = {
   [JobListScope.UPCOMING]: 'jobs-upcoming',
   [JobListScope.OVERDUE]: 'jobs-overdue',
   [JobListScope.HISTORY]: 'jobs-history',
+  // `all` sorts on created_at DESC exactly like today, so it shares the
+  // 'jobs-list' cursor tag — a cursor minted by either replays fine on the
+  // other (same column, same direction).
+  [JobListScope.ALL]: 'jobs-list',
 };
 
 /**
@@ -935,10 +939,11 @@ export class JobsService {
     // (IST day window, created_at sort, jobs-list cursor, date re-anchor),
     // except that a technician's in_progress jobs are included with the
     // default view (an active job must not vanish when its slot crosses
-    // midnight IST); the
-    // other scopes model the full job timeline. The IST day boundary is a DAY
-    // boundary, not a time-of-day one, so the three day-buckets stay mutually
-    // exclusive by construction.
+    // midnight IST); the other scopes model the full job timeline — `all`
+    // (Epic 22) drops even the status predicate, so a pending job has an
+    // employee-visible home. The IST day boundary is a DAY boundary, not a
+    // time-of-day one, so the three day-buckets stay mutually exclusive by
+    // construction.
     const scope = query.scope ?? JobListScope.TODAY;
 
     // AC #1 / #3 — the IST day window. For an explicit date (today scope only —
@@ -996,6 +1001,12 @@ export class JobsService {
       qb = qb
         .lt('scheduled_start', range.start.toISOString())
         .in('status', [JobStatus.SCHEDULED, JobStatus.IN_PROGRESS]);
+    } else if (scope === JobListScope.ALL) {
+      // Epic 22 — no status or day predicate: every status of the caller's
+      // jobs (employees are self-scoped below), newest-created first. A
+      // pending job lives on no other employee scope, so this is what the
+      // Jobs tab's "All" and "Pending" chips read. The repeatable status
+      // filter below still narrows it when sent.
     } else {
       // A rejected job stays in the creator's history for good (CAP-7).
       qb = qb.in('status', [
@@ -1027,7 +1038,9 @@ export class JobsService {
     const ascending =
       scope === JobListScope.UPCOMING || scope === JobListScope.OVERDUE;
     const sortColumn =
-      scope === JobListScope.TODAY ? 'created_at' : 'scheduled_start';
+      scope === JobListScope.TODAY || scope === JobListScope.ALL
+        ? 'created_at'
+        : 'scheduled_start';
     const cursorScope = JOBS_CURSOR_SCOPE_BY_SCOPE[scope];
 
     if (query.cursor) {

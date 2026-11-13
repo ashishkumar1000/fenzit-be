@@ -159,7 +159,7 @@ describe('query-string dialect ListJobsQueryDto assumes', () => {
     });
 
     it('rejects scope + date with 422 for every non-today scope', async () => {
-      for (const scope of ['upcoming', 'overdue', 'history']) {
+      for (const scope of ['upcoming', 'overdue', 'history', 'all']) {
         const res = await get(`/jobs?scope=${scope}&date=2026-06-20`);
         expect(res.statusCode).toBe(422);
       }
