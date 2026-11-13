@@ -76,6 +76,7 @@ export interface JobCounts {
   overdue: number;
   completed: number;
   cancelled: number;
+  pending: number;
 }
 
 export interface TechnicianSummary {
@@ -258,6 +259,7 @@ const EMPTY_JOB_COUNTS: JobCounts = {
   overdue: 0,
   completed: 0,
   cancelled: 0,
+  pending: 0,
 };
 
 /** AD-17 default before a tenant exists — no tenant, no attendance. */
@@ -950,6 +952,15 @@ export class UsersService {
             .eq('tenant_id', tenantId)
             .eq('status', JobStatus.CANCELLED),
       },
+      {
+        key: 'pending' as const,
+        build: () =>
+          admin
+            .from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenantId)
+            .eq('status', JobStatus.PENDING_APPROVAL),
+      },
     ];
 
     const results = await Promise.all(
@@ -980,6 +991,7 @@ export class UsersService {
       overdue: results[2].count ?? 0,
       completed: results[3].count ?? 0,
       cancelled: results[4].count ?? 0,
+      pending: results[5].count ?? 0,
     };
   }
 }

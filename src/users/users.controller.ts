@@ -41,7 +41,7 @@ export class UsersController {
     summary:
       "Get the current user's profile — branches by role. Owner gets " +
       'company/tenant info, technician roster + skills, all customers, and ' +
-      'all jobs + jobCounts (today/upcoming/overdue/completed/cancelled). ' +
+      'all jobs + jobCounts (today/upcoming/overdue/completed/cancelled/pending). ' +
       'Technician gets own skills, own jobs, and own jobCounts. Every job ' +
       'row embeds technician (id, name, phone, skills) and customer (id, ' +
       'name, phone, address, city) summaries. jobsScope=today narrows the ' +
