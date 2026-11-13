@@ -147,6 +147,16 @@ export interface EmployeeProfileResponse extends UserProfileBase {
   jobs: PaginatedResponse<ProfileJobResponse>;
   jobCounts: JobCounts;
   /**
+   * Epic 22 — the employee's own job switches, read from the same
+   * memberships row the profile already joins (CAP-1): `canCreateJobs` is
+   * what the app gates the New Job action on, `jobApprovalRequired` is what
+   * tells the creator whether their next submission lands pending or
+   * scheduled. The POST /jobs endpoint re-checks both server-side — these
+   * fields are display truth, never the guard.
+   */
+  canCreateJobs: boolean;
+  jobApprovalRequired: boolean;
+  /**
    * AD-17 (15-7): the attendance access state for first load — identical
    * fields to GET /attendance/me/access, read from the same
    * attendance_access_state view via the admin client (string table name;
@@ -316,16 +326,27 @@ export class UsersService {
       });
     }
 
-    // The employee code and membership status live on the membership. A
-    // platform admin has none, and a person with no company has none yet.
-    let membership: { employee_code: string; status: string } | null = null;
+    // The employee code, membership status and Epic-22 job switches live on
+    // the membership. A platform admin has none, and a person with no company
+    // has none yet.
+    let membership: {
+      employee_code: string;
+      status: string;
+      can_create_jobs: boolean;
+      job_approval_required: boolean;
+    } | null = null;
     if (user.tenantId && user.role !== Role.PLATFORM_ADMIN) {
       const { data: memberRow, error: memberError } = await admin
         .from('memberships')
-        .select('employee_code, status')
+        .select('employee_code, status, can_create_jobs, job_approval_required')
         .eq('user_id', user.userId)
         .eq('tenant_id', user.tenantId)
-        .maybeSingle<{ employee_code: string; status: string }>();
+        .maybeSingle<{
+          employee_code: string;
+          status: string;
+          can_create_jobs: boolean;
+          job_approval_required: boolean;
+        }>();
       if (memberError) {
         this.logger.error('Failed to fetch own membership:', {
           error: memberError,
@@ -437,6 +458,11 @@ export class UsersService {
         jobs,
         jobCounts,
         attendance,
+        // Epic 22 — the creator's own switches. `?? false` mirrors the
+        // server's read in employee-submission.ts: a null flag grants
+        // nothing.
+        canCreateJobs: membership?.can_create_jobs ?? false,
+        jobApprovalRequired: membership?.job_approval_required ?? false,
       };
     }
 

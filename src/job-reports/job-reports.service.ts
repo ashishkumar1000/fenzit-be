@@ -61,6 +61,12 @@ export interface EmployeeReportResponse {
     reason: string | null;
     decidedAt: string;
   }>;
+  /**
+   * How many rejections there really were in the window. The list above is
+   * capped for transport; this count is not, so a client can always say
+   * "+ N more" truthfully.
+   */
+  rejectionReasonsTotal: number;
 }
 
 const REJECTION_LIST_LIMIT = 50;
@@ -113,13 +119,18 @@ export class JobReportsService {
     const mine = await loadWindowJobs(admin, tenantId, window, user.userId);
 
     const counts = countOutcomes(mine);
+    // Cancelled jobs carry a decided_at stamp, but a cancellation is not a
+    // decision — the wait figures cover the same population as approvalRate.
     const decided = mine
+      .filter((j) => outcomeOf(j) !== 'cancelled')
       .map(minutesToDecision)
       .filter((m): m is number => m !== null);
-    const rejected = mine
+    // The full list is counted BEFORE the transport cap, so the total is
+    // always the true number of rejections in the window.
+    const rejectedAll = mine
       .filter((j) => outcomeOf(j) === 'rejected')
-      .sort((a, b) => (b.decidedAt ?? '').localeCompare(a.decidedAt ?? ''))
-      .slice(0, REJECTION_LIST_LIMIT);
+      .sort((a, b) => (b.decidedAt ?? '').localeCompare(a.decidedAt ?? ''));
+    const rejected = rejectedAll.slice(0, REJECTION_LIST_LIMIT);
 
     const [assignedNow, completedInRange] = await Promise.all([
       this.countAssigned(admin, tenantId, user.userId),
@@ -140,6 +151,7 @@ export class JobReportsService {
         reason: j.rejectionReason,
         decidedAt: j.decidedAt as string,
       })),
+      rejectionReasonsTotal: rejectedAll.length,
     };
   }
 

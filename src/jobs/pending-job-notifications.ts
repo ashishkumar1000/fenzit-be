@@ -5,10 +5,12 @@ import type { JobPriority } from './enums/job-priority.enum';
 
 /**
  * Event types for the pending-job approval notifications (epic
- * employee-created-jobs, stories 4-5). The rows are written by the database
- * RPCs (create_job_with_log, decide_pending_job, update_job_with_log) in the
- * same step as the change, so a row exists only when the change committed.
- * This file only names the types for the push copy and tests.
+ * employee-created-jobs, stories 4-5). The database RPCs make the change
+ * itself (create_job_with_log, decide_pending_job, update_job_with_log);
+ * these alert rows are written from TypeScript AFTER the RPC has committed,
+ * best-effort and log-and-drop — a missed alert is a lost bell, not a lost
+ * change. The in-app bell/notifications table is the durable record; this
+ * file names the event types for the push copy and tests.
  */
 export const PENDING_JOB_EVENT = {
   /** To each active owner, once per submission. */
@@ -165,17 +167,22 @@ export async function alertCreatorOfDecision(
       : PENDING_JOB_EVENT.REJECTED;
   await alertSafely(event, job, async () => {
     const customerName = await customerNameOf(admin, job);
+    // An approval has no reason to quote — the field exists for a rejection.
+    const payload =
+      event === PENDING_JOB_EVENT.APPROVED
+        ? { job_number: job.job_number, customer_name: customerName }
+        : {
+            job_number: job.job_number,
+            customer_name: customerName,
+            reason,
+          };
     await insertAlerts(admin, [
       {
         tenant_id: job.tenant_id,
         user_id: creatorId,
         job_id: job.id,
         event_type: event,
-        payload: {
-          job_number: job.job_number,
-          customer_name: customerName,
-          reason,
-        },
+        payload,
       },
     ]);
   });
@@ -247,6 +254,9 @@ export interface JobBeforeUpdate extends PendingJobAlertRow {
   scheduled_end: string | null;
   notes_for_technician: string | null;
   priority: JobPriority;
+  // CAP-5 — the three identity fields the owner may now move.
+  service_location: string;
+  skill_id: string | null;
 }
 
 const sameInstant = (a: string | null, b: string): boolean =>
@@ -255,7 +265,10 @@ const sameInstant = (a: string | null, b: string): boolean =>
 /**
  * The fields an owner save really changes, named as the activity log names
  * them. Only fields the request sent count; a value equal to the stored one
- * is not a change. Mirrors the database's own diff for the alert text.
+ * is not a change, and an explicit null is not a change either — the database
+ * coalesces nulls away, so a null is "keep the current value" (a value the
+ * request never really set must not page the creator). Mirrors the
+ * database's own diff for the alert text.
  */
 export function changedEditFields(
   before: JobBeforeUpdate,
@@ -266,7 +279,7 @@ export function changedEditFields(
     changed.push('description');
   }
   if (
-    dto.scheduledStart !== undefined &&
+    dto.scheduledStart != null &&
     !sameInstant(before.scheduled_start, dto.scheduledStart)
   ) {
     changed.push('scheduledStart');
@@ -284,14 +297,24 @@ export function changedEditFields(
   ) {
     changed.push('notesForTechnician');
   }
-  if (dto.priority !== undefined && dto.priority !== before.priority) {
+  if (dto.priority != null && dto.priority !== before.priority) {
     changed.push('priority');
   }
-  if (
-    dto.technicianId !== undefined &&
-    dto.technicianId !== before.technician_id
-  ) {
+  if (dto.technicianId != null && dto.technicianId !== before.technician_id) {
     changed.push('technicianId');
+  }
+  // CAP-5 — the three identity fields, diffed like every other field.
+  if (
+    dto.serviceLocation != null &&
+    dto.serviceLocation !== before.service_location
+  ) {
+    changed.push('serviceLocation');
+  }
+  if (dto.skillId != null && dto.skillId !== before.skill_id) {
+    changed.push('skillId');
+  }
+  if (dto.customerId != null && dto.customerId !== before.customer_id) {
+    changed.push('customerId');
   }
   return changed;
 }

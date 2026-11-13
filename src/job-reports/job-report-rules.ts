@@ -178,7 +178,11 @@ export function ownerPipeline(
   const counts = countOutcomes(employeeJobs);
   const pendingJobs = employeeJobs.filter((j) => outcomeOf(j) === 'pending');
   const rejectedJobs = employeeJobs.filter((j) => outcomeOf(j) === 'rejected');
+  // Time to decision excludes cancelled jobs: a cancelled pending job carries a
+  // decided_at stamp, but a cancellation is not an approval decision — the wait
+  // figures must cover the same population the approval rate covers.
   const minutes = employeeJobs
+    .filter((j) => outcomeOf(j) !== 'cancelled')
     .map(minutesToDecision)
     .filter((m): m is number => m !== null);
   const oldest = [...pendingJobs].sort((a, b) =>

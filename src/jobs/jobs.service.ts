@@ -146,6 +146,9 @@ export interface ActivityLogEntry {
   id: string;
   eventType: string;
   actorId: string;
+  // CAP-6 — the actor's display name, resolved here so the creator (an employee
+  // holding only job.read_own) can see who acted without any member.read call.
+  actorName: string | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
 }
@@ -233,6 +236,15 @@ interface ActivityLogRow {
   actor_id: string;
   metadata: Record<string, unknown> | null;
   created_at: string;
+  // CAP-6 — the actor's name rides the same read via the users FK embed.
+  // PostgREST can surface a to-one embed as an object or an array; normalize.
+  users: { name: string | null } | { name: string | null }[] | null;
+}
+
+/** The one name inside a to-one users embed, in either PostgREST shape. */
+function embedUserName(embed: ActivityLogRow['users']): string | null {
+  const one = Array.isArray(embed) ? (embed[0] ?? null) : (embed ?? null);
+  return typeof one?.name === 'string' ? one.name : null;
 }
 
 // PostgREST embeds a to-one related resource as an object, but the generated
@@ -533,12 +545,16 @@ export class JobsService {
       });
     }
     const admin = this.supabaseClientFactory.createAdmin();
+    // One trim, shared by the database write and the alert below: the RPC
+    // stores btrim(reason), so the notification must quote the same text. A
+    // reason that is all whitespace is no reason at all.
+    const reason = dto.reason?.trim() || null;
     const { data, error } = await admin.rpc('decide_pending_job', {
       p_caller: owner.userId,
       p_tenant_id: owner.tenantId,
       p_job_id: jobId,
       p_decision: dto.decision,
-      p_reason: dto.reason ?? null,
+      p_reason: reason,
     });
 
     if (error) {
@@ -582,13 +598,14 @@ export class JobsService {
         message: 'Failed to decide the job',
       });
     }
-    // Creator hears about the decision (story 5). After the RPC commits.
+    // Creator hears about the decision (story 5). After the RPC commits, with
+    // the same trimmed reason the RPC stored.
     void alertCreatorOfDecision(
       admin,
       rows[0],
       owner.userId,
       dto.decision,
-      dto.reason ?? null,
+      reason,
     );
 
     return this.toResponse(
@@ -617,6 +634,10 @@ export class JobsService {
       dto.notesForTechnician,
       dto.technicianId,
       dto.priority,
+      // CAP-5 — the owner may also edit where, what work and for whom.
+      dto.serviceLocation,
+      dto.skillId,
+      dto.customerId,
     ].some((v) => v !== undefined);
 
     // AC#14 — cancellation and field edits are mutually exclusive (one log event
@@ -658,58 +679,75 @@ export class JobsService {
       );
     }
 
-    // A reschedule cannot move a job before today (IST day), same as create.
-    if (dto.scheduledStart) {
-      assertStartNotInPast(dto.scheduledStart);
-    }
-
     const admin = this.supabaseClientFactory.createAdmin();
 
     // The CURRENT technician, read before the RPC so the assignment
     // notification below fires only on an actual CHANGE (a no-op PATCH
     // carrying the incumbent's id must not ring their bell). null means
-    // the pre-read failed or found nothing — the notification is skipped
-    // (a missed bell is recoverable — the job list still shows the truth;
-    // a spurious one is not retractable).
+    // the pre-read found nothing; preReadFailed means it errored — the two are
+    // kept apart so a missing job answers 404 and a broken read stays a
+    // fail-closed 500.
     // The same read tells the pending-job alerts (story 5) whether the job was
     // pending before this save and which fields really change.
     // A failed read here only loses the alerts; the save itself still goes ahead.
     let before: JobBeforeUpdate | null = null;
+    let preReadFailed = false;
     try {
       const { data: current, error } = await admin
         .from('jobs')
         .select(
-          'id, tenant_id, job_number, customer_id, created_by, status, technician_id, description, scheduled_start, scheduled_end, notes_for_technician, priority',
+          'id, tenant_id, job_number, customer_id, created_by, status, technician_id, description, scheduled_start, scheduled_end, notes_for_technician, priority, service_location, skill_id',
         )
         .eq('id', jobId)
         .eq('tenant_id', owner.tenantId)
         .maybeSingle<JobBeforeUpdate>();
       if (error) {
         this.logger.error('Failed to read the job before update:', { error });
+        preReadFailed = true;
       } else {
         before = current ?? null;
       }
     } catch (err: unknown) {
       this.logger.error('Failed to read the job before update:', { err });
+      preReadFailed = true;
     }
     const previousTechnicianId: string | null = before?.technician_id ?? null;
 
     // Story 4 / CAP-5: once the owner has decided an employee's job, field edits
     // are refused. Only a pending job takes edits. Owner-created jobs keep their
-    // existing flow, and cancel is not an edit. The check fails closed: if the job
-    // cannot be read, an edit is refused rather than guessed at.
+    // existing flow, and cancel is not an edit. This check runs BEFORE the date
+    // checks so a read-only job answers 409, not a date error. The check fails
+    // closed: if the job cannot be read, an edit is refused rather than guessed
+    // at; if the read worked but found no row, it is a plain 404.
     if (!isCancel) {
-      if (!before) {
+      if (preReadFailed) {
         throw new InternalServerErrorException({
           error_code: ErrorCode.INTERNAL_SERVER_ERROR,
           message: 'Could not check the job. Try again.',
         });
       }
-      const creatorIsEmployee = await isEmployeeCreator(
-        admin,
-        owner.tenantId,
-        before.created_by ?? null,
-      );
+      if (!before) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'Job not found',
+        });
+      }
+      // A failed creator lookup is the same fail-closed refusal (story 5 helper
+      // throws on a read error; it must never surface as a raw Postgrest error).
+      let creatorIsEmployee: boolean;
+      try {
+        creatorIsEmployee = await isEmployeeCreator(
+          admin,
+          owner.tenantId,
+          before.created_by ?? null,
+        );
+      } catch (err: unknown) {
+        this.logger.error('Failed to check the job creator:', { err });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Could not check the job. Try again.',
+        });
+      }
       if (editLockedForOwner(before.status, creatorIsEmployee)) {
         throw new HttpException(
           {
@@ -720,6 +758,12 @@ export class JobsService {
           HttpStatus.CONFLICT,
         );
       }
+    }
+
+    // A reschedule cannot move a job before today (IST day), same as create.
+    // Runs after the edit-lock check above, so a read-only job answers 409.
+    if (dto.scheduledStart) {
+      assertStartNotInPast(dto.scheduledStart);
     }
 
     // AC#7 — when reassigning, the new technician must belong to the tenant and be
@@ -763,6 +807,11 @@ export class JobsService {
       p_notes_for_technician: dto.notesForTechnician ?? null,
       p_technician_id: dto.technicianId ?? null,
       p_priority: dto.priority ?? null,
+      // CAP-5 — the three creator-settable identity fields ride the same
+      // coalesce-PATCH RPC; the database validates a moved customer/skill.
+      p_service_location: dto.serviceLocation ?? null,
+      p_skill_id: dto.skillId ?? null,
+      p_customer_id: dto.customerId ?? null,
     });
 
     if (error) {
@@ -801,6 +850,22 @@ export class JobsService {
         throw new NotFoundException({
           error_code: ErrorCode.RESOURCE_NOT_FOUND,
           message: 'Referenced technician not found',
+        });
+      }
+      // The RPC refuses a moved customer that is missing or belongs to another
+      // company (PT404) — same answer the create flow gives.
+      if (code === 'PT404') {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'Referenced customer not found',
+        });
+      }
+      // The RPC refuses a moved skill with no workflow template (PT400) — the
+      // same validation the create flow runs before its RPC.
+      if (code === 'PT400') {
+        throw new BadRequestException({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'Unknown or inactive skillId',
         });
       }
       this.logger.error('update_job_with_log RPC failed:', { error });
@@ -1091,7 +1156,9 @@ export class JobsService {
         .single<CustomerProfileRow>(),
       admin
         .from('activity_logs')
-        .select('id, event_type, actor_id, metadata, created_at')
+        .select(
+          'id, event_type, actor_id, metadata, created_at, users!activity_logs_actor_id_fkey(name)',
+        )
         .eq('job_id', jobId)
         .eq('tenant_id', user.tenantId)
         .order('created_at', { ascending: true }),
@@ -1154,6 +1221,9 @@ export class JobsService {
       id: l.id,
       eventType: l.event_type,
       actorId: l.actor_id,
+      // Null only if the embed came back unreadable (actor_id is a NOT NULL FK
+      // to users, so a real row always has a name under it).
+      actorName: embedUserName(l.users),
       metadata: l.metadata,
       createdAt: l.created_at,
     }));

@@ -4,12 +4,14 @@ import { CreateJobDto } from './create-job.dto';
 import { JobStatus } from '../enums/job-status.enum';
 
 /**
- * Body for `PATCH /api/v1/jobs/:id` (Story 3.4).
+ * Body for `PATCH /api/v1/jobs/:id` (Story 3.4, extended by epic 22 / CAP-5).
  *
- * Only the mutable fields are exposed — we `PickType` the mutable subset of
- * CreateJobDto (reusing its validators/transformers) rather than `OmitType`, which
- * would leak the immutable serviceLocation/skillId/customerId/newCustomer.
- * The Story 3.8 completion flags are gone (Story 4.4): per-step photo/signature
+ * The mutable fields are `PickType`d from CreateJobDto (reusing its
+ * validators/transformers) so the owner can edit everything the creator could
+ * set: description, times, notes, technician, priority — and, since epic 22,
+ * the service location, the skill and the customer. `newCustomer` stays
+ * immutable (an inline find-or-create belongs to the create flow only). The
+ * Story 3.8 completion flags are gone (Story 4.4): per-step photo/signature
  * behaviour lives in the job's stamped workflow template now. `PartialType`
  * makes the fields all optional. The cancellation-only `status` is added on
  * top; lifecycle transitions to in_progress/completed are the workflow
@@ -23,6 +25,9 @@ export class UpdateJobDto extends PartialType(
     'notesForTechnician',
     'technicianId',
     'priority',
+    'serviceLocation',
+    'skillId',
+    'customerId',
   ] as const),
 ) {
   @ApiPropertyOptional({

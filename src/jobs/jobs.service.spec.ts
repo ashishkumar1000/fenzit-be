@@ -707,7 +707,7 @@ describe('JobsService', () => {
       expect(rpc).not.toHaveBeenCalled();
     });
 
-    it('reschedule to a past day is refused with 422, before any write', async () => {
+    it('reschedule to a past day is refused with 422 before any write (after the edit-lock check)', async () => {
       const { rpc } = mockAdmin({});
 
       await expectStatus(
@@ -1255,6 +1255,8 @@ describe('JobsService', () => {
         actor_id: 'owner-uuid',
         metadata: {},
         created_at: '2026-06-21T00:00:00Z',
+        // CAP-6 — the actor's name rides the same read via the users embed.
+        users: { name: 'Ashok' },
       },
       {
         id: 'log-2',
@@ -1262,6 +1264,7 @@ describe('JobsService', () => {
         actor_id: 'owner-uuid',
         metadata: null,
         created_at: '2026-06-21T01:00:00Z',
+        users: [{ name: 'Ashok' }], // the array embed shape PostgREST can emit
       },
     ];
 
@@ -1397,6 +1400,7 @@ describe('JobsService', () => {
           id: 'log-1',
           eventType: 'job_created',
           actorId: 'owner-uuid',
+          actorName: 'Ashok',
           metadata: {},
           createdAt: '2026-06-21T00:00:00Z',
         },
@@ -1404,6 +1408,7 @@ describe('JobsService', () => {
           id: 'log-2',
           eventType: 'job_reassigned',
           actorId: 'owner-uuid',
+          actorName: 'Ashok',
           metadata: null,
           createdAt: '2026-06-21T01:00:00Z',
         },

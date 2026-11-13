@@ -123,6 +123,15 @@ export class MembersService {
     canCreateJobs: boolean;
     jobApprovalRequired: boolean;
   }> {
+    // Company setup first, like the sibling write endpoints: without a company
+    // of their own there is nothing to manage, and the RPC would answer with a
+    // misleading permission 403 instead of this plain company-setup 400.
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
     const { data, error } = await this.supabaseFactory
       .createAdmin()
       .rpc('set_member_job_settings', {

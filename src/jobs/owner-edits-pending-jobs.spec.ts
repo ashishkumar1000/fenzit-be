@@ -78,6 +78,33 @@ describe('JobsService.updateJob: owner edits to pending and other jobs (story 4)
     );
   });
 
+  it('passes the three identity fields (where, what work, for whom) through to the database', async () => {
+    const { service, rpc } = serviceWith({ data: ROW, error: null });
+    await service.updateJob(owner, JOB_ID, {
+      serviceLocation: '14 MG Road',
+      skillId: '22222222-2222-4222-8222-222222222222',
+      customerId: '33333333-3333-4333-8333-333333333333',
+    } as UpdateJobDto);
+    expect(rpc).toHaveBeenCalledWith(
+      'update_job_with_log',
+      expect.objectContaining({
+        p_cancel: false,
+        p_service_location: '14 MG Road',
+        p_skill_id: '22222222-2222-4222-8222-222222222222',
+        p_customer_id: '33333333-3333-4333-8333-333333333333',
+      }),
+    );
+  });
+
+  it('a pre-read that finds no row (missing or cross-tenant job) is a 404, not a 500', async () => {
+    const { service } = serviceWith({ data: ROW, error: null }, null);
+    const err = await service
+      .updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotFoundException);
+    expect((err as HttpException).getStatus()).toBe(404);
+  });
+
   it('sends a cancel as p_cancel true (pending or scheduled, the database decides which)', async () => {
     const { service, rpc } = serviceWith({ data: ROW, error: null });
     await service.updateJob(owner, JOB_ID, { status: 'cancelled' } as never);
@@ -199,6 +226,19 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
       expect(rpc).not.toHaveBeenCalled();
     },
   );
+
+  it('the edit-lock check runs before the date checks: a rejected employee job with a past start answers 409, not a date 422', async () => {
+    const { service } = serviceForDecided('rejected', 'employee');
+    const err = await service
+      .updateJob(owner, JOB_ID, {
+        scheduledStart: '2026-11-10T09:00:00Z', // a past day, on top of the lock
+      } as UpdateJobDto)
+      .catch((e: unknown) => e);
+    expect((err as HttpException).getStatus()).toBe(409);
+    expect(bodyOf(err)).toMatchObject({
+      error_code: ErrorCode.JOB_NOT_MODIFIABLE,
+    });
+  });
 
   it('a cancel of a decided employee job is not an edit, so it still goes through', async () => {
     const { service, rpc } = serviceForDecided('scheduled', 'employee');

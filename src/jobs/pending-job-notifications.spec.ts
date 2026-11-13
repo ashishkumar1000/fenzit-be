@@ -77,6 +77,8 @@ describe('changedEditFields: what a save really changes', () => {
     scheduled_end: null,
     notes_for_technician: null,
     priority: JobPriority.NORMAL,
+    service_location: '12 MG Road',
+    skill_id: 'skill-uuid-1',
   };
 
   it('an empty patch changes nothing', () => {
@@ -136,8 +138,14 @@ describe('changedEditFields: what a save really changes', () => {
     expect(
       changedEditFields(before, {
         description: null,
+        scheduledStart: null,
         scheduledEnd: null,
         notesForTechnician: null,
+        priority: null,
+        technicianId: null,
+        serviceLocation: null,
+        skillId: null,
+        customerId: null,
       } as never),
     ).toEqual([]);
   });
@@ -234,7 +242,7 @@ describe('alertOwnersOfSubmission (job.submitted)', () => {
 });
 
 describe('alertCreatorOfDecision (job.approved / job.rejected)', () => {
-  it('approve: the creator gets one job.approved alert', async () => {
+  it('approve: the creator gets one job.approved alert with no reason field (an approval has none)', async () => {
     const inserts: Array<{
       table: string;
       rows: Array<Record<string, unknown>>;
@@ -253,7 +261,6 @@ describe('alertCreatorOfDecision (job.approved / job.rejected)', () => {
         payload: {
           job_number: 'JB-2026-0007',
           customer_name: 'Asha',
-          reason: null,
         },
       }),
     ]);
