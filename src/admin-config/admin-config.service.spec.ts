@@ -93,8 +93,9 @@ describe('AdminConfigService — Android minimum vs live Play version', () => {
     expect(upsert).toHaveBeenCalledTimes(1);
   });
 
-  it('does not call Play when the Android minimum is unchanged', async () => {
+  it('an unchanged minimum is saved even when Play would refuse it', async () => {
     storedMinAndroid = '1.4.2';
+    play.latestLiveAndroidVersion.mockResolvedValue('1.4.0');
 
     await service.saveAppRoadblocks('admin-1', dtoWithAndroidMin('1.4.2'));
 
@@ -128,5 +129,34 @@ describe('AdminConfigService — Android minimum vs live Play version', () => {
 
     expect(play.latestLiveAndroidVersion).not.toHaveBeenCalled();
     expect(upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('a non-Error failure in the read still returns the stored values with no live version', async () => {
+    play.latestLiveAndroidVersion.mockRejectedValue(null);
+
+    const view = await service.getAppRoadblocks();
+
+    expect(view.android.minVersion).toBe('1.4.2');
+    expect(view.liveAndroidVersion).toBeNull();
+  });
+
+  it('the read returns the live Play version next to the stored minimum', async () => {
+    storedMinAndroid = '1.4.2';
+
+    const view = await service.getAppRoadblocks();
+
+    expect(view.android.minVersion).toBe('1.4.2');
+    expect(view.liveAndroidVersion).toBe('1.4.3');
+  });
+
+  it('the read still loads with liveAndroidVersion null when Play is down', async () => {
+    play.latestLiveAndroidVersion.mockRejectedValue(
+      new PlayUnavailableError('Google Play did not answer in time'),
+    );
+
+    const view = await service.getAppRoadblocks();
+
+    expect(view.android.minVersion).toBe('1.4.2');
+    expect(view.liveAndroidVersion).toBeNull();
   });
 });

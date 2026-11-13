@@ -54,6 +54,11 @@ export interface AppRoadblocksConfigView {
     storeUrl: string | null;
   };
   support: { email: string | null; phone: string | null };
+  /**
+   * The Android version live on Google Play, or null when Play cannot be asked
+   * right now. Read-only. Absent on a save response: a save does not ask Play.
+   */
+  liveAndroidVersion?: string | null;
 }
 
 @Injectable()
@@ -65,8 +70,29 @@ export class AdminConfigService {
     private readonly playConsole: PlayConsoleVersionService,
   ) {}
 
-  /** Reads straight from the table (not the app's cache), so the form shows the truth. */
+  /** The stored config plus the live Play version, for the admin page. */
   async getAppRoadblocks(): Promise<AppRoadblocksConfigView> {
+    const stored = await this.readStoredRoadblocks();
+    let liveAndroidVersion: string | null = null;
+    try {
+      liveAndroidVersion = await this.playConsole.latestLiveAndroidVersion();
+    } catch (error) {
+      // The page still loads without the reference; the save path refuses on its own.
+      const reason =
+        error instanceof PlayUnavailableError
+          ? error.message
+          : error instanceof Error
+            ? error.name
+            : 'unknown error';
+      this.logger.warn(`Live Android version unavailable: ${reason}`);
+    }
+    return { ...stored, liveAndroidVersion };
+  }
+
+  /** Reads straight from the table (not the app's cache), so the form shows the truth. */
+  private async readStoredRoadblocks(): Promise<
+    Omit<AppRoadblocksConfigView, 'liveAndroidVersion'>
+  > {
     const { data, error } = await this.supabaseFactory
       .createAdmin()
       .from('app_config')
@@ -115,7 +141,7 @@ export class AdminConfigService {
   ): Promise<AppRoadblocksConfigView> {
     // The Android minimum must not be above the version live on Google Play.
     // Checked only when it changes, so unrelated edits never depend on Play.
-    const stored = await this.getAppRoadblocks();
+    const stored = await this.readStoredRoadblocks();
     if (dto.android.minVersion !== stored.android.minVersion) {
       await this.assertNotAboveLivePlayVersion(dto.android.minVersion);
     }
@@ -149,7 +175,8 @@ export class AdminConfigService {
     this.logger.log(
       `Roadblock config saved by ${actorId}; keys: ${pairs.map(([k]) => k).join(', ')}`,
     );
-    return this.getAppRoadblocks();
+    // The save answers with the stored values only; it does not ask Google Play.
+    return this.readStoredRoadblocks();
   }
 
   /**
