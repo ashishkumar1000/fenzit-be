@@ -106,7 +106,7 @@ describe('JobsService', () => {
     customerId: 'cust-1',
     serviceLocation: 'Loc',
     skillId: 'skill-uuid-1',
-    scheduledStart: '2026-06-22T09:30:00Z',
+    scheduledStart: '2099-06-22T09:30:00Z',
     technicianId: 'tech-1',
   };
 
@@ -118,7 +118,7 @@ describe('JobsService', () => {
     },
     serviceLocation: 'Loc',
     skillId: 'skill-uuid-2',
-    scheduledStart: '2026-06-22T09:30:00Z',
+    scheduledStart: '2099-06-22T09:30:00Z',
     technicianId: 'tech-1',
   };
 
@@ -129,7 +129,7 @@ describe('JobsService', () => {
     customer_id: 'cust-1',
     technician_id: 'tech-1',
     service_location: 'Loc',
-    scheduled_start: '2026-06-22T09:30:00Z',
+    scheduled_start: '2099-06-22T09:30:00Z',
     scheduled_end: null,
     status: 'scheduled',
     completed_at: null,
@@ -517,8 +517,8 @@ describe('JobsService', () => {
   it('throws 422 when scheduledEnd is before scheduledStart', async () => {
     const dto: CreateJobDto = {
       ...dtoExisting,
-      scheduledStart: '2026-06-22T11:00:00Z',
-      scheduledEnd: '2026-06-22T09:30:00Z',
+      scheduledStart: '2099-06-22T11:00:00Z',
+      scheduledEnd: '2099-06-22T09:30:00Z',
     };
     await expectStatus(
       service.createJob(owner, dto),
@@ -530,7 +530,7 @@ describe('JobsService', () => {
     const { rpc } = mockAdmin({});
     const dto: CreateJobDto = {
       ...dtoExisting,
-      scheduledEnd: '2026-06-22T11:00:00Z',
+      scheduledEnd: '2099-06-22T11:00:00Z',
       description: 'Leaky AC',
       priority: JobPriority.URGENT,
       notesForTechnician: 'Bring ladder',
@@ -541,7 +541,7 @@ describe('JobsService', () => {
     expect(rpc).toHaveBeenCalledWith(
       'create_job_with_log',
       expect.objectContaining({
-        p_scheduled_end: '2026-06-22T11:00:00Z',
+        p_scheduled_end: '2099-06-22T11:00:00Z',
         p_description: 'Leaky AC',
         p_priority: 'urgent',
         p_notes_for_technician: 'Bring ladder',
@@ -611,6 +611,125 @@ describe('JobsService', () => {
     expect(service.toResponse(arrayEmbedRow).skill).toEqual({
       id: 'skill-uuid-1',
       name: 'Plumbing',
+    });
+  });
+
+  describe('createJob — scheduledStart cannot be in the past (IST day)', () => {
+    // Fixed clock: 2026-11-13 11:30 IST. Today's IST day starts at
+    // 2026-11-12T18:30:00Z (IST midnight).
+    const NOW = '2026-11-13T06:00:00Z';
+    const IST_MIDNIGHT = '2026-11-12T18:30:00Z';
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date(NOW) });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const withStart = (scheduledStart: string): CreateJobDto => ({
+      ...dtoExisting,
+      scheduledStart,
+    });
+
+    it('refuses a start one minute before IST midnight with 422, before any write', async () => {
+      const { rpc, from } = mockAdmin({});
+
+      await expectStatus(
+        service.createJob(owner, withStart('2026-11-12T18:29:00Z')),
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+      expect(rpc).not.toHaveBeenCalled();
+      expect(from).not.toHaveBeenCalled();
+    });
+
+    it('refuses a start on an earlier day, and says why', async () => {
+      const { rpc } = mockAdmin({});
+
+      const error: unknown = await service
+        .createJob(owner, withStart('2026-11-10T09:00:00Z'))
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getResponse()).toEqual(
+        expect.objectContaining({
+          error_code: 'VALIDATION_ERROR',
+          message: expect.stringContaining('cannot be in the past') as unknown,
+        }),
+      );
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('accepts a start exactly at IST midnight (first instant of today)', async () => {
+      const { rpc } = mockAdmin({});
+
+      await service.createJob(owner, withStart(IST_MIDNIGHT));
+
+      expect(rpc).toHaveBeenCalledWith(
+        'create_job_with_log',
+        expect.objectContaining({ p_scheduled_start: IST_MIDNIGHT }),
+      );
+    });
+
+    it('accepts an earlier slot today (9am IST while it is 11:30 IST)', async () => {
+      const { rpc } = mockAdmin({});
+
+      await service.createJob(owner, withStart('2026-11-13T03:30:00Z'));
+
+      expect(rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts a start far in the future', async () => {
+      const { rpc } = mockAdmin({});
+
+      await service.createJob(owner, withStart('2099-06-22T09:30:00Z'));
+
+      expect(rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('an employee who may not create this job gets 403, not a date error', async () => {
+      const { rpc } = mockAdmin({});
+      const employee: RequestUser = {
+        ...owner,
+        userId: 'emp-uuid',
+        role: Role.EMPLOYEE,
+      };
+
+      // Employees may only create jobs for themselves; 'tech-1' is someone else.
+      await expectStatus(
+        service.createJob(
+          employee,
+          withStart('2026-11-10T09:00:00Z'), // a past day
+        ),
+        HttpStatus.FORBIDDEN,
+      );
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('reschedule to a past day is refused with 422, before any write', async () => {
+      const { rpc } = mockAdmin({});
+
+      await expectStatus(
+        service.updateJob(owner, 'job-uuid', {
+          scheduledStart: '2026-11-10T09:00:00Z',
+        }),
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('reschedule to an earlier slot today is accepted', async () => {
+      const { rpc } = mockAdmin({});
+
+      await service.updateJob(owner, 'job-uuid', {
+        scheduledStart: '2026-11-13T03:30:00Z',
+      });
+
+      expect(rpc).toHaveBeenCalledWith(
+        'update_job_with_log',
+        expect.objectContaining({ p_scheduled_start: '2026-11-13T03:30:00Z' }),
+      );
     });
   });
 
@@ -685,7 +804,7 @@ describe('JobsService', () => {
         customerId: 'cust-1',
         technicianId: 'tech-1',
         serviceLocation: 'Loc',
-        scheduledStart: '2026-06-22T09:30:00Z',
+        scheduledStart: '2099-06-22T09:30:00Z',
         scheduledEnd: null,
         status: 'scheduled',
         completedAt: null,
@@ -1776,8 +1895,8 @@ describe('JobsService', () => {
     it('throws 422 when scheduledEnd is before scheduledStart', async () => {
       await expectStatus(
         service.updateJob(owner, 'job-uuid', {
-          scheduledStart: '2026-06-22T11:00:00Z',
-          scheduledEnd: '2026-06-22T09:30:00Z',
+          scheduledStart: '2099-06-22T11:00:00Z',
+          scheduledEnd: '2099-06-22T09:30:00Z',
         }),
         HttpStatus.UNPROCESSABLE_ENTITY,
       );

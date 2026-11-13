@@ -256,6 +256,23 @@ const JOBS_CURSOR_SCOPE_BY_SCOPE: Record<JobListScope, CursorScope> = {
   [JobListScope.HISTORY]: 'jobs-history',
 };
 
+/**
+ * A job cannot start before today (IST day). Earlier today is still allowed.
+ * Shared by create and reschedule so both refuse the same starts.
+ */
+function assertStartNotInPast(scheduledStart: string): void {
+  if (Date.parse(scheduledStart) < getIstDayRange().start.getTime()) {
+    throw new HttpException(
+      {
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message:
+          'scheduledStart cannot be in the past. Pick today or a later day.',
+      },
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 @Injectable()
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
@@ -312,6 +329,11 @@ export class JobsService {
       owner,
       dto.technicianId,
     );
+
+    // Past-start check comes after the permission check, so a caller who may not
+    // create the job gets 403, not a date error. Still before any customer or
+    // job is written.
+    assertStartNotInPast(dto.scheduledStart);
 
     // Resolve the customer id (link/create via dedup, or validate existing).
     // The new-customer path hands back the full row, so the assignment
@@ -620,6 +642,11 @@ export class JobsService {
         },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
+    }
+
+    // A reschedule cannot move a job before today (IST day), same as create.
+    if (dto.scheduledStart) {
+      assertStartNotInPast(dto.scheduledStart);
     }
 
     const admin = this.supabaseClientFactory.createAdmin();

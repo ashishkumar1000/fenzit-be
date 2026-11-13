@@ -40,7 +40,7 @@ const ownDto: CreateJobDto = {
   customerId: 'cust-1',
   serviceLocation: 'Loc',
   skillId: 'skill-uuid-1',
-  scheduledStart: '2026-06-22T09:30:00Z',
+  scheduledStart: '2099-06-22T09:30:00Z',
   technicianId: 'tech-1',
 };
 

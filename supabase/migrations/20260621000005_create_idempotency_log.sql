@@ -9,7 +9,7 @@
 -- must NOT replay the wrong cached body. Cross-tenant keys never collide; the unique
 -- index doubles as the lookup index for the guard's (key, tenant_id, scope) probe.
 -- (A request-payload fingerprint, to reject same-key/same-scope/different-body reuse,
--- is an optional future hardening — see deferred-work.md.)
+-- was added later as the nullable request_hash column in migration 20261113000001.)
 --
 -- NOTE: the 24-hour expiry is NOT enforced here. The pg_cron cleanup job
 -- (DELETE WHERE created_at < now() - interval '24 hours') is added in Story 4.2.
