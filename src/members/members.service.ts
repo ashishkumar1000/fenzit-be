@@ -150,11 +150,12 @@ export class MembersService {
         { includeRemoved: false },
       );
 
+      /** The member's job-setting bucket, in the query-param's vocabulary. */
       const jobSplit = (
         m: CompanyMember,
-      ): 'off' | 'createOnly' | 'approval' => {
+      ): 'off' | 'create_only' | 'approval' => {
         if (!m.canCreateJobs) return 'off';
-        return m.jobApprovalRequired ? 'approval' : 'createOnly';
+        return m.jobApprovalRequired ? 'approval' : 'create_only';
       };
       const stats = {
         total: all.length,
@@ -174,7 +175,7 @@ export class MembersService {
         byJobSetting: {
           all: all.length,
           off: all.filter((m) => jobSplit(m) === 'off').length,
-          createOnly: all.filter((m) => jobSplit(m) === 'createOnly').length,
+          createOnly: all.filter((m) => jobSplit(m) === 'create_only').length,
           approval: all.filter((m) => jobSplit(m) === 'approval').length,
         },
       };
