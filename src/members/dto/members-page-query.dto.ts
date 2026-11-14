@@ -16,7 +16,7 @@ import {
 } from '../../common/enums/role.enum';
 
 const STATUS_FILTERS = ['all', 'active', 'invited'] as const;
-const JOB_SETTING_FILTERS = ['all', 'create', 'off'] as const;
+const JOB_SETTING_FILTERS = ['all', 'off', 'create_only', 'approval'] as const;
 const SORTS = [
   'joined_new',
   'joined_old',
@@ -80,11 +80,11 @@ export class MembersPageQueryDto {
     enum: JOB_SETTING_FILTERS,
     default: 'all',
     description:
-      'Filter by the job-settings switches: may create jobs, or not.',
+      'Filter by the job-settings switches: off (cannot create), create_only (creates freely), approval (creates but the owner approves first).',
   })
   @IsOptional()
   @IsIn(JOB_SETTING_FILTERS, {
-    message: 'jobSetting must be all, create or off',
+    message: 'jobSetting must be all, off, create_only or approval',
   })
   jobSetting?: JobSettingFilter;
 

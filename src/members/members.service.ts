@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
-import { MembershipRole } from '../common/enums/role.enum';
+import { MembershipRole, Role } from '../common/enums/role.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import {
   CompanyMember,
@@ -34,6 +34,21 @@ export interface MembersStats {
   invited: number;
   /** Active employees whose jobs wait for the owner's approval first. */
   needsApproval: number;
+  /** Per-role counts for the role dropdown's option rows. */
+  byRole: {
+    all: number;
+    company_admin: number;
+    employee: number;
+    viewer: number;
+  };
+  /** Per job-setting counts for that dropdown: cannot create, creates
+   *  freely, creates but the owner approves first. */
+  byJobSetting: {
+    all: number;
+    off: number;
+    createOnly: number;
+    approval: number;
+  };
 }
 
 /** One page of the team list, the shape GET /members/page answers with. */
@@ -135,6 +150,12 @@ export class MembersService {
         { includeRemoved: false },
       );
 
+      const jobSplit = (
+        m: CompanyMember,
+      ): 'off' | 'createOnly' | 'approval' => {
+        if (!m.canCreateJobs) return 'off';
+        return m.jobApprovalRequired ? 'approval' : 'createOnly';
+      };
       const stats = {
         total: all.length,
         active: all.filter((m) => m.status === 'active').length,
@@ -143,6 +164,19 @@ export class MembersService {
           (m) =>
             m.status === 'active' && m.canCreateJobs && m.jobApprovalRequired,
         ).length,
+        byRole: {
+          all: all.length,
+          company_admin: all.filter((m) => m.role === Role.COMPANY_ADMIN)
+            .length,
+          employee: all.filter((m) => m.role === Role.EMPLOYEE).length,
+          viewer: all.filter((m) => m.role === Role.VIEWER).length,
+        },
+        byJobSetting: {
+          all: all.length,
+          off: all.filter((m) => jobSplit(m) === 'off').length,
+          createOnly: all.filter((m) => jobSplit(m) === 'createOnly').length,
+          approval: all.filter((m) => jobSplit(m) === 'approval').length,
+        },
       };
 
       let rows = all;
@@ -153,8 +187,7 @@ export class MembersService {
         rows = rows.filter((m) => m.role === query.role);
       }
       if (query.jobSetting !== undefined && query.jobSetting !== 'all') {
-        const wantCreate = query.jobSetting === 'create';
-        rows = rows.filter((m) => m.canCreateJobs === wantCreate);
+        rows = rows.filter((m) => jobSplit(m) === query.jobSetting);
       }
       if (query.search !== undefined && query.search !== '') {
         const needle = query.search.trim().toLowerCase();
