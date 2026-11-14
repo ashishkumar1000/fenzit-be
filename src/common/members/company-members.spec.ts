@@ -23,6 +23,7 @@ function stub(result: { data: unknown; error: unknown }) {
 
 const identity = (over: Record<string, unknown> = {}) => ({
   name: 'Asha',
+  email: 'asha@fenzit.app',
   country_code: '+91',
   phone_number: '9000000001',
   disabled: false,
@@ -108,6 +109,7 @@ describe('listCompanyMembers', () => {
     expect(member).toEqual({
       userId: 'u-1',
       name: 'Asha',
+      email: 'asha@fenzit.app',
       countryCode: '+91',
       phoneNumber: '9000000001',
       employeeCode: 'EMP-001',

@@ -10,6 +10,8 @@ import { MembershipRole } from '../enums/role.enum';
 export interface CompanyMember {
   userId: string;
   name: string | null;
+  /** The linked login email, or null — shown under the name on the console. */
+  email: string | null;
   countryCode: string;
   phoneNumber: string;
   employeeCode: string;
@@ -46,12 +48,16 @@ interface MemberRow {
   job_approval_required: boolean;
   users: {
     name: string | null;
+    email: string | null;
     country_code: string;
     phone_number: string;
     disabled: boolean;
     avatar_key: string | null;
     user_skills?: Array<{
-      skills: { id: string; name: string } | Array<{ id: string; name: string }> | null;
+      skills:
+        | { id: string; name: string }
+        | Array<{ id: string; name: string }>
+        | null;
     }> | null;
   } | null;
 }
@@ -68,8 +74,8 @@ export async function listCompanyMembers(
     return [];
   }
   const userCols = filter.withSkills
-    ? 'name, country_code, phone_number, disabled, avatar_key, user_skills(skills(id, name))'
-    : 'name, country_code, phone_number, disabled, avatar_key';
+    ? 'name, email, country_code, phone_number, disabled, avatar_key, user_skills(skills(id, name))'
+    : 'name, email, country_code, phone_number, disabled, avatar_key';
 
   let qb = admin
     .from('memberships')
@@ -96,6 +102,7 @@ export async function listCompanyMembers(
     .map((row) => ({
       userId: row.user_id,
       name: row.users!.name,
+      email: row.users!.email ?? null,
       countryCode: row.users!.country_code,
       phoneNumber: row.users!.phone_number,
       employeeCode: row.employee_code,
@@ -108,7 +115,11 @@ export async function listCompanyMembers(
       ...(filter.withSkills
         ? {
             skills: (row.users!.user_skills ?? []).flatMap((us) =>
-              Array.isArray(us.skills) ? us.skills : us.skills ? [us.skills] : [],
+              Array.isArray(us.skills)
+                ? us.skills
+                : us.skills
+                  ? [us.skills]
+                  : [],
             ),
           }
         : {}),

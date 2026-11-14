@@ -59,6 +59,12 @@ function byNameAz(a: CompanyMember, b: CompanyMember): number {
   return an.localeCompare(bn);
 }
 
+/** Employee codes are a fixed-width sequence, so plain byte order sorts them
+ *  the way a person reads the list: EMP-001 before EMP-002. */
+function byCode(a: CompanyMember, b: CompanyMember): number {
+  return a.employeeCode.localeCompare(b.employeeCode);
+}
+
 export interface AuditLogEntry {
   id: string;
   createdAt: string;
@@ -165,6 +171,15 @@ export class MembersService {
           break;
         case 'name_az':
           rows = [...rows].sort(byNameAz);
+          break;
+        case 'name_za':
+          rows = [...rows].sort((a, b) => -byNameAz(a, b));
+          break;
+        case 'code_az':
+          rows = [...rows].sort(byCode);
+          break;
+        case 'code_za':
+          rows = [...rows].sort((a, b) => -byCode(a, b));
           break;
         default:
           rows = [...rows].sort((a, b) => -byJoinedAsc(a, b));

@@ -17,7 +17,14 @@ import {
 
 const STATUS_FILTERS = ['all', 'active', 'invited'] as const;
 const JOB_SETTING_FILTERS = ['all', 'create', 'off'] as const;
-const SORTS = ['joined_new', 'joined_old', 'name_az'] as const;
+const SORTS = [
+  'joined_new',
+  'joined_old',
+  'name_az',
+  'name_za',
+  'code_az',
+  'code_za',
+] as const;
 
 type RoleFilter = 'all' | MembershipRole;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
