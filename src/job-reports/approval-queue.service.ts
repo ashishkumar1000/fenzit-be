@@ -19,6 +19,11 @@ export interface ApprovalQueueItem {
   ageHours: number;
   employee: { id: string; name: string | null } | null;
   customerName: string | null;
+  /** The work itself, as the employee described it (Epic 23 review). */
+  description: string | null;
+  /** When the work was scheduled to happen (Epic 23 review) — the owner
+   *  decides "who, for whom, what, when" from the row itself. */
+  scheduledStart: string | null;
 }
 
 interface QueueRow {
@@ -26,6 +31,8 @@ interface QueueRow {
   job_number: string;
   created_by: string | null;
   created_at: string;
+  scheduled_start: string | null;
+  description: string | null;
   customers: { name: string | null } | { name: string | null }[] | null;
   creator: { name: string | null } | { name: string | null }[] | null;
 }
@@ -84,7 +91,7 @@ export class ApprovalQueueService {
     let qb = admin
       .from('jobs')
       .select(
-        'id, job_number, created_by, created_at, customers(name), creator:users!jobs_created_by_fkey(name)',
+        'id, job_number, created_by, created_at, scheduled_start, description, customers(name), creator:users!jobs_created_by_fkey(name)',
       )
       .eq('tenant_id', tenantId)
       .eq('status', 'pending_approval');
@@ -145,6 +152,8 @@ export class ApprovalQueueService {
           ? null
           : { id: row.created_by, name: creator?.name ?? null },
       customerName: first(row.customers)?.name ?? null,
+      description: row.description ?? null,
+      scheduledStart: row.scheduled_start ?? null,
     };
   }
 }

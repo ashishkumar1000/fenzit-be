@@ -105,6 +105,10 @@ export interface JobResponse {
   // the label is historical, so job embeds never filter is_active.
   skill: JobSkillResponse | null;
   workflowTemplate: WorkflowTemplateResponse | null;
+  // Epic 23 review — the assignee's id and name on every job response, so the
+  // owner can see who a job belongs to from the list without opening it.
+  // Null-safe like skill: an unreadable embed maps to null, never drops the row.
+  technician: { id: string; name: string | null } | null;
   // 0-based index of current_step in the stamped template's steps. Null while
   // the job is fresh (no advance yet) and when the template data is unreadable.
   currentStepIndex: number | null;
@@ -268,7 +272,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 // degrade to null response fields, never silently drop the job row.
 // Exported so sibling services reuse the same literal.
 export const JOB_COLUMNS =
-  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_by, decided_at, rejection_reason, created_at, updated_at, skill_id, skills(id, name), workflow_templates(version, steps)';
+  'id, job_number, tenant_id, customer_id, technician_id, service_location, scheduled_start, scheduled_end, status, completed_at, current_step, priority, description, notes_for_technician, created_by, decided_at, rejection_reason, created_at, updated_at, skill_id, skills(id, name), technician:users!jobs_technician_id_fkey(id, name), workflow_templates(version, steps)';
 const PAGE_SIZE = 50;
 // Cursor scope per timeline scope (Story 3.7): a cursor minted for one scope is
 // rejected (400) when replayed against another — jobs-list keys on created_at,
@@ -1353,6 +1357,9 @@ export class JobsService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       skill: normalizeSkillEmbed<JobSkillResponse>(row.skills),
+      technician: normalizeSkillEmbed<{ id: string; name: string | null }>(
+        (row as JobRow & { technician?: { id: string; name: string | null } | null }).technician,
+      ),
       workflowTemplate:
         steps && templateRaw
           ? {

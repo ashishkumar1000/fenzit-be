@@ -822,6 +822,9 @@ describe('JobsService', () => {
         // Story 4.5 — every list row carries the same skill/template shape.
         skill: { id: 'skill-uuid-1', name: 'Plumbing' },
         workflowTemplate: { version: 1, steps: V1_STEPS_RESPONSE },
+        // Epic 23 review — the assignee rides every job response; null when
+        // the row (here: the bare spec mock) carries no embed.
+        technician: null,
         currentStepIndex: null,
       });
       expect(result.hasMore).toBe(false);
