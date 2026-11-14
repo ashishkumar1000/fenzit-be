@@ -825,6 +825,9 @@ describe('JobsService', () => {
         // Epic 23 review — the assignee rides every job response; null when
         // the row (here: the bare spec mock) carries no embed.
         technician: null,
+        // Epic 23 enrichment — the customer's id + name ride the list too;
+        // null on the bare spec mock, same posture as technician.
+        customer: null,
         currentStepIndex: null,
       });
       expect(result.hasMore).toBe(false);
