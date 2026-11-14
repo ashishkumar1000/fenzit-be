@@ -14,6 +14,7 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -22,6 +23,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { ChangeRoleDto } from './dto/change-role.dto';
 import { JobSettingsDto } from './dto/job-settings.dto';
+import { MembersPageQueryDto } from './dto/members-page-query.dto';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { MembersService } from './members.service';
 
@@ -36,6 +38,42 @@ export class MembersController {
   @ApiOperation({ summary: 'List the people of the company' })
   list(@CurrentUser() user: RequestUser) {
     return this.membersService.list(user);
+  }
+
+  @Get('members/page')
+  @Can('member.read')
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, example: 10 })
+  @ApiQuery({ name: 'search', required: false, example: 'amit' })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['all', 'active', 'invited'],
+  })
+  @ApiQuery({
+    name: 'role',
+    required: false,
+    enum: ['all', 'company_admin', 'employee', 'viewer'],
+  })
+  @ApiQuery({
+    name: 'jobSetting',
+    required: false,
+    enum: ['all', 'create', 'off'],
+  })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: ['joined_new', 'joined_old', 'name_az'],
+  })
+  @ApiOperation({
+    summary:
+      'One page of the company people, filtered and sorted. Filtering and paging happen in the service (no RPC). `stats` counts the whole team regardless of the filters.',
+  })
+  listPaged(
+    @CurrentUser() user: RequestUser,
+    @Query() query: MembersPageQueryDto,
+  ) {
+    return this.membersService.listPaged(user, query);
   }
 
   @Patch('members/:userId/role')
@@ -67,9 +105,18 @@ export class MembersController {
     summary:
       "Set an employee's job switches: may create jobs, and whether owner approval is needed",
   })
-  @ApiResponse({ status: 400, description: 'NOT_AN_EMPLOYEE — the person is not an employee' })
-  @ApiResponse({ status: 403, description: 'Not a company admin of this company' })
-  @ApiResponse({ status: 404, description: 'The person is not an active member of this company' })
+  @ApiResponse({
+    status: 400,
+    description: 'NOT_AN_EMPLOYEE — the person is not an employee',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a company admin of this company',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not an active member of this company',
+  })
   setJobSettings(
     @CurrentUser() user: RequestUser,
     @Param('userId', ParseUUIDPipe) userId: string,
@@ -92,8 +139,14 @@ export class MembersController {
     status: 409,
     description: 'LAST_ADMIN — the company would have no admin',
   })
-  @ApiResponse({ status: 403, description: 'Removing yourself, or not an admin' })
-  @ApiResponse({ status: 404, description: 'The person is not a member of this company' })
+  @ApiResponse({
+    status: 403,
+    description: 'Removing yourself, or not an admin',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not a member of this company',
+  })
   async remove(
     @CurrentUser() user: RequestUser,
     @Param('userId', ParseUUIDPipe) userId: string,
@@ -105,9 +158,15 @@ export class MembersController {
   @Can('user.disable')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Disable a user account (platform admin only)' })
-  @ApiResponse({ status: 403, description: 'Not a platform admin, or disabling your own account' })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a platform admin, or disabling your own account',
+  })
   @ApiResponse({ status: 404, description: 'No such user' })
-  @ApiResponse({ status: 409, description: 'LAST_ADMIN — the company would have no admin' })
+  @ApiResponse({
+    status: 409,
+    description: 'LAST_ADMIN — the company would have no admin',
+  })
   disable(
     @CurrentUser() user: RequestUser,
     @Param('userId', ParseUUIDPipe) userId: string,

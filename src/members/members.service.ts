@@ -18,12 +18,46 @@ import {
   presignAvatarUrls,
 } from '../common/members/member-avatars';
 import { StorageService } from '../storage/storage.service';
+import { MembersPageQueryDto } from './dto/members-page-query.dto';
 
 /** A person of the company as the members list serves them: no raw storage key. */
 export type MemberView = Omit<CompanyMember, 'avatarKey'> & {
   /** Short-lived link to the person's photo, or null when none is set. */
   avatarUrl: string | null;
 };
+
+/** The whole-company counters the console's stat tiles show. They count the
+ *  team before any filter, so tiles stay stable while the table narrows. */
+export interface MembersStats {
+  total: number;
+  active: number;
+  invited: number;
+  /** Active employees whose jobs wait for the owner's approval first. */
+  needsApproval: number;
+}
+
+/** One page of the team list, the shape GET /members/page answers with. */
+export interface MembersPage {
+  data: MemberView[];
+  /** How many rows the current filters keep, across all pages. */
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+  stats: MembersStats;
+}
+
+/** Newest join first by default; the mockup's "Joined (Newest)". */
+function byJoinedAsc(a: CompanyMember, b: CompanyMember): number {
+  return a.createdAt.localeCompare(b.createdAt);
+}
+
+/** Names sort with nulls last, the way a person expects an incomplete record. */
+function byNameAz(a: CompanyMember, b: CompanyMember): number {
+  const an = a.name ?? '￿';
+  const bn = b.name ?? '￿';
+  return an.localeCompare(bn);
+}
 
 export interface AuditLogEntry {
   id: string;
@@ -70,6 +104,92 @@ export class MembersService {
       }));
     } catch (error) {
       this.logger.error('Failed to list members:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to list members',
+      });
+    }
+  }
+
+  /**
+   * The console's paged team list. Reads the company's members once with the
+   * plain members query (no database function), then filters, sorts and
+   * pages in the service, so the contract stays in one file and no new SQL
+   * surface exists. Stats always describe the whole team, so the tiles do not
+   * move when a filter is on.
+   */
+  async listPaged(
+    caller: RequestUser,
+    query: MembersPageQueryDto,
+  ): Promise<MembersPage> {
+    try {
+      const all = await listCompanyMembers(
+        this.supabaseFactory.createAdmin(),
+        caller.tenantId as string,
+        { includeRemoved: false },
+      );
+
+      const stats = {
+        total: all.length,
+        active: all.filter((m) => m.status === 'active').length,
+        invited: all.filter((m) => m.status === 'invited').length,
+        needsApproval: all.filter(
+          (m) =>
+            m.status === 'active' && m.canCreateJobs && m.jobApprovalRequired,
+        ).length,
+      };
+
+      let rows = all;
+      if (query.status !== undefined && query.status !== 'all') {
+        rows = rows.filter((m) => m.status === query.status);
+      }
+      if (query.role !== undefined && query.role !== 'all') {
+        rows = rows.filter((m) => m.role === query.role);
+      }
+      if (query.jobSetting !== undefined && query.jobSetting !== 'all') {
+        const wantCreate = query.jobSetting === 'create';
+        rows = rows.filter((m) => m.canCreateJobs === wantCreate);
+      }
+      if (query.search !== undefined && query.search !== '') {
+        const needle = query.search.trim().toLowerCase();
+        const digits = needle.replace(/\D/g, '');
+        rows = rows.filter((m) => {
+          if ((m.name ?? '').toLowerCase().includes(needle)) return true;
+          if (m.employeeCode.toLowerCase().includes(needle)) return true;
+          return digits !== '' && m.phoneNumber.includes(digits);
+        });
+      }
+      switch (query.sort ?? 'joined_new') {
+        case 'joined_old':
+          rows = [...rows].sort(byJoinedAsc);
+          break;
+        case 'name_az':
+          rows = [...rows].sort(byNameAz);
+          break;
+        default:
+          rows = [...rows].sort((a, b) => -byJoinedAsc(a, b));
+      }
+
+      const total = rows.length;
+      const page = query.page ?? 1;
+      const pageSize = query.pageSize ?? 10;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      const safePage = Math.min(page, pages);
+      const slice = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+      // Only the returned page needs a signed photo link.
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        slice.map((m) => m.avatarKey),
+      );
+      const data: MemberView[] = slice.map(({ avatarKey, ...member }) => ({
+        ...member,
+        avatarUrl: avatarUrlFor(avatarUrls, avatarKey),
+      }));
+
+      return { data, total, page: safePage, pageSize, pages, stats };
+    } catch (error) {
+      this.logger.error('Failed to list the paged members:', { error });
       throw new InternalServerErrorException({
         error_code: ErrorCode.INTERNAL_SERVER_ERROR,
         message: 'Failed to list members',
@@ -225,7 +345,7 @@ export class MembersService {
 
     if (!caller.platformAdmin) {
       // Never trust the caller to widen this: a company admin always has a company.
-      query = query.eq('tenant_id', caller.tenantId as string);
+      query = query.eq('tenant_id', caller.tenantId);
     } else if (caller.tenantId) {
       query = query.eq('tenant_id', caller.tenantId);
     }
