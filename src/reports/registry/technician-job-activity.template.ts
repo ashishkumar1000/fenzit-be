@@ -72,6 +72,11 @@ const STATUS_LABELS: Record<ActivityJobStatus, string> = {
   in_progress: 'In progress',
   completed: 'Completed',
   cancelled: 'Cancelled',
+  // Epic 22 statuses — an employee-created job waiting on the owner, and one
+  // the owner declined. Both can sit in any 30-day window; the report shows
+  // them like any other status rather than failing the whole PDF.
+  pending_approval: 'Pending approval',
+  rejected: 'Rejected',
 };
 
 function toJobTableRow(job: FetchedJob) {

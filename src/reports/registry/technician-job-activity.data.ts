@@ -15,9 +15,17 @@ import type { ReportFetchContext } from './report-definition';
  * fails with report_too_large, never silently.
  */
 
-/** Mirrored job status values (jobs/enums — not imported, NFR5). */
+/** Mirrored job status values (jobs/enums — not imported, NFR5). Epic 22
+ *  added pending_approval and rejected to the DB check; the mirror carries
+ *  all six, so a pending or rejected job in the window renders instead of
+ *  crashing the report (found live 2026-11-14). */
 export type ActivityJobStatus =
-  'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+  | 'scheduled'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled'
+  | 'pending_approval'
+  | 'rejected';
 
 export type ActivityJobPriority = 'normal' | 'urgent';
 

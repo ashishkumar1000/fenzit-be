@@ -40,7 +40,12 @@ export function computeMetrics(jobs: FetchedJob[]): ActivityMetrics {
     completed: completedJobs.length,
     cancelled: jobs.filter((j) => j.status === 'cancelled').length,
     open: jobs.filter(
-      (j) => j.status === 'scheduled' || j.status === 'in_progress',
+      (j) =>
+        j.status === 'scheduled' ||
+        j.status === 'in_progress' ||
+        // Epic 22 — an employee-created job waiting on the owner is open
+        // work: nobody has decided it yet.
+        j.status === 'pending_approval',
     ).length,
     urgentCompleted: completedJobs.filter((j) => j.priority === 'urgent')
       .length,

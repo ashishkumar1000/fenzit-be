@@ -60,9 +60,12 @@ export function jobsTable(rows: JobTableRow[]): Content {
   const bodyCells: TableCell[][] = rows.map((row, i) => {
     const zebra = i % 2 === 1 ? TABLE.zebraBackground : undefined;
     // Templates pass display labels ("In progress"); the kit resolves the
-    // status token from the normalized label.
-    const statusKey = row.status.toLowerCase().replace(/ /g, '_') as
-      keyof typeof statusColors | 'unknown';
+    // status token from the normalized label. A row without a status never
+    // crashes the PDF — it prints as "—" in the plain ink (found live
+    // 2026-11-14 when a status outside the report's vocabulary hit here).
+    const statusKey = (row.status ?? '')
+      .toLowerCase()
+      .replace(/ /g, '_') as keyof typeof statusColors | 'unknown';
     const statusColor =
       statusColors[statusKey as keyof typeof statusColors] ?? brand.text;
     const statusTint =
@@ -83,7 +86,7 @@ export function jobsTable(rows: JobTableRow[]): Content {
       plain(row.jobNumber, brand.text),
       plain(row.customer),
       plain(row.skill),
-      plain(row.status, statusColor, statusTint),
+      plain(row.status ?? '—', statusColor, statusTint),
       plain(row.planned),
       plain(row.finish),
       plain(row.proofs > 0 ? String(row.proofs) : '—'),

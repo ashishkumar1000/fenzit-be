@@ -41,6 +41,10 @@ export const statusColors = {
   scheduled: brand.scheduled,
   cancelled: brand.cancelled,
   pending: brand.textMuted,
+  // Epic 22's employee-created-job states (kit tolerates unknown keys, but a
+  // pending submission and a rejection deserve their real tones).
+  pending_approval: brand.textMuted,
+  rejected: brand.cancelled,
 } as const;
 
 /** Job status → light cell tint (the fill behind the status text; a tinted
@@ -51,6 +55,8 @@ export const statusTints = {
   scheduled: '#FCF1DE',
   cancelled: '#FBE9E9',
   pending: gray[100],
+  pending_approval: gray[100],
+  rejected: '#FBE9E9',
 } as const;
 
 /** Printable content width (A4 595pt − the left/right PAGE_MARGINS). */
