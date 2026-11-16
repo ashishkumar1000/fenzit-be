@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DbPoolMetricsBinder } from './db-pool-metrics.binder';
 import { PgPoolFactory } from './pg-pool.factory';
 
 /**
@@ -12,7 +13,7 @@ import { PgPoolFactory } from './pg-pool.factory';
  * `withTransaction` for the same statement-timeout discipline.
  */
 @Module({
-  providers: [PgPoolFactory],
+  providers: [PgPoolFactory, DbPoolMetricsBinder],
   exports: [PgPoolFactory],
 })
 export class PgModule {}

@@ -9,6 +9,11 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { parseOtlpHeaders } from './otlp-headers';
 import { initAppMetrics, resetAppMetrics } from './app-metrics';
+import {
+  initDomainMetrics,
+  resetDbPoolStats,
+  resetDomainMetrics,
+} from './domain-metrics';
 import { initRuntimeMetrics, shutdownRuntimeMetrics } from './runtime-metrics';
 
 /**
@@ -85,6 +90,7 @@ export async function initTelemetry(): Promise<boolean> {
     const meter = provider.getMeter('fenzit.telemetry');
     initAppMetrics(meter);
     initRuntimeMetrics(meter);
+    initDomainMetrics(meter);
 
     logger.log(`Metrics export to Grafana Cloud every ${intervalMs}ms`);
     return true;
@@ -98,6 +104,7 @@ export async function initTelemetry(): Promise<boolean> {
     // it (samples that would never be exported).
     await shutdownTelemetry();
     resetAppMetrics();
+    resetDomainMetrics();
     return false;
   }
 }
@@ -105,6 +112,10 @@ export async function initTelemetry(): Promise<boolean> {
 /** Flushes and stops the exporter. Safe to call when telemetry is off. */
 export async function shutdownTelemetry(): Promise<void> {
   shutdownRuntimeMetrics();
+  // Published registries must stop recording before the provider dies —
+  // samples recorded into a torn-down provider would never be exported.
+  resetDomainMetrics();
+  resetDbPoolStats();
   const current = provider;
   provider = null;
   await current?.shutdown({ timeoutMillis: 10_000 });

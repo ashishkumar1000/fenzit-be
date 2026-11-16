@@ -76,6 +76,20 @@ export class PgPoolFactory implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Pool saturation snapshot for the DB-pool telemetry gauges (domain-
+   * metrics.ts). totalCount includes clients currently checked out, so
+   * idle ≤ total; waitingCount is the starvation signal — anything above
+   * zero means a caller queued for a connection.
+   */
+  stats(): { total: number; idle: number; waiting: number } {
+    return {
+      total: this.pool.totalCount,
+      idle: this.pool.idleCount,
+      waiting: this.pool.waitingCount,
+    };
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.pool.end();
   }

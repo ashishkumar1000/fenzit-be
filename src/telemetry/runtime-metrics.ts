@@ -9,6 +9,13 @@ import type { Meter, ObservableResult } from '@opentelemetry/api';
 
 let loopMonitor: LoopMonitor | null = null;
 
+/**
+ * Previous tick's CPU reading for the utilization gauge — (user+system) in
+ * microseconds over the wall clock between export ticks. First tick has no
+ * window and observes nothing (no invented zero for a stale denominator).
+ */
+let lastCpu: { usageUs: number; wallMs: number } | null = null;
+
 export function initRuntimeMetrics(meter: Meter): void {
   meter
     .createObservableGauge('process.memory.rss', {
@@ -26,6 +33,41 @@ export function initRuntimeMetrics(meter: Meter): void {
     })
     .addCallback((obs: ObservableResult) => {
       obs.observe(process.memoryUsage().heapUsed);
+    });
+
+  // CPU saturation is the third golden-signal gauge: on the 0.5-vCPU Render
+  // instance a sustained value near 1.0 is the "why is everything slow"
+  // answer. Clamped at 1.0 (the process is single-threaded; a >1 reading
+  // would be a wall-clock rounding artefact, not real saturation).
+  meter
+    .createObservableGauge('process.cpu.utilization', {
+      description: 'CPU time per wall-clock second since the previous export',
+      unit: '1',
+    })
+    .addCallback((obs: ObservableResult) => {
+      if (typeof process.cpuUsage !== 'function') return;
+      const usage = process.cpuUsage();
+      const wallMs = Date.now();
+      const prev = lastCpu;
+      lastCpu = { usageUs: usage.user + usage.system, wallMs };
+      if (!prev) return;
+      const wallDeltaMs = Math.max(1, wallMs - prev.wallMs);
+      const utilization =
+        (usage.user + usage.system - prev.usageUs) / (wallDeltaMs * 1000);
+      if (Number.isFinite(utilization)) {
+        obs.observe(Math.min(Math.max(utilization, 0), 1));
+      }
+    });
+
+  // Boot age — the simplest "did it stay up" series; restarts reset it to
+  // zero, so a sawtooth here is the deploy/restart picture at a glance.
+  meter
+    .createObservableGauge('process.uptime', {
+      description: 'Seconds since the process started',
+      unit: 's',
+    })
+    .addCallback((obs: ObservableResult) => {
+      obs.observe(process.uptime());
     });
 
   // monitorEventLoopDelay is unavailable in some runtimes — degrade quietly.

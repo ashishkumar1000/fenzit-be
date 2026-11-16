@@ -12,6 +12,7 @@ import {
 } from '../registry/report-definition';
 import { PDF_RENDERER } from './pdf-renderer.port';
 import type { PdfRenderer } from './pdf-renderer.port';
+import { getDomainMetrics } from '../../telemetry/domain-metrics';
 import { ReportRequestRow } from '../report-response.model';
 import {
   markReportFailed,
@@ -43,13 +44,28 @@ export class ReportPipelineService {
 
   async run(row: ReportRequestRow): Promise<void> {
     const admin = this.supabaseClientFactory.createAdmin();
+    const startedAt = Date.now();
+    const metrics = getDomainMetrics();
     try {
       const definition = this.definitionOrThrow(row.report_type);
       const data = await this.fetchData(definition, row, admin);
       const doc = this.buildDocument(definition, data);
       const pdf = await this.renderer.render(doc);
       await this.uploadAndStampReady(admin, row, pdf);
+      // Background work — the render count and duration (with the
+      // render duration histogram) are the only window into the pipeline
+      // from Grafana, and renders are the process's memory-spike risk.
+      metrics?.recordReportRender(
+        row.report_type,
+        'ok',
+        (Date.now() - startedAt) / 1000,
+      );
     } catch (err) {
+      metrics?.recordReportRender(
+        row.report_type,
+        'error',
+        (Date.now() - startedAt) / 1000,
+      );
       await this.fail(admin, row, err);
     }
   }

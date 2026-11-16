@@ -5,6 +5,7 @@ import {
   PushSendOutcome,
   PushMessage,
 } from './push-sender.port';
+import { getDomainMetrics } from '../telemetry/domain-metrics';
 
 /**
  * The firebase-admin adapter (CAP-2, stack.md Phase 3). Credentials come
@@ -73,6 +74,15 @@ export class FcmPushSender extends PushSender {
     // Caller caps at 500 (FCM's sendEach limit) so responses stay
     // order-mapped to the input.
     const batch = await messaging.sendEach(messages.map(toFcmMessage));
+    // Per-message outcomes land in Grafana (fenzit_push_messages_total) —
+    // the sweep is background traffic, so these results never surface as
+    // an HTTP status a dashboard could otherwise count.
+    const metrics = getDomainMetrics();
+    for (const response of batch.responses) {
+      metrics?.recordPush(
+        response.success ? 'ok' : this.toSendError(response.error).kind,
+      );
+    }
     return batch.responses.map((response, i) => ({
       message: messages[i],
       error: response.success ? null : this.toSendError(response.error),

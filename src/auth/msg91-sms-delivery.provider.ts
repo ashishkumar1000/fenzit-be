@@ -4,6 +4,7 @@ import {
   SmsDeliveryProvider,
   SmsDeliveryError,
 } from './sms-delivery.provider';
+import { getDomainMetrics, smsChannelLabel } from '../telemetry/domain-metrics';
 
 /**
  * The v5 FLOW endpoint — NOT the v5 /otp endpoint. Live-verified 2026-10-15:
@@ -30,7 +31,32 @@ export class Msg91SmsDeliveryProvider extends SmsDeliveryProvider {
     super();
   }
 
+  /**
+   * Counts the delivery (domain metrics) and delegates to `deliver` — the
+   * one funnel point where every OTP and invite SMS crosses, so the
+   * Grafana panel sees vendor rejections and timeouts even when callers
+   * (like the invite flow) swallow them as normal delivery outcomes.
+   */
   async send(
+    to: string,
+    templateId: string,
+    variables: Record<string, string>,
+  ): Promise<void> {
+    try {
+      await this.deliver(to, templateId, variables);
+      getDomainMetrics()?.recordSms(smsChannelLabel(templateId), 'ok');
+    } catch (err) {
+      const outcome =
+        err instanceof SmsDeliveryError && err.outcome === 'timeout'
+          ? 'timeout'
+          : 'error';
+      getDomainMetrics()?.recordSms(smsChannelLabel(templateId), outcome);
+      throw err;
+    }
+  }
+
+  /** The MSG91 wire call — the body that used to be `send` itself. */
+  private async deliver(
     to: string,
     templateId: string,
     variables: Record<string, string>,
