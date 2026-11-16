@@ -2,6 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { Msg91SmsDeliveryProvider } from './msg91-sms-delivery.provider';
 import { SmsDeliveryError } from './sms-delivery.provider';
 import { SMS_TEMPLATES } from '../common/constants/sms-templates';
+import type { Meter } from '@opentelemetry/api';
+import {
+  METRIC_SMS_DELIVERIES,
+  initDomainMetrics,
+  resetDomainMetrics,
+} from '../telemetry/domain-metrics';
 
 /**
  * All HTTP is mocked at the global fetch boundary — no real request leaves
@@ -202,5 +208,91 @@ describe('Msg91SmsDeliveryProvider', () => {
 
     expect(err).toBeInstanceOf(SmsDeliveryError);
     expect(err.outcome).toBe('error');
+  });
+
+  /**
+   * The delivery metrics (2026-11-17 monitoring round, review F4): the
+   * send wrapper must classify EVERY outcome into
+   * fenzit_sms_deliveries_total — ok / timeout / error — and label the
+   * channel from the CODE-CONSTANT template ID. The stub meter from
+   * domain-metrics.spec.ts, inlined small: init the real registry against
+   * a capturing meter, send through the real provider, assert the
+   * captured counter calls.
+   */
+  describe('delivery metrics (review F4)', () => {
+    let metricsCalls: { metric: string; attributes?: Record<string, string> }[];
+
+    const capturingMeter = {
+      createCounter: (name: string) => ({
+        add: (_v: number, attributes?: Record<string, string>) =>
+          metricsCalls.push({ metric: name, attributes }),
+      }),
+      createHistogram: () => ({ record: () => undefined }),
+      createObservableGauge: () => ({}),
+      addBatchObservableCallback: () => undefined,
+    } as unknown as Meter;
+
+    beforeEach(() => {
+      metricsCalls = [];
+      initDomainMetrics(capturingMeter);
+    });
+
+    afterEach(() => {
+      resetDomainMetrics();
+    });
+
+    it('a success records {channel: otp, outcome: ok}', async () => {
+      fetchMock.mockResolvedValue(okJson({ type: 'success' }));
+
+      await provider.send('+919876543210', SMS_TEMPLATES.OTP_LOGIN, {
+        number: '1234',
+      });
+
+      expect(metricsCalls).toEqual([
+        {
+          metric: METRIC_SMS_DELIVERIES,
+          attributes: { channel: 'otp', outcome: 'ok' },
+        },
+      ]);
+    });
+
+    it('a fetch TimeoutError (AbortSignal.timeout) records outcome "timeout" and still rethrows', async () => {
+      // deliver() classifies timeouts by ERROR NAME (TimeoutError /
+      // AbortError off AbortSignal.timeout), not by SmsDeliveryError —
+      // simulate the real shape the fetch boundary produces.
+      const timeoutErr = new Error('The operation was aborted due to timeout');
+      timeoutErr.name = 'TimeoutError';
+      fetchMock.mockRejectedValue(timeoutErr);
+
+      await expect(
+        provider.send('+919876543210', SMS_TEMPLATES.OTP_LOGIN, {
+          number: '1234',
+        }),
+      ).rejects.toBeInstanceOf(SmsDeliveryError);
+
+      expect(metricsCalls).toEqual([
+        {
+          metric: METRIC_SMS_DELIVERIES,
+          attributes: { channel: 'otp', outcome: 'timeout' },
+        },
+      ]);
+    });
+
+    it('a vendor rejection (200 + type:error) records outcome "error"', async () => {
+      fetchMock.mockResolvedValue(okJson({ type: 'error' }));
+
+      await expect(
+        provider.send('+919876543210', SMS_TEMPLATES.OTP_LOGIN, {
+          number: '1234',
+        }),
+      ).rejects.toBeInstanceOf(SmsDeliveryError);
+
+      expect(metricsCalls).toEqual([
+        {
+          metric: METRIC_SMS_DELIVERIES,
+          attributes: { channel: 'otp', outcome: 'error' },
+        },
+      ]);
+    });
   });
 });

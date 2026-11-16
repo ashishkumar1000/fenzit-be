@@ -46,28 +46,28 @@ export class ReportPipelineService {
     const admin = this.supabaseClientFactory.createAdmin();
     const startedAt = Date.now();
     const metrics = getDomainMetrics();
+    // Recorded AFTER the try/catch, never inside it: a throwing metric
+    // call must not be able to re-mark an already-uploaded report as
+    // failed (telemetry never disturbs live traffic — review F3).
+    let outcome: 'ok' | 'error' = 'error';
     try {
       const definition = this.definitionOrThrow(row.report_type);
       const data = await this.fetchData(definition, row, admin);
       const doc = this.buildDocument(definition, data);
       const pdf = await this.renderer.render(doc);
       await this.uploadAndStampReady(admin, row, pdf);
-      // Background work — the render count and duration (with the
-      // render duration histogram) are the only window into the pipeline
-      // from Grafana, and renders are the process's memory-spike risk.
-      metrics?.recordReportRender(
-        row.report_type,
-        'ok',
-        (Date.now() - startedAt) / 1000,
-      );
+      outcome = 'ok';
     } catch (err) {
-      metrics?.recordReportRender(
-        row.report_type,
-        'error',
-        (Date.now() - startedAt) / 1000,
-      );
       await this.fail(admin, row, err);
     }
+    // Background work — the render count and duration (with the render
+    // duration histogram) are the only window into the pipeline from
+    // Grafana, and renders are the process's memory-spike risk.
+    metrics?.recordReportRender(
+      row.report_type,
+      outcome,
+      (Date.now() - startedAt) / 1000,
+    );
   }
 
   private definitionOrThrow(reportType: string): ReportDefinition {

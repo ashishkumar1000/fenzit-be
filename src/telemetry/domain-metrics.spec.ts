@@ -1,4 +1,5 @@
 import type { Meter } from '@opentelemetry/api';
+import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import {
   DB_POOL_STATES,
   METRIC_DB_POOL_CONNECTIONS,
@@ -220,8 +221,17 @@ describe('the DB pool gauges', () => {
 
 describe('smsChannelLabel', () => {
   it('maps the code-constant template IDs to friendly channels', () => {
-    expect(smsChannelLabel('6abbb9d03a3773ee7209dd94')).toBe('otp');
-    expect(smsChannelLabel('PENDING_DLT_APPROVAL')).toBe('invite');
+    expect(smsChannelLabel(SMS_TEMPLATES.OTP_LOGIN)).toBe('otp');
+    expect(smsChannelLabel(SMS_TEMPLATES['T-INVITE'])).toBe('invite');
     expect(smsChannelLabel('anything-else')).toBe('other');
+  });
+
+  it('EVERY registered SMS template maps to a friendly channel — no silent "other" (review F1 tripwire)', () => {
+    // sms-templates.ts re-registers a changed template under a NEW ID; a
+    // new ID that lands here without a mapping case would silently drop
+    // that channel's Grafana series into 'other'.
+    for (const id of Object.values(SMS_TEMPLATES)) {
+      expect(smsChannelLabel(id)).not.toBe('other');
+    }
   });
 });

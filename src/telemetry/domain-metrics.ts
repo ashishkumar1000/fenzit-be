@@ -1,4 +1,5 @@
 import type { Meter } from '@opentelemetry/api';
+import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 
 /**
  * Domain + dependency metrics (2026-11-17 monitoring round) — the surfaces
@@ -83,16 +84,19 @@ export function resetDbPoolStats(): void {
 }
 
 /**
- * Maps a DLT template ID onto the friendly channel label. Template IDs are
- * code constants (sms-templates.ts), so the mapping is exhaustive for the
- * templates that exist; an unmapped ID degrades to 'other' instead of
- * inventing a high-cardinality label.
+ * Maps a DLT template ID onto the friendly channel label. Switches on the
+ * CODE CONSTANTS, not literals: sms-templates.ts re-registers a template
+ * under a NEW ID when its copy changes, and a literal-keyed mapping would
+ * silently drop the invite series into 'other' at exactly that flip (the
+ * review's F1). The exhaustiveness spec pins that every registered ID
+ * maps to a friendly channel; a genuinely unknown ID still degrades to
+ * 'other' instead of inventing a high-cardinality label.
  */
 export function smsChannelLabel(templateId: string): string {
   switch (templateId) {
-    case '6abbb9d03a3773ee7209dd94': // SMS_TEMPLATES.OTP_LOGIN
+    case SMS_TEMPLATES.OTP_LOGIN:
       return 'otp';
-    case 'PENDING_DLT_APPROVAL': // SMS_TEMPLATES['T-INVITE'] placeholder
+    case SMS_TEMPLATES['T-INVITE']:
       return 'invite';
     default:
       return 'other';
