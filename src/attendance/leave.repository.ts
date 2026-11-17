@@ -7,6 +7,7 @@ import {
   PG_OVERLAP_CONSTRAINT,
   PG_REQUEST_KEY_CONSTRAINT,
 } from './leave.constants';
+import { leaveTypeNotFound } from './leave.model';
 import type { LeaveDayRow, LeaveRequestRow } from './leave.model';
 import { WeeklyOffRow } from './me-summary.model';
 
@@ -45,13 +46,17 @@ export async function insertLeaveRequest(
     part: string;
     reason: string;
     createdBy: string;
+    leaveTypeId: string | null;
   },
 ): Promise<LeaveRequestRow | 'duplicate_key'> {
+  const leaveTypeId = input.leaveTypeId ?? null;
   try {
     const result = await tx.query<LeaveRequestRow>(
       `insert into public.leave_requests
-         (tenant_id, employee_id, request_id, start_date, end_date, part, reason, created_by)
-       values ($1::uuid, $2::uuid, $3::uuid, $4::date, $5::date, $6::text, $7::text, $8::uuid)
+         (tenant_id, employee_id, request_id, start_date, end_date, part, reason,
+          created_by, leave_type_id)
+       values ($1::uuid, $2::uuid, $3::uuid, $4::date, $5::date, $6::text, $7::text,
+               $8::uuid, $9::uuid)
        returning id, tenant_id, employee_id, request_id, start_date::text,
                  end_date::text, part, reason, created_by, created_at`,
       [
@@ -63,18 +68,40 @@ export async function insertLeaveRequest(
         input.part,
         input.reason,
         input.createdBy,
+        leaveTypeId,
       ],
     );
     return mapRequest(result.rows[0]);
   } catch (err) {
+    const code = (err as { code?: string }).code;
     if (
-      (err as { code?: string; constraint?: string }).code === '23505' &&
+      code === '23505' &&
       (err as { constraint?: string }).constraint === PG_REQUEST_KEY_CONSTRAINT
     ) {
       return 'duplicate_key';
     }
+    if (code === '23503') {
+      // The chosen type vanished between the ownership check and this
+      // insert (CAP-12) — the RESTRICT backstop caught the race.
+      throw leaveTypeNotFound();
+    }
     throw err;
   }
+}
+
+/** The catalog type the apply picked must belong to the same company. */
+export async function leaveTypeExistsInTenant(
+  tx: PoolClient,
+  tenantId: string,
+  leaveTypeId: string,
+): Promise<boolean> {
+  const result = await tx.query(
+    `select 1 from public.leave_types
+      where tenant_id = $1::uuid and id = $2::uuid
+      limit 1`,
+    [tenantId, leaveTypeId],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** The request's own id for an existing idempotency key (replay path). */

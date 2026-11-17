@@ -686,4 +686,365 @@ describe('Payroll journey (real DB, real routes)', () => {
       expect(me.body).not.toContain('Ramesh Sharma');
     },
   );
+
+  // ------------------------------------------------------------- 23-2 legs
+  // The leave-type catalog (CAP-12): config CRUD + the typing the payroll
+  // run's LOP read will join on. The JOIN under test mirrors the day-status
+  // grid reader exactly: leave_request_days ⋈ leave_requests (approved
+  // states) ⋈ leave_types for the paid marking.
+
+  const casualLeave: { id: string } = { id: '' };
+  const unpaidLeave: { id: string } = { id: '' };
+
+  /** Catalog rows of the throwaway tenant, by name. */
+  async function leaveTypeRowByName(
+    name: string,
+  ): Promise<Record<string, unknown>> {
+    const { rows } = await pool.query<{
+      id: string;
+      name: string;
+      paid: boolean;
+    }>(
+      `select id::text, name, paid
+         from public.leave_types
+        where tenant_id = $1 and name = $2`,
+      [tenant, name],
+    );
+    if (!rows[0]) {
+      throw new Error(`leave type "${name}" missing in tenant ${tenant}`);
+    }
+    return rows[0];
+  }
+
+  /**
+   * The JOIN shape the payroll run mirrors (grid-reader.ts): day rows in the
+   * approved states ⋈ their request ⋈ the type's paid flag — with NULL
+   * reading as paid (`coalesce`), which is the run's contract for untyped
+   * requests. The raw link itself is asserted separately by leaveTypingOf.
+   */
+  async function typedLeaveJoin(
+    employeeId: string,
+    states: string[] = ['approved'],
+  ): Promise<Array<{ leave_date: string; paid: boolean }>> {
+    const { rows } = await pool.query<{
+      leave_date: string;
+      paid: boolean;
+    }>(
+      `select d.leave_date::text as leave_date, coalesce(t.paid, true) as paid
+         from public.leave_request_days d
+         join public.leave_requests r on r.id = d.leave_request_id
+         left join public.leave_types t on t.id = r.leave_type_id
+        where r.tenant_id = $1 and d.employee_id = $2
+          and d.state = any($3::text[])
+        order by d.leave_date`,
+      [tenant, employeeId, states],
+    );
+    return rows;
+  }
+
+  /** A request's typing link, straight from the row. */
+  async function leaveTypingOf(
+    requestId: string,
+  ): Promise<{ leave_type_id: string | null; paid: boolean | null }> {
+    const { rows } = await pool.query<{
+      leave_type_id: string | null;
+      paid: boolean | null;
+    }>(
+      `select r.leave_type_id::text as leave_type_id, t.paid
+         from public.leave_requests r
+         left join public.leave_types t on t.id = r.leave_type_id
+        where r.tenant_id = $1 and r.id = $2`,
+      [tenant, requestId],
+    );
+    if (!rows[0]) {
+      throw new Error(`leave request ${requestId} missing in tenant ${tenant}`);
+    }
+    return rows[0];
+  }
+
+  /** Seed one request + its day rows directly (the admin-client idiom). */
+  async function seedLeaveRequest(input: {
+    dates: string[];
+    state: 'pending' | 'approved';
+    leaveTypeId?: string | null;
+    employeeId?: string;
+  }): Promise<string> {
+    const employeeId = input.employeeId ?? employeeA;
+    const created = must(
+      (await admin
+        .from('leave_requests')
+        .insert({
+          tenant_id: tenant,
+          employee_id: employeeId,
+          request_id: randomUUID(),
+          start_date: input.dates[0],
+          end_date: input.dates[input.dates.length - 1],
+          part: 'full_day',
+          reason: 'journey leave',
+          created_by: owner,
+          leave_type_id: input.leaveTypeId ?? null,
+        })
+        .select('id')
+        .single()) as {
+        data: { id: string } | null;
+        error: { message: string } | null;
+      },
+    ).id;
+    must(
+      (await admin.from('leave_request_days').insert(
+        input.dates.map((d) => ({
+          tenant_id: tenant,
+          leave_request_id: created,
+          employee_id: employeeId,
+          leave_date: d,
+          state: input.state,
+        })),
+      )) as { data: unknown; error: { message: string } | null },
+    );
+    return created;
+  }
+
+  maybeIt(
+    '23-2 — the owner creates the catalog: keyword defaults apply and say so',
+    async () => {
+      const casual = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/leave/types',
+        headers: ownerHeaders(),
+        payload: { name: 'Casual Leave' },
+      });
+      expect(casual.statusCode).toBe(201);
+      const casualBody = JSON.parse(casual.body) as {
+        id: string;
+        paid: boolean;
+        appliedDefault?: string;
+      };
+      expect(casualBody.paid).toBe(true);
+      expect(casualBody.appliedDefault).toBe('paid');
+      casualLeave.id = casualBody.id;
+
+      const unpaid = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/leave/types',
+        headers: ownerHeaders(),
+        payload: { name: 'Unpaid Leave' },
+      });
+      expect(unpaid.statusCode).toBe(201);
+      const unpaidBody = JSON.parse(unpaid.body) as {
+        id: string;
+        paid: boolean;
+        appliedDefault?: string;
+      };
+      expect(unpaidBody.paid).toBe(false);
+      expect(unpaidBody.appliedDefault).toBe('unpaid');
+      unpaidLeave.id = unpaidBody.id;
+
+      expect(await leaveTypeRowByName('Casual Leave')).toMatchObject({
+        paid: true,
+      });
+      expect(await leaveTypeRowByName('Unpaid Leave')).toMatchObject({
+        paid: false,
+      });
+    },
+  );
+
+  maybeIt(
+    '23-2 — a duplicate catalog name is a 409 naming it; the catalog does not grow',
+    async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/leave/types',
+        headers: ownerHeaders(),
+        payload: { name: 'Casual Leave' },
+      });
+      expect(res.statusCode).toBe(409);
+      expect((JSON.parse(res.body) as { error_code: string }).error_code).toBe(
+        'DUPLICATE_RESOURCE',
+      );
+      expect(res.body).toContain('Casual Leave');
+      const { rows } = await pool.query<{ n: number }>(
+        'select count(*)::int as n from public.leave_types where tenant_id = $1',
+        [tenant],
+      );
+      expect(rows[0].n).toBe(2);
+    },
+  );
+
+  maybeIt(
+    '23-2 — typing an approved leave writes the link and the run JOIN reads it',
+    async () => {
+      // Oct 13-15 — the canonical fixture's unpaid-leave dates.
+      const requestId = await seedLeaveRequest({
+        dates: ['2026-10-13', '2026-10-14', '2026-10-15'],
+        state: 'approved',
+      });
+
+      // Untyped first: NULL reads paid, so the JOIN shows paid even before typing.
+      const before = await typedLeaveJoin(employeeA);
+      expect(before.map((r) => r.leave_date)).toEqual([
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+      ]);
+      expect(before.every((r) => r.paid === true)).toBe(true);
+
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/${requestId}/type`,
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: casualLeave.id },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        requestId,
+        leaveTypeId: casualLeave.id,
+        paid: true,
+      });
+      const typing = await leaveTypingOf(requestId);
+      expect(typing.leave_type_id).toBe(casualLeave.id);
+
+      const join = await typedLeaveJoin(employeeA);
+      expect(join).toHaveLength(3);
+      expect(join.every((r) => r.paid === true)).toBe(true);
+    },
+  );
+
+  maybeIt(
+    '23-2 — reclassifying a type flips what the run JOIN reads (mutable config, no snapshot)',
+    async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${casualLeave.id}`,
+        headers: ownerHeaders(),
+        payload: { paid: false },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({ paid: false });
+
+      const join = await typedLeaveJoin(employeeA);
+      expect(join).toHaveLength(3);
+      expect(join.every((r) => r.paid === false)).toBe(true);
+    },
+  );
+
+  maybeIt(
+    '23-2 — rejected day rows drop out of the approved-only JOIN',
+    async () => {
+      // A typed PENDING request (Oct 20-21, typed at insert): the approved-only
+      // JOIN must not read it yet.
+      const pendingId = await seedLeaveRequest({
+        dates: ['2026-10-20', '2026-10-21'],
+        state: 'pending',
+        leaveTypeId: unpaidLeave.id,
+      });
+      expect(await typedLeaveJoin(employeeA)).toHaveLength(3); // Oct 13-15 only
+
+      // The rejection is seeded at SQL level (bypassing the API — the
+      // owner-reject route is Epic 17's own suite): the day rows flip
+      // pending → rejected, the legal transition, while the request row
+      // itself stays pending. What this leg exercises is the JOIN, not the
+      // reject endpoint.
+      const { rowCount } = await pool.query(
+        `update public.leave_request_days
+            set state = 'rejected'
+          where leave_request_id = $1 and state = 'pending'`,
+        [pendingId],
+      );
+      expect(rowCount).toBe(2);
+
+      // Rejected (and any non-approved state) never reaches the LOP join.
+      const join = await typedLeaveJoin(employeeA);
+      expect(join).toHaveLength(3);
+      const rejected = await typedLeaveJoin(employeeA, [
+        'pending',
+        'approved',
+        'rejected',
+        'cancelled',
+        'revoked',
+      ]);
+      expect(rejected.map((r) => r.leave_date)).toEqual([
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+        '2026-10-20',
+        '2026-10-21',
+      ]);
+    },
+  );
+
+  maybeIt(
+    '23-2 — a type referenced by leave requests cannot be deleted',
+    async () => {
+      // A SECOND request referencing the type: the in-use probe must stay
+      // multi-row-safe (limit(1)), not a single-row read that would error
+      // the moment a second reference exists.
+      await seedLeaveRequest({
+        dates: ['2026-10-06', '2026-10-07'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+      });
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(409);
+      expect((JSON.parse(res.body) as { error_code: string }).error_code).toBe(
+        'LEAVE_TYPE_IN_USE',
+      );
+      expect(await leaveTypeRowByName('Unpaid Leave')).toMatchObject({
+        paid: false,
+      });
+    },
+  );
+
+  maybeIt(
+    '23-2 — an employee token is 403 on the catalog, and apply names an unknown type 404 without leaving a request',
+    async () => {
+      const employeeHeaders = () => ({
+        authorization: `Bearer ${bearerFor(employeeA)}`,
+      });
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/leave/types',
+        headers: employeeHeaders(),
+      });
+      expect(list.statusCode).toBe(403);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${casualLeave.id}`,
+        headers: employeeHeaders(),
+        payload: { paid: true },
+      });
+      expect(patch.statusCode).toBe(403);
+
+      const applyRequestId = randomUUID();
+      const apply = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: {
+          ...employeeHeaders(),
+          'x-idempotency-key': applyRequestId,
+        },
+        payload: {
+          startDate: '2026-11-20',
+          endDate: '2026-11-20',
+          reason: 'journey apply',
+          leaveTypeId: randomUUID(), // no such type in this company
+        },
+      });
+      expect(apply.statusCode).toBe(404);
+      expect(
+        (JSON.parse(apply.body) as { error_code: string }).error_code,
+      ).toBe('RESOURCE_NOT_FOUND');
+
+      const { rows } = await pool.query<{ n: number }>(
+        'select count(*)::int as n from public.leave_requests where tenant_id = $1 and request_id = $2',
+        [tenant, applyRequestId],
+      );
+      expect(rows[0].n).toBe(0); // the refused apply left nothing behind
+    },
+  );
 });

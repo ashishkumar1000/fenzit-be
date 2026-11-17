@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -22,12 +23,14 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { LeaveService } from './leave.service';
 import { LeaveReadService } from './leave-read.service';
+import { LeaveTypesService } from './leave-types.service';
 import {
   ListLeaveQueryDto,
   OnBehalfLeaveDto,
   RejectLeaveDto,
   RevokeLeaveDto,
 } from './dto/leave.dto';
+import { SetLeaveRequestTypeDto } from './dto/leave-type.dto';
 import { Can } from '../common/decorators/can.decorator';
 
 /** AD-6: UUID v4, generated per user tap by the app. */
@@ -47,6 +50,7 @@ export class LeaveController {
   constructor(
     private readonly leaveService: LeaveService,
     private readonly leaveReadService: LeaveReadService,
+    private readonly leaveTypesService: LeaveTypesService,
   ) {}
 
   @Get()
@@ -149,6 +153,36 @@ export class LeaveController {
     @Body() dto: RevokeLeaveDto,
   ) {
     return this.leaveService.revoke(user, id, dto.reason);
+  }
+
+  @Patch(':requestId/type')
+  @Can('leave.types')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Set (or clear — null — back to the untyped = paid default) a request's paid/unpaid type from this company's catalog",
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ requestId, employeeId, leaveTypeId, paid } — paid is the marking the payroll run acts on (untyped reads paid)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The request or the type is not in this company',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The chosen type was deleted while the typing was in flight — reload and retry',
+  })
+  @ApiResponse({ status: 403, description: 'Not a company admin' })
+  setRequestType(
+    @CurrentUser() user: RequestUser,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() dto: SetLeaveRequestTypeDto,
+  ) {
+    return this.leaveTypesService.setRequestType(user, requestId, dto);
   }
 
   @Post('on-behalf')

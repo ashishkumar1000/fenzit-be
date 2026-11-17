@@ -53,3 +53,23 @@ describe('employment grant per role (payroll CAP-13)', () => {
     expect(permissionsFor(null).has('member.employment')).toBe(false);
   });
 });
+
+/**
+ * Pins the leave-type catalog grant (CAP-12, story 23-2) the same way: the
+ * catalog config endpoints sit behind `leave.types`, so a dropped grant
+ * switches the paid/unpaid configuration surface off without any service
+ * test failing. Outside ADMIN_PERMISSIONS — a platform admin (staff, no
+ * company) configures no tenant's payroll.
+ */
+describe('leave-type catalog grant per role (payroll CAP-12)', () => {
+  it('only the company admin holds it', () => {
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('leave.types')).toBe(true);
+    expect(permissionsFor(Role.EMPLOYEE).has('leave.types')).toBe(false);
+    expect(permissionsFor(Role.VIEWER).has('leave.types')).toBe(false);
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('leave.types')).toBe(false);
+  });
+
+  it('a signed-in person with no company holds nothing of it', () => {
+    expect(permissionsFor(null).has('leave.types')).toBe(false);
+  });
+});

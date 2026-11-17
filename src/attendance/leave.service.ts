@@ -22,6 +22,7 @@ import {
   leaveEmployeeNotFound,
   leaveNotFound,
   leaveRejectionToException,
+  leaveTypeNotFound,
   toRequestView,
   type LeaveRequestView,
 } from './leave.model';
@@ -34,6 +35,7 @@ import {
   findRequestIdByKey,
   insertLeaveRequest,
   employeeExistsInTenant,
+  leaveTypeExistsInTenant,
   readEnrolmentFloor,
   readEmployeeName,
   readSettingsGate,
@@ -214,6 +216,19 @@ export class LeaveService {
       return this.buildView(tx, input.tenantId, replay);
     }
 
+    // CAP-12: a named catalog type must belong to this company; absent or
+    // null keeps the request untyped, which reads as paid.
+    let leaveTypeId: string | null = null;
+    if (input.dto.leaveTypeId) {
+      const known = await leaveTypeExistsInTenant(
+        tx,
+        input.tenantId,
+        input.dto.leaveTypeId,
+      );
+      if (!known) throw leaveTypeNotFound();
+      leaveTypeId = input.dto.leaveTypeId;
+    }
+
     const shape = validateApplyShape({
       startDate: input.dto.startDate,
       endDate: input.dto.endDate ?? input.dto.startDate,
@@ -225,40 +240,46 @@ export class LeaveService {
       input.dto.startDate,
       input.dto.endDate ?? input.dto.startDate,
     );
-    const [enrolment, settings, spanFacts, overlapping, checkedIn, overrideDates] =
-      await Promise.all([
-        readEnrolmentFloor(tx, input.employeeId, today),
-        readSettingsGate(tx, input.tenantId),
-        readSpanFacts(
-          tx,
-          input.tenantId,
-          input.employeeId,
-          dates,
-          pickWeeklyOffDays,
-          isoWeekdayOf,
-        ),
-        findOverlappingDays(
-          tx,
-          input.tenantId,
-          input.employeeId,
-          dates[0],
-          dates[dates.length - 1],
-        ),
-        findCheckedInDates(
-          tx,
-          input.tenantId,
-          input.employeeId,
-          dates[0],
-          dates[dates.length - 1],
-          today,
-        ),
-        findActiveOverrideDates(tx, {
-          tenantId: input.tenantId,
-          employeeId: input.employeeId,
-          start: dates[0],
-          end: dates[dates.length - 1],
-        }),
-      ]);
+    const [
+      enrolment,
+      settings,
+      spanFacts,
+      overlapping,
+      checkedIn,
+      overrideDates,
+    ] = await Promise.all([
+      readEnrolmentFloor(tx, input.employeeId, today),
+      readSettingsGate(tx, input.tenantId),
+      readSpanFacts(
+        tx,
+        input.tenantId,
+        input.employeeId,
+        dates,
+        pickWeeklyOffDays,
+        isoWeekdayOf,
+      ),
+      findOverlappingDays(
+        tx,
+        input.tenantId,
+        input.employeeId,
+        dates[0],
+        dates[dates.length - 1],
+      ),
+      findCheckedInDates(
+        tx,
+        input.tenantId,
+        input.employeeId,
+        dates[0],
+        dates[dates.length - 1],
+        today,
+      ),
+      findActiveOverrideDates(tx, {
+        tenantId: input.tenantId,
+        employeeId: input.employeeId,
+        start: dates[0],
+        end: dates[dates.length - 1],
+      }),
+    ]);
 
     const rejection = validateApplyFacts(dates, {
       today,
@@ -280,6 +301,7 @@ export class LeaveService {
       part: input.dto.part,
       reason: input.dto.reason.trim(),
       createdBy: input.callerId,
+      leaveTypeId,
     });
     if (request === 'duplicate_key') {
       // The key raced a DIFFERENT caller's insert — no second row (D7).
@@ -417,10 +439,10 @@ export class LeaveService {
     dates: string[],
   ): LeaveRequestView {
     if (cause === 'owner_revoke') {
-      return { ...view, revokedDates: dates } as LeaveRequestView;
+      return { ...view, revokedDates: dates };
     }
     if (cause === 'employee_cancel') {
-      return { ...view, cancelledDates: dates } as LeaveRequestView;
+      return { ...view, cancelledDates: dates };
     }
     return view;
   }
@@ -490,7 +512,7 @@ export class LeaveService {
       }),
     });
     const view = await this.buildView(tx, tenantId, request);
-    return { ...view, cancelledDates: split.actionDates } as LeaveRequestView;
+    return { ...view, cancelledDates: split.actionDates };
   }
 
   // --------------------------------------------------------------- helpers

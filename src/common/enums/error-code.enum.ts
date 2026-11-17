@@ -111,6 +111,12 @@ export enum ErrorCode {
   /** The employment record changed between this read and write (409) — the
    *  database CHECK backstop caught a stale read; reload and retry. */
   EMPLOYMENT_RECORD_CHANGED = 'EMPLOYMENT_RECORD_CHANGED',
+  /** A leave type is referenced by existing leave requests and cannot be
+   *  deleted (409) — retype those requests first. */
+  LEAVE_TYPE_IN_USE = 'LEAVE_TYPE_IN_USE',
+  /** The chosen leave type vanished while this typing was in flight (409) —
+   *  the foreign-key RESTRICT backstop caught the race; reload and retry. */
+  LEAVE_TYPE_CHANGED = 'LEAVE_TYPE_CHANGED',
   /** Google Play could not be asked for the live Android version (502).
    *  Retryable; a roadblock save that needs the check is refused, not guessed. */
   PLAY_UPSTREAM_ERROR = 'PLAY_UPSTREAM_ERROR',

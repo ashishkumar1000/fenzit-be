@@ -161,6 +161,17 @@ export function leaveNotFound(): HttpException {
   );
 }
 
+/** CAP-12: the catalog type an apply named is not in this company. */
+export function leaveTypeNotFound(): HttpException {
+  return new HttpException(
+    {
+      error_code: ErrorCode.RESOURCE_NOT_FOUND,
+      message: 'The leave type is not in this company',
+    },
+    HttpStatus.NOT_FOUND,
+  );
+}
+
 /** D10: an on-behalf target who is not a technician of this tenant. */
 export function leaveEmployeeNotFound(): HttpException {
   return new HttpException(

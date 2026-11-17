@@ -18,6 +18,8 @@ import { ApplyLeaveDto, OnBehalfLeaveDto } from './dto/leave.dto';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const EMPLOYEE = '22222222-2222-4222-8222-222222222222';
+/** A catalog type the fake leave_types router knows (CAP-12 apply path). */
+const KNOWN_TYPE_ID = '33333333-3333-4333-8333-333333333333';
 const ADMIN = '33333333-3333-4333-8333-333333333333';
 // A second company admin — every admin gets the alert (decision 36).
 const ADMIN_2 = '44444444-4444-4444-8444-444444444444';
@@ -87,7 +89,7 @@ function baseRouter(
   } = {},
 ): Router {
   let requestReads = 0;
-  return (sql) => {
+  return (sql, params?: unknown[]) => {
     if (sql.includes('attendance_lock')) return { rows: [] };
     if (sql.includes('attendance_today'))
       return { rows: [{ today: '2026-09-29' }] };
@@ -178,6 +180,14 @@ function baseRouter(
           },
         ],
       };
+    // CAP-12: the apply's leaveTypeExistsInTenant probe — only the known
+    // type answers "present" (rowCount is what the repository reads).
+    if (sql.includes('from public.leave_types')) {
+      const known = params?.[1] === KNOWN_TYPE_ID;
+      return known
+        ? { rows: [{ ok: 1 }], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
     if (sql.includes('insert into public.leave_requests'))
       return { rows: [REQUEST_ROW] };
     if (sql.includes('insert into public.leave_request_days'))
@@ -197,8 +207,7 @@ function baseRouter(
     }
     if (sql.includes('insert into public.leave_events')) return { rows: [] };
     if (sql.includes('insert into public.notifications')) return { rows: [] };
-    if (sql.includes('select u.name'))
-      return { rows: [{ name: 'Arya' }] };
+    if (sql.includes('select u.name')) return { rows: [{ name: 'Arya' }] };
     return { rows: [] };
   };
 }
@@ -256,6 +265,39 @@ describe('LeaveService — apply (17-1)', () => {
     }
     expect(view.status).toBe('pending');
     expect(view.workingDays).toBe(3);
+  });
+
+  it('carries the chosen catalog type: the request insert ninth parameter is the type id', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.applyForSelf(
+      user(EMPLOYEE),
+      dto({ leaveTypeId: KNOWN_TYPE_ID }),
+      KEY,
+    );
+    const probed = queries.some((q) =>
+      q.sql.includes('from public.leave_types'),
+    );
+    expect(probed).toBe(true);
+    const requestInsert = queries.find((q) =>
+      q.sql.includes('insert into public.leave_requests'),
+    );
+    expect((requestInsert?.params as unknown[])[8]).toBe(KNOWN_TYPE_ID);
+  });
+
+  it('a leaveTypeId outside this company answers 404 and writes nothing', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    const { status, body } = await rejectionOf(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({ leaveTypeId: '44444444-4444-4444-8444-444444444444' }),
+        KEY,
+      ),
+    );
+    expect(status).toBe(404);
+    expect(body).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(false);
   });
 
   it('replays the stored request with NO second write (AD-6)', async () => {

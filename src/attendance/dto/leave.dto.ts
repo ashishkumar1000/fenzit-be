@@ -68,6 +68,15 @@ export class ApplyLeaveDto {
   @IsNotEmpty({ message: 'reason is required' })
   @MaxLength(LEAVE_REASON_MAX)
   reason!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'A type from the company leave catalog (CAP-12); must belong to the same company or the apply answers 404. Absent or null keeps the request untyped, which reads as paid.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  leaveTypeId?: string | null;
 }
 
 export class OnBehalfLeaveDto extends ApplyLeaveDto {

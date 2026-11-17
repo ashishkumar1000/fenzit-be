@@ -43,15 +43,19 @@ describe('statement contracts', () => {
       part: 'full_day',
       reason: 'Trip',
       createdBy: EMPLOYEE,
+      leaveTypeId: null,
     });
     const sql = tx.query.mock.calls[0][0] as string;
     expect(sql).toContain('tenant_id');
+    expect(sql).toContain('leave_type_id');
     expect(sql).toContain(
       'unique (tenant_id, request_id)'.slice(0, 0) || 'values',
     );
     // The duplicate mapping is behavioural; the journey probe 2 covers the
-    // raced-key 409 end to end. Here we pin the parameterisation shape.
-    expect(tx.query.mock.calls[0][1]).toHaveLength(8);
+    // raced-key 409 end to end. Here we pin the parameterisation shape — the
+    // ninth parameter is the CAP-12 typing link (null = untyped, reads paid).
+    expect(tx.query.mock.calls[0][1]).toHaveLength(9);
+    expect((tx.query.mock.calls[0][1] as unknown[])[8]).toBeNull();
   });
 
   it('findOverlappingDays restricts to the ACTIVE states and casts the array', async () => {
