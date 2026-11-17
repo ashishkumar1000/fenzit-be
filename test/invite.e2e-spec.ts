@@ -11,11 +11,22 @@ import { SupabaseClientFactory } from '../src/common/factories/supabase-client.f
 import { Role } from '../src/common/enums/role.enum';
 import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { withOpenSubscription } from './helpers/open-subscription-admin';
+import { SmsDeliveryProvider } from '../src/auth/sms-delivery.provider';
+
+// Go-live (2026-11-17): the DLT template is approved and sending is on, so a
+// successful invite runs the full send path — status guard, cap reserve and
+// the (mocked) provider — and answers sms_status 'sent'.
+
+// The cap hash needs its key. Config only requires it in production, so the
+// test supplies a throwaway value.
+process.env['INVITE_SMS_HASH_KEY'] ??=
+  'e2e-test-invite-sms-hash-key-0123456789';
 
 describe('Member Invitation (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
+  let mockSend: jest.Mock;
 
   const TENANT_ID = '33333333-3333-4333-8333-333333333333';
   const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -26,6 +37,7 @@ describe('Member Invitation (e2e)', () => {
 
   beforeAll(async () => {
     mockCreateAdmin = jest.fn();
+    mockSend = jest.fn().mockResolvedValue(undefined);
 
     const moduleFixture: TestingModule = await withPeople(
       Test.createTestingModule({
@@ -35,7 +47,9 @@ describe('Member Invitation (e2e)', () => {
         .useValue({
           create: jest.fn(),
           createAdmin: () => withOpenSubscription(mockCreateAdmin()),
-        }),
+        })
+        .overrideProvider(SmsDeliveryProvider)
+        .useValue({ send: (...args: unknown[]) => mockSend(...args) }),
       [
         { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
         { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
@@ -72,11 +86,14 @@ describe('Member Invitation (e2e)', () => {
     return accessToken(jwtService, VIEWER_ID);
   }
 
-  /** Builds a Supabase admin mock for the invite endpoint's two database calls:
+  /** Builds a Supabase admin mock for the invite endpoint's database calls:
    *  1. from('skills').select().in().eq()  — global skills-catalog check
    *  2. rpc('invite_member', ...)          — the one all-or-nothing invite step
    *     (finds or creates the person, refuses someone already in a company,
    *     creates the membership, attaches skills, writes the audit row)
+   *  Then the SMS send path (sending is on): the status guard's
+   *  from('memberships') read, rpc('invite_sms_reserve_send') for the cap,
+   *  and the audit insert.
    */
   function makeInviteMock(opts: {
     validSkills?: { id: string }[];
@@ -85,21 +102,53 @@ describe('Member Invitation (e2e)', () => {
   }) {
     const validSkillsData =
       opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
-    const rpc = jest.fn().mockResolvedValue({
-      data: opts.rpcData ?? null,
-      error: opts.rpcError ?? null,
+    const rpc = jest.fn((name: string) => {
+      if (name === 'invite_member') {
+        return Promise.resolve({
+          data: opts.rpcData ?? null,
+          error: opts.rpcError ?? null,
+        });
+      }
+      if (name === 'invite_sms_reserve_send') {
+        return Promise.resolve({ data: 'counter-1', error: null });
+      }
+      throw new Error(`unexpected rpc ${name}`);
     });
+    const auditInsert = jest.fn().mockResolvedValue({ error: null });
     return {
       rpc,
-      from: jest.fn().mockImplementation(() => ({
-        select: jest.fn().mockReturnValue({
-          in: jest.fn().mockReturnValue({
-            eq: jest
-              .fn()
-              .mockResolvedValue({ data: validSkillsData, error: null }),
-          }),
-        }),
-      })),
+      auditInsert,
+      from: jest.fn().mockImplementation((table: string) => {
+        if (table === 'skills') {
+          return {
+            select: jest.fn().mockReturnValue({
+              in: jest.fn().mockReturnValue({
+                eq: jest
+                  .fn()
+                  .mockResolvedValue({ data: validSkillsData, error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === 'memberships') {
+          // The status guard: the membership is still pending.
+          return {
+            select: jest.fn().mockReturnValue({
+              eq: jest.fn().mockReturnValue({
+                eq: jest.fn().mockReturnValue({
+                  maybeSingle: jest
+                    .fn()
+                    .mockResolvedValue({ data: { status: 'invited' }, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'invite_sms_audit') {
+          return { insert: auditInsert };
+        }
+        throw new Error(`unexpected table ${table}`);
+      }),
     };
   }
 
@@ -126,13 +175,15 @@ describe('Member Invitation (e2e)', () => {
 
       expect(response.statusCode).toBe(201);
       const body = JSON.parse(response.body);
-      // sms_status is part of the 21-1 contract. The DLT template is still the
-      // placeholder, so sending is off and the status is not_configured.
+      // Sending is on (go-live 2026-11-17): the invite answers 'sent' and the
+      // mocked provider received exactly one send.
       expect(body).toEqual({
         invite_id: NEW_USER_ID,
         employee_code: 'EMP-002',
-        sms_status: 'not_configured',
+        sms_status: 'sent',
       });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(admin.auditInsert.mock.calls[0][0].outcome).toBe('sent');
       // The company comes from the caller's membership, never the request.
       expect(admin.rpc).toHaveBeenCalledWith('invite_member', {
         p_caller: OWNER_ID,

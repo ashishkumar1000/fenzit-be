@@ -52,7 +52,7 @@ export class InviteSmsController {
   @ApiOperation({
     summary: 'Send the invite SMS again (company admin only)',
     description:
-      'Resends the invite text to a person who has not joined yet. At most 5 invite texts reach one phone number in any rolling 60 minutes, counting every invite and re-invite. A failed send does not count, but a timeout does, because the text may have arrived. Sending is off while the DLT template is pending, and then sms_status is not_configured.',
+      'Resends the invite text to a person who has not joined yet. At most 5 invite texts reach one phone number in any rolling 60 minutes, counting every invite and re-invite. A failed send does not count, but a timeout does, because the text may have arrived.',
   })
   @ApiParam({
     name: 'membershipUserId',
@@ -62,7 +62,7 @@ export class InviteSmsController {
   @ApiResponse({
     status: 201,
     description:
-      'Resend attempted. sms_status: sent, failed (not counted toward the cap, except a timeout) or not_configured (sending is off).',
+      'Resend attempted. sms_status: sent, failed (not counted toward the cap, except a timeout), skipped_active (the person activated before the send, so no text went) or not_configured (sending is off).',
     schema: { example: { sms_status: 'sent' } },
   })
   @ApiResponse({

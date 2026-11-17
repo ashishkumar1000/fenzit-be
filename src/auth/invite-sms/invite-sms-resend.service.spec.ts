@@ -9,6 +9,7 @@ import { ErrorCode } from '../../common/enums/error-code.enum';
 import { Role } from '../../common/enums/role.enum';
 import type { RequestUser } from '../../common/interfaces/request-user.interface';
 import { InviteSmsResendService } from './invite-sms-resend.service';
+import type { InviteSmsStatus } from './invite-sms.service';
 
 // Story 21-2 resend rules: admin-only, same company, pending only, cap, 429.
 // The database is a fake; the company-scoped lookup is checked through the
@@ -21,7 +22,6 @@ const FULL_NUMBER = '9876543210';
 
 const INVITED_ROW = {
   user_id: MEMBER,
-  role: 'employee',
   status: 'invited',
   users: { name: 'Ravi Kumar', country_code: '+91', phone_number: FULL_NUMBER },
 };
@@ -53,7 +53,7 @@ function fakeAdmin(result: { data: unknown; error: unknown }) {
 function build(opts: {
   row?: unknown;
   readError?: unknown;
-  smsStatus?: 'sent' | 'failed' | 'not_configured' | 'refused_cap';
+  smsStatus?: InviteSmsStatus;
 }) {
   const db = fakeAdmin({
     data: opts.row === undefined ? INVITED_ROW : opts.row,
@@ -227,16 +227,17 @@ describe('InviteSmsResendService: cap and status', () => {
     ).resolves.toEqual({ sms_status: 'not_configured' });
   });
 
-  it('passes the stored name, country code, number and role to the send path', async () => {
+  it('passes the stored name, country code and number to the send path', async () => {
     const h = build({});
     await h.service.resend(caller(Role.COMPANY_ADMIN), MEMBER);
+    // No role: the approved DLT copy has no role variable, so the send path
+    // does not take one (owner decision 2026-11-17).
     expect(h.sendInviteSms).toHaveBeenCalledWith({
       tenantId: TENANT,
       membershipUserId: MEMBER,
       countryCode: '+91',
       phoneNumber: FULL_NUMBER,
       name: 'Ravi Kumar',
-      role: 'employee',
     });
   });
 });

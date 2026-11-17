@@ -616,7 +616,6 @@ export class AuthService {
       countryCode: dto.countryCode,
       phoneNumber: dto.phoneNumber,
       name: dto.name,
-      role,
     });
     return {
       invite_id: membershipUserId,

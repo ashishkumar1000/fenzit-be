@@ -8,16 +8,15 @@ import {
   SmsDeliveryProvider,
 } from '../sms-delivery.provider';
 import {
+  INVITE_SMS_DOWNLOAD_URL,
   INVITE_TEMPLATE_PLACEHOLDER,
   SMS_TEMPLATES,
 } from '../../common/constants/sms-templates';
-import { MembershipRole } from '../../common/enums/role.enum';
 import {
   canonicalSubscriberNumber,
   fitCompanyName,
   fitFirstName,
   maskPhone,
-  roleWord,
 } from './invite-sms-text';
 import {
   INVITE_SMS_CAP_PER_PHONE,
@@ -32,7 +31,8 @@ export type InviteSmsStatus =
   | 'sent'
   | 'failed'
   | 'not_configured'
-  | 'refused_cap';
+  | 'refused_cap'
+  | 'skipped_active';
 type AuditOutcome = InviteSmsStatus;
 
 export interface InviteSmsRequest {
@@ -42,7 +42,6 @@ export interface InviteSmsRequest {
   countryCode: string;
   phoneNumber: string;
   name: string;
-  role: MembershipRole;
 }
 
 /**
@@ -74,7 +73,9 @@ export class InviteSmsService {
     const masked = maskPhone(req.countryCode, req.phoneNumber);
 
     // Placeholder template: sending is off. No provider call, no counter row.
-    if (SMS_TEMPLATES['T-INVITE'] === INVITE_TEMPLATE_PLACEHOLDER) {
+    // The cast keeps this a runtime gate for any future template whose ID has
+    // not been supplied yet; with T-INVITE approved it never fires.
+    if ((SMS_TEMPLATES['T-INVITE'] as string) === INVITE_TEMPLATE_PLACEHOLDER) {
       await this.writeAudit(admin, req, masked, 'not_configured');
       return 'not_configured';
     }
@@ -83,6 +84,28 @@ export class InviteSmsService {
     // Set once the cap slot is reserved. Only then is there a row to release.
     let counterId: string | null = null;
     try {
+      // Only a still-pending invite gets a text (owner requirement
+      // 2026-11-17). The DB refuses an invite to anyone already in the
+      // company and the resend endpoint refuses a non-pending status, but
+      // both checks run earlier in the request; a person who activates while
+      // it runs would still be texted. This is the last line. A check and an
+      // external send can never be one atomic step, so the residual window
+      // is the gap between this select and the provider call. A DB error
+      // reading the status throws into the catch below, which returns
+      // 'failed' and audits it: no SMS goes out without its guard.
+      const { data: pending, error: pendingError } = await admin
+        .from('memberships')
+        .select('status')
+        .eq('user_id', req.membershipUserId)
+        .eq('tenant_id', req.tenantId)
+        .maybeSingle<{ status: string }>();
+      if (pendingError) {
+        throw new Error('Invite SMS status guard failed');
+      }
+      if (pending?.status !== 'invited') {
+        await this.writeAudit(admin, req, masked, 'skipped_active');
+        return 'skipped_active';
+      }
       // The hash is made before the reservation. A missing key then stops the
       // SMS, so no message goes out without its counter row.
       const phoneHash = this.phoneHash(e164);
@@ -95,9 +118,9 @@ export class InviteSmsService {
         return 'refused_cap';
       }
       await this.smsDeliveryProvider.send(e164, SMS_TEMPLATES['T-INVITE'], {
-        name: fitFirstName(req.name),
+        employee: fitFirstName(req.name),
         company: fitCompanyName(company),
-        role: roleWord(req.role),
+        url: INVITE_SMS_DOWNLOAD_URL,
       });
     } catch (err: unknown) {
       // Log the outcome only. Never the number or the message text.

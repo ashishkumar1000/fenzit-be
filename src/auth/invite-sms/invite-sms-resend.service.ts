@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../../common/factories/supabase-client.factory';
 import { ErrorCode } from '../../common/enums/error-code.enum';
-import { MembershipRole } from '../../common/enums/role.enum';
 import { RequestUser } from '../../common/interfaces/request-user.interface';
 import { permissionsFor } from '../../common/permissions/permissions';
 import { InviteSmsService, InviteSmsStatus } from './invite-sms.service';
@@ -21,7 +20,6 @@ import {
 
 interface InvitedMembershipRow {
   user_id: string;
-  role: string;
   status: string;
   users: {
     name: string | null;
@@ -69,7 +67,7 @@ export class InviteSmsResendService {
     const { data, error } = await admin
       .from('memberships')
       .select(
-        'user_id, role, status, users!memberships_user_id_fkey(name, country_code, phone_number)',
+        'user_id, status, users!memberships_user_id_fkey(name, country_code, phone_number)',
       )
       .eq('user_id', membershipUserId)
       .eq('tenant_id', tenantId)
@@ -113,7 +111,6 @@ export class InviteSmsResendService {
       countryCode: data.users.country_code,
       phoneNumber: data.users.phone_number,
       name: data.users.name ?? '',
-      role: data.role as MembershipRole,
     });
 
     if (status === 'refused_cap') {

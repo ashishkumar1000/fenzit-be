@@ -2,8 +2,8 @@ import { Logger } from '@nestjs/common';
 import { SmsDeliveryError } from '../sms-delivery.provider';
 import { InviteSmsService, InviteSmsRequest } from './invite-sms.service';
 
-// Use a real-looking template ID so the send path runs. The shipped value is
-// still the placeholder, which turns sending off.
+// Use a real-looking template ID so the send path runs (the shipped value is
+// the approved template; the flip spec guards the shipped constant).
 jest.mock('../../common/constants/sms-templates', () => {
   const actual = jest.requireActual<
     typeof import('../../common/constants/sms-templates')
@@ -21,7 +21,6 @@ const REQUEST: InviteSmsRequest = {
   countryCode: '+91',
   phoneNumber: '9876543210',
   name: 'Ravi Kumar',
-  role: 'employee' as InviteSmsRequest['role'],
 };
 
 interface Harness {
@@ -50,6 +49,22 @@ function harness(opts: {
   const admin = {
     rpc,
     from: jest.fn((table: string) => {
+      if (table === 'memberships') {
+        // The status guard (owner requirement 2026-11-17): the membership is
+        // still pending in every existing send-path test.
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data: { status: 'invited' },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
       if (table === 'tenants') {
         return {
           select: () => ({

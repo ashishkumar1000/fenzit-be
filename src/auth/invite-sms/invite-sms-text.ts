@@ -1,4 +1,3 @@
-import { Role, MembershipRole } from '../../common/enums/role.enum';
 import { transliterateDevanagari } from './devanagari-to-latin';
 
 /**
@@ -6,9 +5,9 @@ import { transliterateDevanagari } from './devanagari-to-latin';
  * CAP-4, CAP-5 and CAP-6). The SMS text is built here, in the backend only.
  */
 
-/** Approved copy as registered with DLT. MSG91 renders the real text from the panel; this is kept for reference and the length check. */
+/** Approved copy as registered with DLT (2026-11-17). MSG91 renders the real text from the panel; this is kept for reference. The ##url## variable is always INVITE_SMS_DOWNLOAD_URL. */
 export const INVITE_SMS_APPROVED_COPY =
-  'Hi {name}, you are added to {company} as {role}. Get the app at fenzit.com/app/download and log in with this number. - Fenzit Technology';
+  'Hi ##employee##, you have been added to ##company## as an Employee. Get the app at ##url## and login with this number - Fenzit Technology';
 
 const FIRST_NAME_MAX = 12;
 const COMPANY_NAME_MAX = 20;
@@ -62,22 +61,6 @@ export function fitCompanyName(name: string): string {
       .join(' ');
   }
   return fitted;
-}
-
-export type RoleWord = 'Employee' | 'Admin' | 'Viewer';
-
-/** The role word the SMS shows. Any other role is a programming error (validation rejects it earlier). */
-export function roleWord(role: MembershipRole): RoleWord {
-  switch (role) {
-    case Role.EMPLOYEE:
-      return 'Employee';
-    case Role.COMPANY_ADMIN:
-      return 'Admin';
-    case Role.VIEWER:
-      return 'Viewer';
-    default:
-      throw new Error(`No invite SMS role word for role ${String(role)}`);
-  }
 }
 
 /**
