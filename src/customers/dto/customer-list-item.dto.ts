@@ -12,6 +12,13 @@ export class CustomerListItemDto {
   @ApiProperty({ example: 'Priya Sharma' })
   name: string;
 
+  @ApiProperty({
+    example: 'CST-007',
+    description:
+      'Display identity, minted per tenant — never an authorization key',
+  })
+  customerCode: string;
+
   @ApiProperty({ example: '+91' })
   countryCode: string;
 

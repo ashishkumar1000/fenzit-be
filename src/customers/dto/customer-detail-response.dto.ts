@@ -42,6 +42,13 @@ export class CustomerDetailResponseDto {
   @ApiProperty({ example: 'Priya Sharma' })
   name: string;
 
+  @ApiProperty({
+    example: 'CST-007',
+    description:
+      'Display identity, minted per tenant — never an authorization key',
+  })
+  customerCode: string;
+
   @ApiProperty({ example: '+91' })
   countryCode: string;
 
@@ -73,7 +80,7 @@ export class CustomerDetailResponseDto {
     example: 'ChIJbU60yXAWrjsR4E9-UejD3_g',
     nullable: true,
   })
-    placeId: string | null;
+  placeId: string | null;
 
   @ApiPropertyOptional({
     example: 'Flat 302, Tower B, near the main lift',

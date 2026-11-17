@@ -20,11 +20,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
+import { CustomersPageQueryDto } from './dto/customers-page-query.dto';
 import { normalizeSkillEmbed } from '../jobs/workflow-template.model';
 
 export interface CustomerResponse {
   id: string;
   name: string;
+  /** Display identity CST-001 — minted by trigger, write-once, never authz. */
+  customerCode: string;
   countryCode: string;
   phoneNumber: string;
   address: string | null;
@@ -103,6 +106,8 @@ function clearableText(value: string | null | undefined): string | null {
 export interface CustomerListItem {
   id: string;
   name: string;
+  /** Display identity CST-001 — minted by trigger, write-once, never authz. */
+  customerCode: string;
   countryCode: string;
   phoneNumber: string;
   address: string | null;
@@ -120,6 +125,10 @@ export interface CustomerListItem {
 interface CustomerListRow {
   id: string;
   name: string;
+  // Non-null on this table since the 20261117130000 migration: the BEFORE
+  // INSERT trigger mints a code for every new row and the backfill covered
+  // every existing one.
+  customer_code: string;
   country_code: string;
   phone_number: string;
   address: string | null;
@@ -131,6 +140,36 @@ interface CustomerListRow {
   place_id: string | null;
   address_details: string | null;
   created_at: string;
+}
+
+/** One customers_overview row — a customer plus its job aggregate. The code
+ *  is non-null here: the trigger mints one on every insert and the migration
+ *  backfilled every existing row. */
+interface CustomerOverviewRow extends CustomerListRow {
+  job_count: number;
+  last_job_date: string | null;
+}
+
+/**
+ * The whole-company bucket counts the console's tiles show (see
+ * getCustomersStats). `new`/`single`/`repeat` sum to `total`.
+ */
+export interface CustomersStats {
+  total: number;
+  new: number;
+  single: number;
+  repeat: number;
+}
+
+/** One page of GET /customers/page — the members-page contract. `total` is
+ *  the FILTERED row count; `stats` always describes the whole company. */
+export interface CustomersPage {
+  data: CustomerListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+  stats: CustomersStats;
 }
 
 export interface JobHistoryItem {
@@ -160,6 +199,7 @@ export interface CustomerDetailResponse extends CustomerResponse {
 interface CustomerRow {
   id: string;
   name: string;
+  customer_code: string;
   country_code: string;
   phone_number: string;
   address: string | null;
@@ -176,7 +216,7 @@ interface CustomerRow {
 }
 
 const CUSTOMER_COLUMNS =
-  'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_via, created_at, tenant_id';
+  'id, name, customer_code, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_via, created_at, tenant_id';
 
 const PAGE_SIZE = 50;
 const JOB_HISTORY_PAGE_SIZE = 20;
@@ -476,7 +516,7 @@ export class CustomersService {
     let qb = admin
       .from('customers')
       .select(
-        'id, name, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_at',
+        'id, name, customer_code, country_code, phone_number, address, city, formatted_address, pincode, latitude, longitude, place_id, address_details, created_at',
       )
       .eq('tenant_id', owner.tenantId);
 
@@ -528,6 +568,7 @@ export class CustomersService {
       return {
         id: row.id,
         name: row.name,
+        customerCode: row.customer_code,
         countryCode: row.country_code,
         phoneNumber: row.phone_number,
         address: row.address,
@@ -544,6 +585,199 @@ export class CustomersService {
     });
 
     return new PaginatedResponse(items, nextCursor);
+  }
+
+  /**
+   * The whole-company counters the console's customer stat tiles show. The
+   * owner-approved disjoint buckets over job history — new (0 jobs), single
+   * (exactly 1), repeat (2+) — so the counts sum to the total. Counted before
+   * any filter, so tiles stay stable while the table narrows (the members
+   * stats contract).
+   */
+  private async getCustomersStats(tenantId: string): Promise<CustomersStats> {
+    const admin = this.supabaseClientFactory.createAdmin();
+
+    // Only the bucket column crosses the wire — a tenant can hold thousands
+    // of customers and this runs on every page load.
+    const { data, error } = await admin
+      .from('customers_overview')
+      .select('job_count')
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      this.logger.error('Failed to count customer buckets:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to count customers',
+      });
+    }
+
+    const stats: CustomersStats = { total: 0, new: 0, single: 0, repeat: 0 };
+    for (const row of (data ?? []) as { job_count: number }[]) {
+      stats.total += 1;
+      if (row.job_count <= 0) stats.new += 1;
+      else if (row.job_count === 1) stats.single += 1;
+      else stats.repeat += 1;
+    }
+    return stats;
+  }
+
+  /**
+   * One page of the console's customer list — the members-page contract over
+   * the customers_overview view: DB-side filtering/sorting/paging (a company
+   * can hold thousands of customers), a filtered exact total, and whole-
+   * company stats that ignore the filters. No database function of its own —
+   * the view carries the aggregates.
+   */
+  async getCustomersPage(
+    owner: RequestUser,
+    query: CustomersPageQueryDto,
+  ): Promise<CustomersPage> {
+    if (!owner.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing customers',
+      });
+    }
+
+    const admin = this.supabaseClientFactory.createAdmin();
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 10;
+
+    // The tenant/search/bucket filters, applied to a fresh builder — the list
+    // query and the past-the-end recount (below) share them. The select
+    // expression and its options ride in as parameters because the
+    // options-bearing select() overload only exists at the from() level.
+    const filtered = (
+      columns: string,
+      options: { head?: boolean; count?: 'exact' },
+    ) => {
+      let q = admin
+        .from('customers_overview')
+        .select(columns, options)
+        .eq('tenant_id', owner.tenantId);
+
+      const term = query.search ? this.sanitizeSearchTerm(query.search) : '';
+      if (term) {
+        // Inside .or() the ilike wildcard is '*' (PostgREST translates to '%').
+        q = q.or(`name.ilike.*${term}*,phone_number.ilike.*${term}*`);
+      }
+
+      // The disjoint buckets — a customer falls in exactly one, so these are
+      // plain predicates over job_count.
+      if (query.filter === 'new') q = q.eq('job_count', 0);
+      else if (query.filter === 'single') q = q.eq('job_count', 1);
+      else if (query.filter === 'repeat') q = q.gte('job_count', 2);
+
+      return q;
+    };
+
+    let qb = filtered('*', { count: 'exact' });
+
+    // Every sort carries an id tiebreak, so two rows that share the sort key
+    // can never straddle a page boundary.
+    switch (query.sort) {
+      case 'created_old':
+        qb = qb
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true });
+        break;
+      case 'name_az':
+        qb = qb
+          .order('name', { ascending: true })
+          .order('id', { ascending: true });
+        break;
+      case 'name_za':
+        qb = qb
+          .order('name', { ascending: false })
+          .order('id', { ascending: false });
+        break;
+      case 'recent_activity':
+        // A customer with no jobs sorts last (nullsFirst: false on a
+        // descending order puts the nulls at the end).
+        qb = qb
+          .order('last_job_date', { ascending: false, nullsFirst: false })
+          .order('id', { ascending: false });
+        break;
+      default:
+        qb = qb
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false });
+    }
+
+    const [listResult, stats] = await Promise.all([
+      qb.range((page - 1) * pageSize, page * pageSize - 1),
+      this.getCustomersStats(owner.tenantId),
+    ]);
+
+    const { data, error, count } = listResult;
+    if (error) {
+      // A page entirely past the end (a hand-edited address — the app's own
+      // pager clamps) is an EMPTY page, not a failure: PostgREST answers
+      // PGRST103. The filtered total still counts, so the envelope stays
+      // honest and the pager shows the real last page.
+      if (error.code === 'PGRST103') {
+        const { count: recount, error: recountError } = await filtered('id', {
+          count: 'exact',
+          head: true,
+        });
+        if (recountError) {
+          this.logger.error('Failed to recount customers:', {
+            error: recountError,
+          });
+          throw new InternalServerErrorException({
+            error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+            message: 'Failed to list customers',
+          });
+        }
+        const recountTotal = recount ?? 0;
+        return {
+          data: [],
+          total: recountTotal,
+          page,
+          pageSize,
+          pages: Math.max(1, Math.ceil(recountTotal / pageSize)),
+          stats,
+        };
+      }
+      this.logger.error('Failed to list customers page:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to list customers',
+      });
+    }
+
+    const total = count ?? 0;
+    // The select expression is a parameter, so postgrest-js can't narrow the
+    // row type — the double cast just restores the shape we asked for.
+    const rows = (data ?? []) as unknown as CustomerOverviewRow[];
+
+    const items: CustomerListItem[] = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      customerCode: row.customer_code,
+      countryCode: row.country_code,
+      phoneNumber: row.phone_number,
+      address: row.address,
+      city: row.city,
+      formattedAddress: row.formatted_address,
+      pincode: row.pincode,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      placeId: row.place_id,
+      addressDetails: row.address_details,
+      jobCount: row.job_count,
+      lastJobDate: row.last_job_date,
+    }));
+
+    return {
+      data: items,
+      total,
+      page,
+      pageSize,
+      pages: Math.max(1, Math.ceil(total / pageSize)),
+      stats,
+    };
   }
 
   /**
@@ -772,6 +1006,7 @@ export class CustomersService {
   private toResponse(row: {
     id: string;
     name: string;
+    customer_code: string;
     country_code: string;
     phone_number: string;
     address: string | null;
@@ -789,6 +1024,7 @@ export class CustomersService {
     return {
       id: row.id,
       name: row.name,
+      customerCode: row.customer_code,
       countryCode: row.country_code,
       phoneNumber: row.phone_number,
       address: row.address,

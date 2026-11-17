@@ -420,7 +420,9 @@ describe('Customers (e2e)', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/customers',
-        headers: { authorization: `Bearer ${accessToken(jwtService, VIEWER_ID)}` },
+        headers: {
+          authorization: `Bearer ${accessToken(jwtService, VIEWER_ID)}`,
+        },
         payload: validPayload,
       });
 
@@ -456,6 +458,7 @@ describe('Customers (e2e)', () => {
     const listRow = {
       id: 'cust-1',
       name: 'Priya Sharma',
+      customer_code: 'CST-001',
       country_code: '+91',
       phone_number: '9876543210',
       city: 'Bengaluru',
@@ -513,6 +516,7 @@ describe('Customers (e2e)', () => {
       expect(body.data[0]).toEqual({
         id: 'cust-1',
         name: 'Priya Sharma',
+        customerCode: 'CST-001',
         countryCode: '+91',
         phoneNumber: '9876543210',
         city: 'Bengaluru',
@@ -999,7 +1003,8 @@ describe('Customers (e2e)', () => {
     it('matrix-2/CAP-2/3 — a location pick writes the location block and never touches addressDetails (CAP-5)', async () => {
       const row = {
         ...patchedRow,
-        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        formatted_address:
+          '9 Church Street, Bengaluru, Karnataka 560001, India',
         pincode: '560001',
         latitude: 12.9716,
         longitude: 77.5946,
@@ -1012,7 +1017,8 @@ describe('Customers (e2e)', () => {
         url: `/api/v1/customers/${PATCH_ID}`,
         headers: { authorization: `Bearer ${ownerJwt()}` },
         payload: {
-          formattedAddress: '9 Church Street, Bengaluru, Karnataka 560001, India',
+          formattedAddress:
+            '9 Church Street, Bengaluru, Karnataka 560001, India',
           pincode: '560001',
           latitude: 12.9716,
           longitude: 77.5946,
@@ -1022,7 +1028,8 @@ describe('Customers (e2e)', () => {
 
       expect(response.statusCode).toBe(200);
       expect(patch()).toEqual({
-        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        formatted_address:
+          '9 Church Street, Bengaluru, Karnataka 560001, India',
         pincode: '560001',
         latitude: 12.9716,
         longitude: 77.5946,

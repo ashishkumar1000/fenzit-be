@@ -16,12 +16,14 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiExtraModels,
+  ApiQuery,
   getSchemaPath,
 } from '@nestjs/swagger';
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { ListCustomersQueryDto } from './dto/list-customers-query.dto';
+import { CustomersPageQueryDto } from './dto/customers-page-query.dto';
 import { GetCustomerDetailQueryDto } from './dto/get-customer-detail-query.dto';
 import { CustomerDetailResponseDto } from './dto/customer-detail-response.dto';
 import { CustomerListItemDto } from './dto/customer-list-item.dto';
@@ -40,7 +42,7 @@ export class CustomersController {
   @Post()
   @Can('customer.write')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Create a customer for the company" })
+  @ApiOperation({ summary: 'Create a customer for the company' })
   @ApiResponse({ status: 201, description: 'Customer created' })
   @ApiResponse({ status: 400, description: 'Company not set up' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
@@ -94,6 +96,42 @@ export class CustomersController {
     return this.customersService.listCustomers(user, query);
   }
 
+  // NOTE: this route and `:id` below it must stay below the parameterless
+  // `@Get()` list route above — `:id` is a catch-all that would otherwise
+  // shadow `GET /customers` (and would swallow `/page` too).
+  @Get('page')
+  @Can('customer.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, example: 10 })
+  @ApiQuery({ name: 'search', required: false, example: 'priya' })
+  @ApiQuery({
+    name: 'filter',
+    required: false,
+    enum: ['all', 'new', 'single', 'repeat'],
+  })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: [
+      'created_new',
+      'created_old',
+      'name_az',
+      'name_za',
+      'recent_activity',
+    ],
+  })
+  @ApiOperation({
+    summary:
+      "One page of the company's customers, filtered and sorted over the customers_overview view. `total` follows the filters; `stats` counts the whole company regardless of them (disjoint buckets: new = 0 jobs, single = 1, repeat = 2+). A page past the end answers empty rows with the honest total — it does NOT clamp to the last page the way /members/page does; the console's pager never asks for one.",
+  })
+  listPaged(
+    @CurrentUser() user: RequestUser,
+    @Query() query: CustomersPageQueryDto,
+  ) {
+    return this.customersService.getCustomersPage(user, query);
+  }
+
   // NOTE: `:id` must stay below the parameterless `@Get()` list route above —
   // it is a catch-all that would otherwise shadow `GET /customers`.
   @Get(':id')
@@ -132,7 +170,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      "Update the mutable fields of a customer (phone/country code immutable)",
+      'Update the mutable fields of a customer (phone/country code immutable)',
   })
   @ApiResponse({ status: 200, description: 'Customer updated' })
   @ApiResponse({
