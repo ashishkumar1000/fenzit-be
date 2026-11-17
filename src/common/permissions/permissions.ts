@@ -42,6 +42,9 @@ export type Permission =
   | 'leave.create_on_behalf'
   | 'leave.types' // the paid/unpaid catalog config (CAP-12), company admin of this company only
   | 'leave.own'
+  // payroll configuration (epic 23): components, structures (CAP-1/2), and
+  // later the calendar, heads and statutory config (CAP-4/6/8)
+  | 'payroll.config' // company admin of this company only
   // lookups
   | 'places.search'
   // app roadblocks (platform only, super admin)
@@ -90,13 +93,14 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'tenant.validity.manage',
     ]),
     // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
-    // member.job_settings, member.employment, leave.types and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
+    // member.job_settings, member.employment, leave.types, payroll.config and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
     [Role.COMPANY_ADMIN]: new Set<Permission>([
       ...ADMIN_PERMISSIONS,
       'invite_sms.resend',
       'member.job_settings',
       'member.employment',
       'leave.types',
+      'payroll.config',
       'job.approve',
     ]),
     [Role.EMPLOYEE]: new Set<Permission>([

@@ -108,8 +108,17 @@ describe('Payroll journey (real DB, real routes)', () => {
   const memberD = randomUUID(); // remove audit predates the join — the clamp
   const memberE = randomUUID(); // remove audit after the join — the clean case
   const otherOwner = randomUUID();
+  const platformAdmin = randomUUID(); // staff, no membership anywhere
 
-  const crew = [owner, employeeA, memberC, memberD, memberE, otherOwner];
+  const crew = [
+    owner,
+    employeeA,
+    memberC,
+    memberD,
+    memberE,
+    otherOwner,
+    platformAdmin,
+  ];
   const phones = Array.from({ length: crew.length }, (_, i) =>
     `7${Date.now()}${i}`.slice(-12).replace(/[^0-9]/g, ''),
   );
@@ -183,6 +192,7 @@ describe('Payroll journey (real DB, real routes)', () => {
           country_code: '+91',
           phone_number: phones[i],
           name: `payroll journey ${i}`,
+          platform_admin: id === platformAdmin,
         })),
       ),
     );
@@ -1045,6 +1055,671 @@ describe('Payroll journey (real DB, real routes)', () => {
         [tenant, applyRequestId],
       );
       expect(rows[0].n).toBe(0); // the refused apply left nothing behind
+    },
+  );
+  // ------------------------------------------------------------- 23-3 legs
+  // The component library and per-employee salary structures (CAP-1, CAP-2).
+  // Component ids are captured from the API answers; every structure line
+  // references them, mirroring how the run engine will resolve config.
+
+  const basicComp: { id: string } = { id: '' };
+  const hraComp: { id: string } = { id: '' };
+  const specialComp: { id: string } = { id: '' };
+  const unusedComp: { id: string } = { id: '' };
+
+  const structuresUrl = (userId: string) =>
+    `/api/v1/members/${userId}/salary-structures`;
+  const componentsUrl = '/api/v1/payroll/components';
+
+  /** The employee's stored structure rows, straight from the DB. */
+  async function structureRowsOf(
+    userId: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await pool.query<{
+      effective_from: string;
+      lines: unknown;
+      created_at: Date;
+    }>(
+      `select s.effective_from::text as effective_from, s.lines, s.created_at
+         from public.salary_structures s
+         join public.memberships m on m.id = s.membership_id
+        where s.tenant_id = $1 and m.user_id = $2
+        order by s.effective_from`,
+      [tenant, userId],
+    );
+    return rows;
+  }
+
+  async function structureAuditCount(targetUserId: string): Promise<number> {
+    const { rows } = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_log
+        where tenant_id = $1 and action = 'payroll.structure_saved'
+          and target_user_id = $2`,
+      [tenant, targetUserId],
+    );
+    return rows[0].n;
+  }
+
+  maybeIt(
+    '23-3 — the owner builds the fixture library: Basic designated, HRA beside it',
+    async () => {
+      const basic = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'Basic', isBasic: true },
+      });
+      expect(basic.statusCode).toBe(201);
+      const basicBody = JSON.parse(basic.body) as {
+        id: string;
+        isBasic: boolean;
+      };
+      expect(basicBody.isBasic).toBe(true);
+      basicComp.id = basicBody.id;
+
+      const hra = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'HRA' },
+      });
+      expect(hra.statusCode).toBe(201);
+      const hraBody = JSON.parse(hra.body) as { id: string; isBasic: boolean };
+      expect(hraBody.isBasic).toBe(false);
+      hraComp.id = hraBody.id;
+
+      const { rows } = await pool.query(
+        `select name, is_basic, active from public.salary_components
+          where tenant_id = $1 order by name`,
+        [tenant],
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        name: 'Basic',
+        is_basic: true,
+        active: true,
+      });
+      expect(rows[1]).toMatchObject({
+        name: 'HRA',
+        is_basic: false,
+        active: true,
+      });
+    },
+  );
+
+  maybeIt(
+    '23-3 — exactly one basic: a second designation is refused naming the current one',
+    async () => {
+      const second = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'Other', isBasic: true },
+      });
+      expect(second.statusCode).toBe(409);
+      expect(
+        (JSON.parse(second.body) as { error_code: string }).error_code,
+      ).toBe('BASIC_COMPONENT_EXISTS');
+      expect(
+        (JSON.parse(second.body) as { message: string }).message,
+      ).toContain('"Basic"');
+
+      const { rows } = await pool.query<{ n: number }>(
+        'select count(*)::int as n from public.salary_components where tenant_id = $1',
+        [tenant],
+      );
+      expect(rows[0].n).toBe(2); // the refused create left nothing behind
+    },
+  );
+
+  maybeIt(
+    '23-3 — variant A: basic 20,000 + HRA 40% saves with computed 8,000.00, and an identical re-save touches nothing',
+    async () => {
+      const lines = [
+        { componentId: basicComp.id, amount: '20000.00' },
+        {
+          componentId: hraComp.id,
+          formula: {
+            kind: 'percent-of',
+            percent: 40,
+            of: { kind: 'component', componentId: basicComp.id },
+          },
+        },
+      ];
+      const res = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-09-01', lines },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        effectiveFrom: string;
+        lines: Array<{ componentName: string; computedAmount?: string }>;
+      };
+      expect(body.effectiveFrom).toBe('2026-09-01');
+      expect(body.lines.map((l) => l.computedAmount)).toEqual([
+        '20000.00',
+        '8000.00',
+      ]);
+      expect(body.lines.map((l) => l.componentName)).toEqual(['Basic', 'HRA']);
+
+      const rows = await structureRowsOf(employeeA);
+      expect(rows).toHaveLength(1);
+      const stored = rows[0]['lines'] as Array<Record<string, unknown>>;
+      expect(stored[0]).toEqual({
+        componentId: basicComp.id,
+        amount: '20000.00',
+      });
+      expect(stored[1]['componentId']).toBe(hraComp.id);
+      expect(stored[1]['formula']).toMatchObject({
+        kind: 'percent-of',
+        percent: 40,
+      });
+
+      // The identical re-save: still one row, one audit entry, row untouched.
+      const repeat = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-09-01', lines },
+      });
+      expect(repeat.statusCode).toBe(200);
+      expect(await structureRowsOf(employeeA)).toHaveLength(1);
+      expect(await structureAuditCount(employeeA)).toBe(1);
+      expect(String((await structureRowsOf(employeeA))[0]['created_at'])).toBe(
+        String(rows[0]['created_at']),
+      );
+    },
+  );
+
+  maybeIt(
+    '23-3 — a structure without the basic component is refused in plain English',
+    async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-09-01',
+          lines: [
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: basicComp.id },
+              },
+            },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.body).toContain('basic');
+      expect(await structureRowsOf(employeeA)).toHaveLength(1);
+    },
+  );
+
+  maybeIt(
+    '23-3 — an invented calendar date is refused (a real parse, not a regex)',
+    async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-02-30',
+          lines: [{ componentId: basicComp.id, amount: '20000.00' }],
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.body).toContain('effectiveFrom');
+    },
+  );
+
+  maybeIt(
+    '23-3 — a formula cycle is refused naming the chain; the last valid save survives the failed edit',
+    async () => {
+      const special = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'Special' },
+      });
+      expect(special.statusCode).toBe(201);
+      specialComp.id = (JSON.parse(special.body) as { id: string }).id;
+
+      // A valid three-line set first: Special is a flat amount. Dated
+      // December so the fixture months (September = variant A, later
+      // November) stay untouched by this leg's config.
+      const valid = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-12-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: basicComp.id },
+              },
+            },
+            { componentId: specialComp.id, amount: '5000.00' },
+          ],
+        },
+      });
+      expect(valid.statusCode).toBe(200);
+
+      // The edit that would close the loop: HRA from Special, Special from
+      // HRA. The whole set is re-checked and the chain is named.
+      const cycle = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-12-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: specialComp.id },
+              },
+            },
+            {
+              componentId: specialComp.id,
+              formula: { kind: 'component', componentId: hraComp.id },
+            },
+          ],
+        },
+      });
+      expect(cycle.statusCode).toBe(422);
+      expect((JSON.parse(cycle.body) as { message: string }).message).toContain(
+        '"HRA" → "Special" → "HRA"',
+      );
+
+      // The failed edit left the last valid save standing (the September
+      // fixture row plus this leg's December revision — nothing else).
+      const rows = await structureRowsOf(employeeA);
+      expect(rows.map((r) => r['effective_from'])).toEqual([
+        '2026-09-01',
+        '2026-12-01',
+      ]);
+      const stored = rows[1]['lines'] as Array<Record<string, unknown>>;
+      expect(stored[2]).toEqual({
+        componentId: specialComp.id,
+        amount: '5000.00',
+      });
+
+      // A CHANGED same-date save replaces the dated row in place: still one
+      // December row, and the service stamped updated_at (no trigger exists).
+      const changed = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-12-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: basicComp.id },
+              },
+            },
+            { componentId: specialComp.id, amount: '6000.00' },
+          ],
+        },
+      });
+      expect(changed.statusCode).toBe(200);
+      expect(
+        (
+          JSON.parse(changed.body) as {
+            lines: Array<{ computedAmount?: string }>;
+          }
+        ).lines[2].computedAmount,
+      ).toBe('6000.00');
+      const afterChange = await structureRowsOf(employeeA);
+      expect(afterChange.map((r) => r['effective_from'])).toEqual([
+        '2026-09-01',
+        '2026-12-01',
+      ]);
+      const decRow = afterChange[1] as unknown as {
+        created_at: string;
+        updated_at: string;
+      };
+      expect(decRow.updated_at).not.toBe(decRow.created_at);
+      const changedStored = afterChange[1]['lines'] as Array<
+        Record<string, unknown>
+      >;
+      expect(changedStored[2]).toEqual({
+        componentId: specialComp.id,
+        amount: '6000.00',
+      });
+      // Three real changes: the Sep save, the Dec create, the Dec replace.
+      expect(await structureAuditCount(employeeA)).toBe(3);
+    },
+  );
+
+  maybeIt(
+    '23-3 — division by a zero amount and a negative formula are refused',
+    async () => {
+      const zero = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'Zero Rate' },
+      });
+      expect(zero.statusCode).toBe(201);
+      const zeroId = (JSON.parse(zero.body) as { id: string }).id;
+
+      const divByZero = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-09-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            { componentId: zeroId, amount: '0.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'binary',
+                op: '/',
+                left: { kind: 'const', value: 100 },
+                right: { kind: 'component', componentId: zeroId },
+              },
+            },
+          ],
+        },
+      });
+      expect(divByZero.statusCode).toBe(422);
+      expect(divByZero.body).toContain('divides by zero');
+
+      const negative = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-09-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'binary',
+                op: '-',
+                left: { kind: 'component', componentId: basicComp.id },
+                right: { kind: 'const', value: 25000 },
+              },
+            },
+          ],
+        },
+      });
+      expect(negative.statusCode).toBe(422);
+      expect(negative.body).toContain('negative');
+
+      // Neither refusal left a row: the September fixture row and the
+      // December revision stand, nothing else.
+      expect(await structureRowsOf(employeeA)).toHaveLength(2);
+    },
+  );
+
+  maybeIt(
+    '23-3 — variant F: the 2026-11-01 revision coexists with 2026-09-01 (both rows, both readable)',
+    async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-11-01',
+          lines: [
+            { componentId: basicComp.id, amount: '22000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: basicComp.id },
+              },
+            },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        lines: Array<{ computedAmount?: string }>;
+      };
+      expect(body.lines.map((l) => l.computedAmount)).toEqual([
+        '22000.00',
+        '8800.00',
+      ]);
+
+      const read = await app.inject({
+        method: 'GET',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+      });
+      expect(read.statusCode).toBe(200);
+      const revisions = JSON.parse(read.body) as Array<{
+        effectiveFrom: string;
+        lines: Array<{ computedAmount?: string }>;
+      }>;
+      expect(revisions.map((r) => r.effectiveFrom)).toEqual([
+        '2026-09-01',
+        '2026-11-01',
+        '2026-12-01',
+      ]);
+      // September's revision still answers its own numbers (the whole-month
+      // rule's anchor): the run resolves per month from these rows.
+      expect(revisions[0].lines.map((l) => l.computedAmount)).toEqual([
+        '20000.00',
+        '8000.00',
+      ]);
+      expect(await structureRowsOf(employeeA)).toHaveLength(3);
+    },
+  );
+
+  maybeIt(
+    '23-3 — renames reach the read at once; deactivation is refused listing the employee; an unused component retires',
+    async () => {
+      const rename = await app.inject({
+        method: 'PATCH',
+        url: `${componentsUrl}/${hraComp.id}`,
+        headers: ownerHeaders(),
+        payload: { name: 'House Rent' },
+      });
+      expect(rename.statusCode).toBe(200);
+      expect((JSON.parse(rename.body) as { name: string }).name).toBe(
+        'House Rent',
+      );
+
+      const read = await app.inject({
+        method: 'GET',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+      });
+      const revisions = JSON.parse(read.body) as Array<{
+        lines: Array<{ componentName: string }>;
+      }>;
+      expect(revisions[0].lines[1].componentName).toBe('House Rent');
+
+      // The owner-side library read closes the leg (after the retire below)
+      // so every component created here is in the answer.
+      const refuse = await app.inject({
+        method: 'PATCH',
+        url: `${componentsUrl}/${hraComp.id}`,
+        headers: ownerHeaders(),
+        payload: { active: false },
+      });
+      expect(refuse.statusCode).toBe(409);
+      expect(
+        (JSON.parse(refuse.body) as { error_code: string }).error_code,
+      ).toBe('SALARY_COMPONENT_IN_USE');
+      expect(refuse.body).toContain('payroll journey 1'); // Employee A's user name
+      const after = await pool.query<{ active: boolean }>(
+        'select active from public.salary_components where id = $1',
+        [hraComp.id],
+      );
+      expect(after.rows[0]['active']).toBe(true);
+
+      const unused = await app.inject({
+        method: 'POST',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+        payload: { name: 'Unused Allowance' },
+      });
+      expect(unused.statusCode).toBe(201);
+      unusedComp.id = (JSON.parse(unused.body) as { id: string }).id;
+      const retire = await app.inject({
+        method: 'PATCH',
+        url: `${componentsUrl}/${unusedComp.id}`,
+        headers: ownerHeaders(),
+        payload: { active: false },
+      });
+      expect(retire.statusCode).toBe(200);
+      expect((JSON.parse(retire.body) as { active: boolean }).active).toBe(
+        false,
+      );
+
+      // The owner-side library read closes the leg: name-ascending with live
+      // flags — the renamed HRA answers its new name, the retired one its
+      // inactivity.
+      const library = await app.inject({
+        method: 'GET',
+        url: componentsUrl,
+        headers: ownerHeaders(),
+      });
+      expect(library.statusCode).toBe(200);
+      const libraryBody = JSON.parse(library.body) as Array<{
+        name: string;
+        isBasic: boolean;
+        active: boolean;
+      }>;
+      expect(libraryBody.map((c) => c.name)).toEqual([
+        'Basic',
+        'House Rent',
+        'Special',
+        'Unused Allowance',
+        'Zero Rate',
+      ]);
+      expect(libraryBody[0]).toMatchObject({ isBasic: true, active: true });
+      expect(libraryBody[3]).toMatchObject({ active: false });
+    },
+  );
+
+  maybeIt(
+    '23-3 — a deactivated component cannot re-enter a structure; unknown components are refused',
+    async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            { componentId: unusedComp.id, amount: '1000.00' },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.body).toContain('deactivated');
+
+      const unknown = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          lines: [
+            { componentId: basicComp.id, amount: '20000.00' },
+            {
+              componentId: '99999999-9999-4999-8999-999999999999',
+              amount: '1000.00',
+            },
+          ],
+        },
+      });
+      expect(unknown.statusCode).toBe(422);
+      expect(unknown.body).toContain('not in your company library');
+      expect(await structureRowsOf(employeeA)).toHaveLength(3);
+    },
+  );
+
+  maybeIt(
+    '23-3 — another company admin gets 404 on our member; an employee token is 403 on the config surface',
+    async () => {
+      const foreign = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: { authorization: `Bearer ${bearerFor(otherOwner)}` },
+        payload: {
+          effectiveFrom: '2026-10-01',
+          lines: [{ componentId: basicComp.id, amount: '20000.00' }],
+        },
+      });
+      expect(foreign.statusCode).toBe(404);
+      expect(
+        (JSON.parse(foreign.body) as { error_code: string }).error_code,
+      ).toBe('RESOURCE_NOT_FOUND');
+      expect(await structureRowsOf(employeeA)).toHaveLength(3);
+
+      const employeeHeaders = () => ({
+        authorization: `Bearer ${bearerFor(employeeA)}`,
+      });
+      const list = await app.inject({
+        method: 'GET',
+        url: componentsUrl,
+        headers: employeeHeaders(),
+      });
+      expect(list.statusCode).toBe(403);
+
+      const ownWrite = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: employeeHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          lines: [{ componentId: basicComp.id, amount: '20000.00' }],
+        },
+      });
+      expect(ownWrite.statusCode).toBe(403);
+      expect(await structureRowsOf(employeeA)).toHaveLength(3);
+
+      // A platform admin (staff, no company) configures no tenant's payroll:
+      // both surfaces answer 403, same as an employee's token.
+      const staffHeaders = () => ({
+        authorization: `Bearer ${bearerFor(platformAdmin)}`,
+      });
+      const staffList = await app.inject({
+        method: 'GET',
+        url: componentsUrl,
+        headers: staffHeaders(),
+      });
+      expect(staffList.statusCode).toBe(403);
+
+      const staffWrite = await app.inject({
+        method: 'PUT',
+        url: structuresUrl(employeeA),
+        headers: staffHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          lines: [{ componentId: basicComp.id, amount: '20000.00' }],
+        },
+      });
+      expect(staffWrite.statusCode).toBe(403);
+      expect(await structureRowsOf(employeeA)).toHaveLength(3);
     },
   );
 });

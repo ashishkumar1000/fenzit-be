@@ -36,6 +36,7 @@ import { CountryCodesModule } from './country-codes/country-codes.module';
 import { AdminModule } from './admin/admin.module';
 import { MembersModule } from './members/members.module';
 import { PushModule } from './push/push.module';
+import { PayrollModule } from './payroll/payroll.module';
 import { TelemetryShutdown } from './telemetry';
 
 @Module({
@@ -231,6 +232,7 @@ import { TelemetryShutdown } from './telemetry';
     AdminModule,
     MembersModule,
     PushModule,
+    PayrollModule,
     AdminConfigModule,
   ],
   controllers: [HealthController],

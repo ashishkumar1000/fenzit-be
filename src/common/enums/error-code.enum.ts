@@ -117,6 +117,12 @@ export enum ErrorCode {
   /** The chosen leave type vanished while this typing was in flight (409) —
    *  the foreign-key RESTRICT backstop caught the race; reload and retry. */
   LEAVE_TYPE_CHANGED = 'LEAVE_TYPE_CHANGED',
+  /** A salary component is referenced by an employee salary structure and
+   *  cannot be deactivated (409) — the answer names the employees. */
+  SALARY_COMPONENT_IN_USE = 'SALARY_COMPONENT_IN_USE',
+  /** Another component already holds the basic designation (409) — the
+   *  exactly-one-basic rule (CAP-1); the message names the current basic. */
+  BASIC_COMPONENT_EXISTS = 'BASIC_COMPONENT_EXISTS',
   /** Google Play could not be asked for the live Android version (502).
    *  Retryable; a roadblock save that needs the check is refused, not guessed. */
   PLAY_UPSTREAM_ERROR = 'PLAY_UPSTREAM_ERROR',

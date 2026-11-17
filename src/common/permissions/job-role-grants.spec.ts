@@ -73,3 +73,25 @@ describe('leave-type catalog grant per role (payroll CAP-12)', () => {
     expect(permissionsFor(null).has('leave.types')).toBe(false);
   });
 });
+
+/**
+ * Pins the payroll configuration grant (CAP-1/2, story 23-3): the component
+ * library and salary-structure endpoints sit behind `payroll.config`, so a
+ * dropped grant switches the whole payroll configuration surface off without
+ * any service test failing. Outside ADMIN_PERMISSIONS — a platform admin
+ * (staff, no company) configures no tenant's payroll.
+ */
+describe('payroll config grant per role (payroll CAP-1/2)', () => {
+  it('only the company admin holds it', () => {
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('payroll.config')).toBe(true);
+    expect(permissionsFor(Role.EMPLOYEE).has('payroll.config')).toBe(false);
+    expect(permissionsFor(Role.VIEWER).has('payroll.config')).toBe(false);
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('payroll.config')).toBe(
+      false,
+    );
+  });
+
+  it('a signed-in person with no company holds nothing of it', () => {
+    expect(permissionsFor(null).has('payroll.config')).toBe(false);
+  });
+});
