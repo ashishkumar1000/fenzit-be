@@ -2197,4 +2197,522 @@ describe('Payroll journey (real DB, real routes)', () => {
       expect(await stateRulesRowOf()).toMatchObject({ notified: false });
     },
   );
+
+  // ------------------------------------------------------------- 23-5 legs
+  // Deduction heads, the PF-covered switch, and the never-member exclusion
+  // rule (CAP-6). The statutory MATH is pinned by the pure-module unit tests
+  // (statutory.spec.ts quotes the fixture verbatim); these legs pin the
+  // config surfaces and the DB rows.
+
+  const headsUrl = '/api/v1/payroll/deduction-heads';
+
+  /** The tenant's stored head rows, straight from the DB. */
+  async function headRowsOf(): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await pool.query<Record<string, unknown>>(
+      `select name, kind, amount, basis, effective_from::text as effective_from, active
+         from public.payroll_deduction_heads
+        where tenant_id = $1
+        order by name, effective_from`,
+      [tenant],
+    );
+    return rows;
+  }
+
+  maybeIt(
+    '23-5 — the owner builds the fixture heads: flat PT ₹200 and an insurance 2.5% of gross',
+    async () => {
+      const pt = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Professional Tax',
+          kind: 'flat',
+          amount: '200',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(pt.statusCode).toBe(201);
+      expect(JSON.parse(pt.body)).toMatchObject({
+        name: 'Professional Tax',
+        kind: 'flat',
+        amount: '200.00', // normalised to money text
+        basis: null,
+        active: true,
+      });
+
+      // Variant B: 2% of the post-LOP gross — the earned basis amount.
+      const insurance = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Insurance',
+          kind: 'percent',
+          amount: '2.5',
+          basis: 'gross',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(insurance.statusCode).toBe(201);
+      expect(JSON.parse(insurance.body)).toMatchObject({
+        name: 'Insurance',
+        kind: 'percent',
+        amount: '2.50',
+        basis: 'gross',
+      });
+
+      const rows = await headRowsOf();
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        name: 'Insurance',
+        kind: 'percent',
+        amount: '2.50',
+        basis: 'gross',
+        active: true,
+      });
+      expect(rows[1]).toMatchObject({
+        name: 'Professional Tax',
+        kind: 'flat',
+        amount: '200.00',
+        basis: null,
+      });
+    },
+  );
+
+  maybeIt(
+    '23-5 — head shape mismatches are refused naming the rule, and nothing is written',
+    async () => {
+      const reject = async (payload: Record<string, unknown>, text: string) => {
+        const res = await app.inject({
+          method: 'POST',
+          url: headsUrl,
+          headers: ownerHeaders(),
+          payload,
+        });
+        expect(res.statusCode).toBe(422);
+        expect(res.body).toContain(text);
+      };
+      await reject(
+        {
+          name: 'Bad Pct',
+          kind: 'percent',
+          amount: '2.00',
+          effectiveFrom: '2026-09-01',
+        },
+        'needs a basis',
+      );
+      await reject(
+        {
+          name: 'Bad Flat',
+          kind: 'flat',
+          amount: '200.00',
+          basis: 'gross',
+          effectiveFrom: '2026-09-01',
+        },
+        'only a percentage head carries a basis',
+      );
+      await reject(
+        {
+          name: 'Zero Pct',
+          kind: 'percent',
+          amount: '0',
+          basis: 'basic',
+          effectiveFrom: '2026-09-01',
+        },
+        'between 0 (exclusive)',
+      );
+      await reject(
+        {
+          name: 'Invented',
+          kind: 'flat',
+          amount: '200.00',
+          effectiveFrom: '2026-02-30',
+        },
+        'effectiveFrom',
+      );
+      // Wire-shape refusals answer the pipe's 422 (the house pipe maps every
+      // validation failure to 422): a wrongly-cased basis, a whitespace name.
+      const badBasis = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Cased Basis',
+          kind: 'percent',
+          amount: '2.00',
+          basis: 'Basic',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(badBasis.statusCode).toBe(422);
+      expect(badBasis.body).toContain('basis must be basic or gross');
+      const blankName = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: '   ',
+          kind: 'flat',
+          amount: '200.00',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(blankName.statusCode).toBe(422);
+      expect(blankName.body).toContain('name must not be empty');
+      expect(await headRowsOf()).toHaveLength(2);
+    },
+  );
+
+  maybeIt(
+    '23-5 — a same-date head save replaces in place; an identical one writes nothing; deactivation retires',
+    async () => {
+      // Identical (after normalisation): "200" == "200.00" → no-op.
+      const noop = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Professional Tax',
+          kind: 'flat',
+          amount: '200',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(noop.statusCode).toBe(201);
+      expect(await headRowsOf()).toHaveLength(2);
+
+      // A changed same-date save replaces the row — never a second one.
+      const replace = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Professional Tax',
+          kind: 'flat',
+          amount: '250.00',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(replace.statusCode).toBe(201);
+      let rows = await headRowsOf();
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({ amount: '250.00' });
+
+      // The list endpoint answers the stored revisions, name-then-date
+      // order, with the id the deactivate route needs.
+      const listRes = await app.inject({
+        method: 'GET',
+        url: headsUrl,
+        headers: ownerHeaders(),
+      });
+      expect(listRes.statusCode).toBe(200);
+      const listed = JSON.parse(listRes.body) as Array<{
+        id: string;
+        name: string;
+        amount: string;
+        basis: string | null;
+        active: boolean;
+      }>;
+      expect(listed.map((h) => [h.name, h.amount])).toEqual([
+        ['Insurance', '2.50'],
+        ['Professional Tax', '250.00'],
+      ]);
+      expect(listed[0]).toMatchObject({ basis: 'gross', active: true });
+      expect(typeof listed[0].id).toBe('string');
+
+      // Deactivate the insurance head through the API-visible id.
+      const insuranceId = listed[0].id;
+      const deactivate = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${insuranceId}/deactivate`,
+        headers: ownerHeaders(),
+        payload: { confirm: true },
+      });
+      expect(deactivate.statusCode).toBe(200);
+      expect(JSON.parse(deactivate.body)).toMatchObject({
+        name: 'Insurance',
+        active: false,
+      });
+      rows = await headRowsOf();
+      expect(rows[0]).toMatchObject({ name: 'Insurance', active: false });
+      expect(rows[1]).toMatchObject({
+        name: 'Professional Tax',
+        amount: '250.00',
+      });
+
+      // Deactivating again (already retired) is a 404, and the audit trail
+      // carries exactly the real mutations: 2 saves + 1 replacement + 1
+      // retirement + the no-op wrote nothing.
+      const again = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${insuranceId}/deactivate`,
+        headers: ownerHeaders(),
+        payload: { confirm: true },
+      });
+      expect(again.statusCode).toBe(404);
+      const { rows: auditRows } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.audit_log
+          where tenant_id = $1 and action in
+            ('payroll.head_saved', 'payroll.head_deactivated')`,
+        [tenant],
+      );
+      expect(auditRows[0].n).toBe(4);
+    },
+  );
+
+  maybeIt(
+    '23-5 — the PF switch persists effective-dated, and the never-member rule refuses ever-members',
+    async () => {
+      // Fixture: PF-covered ON from the first payroll month.
+      const on = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/pf-config',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-09-01', covered: true },
+      });
+      expect(on.statusCode).toBe(200);
+      const onBody = JSON.parse(on.body) as {
+        effectiveFrom: string;
+        covered: boolean;
+        updatedAt: string;
+      };
+      expect(onBody).toMatchObject({
+        effectiveFrom: '2026-09-01',
+        covered: true,
+      });
+
+      // Identical re-save: no second revision.
+      const noop = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/pf-config',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-09-01', covered: true },
+      });
+      expect(noop.statusCode).toBe(200);
+      const { rows } = await pool.query<Record<string, unknown>>(
+        `select effective_from::text as effective_from, covered
+           from public.payroll_pf_config
+          where tenant_id = $1`,
+        [tenant],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        effective_from: '2026-09-01',
+        covered: true,
+      });
+
+      // Employee A carries UAN 101234567890 (the Form V seed): exclusion
+      // refused — an ever-member is covered at any wage.
+      const everMember = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${employeeA}/pf-exclusion`,
+        headers: ownerHeaders(),
+        payload: { excluded: true },
+      });
+      expect(everMember.statusCode).toBe(422);
+      expect(everMember.body).toContain('never a member');
+
+      // A never-member can be excluded; the row lands and reads back.
+      const never = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${memberE}/pf-exclusion`,
+        headers: ownerHeaders(),
+        payload: { excluded: true },
+      });
+      expect(never.statusCode).toBe(200);
+      expect(JSON.parse(never.body)).toMatchObject({ excluded: true });
+      const readBack = await app.inject({
+        method: 'GET',
+        url: `/api/v1/payroll/employees/${memberE}/pf-exclusion`,
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(readBack.body)).toMatchObject({ excluded: true });
+
+      // Clearing it writes false; a no-row employee reads false + epoch.
+      const clear = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${memberE}/pf-exclusion`,
+        headers: ownerHeaders(),
+        payload: { excluded: false },
+      });
+      expect(clear.statusCode).toBe(200);
+      expect(JSON.parse(clear.body)).toMatchObject({ excluded: false });
+
+      const absent = await app.inject({
+        method: 'GET',
+        url: `/api/v1/payroll/employees/${memberD}/pf-exclusion`,
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(absent.body)).toMatchObject({
+        excluded: false,
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      });
+
+      // The list endpoints answer what was stored, oldest first.
+      const pfList = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/pf-config',
+        headers: ownerHeaders(),
+      });
+      const pfRevisions = JSON.parse(pfList.body) as Array<{
+        effectiveFrom: string;
+        covered: boolean;
+        updatedAt: string;
+      }>;
+      // The list answers exactly the revision the PUT returned.
+      expect(pfRevisions).toEqual([
+        {
+          effectiveFrom: onBody.effectiveFrom,
+          covered: onBody.covered,
+          updatedAt: onBody.updatedAt,
+        },
+      ]);
+
+      // The real audit trail: one switch save + one exclusion set + one
+      // clear — the no-ops and refusals wrote nothing.
+      const { rows: pfAudit } = await pool.query<{
+        action: string;
+        n: number;
+      }>(
+        `select action, count(*)::int as n from public.audit_log
+          where tenant_id = $1 and action in
+            ('payroll.pf_config_saved', 'payroll.pf_exclusion_set')
+          group by action`,
+        [tenant],
+      );
+      const auditByAction: Record<string, number> = {};
+      for (const row of pfAudit) {
+        auditByAction[row.action] = row.n;
+      }
+      expect(auditByAction['payroll.pf_config_saved']).toBe(1);
+      expect(auditByAction['payroll.pf_exclusion_set']).toBe(2);
+
+      // An unknown member is a 404; an employee token is 403.
+      const unknown = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/employees/99999999-9999-4999-8999-999999999999/pf-exclusion',
+        headers: ownerHeaders(),
+        payload: { excluded: true },
+      });
+      expect(unknown.statusCode).toBe(404);
+      const forbidden = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/tds-config',
+        headers: { authorization: `Bearer ${bearerFor(employeeA)}` },
+      });
+      expect(forbidden.statusCode).toBe(403);
+    },
+  );
+
+  maybeIt(
+    '23-5 — the TDS config read returns the exact FY 2026-27 constants',
+    async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/tds-config',
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        taxYear: string;
+        regime: string;
+        standardDeduction: string;
+        slabs: Array<{ upto: number | null; ratePercent: number }>;
+        rebate: { section: string; threshold: number; residentOnly: boolean };
+        cessRatePercent: number;
+      };
+      expect(body).toMatchObject({
+        taxYear: 'FY 2026-27',
+        regime: 'new',
+        standardDeduction: '75000.00',
+        cessRatePercent: 4,
+        rebate: { section: 's.157', threshold: 1200000, residentOnly: true },
+      });
+      expect(body.slabs.map((s) => s.ratePercent)).toEqual([
+        0, 5, 10, 15, 20, 25, 30,
+      ]);
+      expect(body.slabs[6].upto).toBeNull();
+
+      // Both non-admin tokens are 403 on every 23-5 WRITE route — dropping
+      // @Can from any of them would leave the whole payroll config open.
+      const { rows: activeBefore } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_deduction_heads
+          where tenant_id = $1 and active = true`,
+        [tenant],
+      );
+      const employeeHeaders = () => ({
+        authorization: `Bearer ${bearerFor(employeeA)}`,
+      });
+      const staffHeaders = () => ({
+        authorization: `Bearer ${bearerFor(platformAdmin)}`,
+      });
+      for (const headers of [employeeHeaders(), staffHeaders()]) {
+        const head = await app.inject({
+          method: 'POST',
+          url: headsUrl,
+          headers,
+          payload: {
+            name: 'Smuggled',
+            kind: 'flat',
+            amount: '1.00',
+            effectiveFrom: '2026-09-01',
+          },
+        });
+        expect(head.statusCode).toBe(403);
+        const pf = await app.inject({
+          method: 'PUT',
+          url: '/api/v1/payroll/pf-config',
+          headers,
+          payload: { effectiveFrom: '2026-09-01', covered: false },
+        });
+        expect(pf.statusCode).toBe(403);
+        const exclusion = await app.inject({
+          method: 'PUT',
+          url: `/api/v1/payroll/employees/${employeeA}/pf-exclusion`,
+          headers,
+          payload: { excluded: false },
+        });
+        expect(exclusion.statusCode).toBe(403);
+        const headsList = await app.inject({
+          method: 'GET',
+          url: headsUrl,
+          headers,
+        });
+        expect(headsList.statusCode).toBe(403);
+        const pfList403 = await app.inject({
+          method: 'GET',
+          url: '/api/v1/payroll/pf-config',
+          headers,
+        });
+        expect(pfList403.statusCode).toBe(403);
+        const exclusionRead = await app.inject({
+          method: 'GET',
+          url: `/api/v1/payroll/employees/${employeeA}/pf-exclusion`,
+          headers,
+        });
+        expect(exclusionRead.statusCode).toBe(403);
+      }
+      // The deactivate write route is inside the same permission: a
+      // non-admin can neither retire a head nor read the config lists.
+      const { rows: anyHead } = await pool.query<{ id: string }>(
+        `select id from public.payroll_deduction_heads
+          where tenant_id = $1 limit 1`,
+        [tenant],
+      );
+      const staffDeactivate = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${anyHead[0].id}/deactivate`,
+        headers: staffHeaders(),
+        payload: { confirm: true },
+      });
+      expect(staffDeactivate.statusCode).toBe(403);
+      const { rows: activeAfter } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_deduction_heads
+          where tenant_id = $1 and active = true`,
+        [tenant],
+      );
+      expect(activeAfter[0].n).toBe(activeBefore[0].n);
+    },
+  );
 });
