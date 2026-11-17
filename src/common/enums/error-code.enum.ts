@@ -108,6 +108,9 @@ export enum ErrorCode {
   NOT_AN_EMPLOYEE = 'NOT_AN_EMPLOYEE',
   /** The owner tried to approve or reject a job that already left pending (409). */
   JOB_NOT_PENDING = 'JOB_NOT_PENDING',
+  /** The employment record changed between this read and write (409) — the
+   *  database CHECK backstop caught a stale read; reload and retry. */
+  EMPLOYMENT_RECORD_CHANGED = 'EMPLOYMENT_RECORD_CHANGED',
   /** Google Play could not be asked for the live Android version (502).
    *  Retryable; a roadblock save that needs the check is refused, not guessed. */
   PLAY_UPSTREAM_ERROR = 'PLAY_UPSTREAM_ERROR',

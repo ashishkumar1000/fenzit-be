@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiOkResponse,
   ApiOperation,
   ApiQuery,
   ApiResponse,
@@ -22,8 +23,10 @@ import { Can } from '../common/decorators/can.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { ChangeRoleDto } from './dto/change-role.dto';
+import { EmploymentView } from './dto/employment-view.dto';
 import { JobSettingsDto } from './dto/job-settings.dto';
 import { MembersPageQueryDto } from './dto/members-page-query.dto';
+import { UpdateEmploymentDto } from './dto/update-employment.dto';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { MembersService } from './members.service';
 
@@ -126,6 +129,75 @@ export class MembersController {
       canCreateJobs: dto.canCreateJobs,
       jobApprovalRequired: dto.jobApprovalRequired,
     });
+  }
+
+  @Get('members/:userId/employment')
+  @Can('member.employment')
+  @ApiOperation({
+    summary:
+      "Read one member's employment record: join/exit dates, PAN, DOB, Form V names, PF/UAN, bank, designation, department and the employee code",
+  })
+  @ApiOkResponse({
+    type: EmploymentView,
+    description: 'The employment record as stored',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'userId is not a UUID',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a company admin of this company',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not a member of this company',
+  })
+  getEmployment(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ): Promise<EmploymentView> {
+    return this.membersService.getEmployment(user, userId);
+  }
+
+  @Patch('members/:userId/employment')
+  @Can('member.employment')
+  @ApiOperation({
+    summary:
+      "Save one member's employment record. A key present in the body sets it, an absent key is left alone, null clears it. The employee code cannot be cleared.",
+  })
+  @ApiOkResponse({
+    type: EmploymentView,
+    description: 'The employment record as now stored',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'userId is not a UUID',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a company admin of this company',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not a member of this company',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The employee code is already used by another member of this company, or the record changed since it was read',
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      'Bad employment data: invented dates, an exit before or without a join, a cleared employee code, a malformed PAN or IFSC',
+  })
+  updateEmployment(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: UpdateEmploymentDto,
+  ): Promise<EmploymentView> {
+    return this.membersService.updateEmployment(user, userId, dto);
   }
 
   @Delete('members/:userId')

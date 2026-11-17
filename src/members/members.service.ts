@@ -1,8 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -19,6 +22,8 @@ import {
 } from '../common/members/member-avatars';
 import { StorageService } from '../storage/storage.service';
 import { MembersPageQueryDto } from './dto/members-page-query.dto';
+import { UpdateEmploymentDto } from './dto/update-employment.dto';
+import { EmploymentView } from './dto/employment-view.dto';
 
 /** A person of the company as the members list serves them: no raw storage key. */
 export type MemberView = Omit<CompanyMember, 'avatarKey'> & {
@@ -89,6 +94,115 @@ export interface AuditLogEntry {
   action: string;
   targetUserId: string | null;
   details: Record<string, unknown>;
+}
+
+interface EmploymentRow {
+  user_id: string;
+  employee_code: string;
+  join_date: string | null;
+  exit_date: string | null;
+  pan: string | null;
+  date_of_birth: string | null;
+  father_name: string | null;
+  mother_name: string | null;
+  spouse_name: string | null;
+  pf_account_number: string | null;
+  uan_number: string | null;
+  designation: string | null;
+  department: string | null;
+  bank_account_number: string | null;
+  ifsc_code: string | null;
+  bank_name: string | null;
+}
+
+const EMPLOYMENT_COLUMNS =
+  'user_id, employee_code, join_date, exit_date, pan, date_of_birth, father_name, mother_name, spouse_name, pf_account_number, uan_number, designation, department, bank_account_number, ifsc_code, bank_name';
+
+/** DTO key → column, for the plain text fields (trim, empty after trim clears). */
+const EMPLOYMENT_TEXT_FIELDS: Array<
+  [keyof UpdateEmploymentDto, keyof EmploymentRow]
+> = [
+  ['pan', 'pan'],
+  ['fatherName', 'father_name'],
+  ['motherName', 'mother_name'],
+  ['spouseName', 'spouse_name'],
+  ['pfAccountNumber', 'pf_account_number'],
+  ['uanNumber', 'uan_number'],
+  ['designation', 'designation'],
+  ['department', 'department'],
+  ['bankAccountNumber', 'bank_account_number'],
+  ['ifscCode', 'ifsc_code'],
+  ['bankName', 'bank_name'],
+];
+
+/** DTO key → column, for the calendar dates. */
+const EMPLOYMENT_DATE_FIELDS: Array<
+  [keyof UpdateEmploymentDto, keyof EmploymentRow]
+> = [
+  ['joinDate', 'join_date'],
+  ['exitDate', 'exit_date'],
+  ['dateOfBirth', 'date_of_birth'],
+];
+
+function toEmploymentView(row: EmploymentRow): EmploymentView {
+  return {
+    userId: row.user_id,
+    employeeCode: row.employee_code,
+    joinDate: row.join_date,
+    exitDate: row.exit_date,
+    pan: row.pan,
+    dateOfBirth: row.date_of_birth,
+    fatherName: row.father_name,
+    motherName: row.mother_name,
+    spouseName: row.spouse_name,
+    pfAccountNumber: row.pf_account_number,
+    uanNumber: row.uan_number,
+    designation: row.designation,
+    department: row.department,
+    bankAccountNumber: row.bank_account_number,
+    ifscCode: row.ifsc_code,
+    bankName: row.bank_name,
+  };
+}
+
+/** Absent stays absent; a trimmed-empty string becomes a clear (null). */
+function normalisedText(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * A `YYYY-MM-DD` string that names a real calendar day, returned unchanged;
+ * `null` when the day does not exist (2026-02-30) or the shape is off. The
+ * shape is already checked by the DTO; this re-check keeps the service honest
+ * when it is called from anywhere else.
+ */
+function realCalendarDate(value: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const day = new Date(Date.UTC(y, mo - 1, d));
+  if (
+    day.getUTCFullYear() !== y ||
+    day.getUTCMonth() !== mo - 1 ||
+    day.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return value;
+}
+
+/** Absent → undefined (untouched), null or a parsed real date; null if fake. */
+function normalisedDate(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return realCalendarDate(value);
 }
 
 const DEFAULT_AUDIT_LIMIT = 50;
@@ -345,6 +459,261 @@ export class MembersService {
     if (error) {
       throw this.mapError(error, 'Failed to remove the member');
     }
+  }
+
+  /**
+   * The membership read behind GET/PATCH employment. Read straight from the
+   * table by (user_id, tenant_id) with NO status filter: a removed member's
+   * exit date is exactly what the owner fixes here, so unlike the member
+   * lists this read must not hide removed rows.
+   */
+  private async readEmploymentRow(
+    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+    tenantId: string,
+    memberUserId: string,
+  ): Promise<EmploymentRow | null> {
+    const { data, error } = await admin
+      .from('memberships')
+      .select(EMPLOYMENT_COLUMNS)
+      .eq('user_id', memberUserId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle<EmploymentRow>();
+    if (error) {
+      this.logger.error('Failed to read the employment record:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to read the employment record',
+      });
+    }
+    return data ?? null;
+  }
+
+  async getEmployment(
+    caller: RequestUser,
+    memberUserId: string,
+  ): Promise<EmploymentView> {
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
+    const row = await this.readEmploymentRow(
+      this.supabaseFactory.createAdmin(),
+      caller.tenantId,
+      memberUserId,
+    );
+    if (!row) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'The person is not a member of this company',
+      });
+    }
+    return toEmploymentView(row);
+  }
+
+  /**
+   * The owner saves one employee's employment record (CAP-13). Every rule is
+   * judged on the state the row will have AFTER the save, so clearing the
+   * join date and setting an exit in one request is refused the same way as
+   * the two steps would be. Nothing here touches the database functions: the
+   * write is a plain guarded UPDATE with an explicit field list, and the only
+   * cross-writer hazard (a duplicate employee code) is probed here and
+   * backstopped by mapping the database's 23505 to a 409.
+   */
+  async updateEmployment(
+    caller: RequestUser,
+    memberUserId: string,
+    dto: UpdateEmploymentDto,
+  ): Promise<EmploymentView> {
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
+    const tenantId = caller.tenantId;
+    const admin = this.supabaseFactory.createAdmin();
+    const row = await this.readEmploymentRow(admin, tenantId, memberUserId);
+    if (!row) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'The person is not a member of this company',
+      });
+    }
+
+    // 1. Dates must name real calendar days (2026-02-30 is not one).
+    const parsedDates = new Map<string, string | null | undefined>();
+    for (const [dtoKey, column] of EMPLOYMENT_DATE_FIELDS) {
+      const parsed = normalisedDate(dto[dtoKey]);
+      if (
+        parsed === null &&
+        dto[dtoKey] !== null &&
+        dto[dtoKey] !== undefined
+      ) {
+        throw new UnprocessableEntityException({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: `${String(dtoKey)} is not a real calendar date — write it as YYYY-MM-DD`,
+        });
+      }
+      parsedDates.set(column, parsed);
+    }
+
+    // 2. The employee code is permanent: null or blank is an attempted clear.
+    const newCode = normalisedText(dto.employeeCode);
+    if (newCode === null && dto.employeeCode !== undefined) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message:
+          'The employee code is permanent — it can be edited but never removed',
+      });
+    }
+
+    // 3. Exit rules on the post-write state.
+    const resultJoin =
+      parsedDates.get('join_date') === undefined
+        ? row.join_date
+        : (parsedDates.get('join_date') ?? null);
+    const resultExit =
+      parsedDates.get('exit_date') === undefined
+        ? row.exit_date
+        : (parsedDates.get('exit_date') ?? null);
+    if (resultExit !== null && resultJoin === null) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message:
+          'An exit date needs a joining date — set the joining date first',
+      });
+    }
+    if (resultExit !== null && resultJoin !== null && resultExit < resultJoin) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'The exit date cannot be before the joining date',
+      });
+    }
+
+    // The payload is built column by column — the body is never spread onto
+    // the update, so a future DTO field cannot silently become a column write.
+    const updates: Record<string, string | null> = {};
+    const changedFields: string[] = [];
+    const put = (column: keyof EmploymentRow, value: string | null) => {
+      if (row[column] === value) return;
+      updates[column] = value;
+      changedFields.push(column);
+    };
+
+    if (newCode !== undefined && newCode !== row.employee_code) {
+      updates['employee_code'] = newCode;
+      changedFields.push('employee_code');
+    }
+    for (const [, column] of EMPLOYMENT_DATE_FIELDS) {
+      const parsed = parsedDates.get(column);
+      if (parsed !== undefined) put(column, parsed);
+    }
+    for (const [dtoKey, column] of EMPLOYMENT_TEXT_FIELDS) {
+      const value = normalisedText(dto[dtoKey]);
+      if (value !== undefined) put(column, value);
+    }
+
+    // A save that changes nothing writes no row and no audit entry.
+    if (changedFields.length === 0) {
+      return toEmploymentView(row);
+    }
+
+    // 4. A changed code must stay unique inside this company. The probe
+    //    names the conflict; the unique-violation mapping below is the
+    //    backstop for a race between the probe and the write.
+    if (updates['employee_code'] !== undefined) {
+      const { data: clash, error: probeError } = await admin
+        .from('memberships')
+        .select('user_id')
+        .eq('tenant_id', tenantId)
+        .eq('employee_code', updates['employee_code'])
+        .maybeSingle<{ user_id: string }>();
+      if (probeError) {
+        this.logger.error('Failed to probe the employee code:', {
+          error: probeError,
+        });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to save the employment record',
+        });
+      }
+      if (clash && clash.user_id !== memberUserId) {
+        throw new ConflictException({
+          error_code: ErrorCode.DUPLICATE_RESOURCE,
+          message: `Employee code ${updates['employee_code']} is already used by another member of your company`,
+        });
+      }
+    }
+
+    const { data: updated, error: updateError } = await admin
+      .from('memberships')
+      .update(updates)
+      .eq('user_id', memberUserId)
+      .eq('tenant_id', tenantId)
+      .select(EMPLOYMENT_COLUMNS)
+      .single<EmploymentRow>();
+    if (updateError) {
+      if (updateError.code === '23505') {
+        throw new ConflictException({
+          error_code: ErrorCode.DUPLICATE_RESOURCE,
+          message: `Employee code ${updates['employee_code']} is already used by another member of your company`,
+        });
+      }
+      if (updateError.code === 'PGRST116') {
+        // The member was deleted between this read and the write.
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+      if (updateError.code === '23514') {
+        // A CHECK backstop tripped: another writer moved join/exit between
+        // this read and the write.
+        throw new ConflictException({
+          error_code: ErrorCode.EMPLOYMENT_RECORD_CHANGED,
+          message:
+            'The employment record changed since it was read — reload and try again',
+        });
+      }
+      this.logger.error('Failed to save the employment record:', {
+        error: updateError,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to save the employment record',
+      });
+    }
+
+    // Audit: what changed, never the values behind it (no PAN, DOB or bank
+    // details are copied into the log). A failed audit entry must not undo
+    // the member's save, so both a resolved error and a rejection (network)
+    // log and move on, like the import audit.
+    try {
+      const auditCall = (await admin.rpc('write_audit_row', {
+        p_actor: caller.userId,
+        p_action: 'member.employment_update',
+        p_tenant_id: tenantId,
+        p_target_user: memberUserId,
+        p_details: {
+          changed_fields: changedFields,
+          old_employee_code: row.employee_code,
+          new_employee_code: updated.employee_code,
+        },
+      })) as { error: { code?: string; message?: string } | null };
+      if (auditCall.error) {
+        this.logger.error('Failed to write the employment audit entry:', {
+          error: auditCall.error,
+        });
+      }
+    } catch (auditError: unknown) {
+      this.logger.error('Failed to write the employment audit entry:', {
+        error: auditError,
+      });
+    }
+
+    return toEmploymentView(updated);
   }
 
   async setDisabled(

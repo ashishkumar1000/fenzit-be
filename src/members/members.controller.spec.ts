@@ -14,6 +14,8 @@ const REQUIRED: Record<string, string[]> = {
   listPaged: ['member.read'],
   changeRole: ['member.change_role'],
   setJobSettings: ['member.job_settings'],
+  getEmployment: ['member.employment'],
+  updateEmployment: ['member.employment'],
   remove: ['member.remove'],
   disable: ['user.disable'],
   enable: ['user.disable'],
@@ -29,9 +31,9 @@ const caller: RequestUser = {
 };
 
 describe('MembersController', () => {
-  const handlers = Object.getOwnPropertyNames(MembersController.prototype).filter(
-    (name) => name !== 'constructor',
-  );
+  const handlers = Object.getOwnPropertyNames(
+    MembersController.prototype,
+  ).filter((name) => name !== 'constructor');
 
   it('lists the handlers this spec knows, so a new route cannot skip the table', () => {
     expect(handlers.sort()).toEqual(Object.keys(REQUIRED).sort());
@@ -40,20 +42,24 @@ describe('MembersController', () => {
   it.each(Object.entries(REQUIRED))(
     '%s needs exactly the permissions the requirement names',
     (name, permissions) => {
-      const handler = MembersController.prototype[name as keyof MembersController];
+      const handler =
+        MembersController.prototype[name as keyof MembersController];
       expect(Reflect.getMetadata(CAN_KEY, handler)).toEqual(permissions);
     },
   );
 
   it.each(handlers)('%s is never open to every signed-in person', (name) => {
-    const handler = MembersController.prototype[name as keyof MembersController];
+    const handler =
+      MembersController.prototype[name as keyof MembersController];
     expect(Reflect.getMetadata(ANY_MEMBER_KEY, handler)).toBeUndefined();
     expect(Reflect.getMetadata(CAN_KEY, handler)).toBeDefined();
   });
 
   it('passes the caller, not a client-chosen company, to the service on list', async () => {
     const service = { list: jest.fn().mockResolvedValue([]) };
-    const controller = new MembersController(service as unknown as MembersService);
+    const controller = new MembersController(
+      service as unknown as MembersService,
+    );
     await controller.list(caller);
     expect(service.list).toHaveBeenCalledWith(caller);
   });
@@ -62,7 +68,9 @@ describe('MembersController', () => {
     const service = {
       setDisabled: jest.fn().mockResolvedValue({ userId: 'p', disabled: true }),
     };
-    const controller = new MembersController(service as unknown as MembersService);
+    const controller = new MembersController(
+      service as unknown as MembersService,
+    );
     await controller.disable(caller, 'p');
     expect(service.setDisabled).toHaveBeenLastCalledWith(caller, 'p', true);
     await controller.enable(caller, 'p');

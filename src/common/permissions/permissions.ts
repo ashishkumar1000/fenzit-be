@@ -14,6 +14,7 @@ export type Permission =
   | 'member.read'
   | 'member.change_role'
   | 'member.job_settings' // company admin of this company only (CAP-1)
+  | 'member.employment' // company admin of this company only (CAP-13)
   | 'member.remove'
   | 'invite_sms.resend' // company admin of this company only (story 21-2)
   | 'user.disable' // platform only
@@ -47,14 +48,15 @@ export type Permission =
   | 'tenant.validity.manage';
 
 /** Permissions that make sense without a company (everything else needs one). */
-export const PLATFORM_WIDE_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
-  'company.create_own',
-  'user.disable',
-  'user.manage',
-  'audit.read',
-  'app_config.manage',
-  'tenant.validity.manage',
-]);
+export const PLATFORM_WIDE_PERMISSIONS: ReadonlySet<Permission> =
+  new Set<Permission>([
+    'company.create_own',
+    'user.disable',
+    'user.manage',
+    'audit.read',
+    'app_config.manage',
+    'tenant.validity.manage',
+  ]);
 
 const ADMIN_PERMISSIONS: Permission[] = [
   'company.manage',
@@ -77,39 +79,41 @@ const ADMIN_PERMISSIONS: Permission[] = [
   'places.search',
 ];
 
-export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> = {
-  [Role.PLATFORM_ADMIN]: new Set<Permission>([
-    ...ADMIN_PERMISSIONS,
-    'user.disable',
-    'user.manage',
-    'app_config.manage',
-    'tenant.validity.manage',
-  ]),
-  // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
-  // member.job_settings and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
-  [Role.COMPANY_ADMIN]: new Set<Permission>([
-    ...ADMIN_PERMISSIONS,
-    'invite_sms.resend',
-    'member.job_settings',
-    'job.approve',
-  ]),
-  [Role.EMPLOYEE]: new Set<Permission>([
-    'job.read_own',
-    'job.create_own',
-    'job.advance',
-    'job.sync',
-    'customer.read',
-    'attendance.own',
-    'leave.own',
-  ]),
-  [Role.VIEWER]: new Set<Permission>([
-    'job.read_all',
-    'customer.read',
-    'report.read',
-    'report.request',
-    'attendance.read',
-  ]),
-};
+export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
+  {
+    [Role.PLATFORM_ADMIN]: new Set<Permission>([
+      ...ADMIN_PERMISSIONS,
+      'user.disable',
+      'user.manage',
+      'app_config.manage',
+      'tenant.validity.manage',
+    ]),
+    // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
+    // member.job_settings, member.employment and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
+    [Role.COMPANY_ADMIN]: new Set<Permission>([
+      ...ADMIN_PERMISSIONS,
+      'invite_sms.resend',
+      'member.job_settings',
+      'member.employment',
+      'job.approve',
+    ]),
+    [Role.EMPLOYEE]: new Set<Permission>([
+      'job.read_own',
+      'job.create_own',
+      'job.advance',
+      'job.sync',
+      'customer.read',
+      'attendance.own',
+      'leave.own',
+    ]),
+    [Role.VIEWER]: new Set<Permission>([
+      'job.read_all',
+      'customer.read',
+      'report.read',
+      'report.request',
+      'attendance.read',
+    ]),
+  };
 
 /** What a signed-in person with no active company membership may do. */
 export const NO_MEMBERSHIP_PERMISSIONS: ReadonlySet<Permission> =

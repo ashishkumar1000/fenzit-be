@@ -8,6 +8,9 @@ import { MembersService } from './members.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
+import { UpdateEmploymentDto } from './dto/update-employment.dto';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 
 type DbResult = { data: unknown; error: unknown };
 
@@ -73,6 +76,25 @@ const platformAdmin: RequestUser = {
 
 /** The message of the error, without the status: what a client reads. */
 const bodyOf = (e: unknown) => (e as { getResponse(): unknown }).getResponse();
+
+/** The canonical fixture's Employee A (spec-payroll), as the API carries it. */
+const fullFormV = {
+  employeeCode: 'EMP-001',
+  joinDate: '2026-09-01',
+  exitDate: null,
+  pan: 'ABCPE1234F',
+  dateOfBirth: '1995-04-12',
+  fatherName: 'Ramesh Sharma',
+  motherName: 'Sunita Sharma',
+  spouseName: 'Meera Sharma',
+  pfAccountNumber: 'PY/ABC/12345/000',
+  uanNumber: '101234567890',
+  designation: 'Field Technician',
+  department: 'Field Operations',
+  bankAccountNumber: '1234567890',
+  ifscCode: 'HDFC0001234',
+  bankName: 'HDFC Bank',
+};
 
 describe('MembersService', () => {
   describe('list — photo links', () => {
@@ -453,6 +475,486 @@ describe('MembersService', () => {
       expect(bodyOf(err)).toMatchObject({
         error_code: 'INTERNAL_SERVER_ERROR',
       });
+    });
+  });
+
+  describe('employment (CAP-13)', () => {
+    /**
+     * The employment endpoints talk to the memberships TABLE (not a database
+     * function). This stand-in recognises each builder by what it does — a
+     * write is an update, a `select('user_id')` is the employee-code probe,
+     * anything else is the row read — and answers with the matching result.
+     */
+    function buildEmployment(
+      opts: {
+        row?: Record<string, unknown> | null;
+        probeRow?: { user_id: string } | null;
+        updateResult?: Record<string, unknown> | null;
+        updateError?: { code?: string; message?: string } | null;
+        rpcResult?: { data: unknown; error: unknown };
+        rpcRejects?: unknown;
+      } = {},
+    ) {
+      const updatesPayloads: Array<Record<string, unknown>> = [];
+      const stepLog: string[] = [];
+
+      const mkBuilder = () => {
+        const b: Record<string, unknown> = {};
+        let selectArg: unknown = null;
+        let updated = false;
+        for (const name of ['eq', 'neq', 'in', 'order', 'limit', 'lt', 'or']) {
+          b[name] = jest.fn((...args: unknown[]) => {
+            stepLog.push(`${name}(${JSON.stringify(args)})`);
+            return b;
+          });
+        }
+        b['select'] = jest.fn((...args: unknown[]) => {
+          selectArg = args[0];
+          stepLog.push(`select(${JSON.stringify(args)})`);
+          return b;
+        });
+        b['update'] = jest.fn((payload: Record<string, unknown>) => {
+          updated = true;
+          stepLog.push(`update(${JSON.stringify(payload)})`);
+          updatesPayloads.push(payload);
+          return b;
+        });
+        b['maybeSingle'] = jest.fn(() => b);
+        b['single'] = jest.fn(() => b);
+        b['then'] = (resolve: (v: unknown) => void) => {
+          if (updated) {
+            resolve({
+              data: opts.updateResult ?? null,
+              error: opts.updateError ?? null,
+            });
+            return;
+          }
+          if (selectArg === 'user_id') {
+            resolve({ data: opts.probeRow ?? null, error: null });
+            return;
+          }
+          resolve({ data: opts.row ?? null, error: null });
+        };
+        return b;
+      };
+
+      const from = jest.fn(() => mkBuilder());
+      const rpc =
+        opts.rpcRejects !== undefined
+          ? jest.fn().mockRejectedValue(opts.rpcRejects)
+          : jest
+              .fn()
+              .mockResolvedValue(opts.rpcResult ?? { data: null, error: null });
+      const admin = { from, rpc };
+      const factory = {
+        createAdmin: jest.fn(() => admin),
+      } as unknown as jest.Mocked<SupabaseClientFactory>;
+      const storage = {
+        presignReadUrl: jest.fn(),
+      };
+      const service = new MembersService(
+        factory,
+        storage as unknown as StorageService,
+      );
+      return { service, from, rpc, updatesPayloads, stepLog };
+    }
+
+    const employmentRow = (
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      user_id: 'member-1',
+      employee_code: 'EMP-001',
+      join_date: '2026-09-01',
+      exit_date: null,
+      pan: null,
+      date_of_birth: null,
+      father_name: null,
+      mother_name: null,
+      spouse_name: null,
+      pf_account_number: null,
+      uan_number: null,
+      designation: null,
+      department: null,
+      bank_account_number: null,
+      ifsc_code: null,
+      bank_name: null,
+      ...overrides,
+    });
+
+    const employmentErrorOf = async (
+      run: () => Promise<unknown>,
+    ): Promise<{ status: number; body: Record<string, unknown> }> => {
+      const err = await run().catch((e: unknown) => e);
+      return {
+        status: (err as { status?: number }).status ?? 0,
+        body: bodyOf(err) as Record<string, unknown>,
+      };
+    };
+
+    it('get — answers the whole Form V field set, names mapped from the columns', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow({
+          pan: 'ABCPE1234F',
+          designation: 'Field Technician',
+        }),
+      });
+      await expect(
+        service.getEmployment(companyAdmin, 'member-1'),
+      ).resolves.toMatchObject({
+        userId: 'member-1',
+        employeeCode: 'EMP-001',
+        joinDate: '2026-09-01',
+        pan: 'ABCPE1234F',
+        designation: 'Field Technician',
+        bankName: null,
+      });
+    });
+
+    it('get — reads by user AND company with no status filter, so a removed member is served', async () => {
+      const { service, stepLog } = buildEmployment({ row: employmentRow() });
+      await service.getEmployment(companyAdmin, 'member-1');
+      expect(stepLog.join('\n')).toContain(
+        JSON.stringify(['user_id', 'member-1']),
+      );
+      expect(stepLog.join('\n')).toContain(
+        JSON.stringify(['tenant_id', 'tenant-A']),
+      );
+      expect(stepLog.join('\n')).not.toContain('neq');
+    });
+
+    it('get — answers 404 when the person is not a member of the caller company', async () => {
+      const { service } = buildEmployment({ row: null });
+      const { status, body } = await employmentErrorOf(() =>
+        service.getEmployment(companyAdmin, 'stranger-1'),
+      );
+      expect(status).toBe(404);
+      expect(body).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    });
+
+    it('a caller with no company is refused before any read', async () => {
+      const { service, from } = buildEmployment({ row: employmentRow() });
+      const { status } = await employmentErrorOf(() =>
+        service.getEmployment({ ...companyAdmin, tenantId: null }, 'member-1'),
+      );
+      expect(status).toBe(400);
+      expect(from).not.toHaveBeenCalled();
+    });
+
+    it('saves the full Form V set and writes exactly one audit entry naming the fields, never the values', async () => {
+      const saved = employmentRow({
+        pan: 'ABCPE1234F',
+        date_of_birth: '1995-04-12',
+        father_name: 'Ramesh Sharma',
+        pf_account_number: 'PY/ABC/12345/000',
+        uan_number: '101234567890',
+        designation: 'Field Technician',
+        department: 'Field Operations',
+        bank_account_number: '1234567890',
+        ifsc_code: 'HDFC0001234',
+        bank_name: 'HDFC Bank',
+      });
+      const { service, rpc, updatesPayloads } = buildEmployment({
+        row: employmentRow(),
+        updateResult: saved,
+      });
+      await service.updateEmployment(companyAdmin, 'member-1', fullFormV);
+      expect(rpc).toHaveBeenCalledTimes(1);
+      const call = rpc.mock.calls[0] as unknown as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(call[0]).toBe('write_audit_row');
+      expect(call[1].p_action).toBe('member.employment_update');
+      expect(call[1].p_target_user).toBe('member-1');
+      const details = call[1].p_details as Record<string, unknown>;
+      expect(details['changed_fields']).toEqual(
+        expect.arrayContaining([
+          'pan',
+          'date_of_birth',
+          'father_name',
+          'bank_name',
+        ]),
+      );
+      expect(details['old_employee_code']).toBe('EMP-001');
+      expect(details['new_employee_code']).toBe('EMP-001');
+      expect(JSON.stringify(details)).not.toContain('ABCPE1234F');
+      expect(JSON.stringify(details)).not.toContain('Ramesh');
+      // The write itself carries every field — the column names, not the DTO keys.
+      const payload = updatesPayloads[0];
+      expect(payload).toMatchObject({
+        pan: 'ABCPE1234F',
+        date_of_birth: '1995-04-12',
+        father_name: 'Ramesh Sharma',
+        bank_account_number: '1234567890',
+        ifsc_code: 'HDFC0001234',
+      });
+      expect(payload).not.toHaveProperty('pan2');
+      expect(payload).not.toHaveProperty('dateOfBirth');
+    });
+
+    it('an identical repeat save writes no audit row and no update', async () => {
+      const { service, rpc, from } = buildEmployment({
+        row: employmentRow({
+          pan: 'ABCPE1234F',
+          father_name: 'Ramesh Sharma',
+        }),
+      });
+      await service.updateEmployment(companyAdmin, 'member-1', {
+        pan: 'ABCPE1234F',
+        fatherName: 'Ramesh Sharma',
+      });
+      expect(from).toHaveBeenCalledTimes(1); // the read only
+      expect(rpc).not.toHaveBeenCalled();
+    });
+
+    it('null clears a value; an absent key leaves it alone', async () => {
+      const { service, updatesPayloads } = buildEmployment({
+        row: employmentRow({ father_name: 'Ramesh Sharma' }),
+        updateResult: employmentRow({ father_name: null }),
+      });
+      await service.updateEmployment(companyAdmin, 'member-1', {
+        fatherName: null,
+      });
+      expect(updatesPayloads[0]).toEqual({ father_name: null });
+
+      const second = buildEmployment({
+        row: employmentRow({ father_name: 'Ramesh Sharma' }),
+        updateResult: employmentRow(),
+      });
+      await second.service.updateEmployment(companyAdmin, 'member-1', {
+        pan: 'ABCPE1234F',
+      });
+      expect(second.updatesPayloads[0]).toEqual({ pan: 'ABCPE1234F' });
+    });
+
+    it('values are trimmed; empty after the trim is a clear', async () => {
+      const { service, updatesPayloads } = buildEmployment({
+        row: employmentRow({
+          designation: null,
+          department: 'Field Operations',
+        }),
+        updateResult: employmentRow(),
+      });
+      await service.updateEmployment(companyAdmin, 'member-1', {
+        designation: '  Field Technician  ',
+        department: '   ',
+      });
+      expect(updatesPayloads[0]).toEqual({
+        designation: 'Field Technician',
+        department: null,
+      });
+    });
+
+    it('clearing the join date is allowed — the skip path stays real', async () => {
+      const { service, updatesPayloads, rpc } = buildEmployment({
+        row: employmentRow({ join_date: '2026-09-01' }),
+        updateResult: employmentRow({ join_date: null }),
+      });
+      await expect(
+        service.updateEmployment(companyAdmin, 'member-1', { joinDate: null }),
+      ).resolves.toMatchObject({ joinDate: null });
+      expect(updatesPayloads[0]).toEqual({ join_date: null });
+      expect(rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('validation order — an invented calendar date is called out before anything else', async () => {
+      const { service } = buildEmployment({ row: employmentRow() });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          joinDate: '2026-02-30',
+          employeeCode: null,
+        }),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('joinDate');
+      expect(String(body['message'])).not.toContain('employee code');
+    });
+
+    it('validation order — a cleared employee code is refused before the join/exit rules', async () => {
+      const { service } = buildEmployment({ row: employmentRow() });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          employeeCode: null,
+          exitDate: '2026-01-01',
+        }),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('permanent');
+      expect(String(body['message'])).not.toContain('exit');
+    });
+
+    it('an exit needs a join — judged on the state after this save', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow({ join_date: null }),
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          exitDate: '2026-09-01',
+        }),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('joining date');
+    });
+
+    it('clearing the join and setting an exit in one request is the same refusal', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow({ join_date: '2026-10-01' }),
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          joinDate: null,
+          exitDate: '2026-09-01',
+        }),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('joining date');
+    });
+
+    it('an exit before the join is refused', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow({ join_date: '2026-10-01' }),
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          exitDate: '2026-09-01',
+        }),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('cannot be before');
+    });
+
+    it('a clash found by the probe answers 409 naming the code, and never writes', async () => {
+      const { service, from, stepLog } = buildEmployment({
+        row: employmentRow(),
+        probeRow: { user_id: 'other-member' },
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          employeeCode: 'EMP-002',
+        }),
+      );
+      expect(status).toBe(409);
+      expect(body).toMatchObject({ error_code: 'DUPLICATE_RESOURCE' });
+      expect(String(body['message'])).toContain('EMP-002');
+      expect(from).toHaveBeenCalledTimes(2); // read + probe, no write
+      expect(stepLog.join('\n')).not.toContain('.update(');
+    });
+
+    it('a 23505 unique violation that slips past the probe still answers the 409', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow(),
+        updateError: {
+          code: '23505',
+          message:
+            'duplicate key value violates unique constraint "memberships_tenant_employee_code_key"',
+        },
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          employeeCode: 'EMP-002',
+        }),
+      );
+      expect(status).toBe(409);
+      expect(body).toMatchObject({ error_code: 'DUPLICATE_RESOURCE' });
+      expect(String(body['message'])).toContain('EMP-002');
+    });
+
+    it('a failed audit write that RESOLVES with an error still saves', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow(),
+        updateResult: employmentRow({ designation: 'Field Technician' }),
+        rpcResult: {
+          data: null,
+          error: { code: 'PT403', message: 'forbidden' },
+        },
+      });
+      await expect(
+        service.updateEmployment(companyAdmin, 'member-1', {
+          designation: 'Field Technician',
+        }),
+      ).resolves.toMatchObject({ designation: 'Field Technician' });
+    });
+
+    it('a REJECTED audit write (network) still saves too', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow(),
+        updateResult: employmentRow({ designation: 'Field Technician' }),
+        rpcRejects: new Error('network down'),
+      });
+      await expect(
+        service.updateEmployment(companyAdmin, 'member-1', {
+          designation: 'Field Technician',
+        }),
+      ).resolves.toMatchObject({ designation: 'Field Technician' });
+    });
+
+    it('a member deleted between the read and the write answers 404, not a 500', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow(),
+        updateError: { code: 'PGRST116', message: 'no rows returned' },
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          designation: 'Field Technician',
+        }),
+      );
+      expect(status).toBe(404);
+      expect(body).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    });
+
+    it('a CHECK the write tripped on a stale read answers 409 with a reload hint', async () => {
+      const { service } = buildEmployment({
+        row: employmentRow(),
+        updateError: { code: '23514', message: 'check constraint violated' },
+      });
+      const { status, body } = await employmentErrorOf(() =>
+        service.updateEmployment(companyAdmin, 'member-1', {
+          exitDate: '2026-10-10',
+        }),
+      );
+      expect(status).toBe(409);
+      expect(body).toMatchObject({ error_code: 'EMPLOYMENT_RECORD_CHANGED' });
+      expect(String(body['message'])).toContain('changed since it was read');
+    });
+  });
+
+  describe('UpdateEmploymentDto — the pipe-level shapes', () => {
+    const validateBody = async (body: Record<string, unknown>) => {
+      const dto = plainToInstance(UpdateEmploymentDto, body);
+      return validate(dto, { whitelist: true });
+    };
+
+    it('takes the full Form V save, and a null as the clear verb', async () => {
+      const errors = await validateBody({
+        ...fullFormV,
+      });
+      expect(errors).toHaveLength(0);
+      expect(await validateBody({ pan: null, joinDate: null })).toHaveLength(0);
+    });
+
+    it('rejects a malformed PAN in plain English, never echoing the value', async () => {
+      const errors = await validateBody({ pan: '12bcd345g' });
+      expect(errors).toHaveLength(1);
+      const message = Object.values(
+        errors[0].constraints as Record<string, string>,
+      )[0];
+      expect(message).toContain('pan');
+      expect(message).not.toContain('12bcd345g');
+    });
+
+    it('rejects a malformed IFSC', async () => {
+      const errors = await validateBody({ ifscCode: 'HDFC12XY34' });
+      expect(errors).toHaveLength(1);
+      expect(JSON.stringify(errors[0].constraints)).toContain('ifscCode');
+    });
+
+    it('rejects a badly shaped date but passes a real one for the service to calendar-check', async () => {
+      expect(await validateBody({ joinDate: '01/09/2026' })).toHaveLength(1);
+      expect(await validateBody({ joinDate: '2026-02-30' })).toHaveLength(0);
+    });
+
+    it('trims text before validation, so a padded PAN still passes the shape', async () => {
+      expect(await validateBody({ pan: '  ABCPE1234F  ' })).toHaveLength(0);
     });
   });
 });
