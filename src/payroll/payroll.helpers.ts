@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   InternalServerErrorException,
+  Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 
 /**
@@ -37,4 +39,42 @@ export function validationError(message: string): UnprocessableEntityException {
     error_code: ErrorCode.VALIDATION_ERROR,
     message,
   });
+}
+
+/**
+ * One audit entry per real mutation, through the shared write_audit_row rpc.
+ * An audit failure is logged, never thrown — it must not undo the save it
+ * describes. The three payroll services that audit pass only their label;
+ * the behaviour lives here so the rpc contract has one home.
+ */
+export async function writeAuditRow(
+  admin: ReturnType<SupabaseClientFactory['createAdmin']>,
+  logger: Logger,
+  label: string,
+  entry: {
+    actorId: string;
+    tenantId: string;
+    action: string;
+    targetUser: string | null;
+    details: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    const auditCall = (await admin.rpc('write_audit_row', {
+      p_actor: entry.actorId,
+      p_action: entry.action,
+      p_tenant_id: entry.tenantId,
+      p_target_user: entry.targetUser,
+      p_details: entry.details,
+    })) as { error: { code?: string; message?: string } | null };
+    if (auditCall.error) {
+      logger.error(`Failed to write the ${label} audit entry:`, {
+        error: auditCall.error,
+      });
+    }
+  } catch (rejection: unknown) {
+    logger.error(`Failed to write the ${label} audit entry:`, {
+      error: rejection,
+    });
+  }
 }

@@ -6,6 +6,7 @@ import {
   internalError,
   requireTenant,
   validationError,
+  writeAuditRow,
 } from './payroll.helpers';
 import {
   evaluateStructure,
@@ -452,26 +453,15 @@ export class SalaryStructuresService {
     memberUserId: string,
     entry: { action: string; effectiveFrom: string; changedFields: string[] },
   ): Promise<void> {
-    try {
-      const auditCall = (await admin.rpc('write_audit_row', {
-        p_actor: actorId,
-        p_action: entry.action,
-        p_tenant_id: tenantId,
-        p_target_user: memberUserId,
-        p_details: {
-          changed_fields: entry.changedFields,
-          effective_from: entry.effectiveFrom,
-        },
-      })) as { error: { code?: string; message?: string } | null };
-      if (auditCall.error) {
-        this.logger.error('Failed to write the structure audit entry:', {
-          error: auditCall.error,
-        });
-      }
-    } catch (rejection: unknown) {
-      this.logger.error('Failed to write the structure audit entry:', {
-        error: rejection,
-      });
-    }
+    await writeAuditRow(admin, this.logger, 'structure', {
+      actorId,
+      tenantId,
+      action: entry.action,
+      targetUser: memberUserId,
+      details: {
+        changed_fields: entry.changedFields,
+        effective_from: entry.effectiveFrom,
+      },
+    });
   }
 }

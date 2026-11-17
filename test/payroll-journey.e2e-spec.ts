@@ -1722,4 +1722,479 @@ describe('Payroll journey (real DB, real routes)', () => {
       expect(await structureRowsOf(employeeA)).toHaveLength(3);
     },
   );
+
+  // ------------------------------------------------------------- 23-4 legs
+  // The calendar, the month-status read, and the state-rules flag (CAP-4,
+  // CAP-8). Fixture facts carried in from earlier legs: employee A joined
+  // 2026-09-01 and is the only active employee with a join date (C is
+  // removed, D/E have none), so the main tenant's first payroll month is
+  // 2026-09 and the stranger tenant has no bound at all.
+
+  /** The tenant's stored calendar revisions, oldest effective date first. */
+  async function calendarRowsOf(
+    tenantId = tenant,
+  ): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await pool.query<Record<string, unknown>>(
+      `select effective_from::text as effective_from, divisor_convention,
+              cutoff_day, pay_date
+         from public.payroll_calendar
+        where tenant_id = $1
+        order by effective_from`,
+      [tenantId],
+    );
+    return rows;
+  }
+
+  async function payrollAuditCount(action: string): Promise<number> {
+    const { rows } = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_log
+        where tenant_id = $1 and action = $2`,
+      [tenant, action],
+    );
+    return rows[0].n;
+  }
+
+  async function stateRulesRowOf(
+    tenantId = tenant,
+  ): Promise<Record<string, unknown>> {
+    const { rows } = await pool.query<Record<string, unknown>>(
+      `select notified, updated_at from public.payroll_state_rules
+        where tenant_id = $1`,
+      [tenantId],
+    );
+    return rows[0];
+  }
+
+  maybeIt(
+    '23-4 — month status answers the defaults, the bound, and the month before the bound',
+    async () => {
+      // A counterexample for the bound's filters: the OWNER (a company_admin)
+      // joins earlier than employee A. A regression that drops the role
+      // filter would answer 2026-08 here instead of the fixture's 2026-09.
+      must(
+        await admin
+          .from('memberships')
+          .update({ join_date: '2026-08-01' })
+          .eq('user_id', owner)
+          .eq('tenant_id', tenant),
+      );
+
+      const status = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: ownerHeaders(),
+      });
+      expect(status.statusCode).toBe(200);
+      expect(JSON.parse(status.body)).toMatchObject({
+        month: '2026-10',
+        divisorConvention: 'fixed-26',
+        cutoffDay: 25,
+        payDate: 1,
+        effectiveFrom: null,
+        locked: false,
+        firstPayrollMonth: '2026-09',
+        notRunnableReason: null,
+      });
+      expect(await calendarRowsOf()).toHaveLength(0);
+
+      // A month before the bound is not runnable, naming the bound.
+      const early = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-08',
+        headers: ownerHeaders(),
+      });
+      expect(early.statusCode).toBe(200);
+      const earlyBody = JSON.parse(early.body) as { notRunnableReason: string };
+      expect(earlyBody.notRunnableReason).toContain('2026-09');
+      expect(earlyBody.notRunnableReason).toContain('no payroll history');
+    },
+  );
+
+  maybeIt(
+    '23-4 — a dated revision governs from its month; September stays on defaults',
+    async () => {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          divisorConvention: 'fixed-30',
+          cutoffDay: 20,
+          payDate: 5,
+        },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(JSON.parse(put.body)).toMatchObject({
+        effectiveFrom: '2026-10-01',
+        divisorConvention: 'fixed-30',
+        cutoffDay: 20,
+        payDate: 5,
+      });
+
+      const oct = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(oct.body)).toMatchObject({
+        divisorConvention: 'fixed-30',
+        cutoffDay: 20,
+        payDate: 5,
+        effectiveFrom: '2026-10-01',
+        notRunnableReason: null,
+      });
+
+      // September's first day predates the row: the defaults still govern.
+      // It is also the bound month itself — runnable, so no reason.
+      const sep = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-09',
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(sep.body)).toMatchObject({
+        divisorConvention: 'fixed-26',
+        cutoffDay: 25,
+        payDate: 1,
+        effectiveFrom: null,
+        notRunnableReason: null,
+      });
+      expect(await payrollAuditCount('payroll.calendar_saved')).toBe(1);
+    },
+  );
+
+  maybeIt(
+    '23-4 — a mid-month-dated revision is invisible to its own month, governs the next',
+    async () => {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-11-10', cutoffDay: 15 },
+      });
+      expect(put.statusCode).toBe(200);
+      // Absent fields take the defaults, not the previous revision's values.
+      expect(JSON.parse(put.body)).toMatchObject({
+        effectiveFrom: '2026-11-10',
+        divisorConvention: 'fixed-26',
+        cutoffDay: 15,
+        payDate: 1,
+      });
+
+      // November still resolves to the October row (month-start resolution).
+      const nov = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-11',
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(nov.body)).toMatchObject({
+        divisorConvention: 'fixed-30',
+        cutoffDay: 20,
+        payDate: 5,
+        effectiveFrom: '2026-10-01',
+      });
+
+      const dec = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-12',
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(dec.body)).toMatchObject({
+        divisorConvention: 'fixed-26',
+        cutoffDay: 15,
+        payDate: 1,
+        effectiveFrom: '2026-11-10',
+      });
+
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+      });
+      expect(list.statusCode).toBe(200);
+      const revisions = JSON.parse(list.body) as Array<{
+        effectiveFrom: string;
+      }>;
+      expect(revisions.map((r) => r.effectiveFrom)).toEqual([
+        '2026-10-01',
+        '2026-11-10',
+      ]);
+    },
+  );
+
+  maybeIt(
+    '23-4 — February and CoW rejections refuse to write; a same-date save replaces in place',
+    async () => {
+      const feb = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-12-01', cutoffDay: 29 },
+      });
+      expect(feb.statusCode).toBe(422);
+      expect(feb.body).toContain('February');
+
+      const cow = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-12-01', payDate: 8 },
+      });
+      expect(cow.statusCode).toBe(422);
+      expect(cow.body).toContain('7th day');
+
+      const cleared = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-12-01', cutoffDay: null },
+      });
+      expect(cleared.statusCode).toBe(422);
+      expect(cleared.body).toContain('cannot be cleared');
+
+      // An invented calendar date never reaches the service: the pipe
+      // refuses it 422 (a 500 here would mean the constraint unwired).
+      const invented = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-02-30', cutoffDay: 20 },
+      });
+      expect(invented.statusCode).toBe(422);
+      expect(invented.body).toContain('effectiveFrom');
+      expect(await calendarRowsOf()).toHaveLength(2);
+      expect(await payrollAuditCount('payroll.calendar_saved')).toBe(2);
+
+      // An identical same-date save writes nothing.
+      const noop = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          divisorConvention: 'fixed-30',
+          cutoffDay: 20,
+          payDate: 5,
+        },
+      });
+      expect(noop.statusCode).toBe(200);
+      expect(await calendarRowsOf()).toHaveLength(2);
+      expect(await payrollAuditCount('payroll.calendar_saved')).toBe(2);
+
+      // A changed same-date save replaces the row — never a second one. The
+      // save is a full envelope: absent fields take the DEFAULTS, not the
+      // replaced revision's values.
+      const replace = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: { effectiveFrom: '2026-10-01', cutoffDay: 22 },
+      });
+      expect(replace.statusCode).toBe(200);
+      const rows = await calendarRowsOf();
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        effective_from: '2026-10-01',
+        divisor_convention: 'fixed-26',
+        cutoff_day: 22,
+        pay_date: 1,
+      });
+      expect(await payrollAuditCount('payroll.calendar_saved')).toBe(3);
+
+      // Naming every field restores them in the same dated slot.
+      const full = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          divisorConvention: 'fixed-30',
+          cutoffDay: 22,
+          payDate: 5,
+        },
+      });
+      expect(full.statusCode).toBe(200);
+      expect((await calendarRowsOf())[0]).toMatchObject({
+        effective_from: '2026-10-01',
+        divisor_convention: 'fixed-30',
+        cutoff_day: 22,
+        pay_date: 5,
+      });
+      expect(await payrollAuditCount('payroll.calendar_saved')).toBe(4);
+    },
+  );
+
+  maybeIt(
+    '23-4 — the state-rules flag persists, no-ops identically, and audits each real change',
+    async () => {
+      const before = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/state-rules',
+        headers: ownerHeaders(),
+      });
+      expect(before.statusCode).toBe(200);
+      expect(JSON.parse(before.body)).toMatchObject({
+        notified: false,
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      });
+
+      const set = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/state-rules',
+        headers: ownerHeaders(),
+        payload: { notified: true },
+      });
+      expect(set.statusCode).toBe(200);
+      const setBody = JSON.parse(set.body) as { updatedAt: string };
+      expect(setBody).toMatchObject({ notified: true });
+      expect(await stateRulesRowOf()).toMatchObject({ notified: true });
+      expect(await payrollAuditCount('payroll.state_rules_updated')).toBe(1);
+
+      const again = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/state-rules',
+        headers: ownerHeaders(),
+        payload: { notified: true },
+      });
+      expect(again.statusCode).toBe(200);
+      const againBody = JSON.parse(again.body) as { updatedAt: string };
+      expect(againBody.updatedAt).toBe(setBody.updatedAt);
+      expect(await payrollAuditCount('payroll.state_rules_updated')).toBe(1);
+
+      // The other direction is a real change and audits again.
+      const unset = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/state-rules',
+        headers: ownerHeaders(),
+        payload: { notified: false },
+      });
+      expect(unset.statusCode).toBe(200);
+      expect(await stateRulesRowOf()).toMatchObject({ notified: false });
+      expect(await payrollAuditCount('payroll.state_rules_updated')).toBe(2);
+    },
+  );
+
+  maybeIt(
+    '23-4 — another company sees only its own calendar, has no bound, and a bad month key is a 400',
+    async () => {
+      const strangerHeaders = () => ({
+        authorization: `Bearer ${bearerFor(otherOwner)}`,
+      });
+
+      const empty = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/calendar',
+        headers: strangerHeaders(),
+      });
+      expect(JSON.parse(empty.body)).toEqual([]);
+
+      const status = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: strangerHeaders(),
+      });
+      expect(JSON.parse(status.body)).toMatchObject({
+        divisorConvention: 'fixed-26',
+        cutoffDay: 25,
+        effectiveFrom: null,
+        firstPayrollMonth: null,
+      });
+      expect(
+        (JSON.parse(status.body) as { notRunnableReason: string })
+          .notRunnableReason,
+      ).toContain('joining date');
+
+      // The stranger saves their own revision; ours is untouched.
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: strangerHeaders(),
+        payload: { effectiveFrom: '2026-10-01', cutoffDay: 20 },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(await calendarRowsOf(tenant)).toHaveLength(2);
+
+      // A second, EARLIER revision saved after the first — the inclusive
+      // bounds (cutoff 28, pay date 7) are legal, and the list must order by
+      // effective date, not save order.
+      const earlier = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: strangerHeaders(),
+        payload: { effectiveFrom: '2026-09-01', cutoffDay: 28, payDate: 7 },
+      });
+      expect(earlier.statusCode).toBe(200);
+      expect(await calendarRowsOf(otherTenant)).toHaveLength(2);
+
+      const strangerList = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/calendar',
+        headers: strangerHeaders(),
+      });
+      const strangerRevisions = JSON.parse(strangerList.body) as Array<{
+        effectiveFrom: string;
+      }>;
+      expect(strangerRevisions.map((r) => r.effectiveFrom)).toEqual([
+        '2026-09-01',
+        '2026-10-01',
+      ]);
+
+      const strangerSep = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-09',
+        headers: strangerHeaders(),
+      });
+      expect(JSON.parse(strangerSep.body)).toMatchObject({
+        cutoffDay: 28,
+        payDate: 7,
+        effectiveFrom: '2026-09-01',
+      });
+
+      const theirs = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: strangerHeaders(),
+      });
+      expect(JSON.parse(theirs.body)).toMatchObject({ cutoffDay: 20 });
+      const ours = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: ownerHeaders(),
+      });
+      expect(JSON.parse(ours.body)).toMatchObject({ cutoffDay: 22 });
+
+      const badMonth = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/october',
+        headers: ownerHeaders(),
+      });
+      expect(badMonth.statusCode).toBe(400);
+      expect(badMonth.body).toContain('YYYY-MM');
+
+      // An employee token is forbidden on the whole config surface.
+      const employeeHeaders = () => ({
+        authorization: `Bearer ${bearerFor(employeeA)}`,
+      });
+      const employee = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/calendar',
+        headers: employeeHeaders(),
+      });
+      expect(employee.statusCode).toBe(403);
+      const employeeMonths = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: employeeHeaders(),
+      });
+      expect(employeeMonths.statusCode).toBe(403);
+      const employeeRules = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/state-rules',
+        headers: employeeHeaders(),
+        payload: { notified: true },
+      });
+      expect(employeeRules.statusCode).toBe(403);
+      expect(await stateRulesRowOf()).toMatchObject({ notified: false });
+    },
+  );
 });

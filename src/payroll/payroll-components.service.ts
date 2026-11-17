@@ -11,6 +11,7 @@ import {
   internalError,
   requireTenant,
   validationError,
+  writeAuditRow,
 } from './payroll.helpers';
 import {
   CreateSalaryComponentDto,
@@ -394,24 +395,13 @@ export class PayrollComponentsService {
     tenantId: string,
     entry: { action: string; changedFields: string[] },
   ): Promise<void> {
-    try {
-      const auditCall = (await admin.rpc('write_audit_row', {
-        p_actor: actorId,
-        p_action: entry.action,
-        p_tenant_id: tenantId,
-        p_target_user: null,
-        p_details: { changed_fields: entry.changedFields },
-      })) as { error: { code?: string; message?: string } | null };
-      if (auditCall.error) {
-        this.logger.error('Failed to write the component audit entry:', {
-          error: auditCall.error,
-        });
-      }
-    } catch (rejection: unknown) {
-      this.logger.error('Failed to write the component audit entry:', {
-        error: rejection,
-      });
-    }
+    await writeAuditRow(admin, this.logger, 'components', {
+      actorId,
+      tenantId,
+      action: entry.action,
+      targetUser: null,
+      details: { changed_fields: entry.changedFields },
+    });
   }
 }
 
