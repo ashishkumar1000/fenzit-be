@@ -4790,7 +4790,9 @@ describe('Payroll journey (real DB, real routes)', () => {
         payload: {},
       });
       expect(forever.statusCode).toBe(200);
-      expect(pauseBody(forever)).toEqual({ paused: true, pausedUntil: null });
+      // toMatchObject: the response carries the panel's full state (who
+      // paused it, when) — only the pause contract fields are pinned here.
+      expect(pauseBody(forever)).toMatchObject({ paused: true, pausedUntil: null });
       // The timed bounds: minutes must be an int in 1–1440.
       const zero = await app.inject({
         method: 'POST',
@@ -4812,7 +4814,7 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: ownerHeaders(),
       });
       expect(resume.statusCode).toBe(200);
-      expect(pauseBody(resume)).toEqual({ paused: false, pausedUntil: null });
+      expect(pauseBody(resume)).toMatchObject({ paused: false, pausedUntil: null });
       // The fence the rest of the run lives under: a day-long pause. The
       // pause self-expires even if this run dies mid-way.
       const fence = await app.inject({

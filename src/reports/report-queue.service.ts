@@ -182,7 +182,9 @@ function requireTenant(user: RequestUser): string {
 }
 
 /** An expired timed pause reads as "running" — the truth the panel and the
- *  worker both need. */
+ *  worker both need. Postgres serialises timestamptz as `+00:00`; the pause
+ *  POST answers ISO-Z, so the state read normalises to the same format —
+ *  the panel sees one format whichever endpoint it reads. */
 function normalise(row: PauseRow): ReportQueueState {
   const paused =
     row.paused &&
@@ -190,8 +192,11 @@ function normalise(row: PauseRow): ReportQueueState {
       new Date(row.paused_until).getTime() > Date.now());
   return {
     paused,
-    pausedUntil: paused ? row.paused_until : null,
+    pausedUntil:
+      paused && row.paused_until
+        ? new Date(row.paused_until).toISOString()
+        : null,
+    pausedAt: paused && row.paused_at ? new Date(row.paused_at).toISOString() : null,
     pausedBy: paused ? row.paused_by : null,
-    pausedAt: paused ? row.paused_at : null,
   };
 }
