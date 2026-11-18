@@ -23,6 +23,13 @@ export const technicianJobActivityDefinition: ReportDefinition = {
   label: 'Technician job report',
 
   validateParams(raw: RawReportParams): ReportParams {
+    // Union guard (23-8): this definition only accepts the range shape.
+    if (!('startDate' in raw)) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'startDate and endDate are required for this report',
+      });
+    }
     // Strict shape: this report scopes by people only — an officeIds value
     // is a client bug (the FE never sends it here), not a silent no-op.
     if (raw.officeIds != null && raw.officeIds.length > 0) {

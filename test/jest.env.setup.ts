@@ -8,10 +8,18 @@ process.env['SUPABASE_JWT_SECRET'] ??=
   'test-jwt-secret-for-e2e-tests-minimum-32-chars';
 process.env['SUPABASE_SERVICE_ROLE_KEY'] ??=
   'test-service-role-key-for-e2e-tests';
-process.env['CLOUDFLARE_R2_ACCOUNT_ID'] = 'test-account-id';
-process.env['CLOUDFLARE_R2_ACCESS_KEY'] = 'test-access-key';
-process.env['CLOUDFLARE_R2_SECRET_KEY'] = 'test-secret-key';
-process.env['CLOUDFLARE_R2_BUCKET'] = 'test-bucket';
+// ??= (not =): real R2 credentials from --env-file=.env must survive — the
+// 23-8 payslip legs run the real upload pipeline, and a fake endpoint gets
+// TLS-rejected by Cloudflare's edge (SSL alert 40). Unset env falls back to
+// the stub so specs that never touch R2 still boot.
+process.env['CLOUDFLARE_R2_ACCOUNT_ID'] ??= 'test-account-id';
+process.env['CLOUDFLARE_R2_ACCESS_KEY'] ??= 'test-access-key';
+process.env['CLOUDFLARE_R2_SECRET_KEY'] ??= 'test-secret-key';
+process.env['CLOUDFLARE_R2_BUCKET'] ??= 'test-bucket';
+// 23-8: the suite's worker is the queue's sole legal claimer — it skips the
+// pause check, so the pause the legs set through the API fences every OTHER
+// worker (the deployed one on Render) without stalling this run.
+process.env['REPORT_WORKER_EXCLUSIVE'] = 'true';
 process.env['WORKER_WEBHOOK_SECRET'] = 'test-webhook-secret';
 process.env['GOOGLE_PLACES_API_KEY'] = 'test-google-places-api-key';
 // The response-echo half of this flag is GONE — OTP_DEV_ECHO now gates ONLY

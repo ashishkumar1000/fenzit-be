@@ -17,6 +17,7 @@ import { ReportRegistry } from '../registry/report-registry';
 import { ReportRequestRow } from '../report-response.model';
 import { ReportRequestStatus } from '../enums/report-status.enum';
 import { ReportPipelineService } from './report-pipeline.service';
+import { ReportQueueService } from '../report-queue.service';
 import {
   claimQueuedReport,
   markReportFailed,
@@ -42,6 +43,10 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly leaseMs: number;
   private readonly concurrency: number;
   private readonly maxAttempts: number;
+  /** Exclusive worker (test environments): the one legal owner of the
+   *  queue — it skips the pause check so the pause can fence every OTHER
+   *  worker (the deployed one) without stalling this run's own processing. */
+  private readonly exclusive: boolean;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -50,6 +55,7 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly pipeline: ReportPipelineService,
     private readonly registry: ReportRegistry,
     private readonly configService: ConfigService,
+    private readonly queue: ReportQueueService,
   ) {
     this.pollIntervalMs =
       (configService.get<number>('REPORT_POLL_INTERVAL_SECONDS') ?? 5) * 1000;
@@ -58,6 +64,19 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     this.concurrency =
       configService.get<number>('REPORT_WORKER_CONCURRENCY') ?? 1;
     this.maxAttempts = configService.get<number>('REPORT_MAX_ATTEMPTS') ?? 3;
+    // Parsed strictly ('true' only): ConfigService hands back the raw env
+    // string, and a truthy 'false' would silently make this worker
+    // pause-immune — exactly the misconfiguration the fence can never see.
+    this.exclusive =
+      configService.get<string>('REPORT_WORKER_EXCLUSIVE') === 'true';
+    // Test-only flag, by design: an exclusive worker ignores the pause for
+    // EVERY tenant, so one that slips into a deployment voids the pause
+    // API's entire contract. Fail the boot instead.
+    if (this.exclusive && process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'REPORT_WORKER_EXCLUSIVE is test-only — a deployed worker must respect the report-queue pause',
+      );
+    }
   }
 
   onApplicationBootstrap(): void {
@@ -81,7 +100,20 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     this.running = true;
     try {
       const admin = this.supabaseClientFactory.createAdmin();
-      const ids = await this.candidateIds(admin);
+      // 23-8: the per-tenant pause fences claims for the paused tenants in
+      // every worker that respects it — claims stop for those tenants
+      // everywhere, in-flight reports finish on their leases, and everyone
+      // else's reports keep flowing. An exclusive worker (tests) skips the
+      // check: it is the pause's intended exemption, the sole legal claimer
+      // while others are fenced.
+      const pausedTenants = this.exclusive
+        ? new Set<string>()
+        : await this.queue.pausedTenantIds();
+      // The paused set goes INTO the candidate query, not a post-filter:
+      // candidates are the OLDEST rows under limit(concurrency) — filtering
+      // afterwards would let one paused tenant's head-of-line rows starve
+      // every other tenant for the whole pause.
+      const ids = await this.candidateIds(admin, pausedTenants);
       // Sequential processing: concurrency default 1 — one render at a time.
       for (const id of ids.slice(0, this.concurrency)) {
         await this.processOne(admin, id);
@@ -93,17 +125,29 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
   }
 
-  /** Queued oldest-first (with attempt_count for the claim), then rows
-   *  stranded past their lease. */
+  /** Queued oldest-first (with attempt_count and tenant for the claim),
+   *  then rows stranded past their lease — both excluding the paused
+   *  tenants' rows in SQL (an empty pause set skips the filter entirely). */
   private async candidateIds(
     admin: SupabaseClient,
-  ): Promise<{ id: string; attemptCount: number }[]> {
+    pausedTenants: Set<string>,
+  ): Promise<{ id: string; tenantId: string; attemptCount: number }[]> {
     const nowIso = new Date().toISOString();
+    // PostgREST's `not.in` takes a parenthesised CSV; an empty pause set
+    // would produce a meaningless `not.in.()`, so the filter is skipped.
+    const pausedCsv = `(${[...pausedTenants].join(',')})`;
 
-    const queued = await admin
-      .from('report_requests')
-      .select('id, attempt_count')
-      .eq('status', ReportRequestStatus.QUEUED)
+    const queued = await (pausedTenants.size > 0
+      ? admin
+          .from('report_requests')
+          .select('id, tenant_id, attempt_count')
+          .eq('status', ReportRequestStatus.QUEUED)
+          .not('tenant_id', 'in', pausedCsv)
+      : admin
+          .from('report_requests')
+          .select('id, tenant_id, attempt_count')
+          .eq('status', ReportRequestStatus.QUEUED)
+    )
       .order('created_at', { ascending: true })
       .limit(this.concurrency);
 
@@ -111,11 +155,19 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
       throw queued.error;
     }
 
-    const stranded = await admin
-      .from('report_requests')
-      .select('id, attempt_count')
-      .eq('status', ReportRequestStatus.GENERATING)
-      .lt('locked_until', nowIso)
+    const stranded = await (pausedTenants.size > 0
+      ? admin
+          .from('report_requests')
+          .select('id, tenant_id, attempt_count')
+          .eq('status', ReportRequestStatus.GENERATING)
+          .lt('locked_until', nowIso)
+          .not('tenant_id', 'in', pausedCsv)
+      : admin
+          .from('report_requests')
+          .select('id, tenant_id, attempt_count')
+          .eq('status', ReportRequestStatus.GENERATING)
+          .lt('locked_until', nowIso)
+    )
       .order('locked_until', { ascending: true })
       .limit(this.concurrency);
 
@@ -123,8 +175,14 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
       throw stranded.error;
     }
 
-    const toCandidates = (rows: { id: string; attempt_count: number }[]) =>
-      rows.map((r) => ({ id: r.id, attemptCount: r.attempt_count }));
+    const toCandidates = (
+      rows: { id: string; tenant_id: string; attempt_count: number }[],
+    ) =>
+      rows.map((r) => ({
+        id: r.id,
+        tenantId: r.tenant_id,
+        attemptCount: r.attempt_count,
+      }));
     return [
       ...toCandidates(queued.data ?? []),
       ...toCandidates(stranded.data ?? []),
@@ -133,7 +191,7 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async processOne(
     admin: SupabaseClient,
-    candidate: { id: string; attemptCount: number },
+    candidate: { id: string; tenantId: string; attemptCount: number },
   ): Promise<void> {
     // ALS context does not cross the job-queue boundary — each job mints its
     // own correlation id so worker logs are traceable per job. tenant/user
@@ -157,7 +215,7 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async claimAndProcess(
     admin: SupabaseClient,
-    candidate: { id: string; attemptCount: number },
+    candidate: { id: string; tenantId: string; attemptCount: number },
     context: CorrelationContext,
   ): Promise<void> {
     const lockedUntil = new Date(Date.now() + this.leaseMs).toISOString();

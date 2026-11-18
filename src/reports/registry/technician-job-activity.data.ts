@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import { listCompanyMembers } from '../../common/members/company-members';
-import type { ReportFetchContext } from './report-definition';
+import { isRangeParams, type ReportFetchContext } from './report-definition';
 
 /**
  * Data fetcher for the Technician Job Activity report (FR16) — story 12-5.
@@ -250,6 +250,13 @@ export async function fetchTechnicianJobActivityData(
   ctx: ReportFetchContext,
 ): Promise<TechnicianJobActivityData> {
   const { supabase, tenantId, params } = ctx;
+  // Union guard (23-8): this fetcher reads the range shape only.
+  if (!isRangeParams(params)) {
+    throw new BadRequestException({
+      error_code: ErrorCode.VALIDATION_ERROR,
+      message: 'This report requires a start and end date',
+    });
+  }
   const bounds = istDayBounds(params.start_date, params.end_date);
 
   const [tenant, rawJobs] = await Promise.all([

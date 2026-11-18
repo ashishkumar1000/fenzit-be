@@ -17,8 +17,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ReportsService } from './reports.service';
+import { ReportQueueService } from './report-queue.service';
 import { CreateReportRequestDto } from './dto/create-report-request.dto';
 import { ListReportsQueryDto } from './dto/list-reports-query.dto';
+import { ReportQueuePauseDto } from './dto/report-queue-pause.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -28,7 +30,10 @@ import { Can } from '../common/decorators/can.decorator';
 @ApiBearerAuth()
 @Controller('reports')
 export class ReportsController {
-  constructor(private readonly reportsService: ReportsService) {}
+  constructor(
+    private readonly reportsService: ReportsService,
+    private readonly queue: ReportQueueService,
+  ) {}
 
   @Post()
   @Can('report.request')
@@ -54,6 +59,60 @@ export class ReportsController {
     @Body() dto: CreateReportRequestDto,
   ) {
     return this.reportsService.createReport(user, dto);
+  }
+
+  // NOTE: the `queue/...` routes must stay ABOVE the `:id` routes below —
+  // `:id` is a catch-all that would otherwise swallow the literal path
+  // (and trip the uuid pipe on the word "queue").
+  @Get('queue/status')
+  @Can('report.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Is the report queue paused? pausedUntil null while paused = indefinitely',
+  })
+  @ApiResponse({ status: 200, description: 'The pause state' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  getQueueStatus(@CurrentUser() user: RequestUser) {
+    return this.queue.getState(user);
+  }
+
+  @Post('queue/pause')
+  @Can('report.queue')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Pause report generation (body minutes = timed pause; omit = indefinitely)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'The pause state after pausing',
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — pause/resume needs the report.queue permission (company admin)',
+  })
+  @ApiResponse({ status: 422, description: 'minutes outside 1–1440' })
+  pauseQueue(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: ReportQueuePauseDto,
+  ) {
+    return this.queue.pause(user, dto.minutes ?? null);
+  }
+
+  @Post('queue/resume')
+  @Can('report.queue')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'End the pause — claims resume on the next tick' })
+  @ApiResponse({ status: 200, description: 'The pause state after resuming' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — pause/resume needs the report.queue permission (company admin)',
+  })
+  resumeQueue(@CurrentUser() user: RequestUser) {
+    return this.queue.resume(user);
   }
 
   // NOTE: `:id` must stay BELOW the parameterless `@Get()` list route above —

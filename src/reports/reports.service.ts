@@ -19,6 +19,10 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 import { isUuidShape } from './registry/report-params.util';
+import {
+  isPayslipParams,
+  isRangeParams,
+} from './registry/report-definition';
 import { StorageService } from '../storage/storage.service';
 import { ReportRegistry } from './registry/report-registry';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
@@ -44,10 +48,11 @@ const REPORTS_CURSOR_SCOPE = 'reports-list' as const;
 
 /**
  * SQLSTATE raised by the report_requests in-flight guard trigger when a
- * tenant's queued+generating count is already at the cap. The app maps it to
- * 429 REPORT_IN_FLIGHT_LIMIT (PTxxx convention: last 3 digits = HTTP status).
- */
-const PT_IN_FLIGHT_LIMIT = 'PT429';
+ *  tenant's queued+generating count is already at the cap. The app maps it to
+ *  429 REPORT_IN_FLIGHT_LIMIT (PTxxx convention: last 3 digits = HTTP status).
+ *  Exported — the payroll payslip-PDF routes (23-8) insert into
+ *  report_requests too and map the same SQLSTATE. */
+export const PT_IN_FLIGHT_LIMIT = 'PT429';
 
 @Injectable()
 export class ReportsService {
@@ -80,6 +85,17 @@ export class ReportsService {
       technicianIds: dto.technicianIds,
       officeIds: dto.officeIds,
     });
+    if (isPayslipParams(params)) {
+      // Defense-in-depth (23-8): the generic report route never creates
+      // payslip requests — payslip PDFs queue only through the payroll
+      // payslip endpoints. Today the DTO cannot even carry the payslip
+      // shape (validateParams above already refused it); this arm keeps it
+      // true if the DTO ever grows fields.
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Payslip PDFs are requested from the payroll payslip endpoints',
+      });
+    }
     params.technician_ids = await this.resolveTechnicianIds(
       user.tenantId,
       dto.technicianIds,
@@ -281,6 +297,22 @@ export class ReportsService {
   }
 
   private toListItem(row: ReportRequestRow): ReportListItemResponse {
+    // A payslip request renders as a sparse-but-well-formed history row
+    // (23-8): no range, no counts — its identifying fields live on the
+    // payroll payslip endpoints, never as `undefined` in this JSON.
+    if (!isRangeParams(row.params)) {
+      return {
+        id: row.id,
+        reportType: row.report_type,
+        range: { startDate: null, endDate: null },
+        technicianCount: null,
+        officeCount: null,
+        status: row.status,
+        errorCode: row.error_code,
+        createdAt: row.created_at,
+        completedAt: row.completed_at,
+      };
+    }
     return {
       id: row.id,
       reportType: row.report_type,

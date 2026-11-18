@@ -52,13 +52,22 @@ export async function writeAuditRow(
   logger: Logger,
   label: string,
   entry: {
-    actorId: string;
+    actorId: string | null;
     tenantId: string;
     action: string;
     targetUser: string | null;
     details: Record<string, unknown>;
   },
 ): Promise<void> {
+  if (!entry.actorId) {
+    // write_audit_row's p_actor is a uuid and must be a real user — an
+    // actorless entry (e.g. a run row that somehow lost initiated_by) is
+    // logged and skipped, never let it disturb the change it describes.
+    logger.warn(`No actor for the ${label} audit entry — skipping`, {
+      action: entry.action,
+    });
+    return;
+  }
   try {
     const auditCall = (await admin.rpc('write_audit_row', {
       p_actor: entry.actorId,

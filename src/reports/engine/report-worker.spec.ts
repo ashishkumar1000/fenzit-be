@@ -7,8 +7,10 @@ import { ReportRegistry } from '../registry/report-registry';
 import { ReportRequestStatus } from '../enums/report-status.enum';
 import { ReportRequestRow } from '../report-response.model';
 import { ReportPipelineService } from './report-pipeline.service';
+import { ReportQueueService } from '../report-queue.service';
 import { ReportWorker } from './report-worker';
 import { getCorrelationContext } from '../../common/correlation/correlation.context';
+import type { CorrelationContext } from '../../common/correlation/correlation.context';
 
 /**
  * The guarded-UPDATE chains of the claim/stamp helpers: awaited directly —
@@ -163,6 +165,10 @@ describe('ReportWorker (story 12-3)', () => {
           provide: ConfigService,
           useValue: { get: jest.fn((key: string) => CONFIG[key]) },
         },
+        {
+          provide: ReportQueueService,
+          useValue: { pausedTenantIds: jest.fn().mockResolvedValue(new Set()) },
+        },
       ],
     }).compile();
 
@@ -215,7 +221,7 @@ describe('ReportWorker (story 12-3)', () => {
         updateResults: [{ data: [row], error: null }],
         row: { data: row, error: null },
       });
-      let seen: ReturnType<typeof getCorrelationContext> = null;
+      let seen!: CorrelationContext | null;
       pipeline.run.mockImplementation(async () => {
         seen = getCorrelationContext();
       });
@@ -243,7 +249,7 @@ describe('ReportWorker (story 12-3)', () => {
         updateResults: [{ data: [row], error: null }],
         row: { data: row, error: null },
       });
-      let seen: ReturnType<typeof getCorrelationContext> = null;
+      let seen!: CorrelationContext | null;
       pipeline.run.mockImplementation(async () => {
         seen = getCorrelationContext();
         throw new Error('pipeline exploded');

@@ -45,6 +45,17 @@ const IS_REAL_DB =
   !SUPABASE_URL.startsWith('https://test.supabase.co') &&
   SUPABASE_SERVICE_KEY !== '';
 
+// The 23-8 PDF legs run the REAL upload pipeline (pdfmake → R2 → presigned
+// URL), so they need real CLOUDFLARE_R2_* credentials — jest.env.setup.ts
+// falls back to stubs when unset, and stubs die at the R2 edge (TLS), not at
+// boot. Real creds are detected by the stub values' absence: any value the
+// setup itself would have injected means the env never carried real ones.
+const IS_REAL_R2 =
+  !!process.env['CLOUDFLARE_R2_ACCOUNT_ID'] &&
+  process.env['CLOUDFLARE_R2_ACCOUNT_ID'] !== 'test-account-id' &&
+  !!process.env['CLOUDFLARE_R2_BUCKET'] &&
+  process.env['CLOUDFLARE_R2_BUCKET'] !== 'test-bucket';
+
 jest.setTimeout(120_000);
 
 const TZ = 'Asia/Kolkata';
@@ -95,6 +106,16 @@ function must<T>(res: {
 
 describe('Payroll journey (real DB, real routes)', () => {
   const maybeIt = IS_REAL_DB ? it : it.skip;
+  // The PDF legs (real upload pipeline) additionally need real R2 creds —
+  // with stubs they would run and die mid-run at the R2 edge, which the
+  // plan forbids ("never a silent green" — this is a LOUD skip marker).
+  const pdfMaybeIt = IS_REAL_R2 ? maybeIt : it.skip;
+  if (!IS_REAL_R2) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '23-8 PDF legs SKIPPED — real CLOUDFLARE_R2_* credentials are required for the real upload pipeline',
+    );
+  }
   let app: NestFastifyApplication;
   let jwt: JwtService;
   let pool: Pool;
@@ -3101,7 +3122,7 @@ describe('Payroll journey (real DB, real routes)', () => {
             radius_m: 200,
           })
           .select('id')
-          .single(),
+          .single<{ id: string }>(),
       );
       const runEmployees = [employeeA, empB, empC2, empE, empI, empNoPan];
       for (const employeeId of runEmployees) {
@@ -4559,6 +4580,617 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: { authorization: `Bearer ${bearerFor(employeeA)}` },
       });
       expect(forbidden.statusCode).toBe(403);
+    },
+  );
+
+  // ------------------------------------------------------------- 23-8 legs
+  // The payslip surface (CAP-7): the admin's snapshot read, the payslip PDF
+  // through the REAL report pipeline (in-process worker → pdfmake → R2 →
+  // presigned URL), the regeneration semantics, and the employee's
+  // locked-only /me routes. The PDF-bearing legs are additionally gated on
+  // real R2 credentials (pdfMaybeIt — jest.env.setup.ts stubs would only die
+  // at the R2 edge mid-run); the snapshot read runs on the real DB alone.
+
+  const payslipsUrl = '/api/v1/payroll/payslips';
+
+  /** The payslip view as the API answers it (the fields these legs assert). */
+  type PayslipApiRow = {
+    id: string;
+    membershipId: string;
+    month: string;
+    slipNumber: string;
+    employeeCode: string;
+    pan: string | null;
+    establishmentName: string | null;
+    establishmentAddress: string | null;
+    wagePeriodStart: string | null;
+    wagePeriodEnd: string | null;
+    divisorConvention: string;
+    cutoffDay: number;
+    payDate: number;
+    payableDays: number;
+    lopDays: number;
+    paidDays: number;
+    daysWorked: number | null;
+    netWages: number;
+    earningLines: Array<{ name: string; amount: number }>;
+    deductionLines: Array<{ source: string; amount: number }>;
+    pdf: { status: string; url?: string };
+  };
+
+  /** A membership id by user — the payslip-PDF POST routes key on it. */
+  async function membershipIdOf(userId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `select id from public.memberships
+        where tenant_id = $1 and user_id = $2 limit 1`,
+      [tenant, userId],
+    );
+    if (!rows[0]) {
+      throw new Error(`no membership for ${userId}`);
+    }
+    return rows[0].id;
+  }
+
+  /** One report request, polled to a terminal status straight from the DB. */
+  async function awaitReportRequest(
+    requestId: string,
+  ): Promise<{ status: string; errorCode: string | null; r2Key: string | null }> {
+    const deadline = Date.now() + 90_000;
+    for (;;) {
+      const { rows } = await pool.query<{
+        status: string;
+        error_code: string | null;
+        r2_key: string | null;
+      }>(
+        `select status::text as status, error_code, r2_key
+           from public.report_requests where id = $1`,
+        [requestId],
+      );
+      const row = rows[0];
+      if (!row) {
+        throw new Error(`report request ${requestId} vanished`);
+      }
+      if (row.status === 'ready' || row.status === 'failed') {
+        return {
+          status: row.status,
+          errorCode: row.error_code,
+          r2Key: row.r2_key,
+        };
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`report ${requestId} stuck at ${row.status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+
+  /** Polls the admin list until one employee's row carries a PDF url. */
+  async function awaitPayslipPdfUrl(
+    month: string,
+    employeeCode: string,
+  ): Promise<string> {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=${month}`,
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const row = (JSON.parse(res.body) as PayslipApiRow[]).find(
+        (r) => r.employeeCode === employeeCode,
+      );
+      if (row?.pdf?.url) {
+        return row.pdf.url;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`pdf url never appeared for ${employeeCode}/${month}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+
+  maybeIt(
+    '23-8 — the admin snapshot read: the Form V field set, slip-number order, days worked',
+    async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=2026-10`,
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const rows = JSON.parse(res.body) as PayslipApiRow[];
+
+      // Slip-number order, and one live row per employee (the fixture's six).
+      const codes = rows.map((r) => r.employeeCode);
+      expect([...codes].sort()).toEqual(codes);
+      expect(codes).toEqual([
+        'EMP-001',
+        'EMP-010',
+        'EMP-011',
+        'EMP-012',
+        'EMP-013',
+        'EMP-014',
+      ]);
+
+      // Employee A's row: the Form V field set verbatim (the fixture's
+      // employment data), the establishment fields off the tenant, the
+      // final-run attendance (LOP 4.0 — the corrected half-day), and the
+      // Form V "days worked" bucket (present days, half 0.5, over the kept
+      // payable dates Oct 1–26; weekly offs and leave days contribute 0).
+      const a = rows.find((r) => r.employeeCode === 'EMP-001')!;
+      const { rows: tenantRow } = await pool.query<{
+        company_name: string | null;
+        address: string | null;
+      }>(`select company_name, address from public.tenants where id = $1`, [
+        tenant,
+      ]);
+      expect(a).toMatchObject({
+        employeeCode: 'EMP-001',
+        pan: 'ABCPE1234F',
+        establishmentName: tenantRow[0].company_name,
+        establishmentAddress: tenantRow[0].address,
+        wagePeriodStart: '2026-10-01',
+        wagePeriodEnd: '2026-10-31',
+        divisorConvention: 'fixed-26',
+        cutoffDay: 25,
+        payDate: 1,
+        payableDays: 26,
+        lopDays: 4,
+        paidDays: 22,
+        daysWorked: 15.5,
+        netWages: 21461.54,
+      });
+      expect(a.earningLines).toEqual([
+        { name: 'Basic', amount: 16923.08 },
+        { name: 'House Rent', amount: 6769.23 },
+      ]);
+      expect(a.deductionLines).toEqual(
+        expect.arrayContaining([
+          { source: 'pf_employee', amount: 2030.77 },
+          { source: 'head:Professional Tax', amount: 200 },
+        ]),
+      );
+
+      // A month's worth of requests touches nothing: a never-requested
+      // payslip answers pdf 'none' without erroring.
+      expect(rows.find((r) => r.employeeCode === 'EMP-013')!.pdf).toEqual({
+        status: 'none',
+      });
+
+      // The wire contract: month must be a real month.
+      const bad = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=october`,
+        headers: ownerHeaders(),
+      });
+      expect(bad.statusCode).toBe(422);
+      expect(bad.body).toContain('YYYY-MM');
+    },
+  );
+
+  pdfMaybeIt(
+    '23-8 — the payslip PDF end to end, then regeneration kills the superseded artifact',
+    async () => {
+      const membershipA = await membershipIdOf(employeeA);
+      const before = await payslipOf(employeeA, '2026-09');
+      const oldSlipId = String(before['id']);
+      const oldSlipNumber = String(before['slip_number']);
+
+      // -- the queue pause: the fence against every other worker ----------
+      // (the deployed one polls this same table; a claim race with it was
+      // the flake). The API surface itself is under test here too: forever,
+      // timed, its validation bounds, and the status read.
+      const pauseBody = (res: { body: string }) =>
+        JSON.parse(res.body) as { paused: boolean; pausedUntil: string | null };
+      const forever = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/pause',
+        headers: ownerHeaders(),
+        payload: {},
+      });
+      expect(forever.statusCode).toBe(200);
+      expect(pauseBody(forever)).toEqual({ paused: true, pausedUntil: null });
+      // The timed bounds: minutes must be an int in 1–1440.
+      const zero = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/pause',
+        headers: ownerHeaders(),
+        payload: { minutes: 0 },
+      });
+      expect(zero.statusCode).toBe(422);
+      const tooBig = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/pause',
+        headers: ownerHeaders(),
+        payload: { minutes: 1441 },
+      });
+      expect(tooBig.statusCode).toBe(422);
+      const resume = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/resume',
+        headers: ownerHeaders(),
+      });
+      expect(resume.statusCode).toBe(200);
+      expect(pauseBody(resume)).toEqual({ paused: false, pausedUntil: null });
+      // The fence the rest of the run lives under: a day-long pause. The
+      // pause self-expires even if this run dies mid-way.
+      const fence = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/pause',
+        headers: ownerHeaders(),
+        payload: { minutes: 1440 },
+      });
+      expect(fence.statusCode).toBe(200);
+      const fenced = pauseBody(fence);
+      expect(fenced.paused).toBe(true);
+      expect(fenced.pausedUntil).toBeTruthy();
+      const status = await app.inject({
+        method: 'GET',
+        url: '/api/v1/reports/queue/status',
+        headers: ownerHeaders(),
+      });
+      expect(status.statusCode).toBe(200);
+      expect(pauseBody(status)).toMatchObject({
+        paused: true,
+        pausedUntil: fenced.pausedUntil,
+      });
+
+      // -- the admin queues the PDF; the double-tap reuses the request ----
+      const post = () =>
+        app.inject({
+          method: 'POST',
+          url: `${payslipsUrl}/${membershipA}/2026-09/pdf`,
+          headers: ownerHeaders(),
+        });
+      const first = await post();
+      expect(first.statusCode).toBe(201);
+      const req1 = JSON.parse(first.body) as {
+        id: string;
+        status: string;
+        createdAt: string;
+      };
+      expect(req1.status).toBe('queued');
+      const repeat = await post();
+      expect(repeat.statusCode).toBe(201);
+      expect((JSON.parse(repeat.body) as { id: string }).id).toBe(req1.id);
+
+      // The generic reports history renders the payslip request sparse but
+      // well-formed — no range, no counts, never `undefined`.
+      const history = await app.inject({
+        method: 'GET',
+        url: '/api/v1/reports',
+        headers: ownerHeaders(),
+      });
+      expect(history.statusCode).toBe(200);
+      const historyRows = (JSON.parse(history.body) as {
+        data: Array<{
+          reportType: string;
+          range: { startDate: string | null; endDate: string | null };
+          technicianCount: number | null;
+          officeCount: number | null;
+          status: string;
+        }>;
+      }).data;
+      const payslipHistory = historyRows.filter(
+        (r) => r.reportType === 'payslip',
+      );
+      expect(payslipHistory.length).toBeGreaterThan(0);
+      for (const row of payslipHistory) {
+        expect(row.range).toEqual({ startDate: null, endDate: null });
+        expect(row.technicianCount).toBeNull();
+        expect(row.officeCount).toBeNull();
+        // The transient status is NOT asserted: the in-process worker can
+        // claim (and finish) a request between the POST above and this GET,
+        // so a status pin here is a timing bet, not a contract. req1's
+        // queued state was already asserted on the POST response.
+      }
+
+      // -- the worker renders, uploads, stamps; the URL serves the PDF ----
+      // (errorCode rides along so a failure names its cause, not just its state)
+      expect(await awaitReportRequest(req1.id)).toMatchObject({
+        status: 'ready',
+        errorCode: null,
+      });
+      const pdfUrl = await awaitPayslipPdfUrl('2026-09', 'EMP-001');
+      const pdfRes = await fetch(pdfUrl);
+      expect(pdfRes.status).toBe(200);
+      expect(pdfRes.headers.get('content-type')).toContain('application/pdf');
+      const bytes = Buffer.from(await pdfRes.arrayBuffer());
+      expect(bytes.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+
+      // -- the re-run: destroy and replace, fresh slip number -------------
+      const rerun = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-09' },
+      });
+      expect(rerun.statusCode).toBe(202);
+      const rerunId = (JSON.parse(rerun.body) as { id: string }).id;
+      expect((await awaitRun(rerunId))['status']).toBe('completed');
+
+      const { rows: gone } = await pool.query(
+        `select 1 from public.payroll_payslips where id = $1`,
+        [oldSlipId],
+      );
+      expect(gone).toHaveLength(0);
+      const after = await payslipOf(employeeA, '2026-09');
+      const newSlipNumber = String(after['slip_number']);
+      expect(newSlipNumber).not.toBe(oldSlipNumber);
+      expect(newSlipNumber).toMatch(/^PS-2026-09-\d{4}$/);
+      expect(Number(newSlipNumber.slice(-4))).toBeGreaterThan(
+        Number(oldSlipNumber.slice(-4)),
+      );
+
+      // The superseded PDF's URL is dead NOW, not at the presign TTL.
+      const dead = await fetch(pdfUrl);
+      expect([403, 404]).toContain(dead.status);
+
+      // The stale ready request never binds the new payslip row.
+      const listAfter = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=2026-09`,
+        headers: ownerHeaders(),
+      });
+      const rowsAfter = JSON.parse(listAfter.body) as PayslipApiRow[];
+      expect(rowsAfter.find((r) => r.employeeCode === 'EMP-001')!.pdf).toEqual({
+        status: 'none',
+      });
+
+      // -- a fresh attempt lands on the live row and completes ------------
+      const retry = await post();
+      expect(retry.statusCode).toBe(201);
+      const req3 = JSON.parse(retry.body) as { id: string };
+      expect(req3.id).not.toBe(req1.id);
+      expect((await awaitReportRequest(req3.id)).status).toBe('ready');
+    },
+  );
+
+  pdfMaybeIt(
+    '23-8 — a superseded mid-generation request fails cleanly and never blocks a re-request',
+    async () => {
+      const membershipA = await membershipIdOf(employeeA);
+      const live = await payslipOf(employeeA, '2026-09');
+      const liveId = String(live['id']);
+
+      // Stage an in-flight request against the row the re-run will destroy:
+      // `generating` with a live lease is invisible to the worker until we
+      // hand the lease back, so the staging is deterministic, not a race.
+      const stagedId = randomUUID();
+      must(
+        await admin.from('report_requests').insert({
+          id: stagedId,
+          tenant_id: tenant,
+          requested_by: employeeA,
+          report_type: 'payslip',
+          params: {
+            month: '2026-09',
+            membershipId: membershipA,
+            payslipId: liveId,
+          },
+          status: 'generating',
+          locked_until: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      );
+
+      const rerun = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-09' },
+      });
+      expect(rerun.statusCode).toBe(202);
+      const rerunId = (JSON.parse(rerun.body) as { id: string }).id;
+      expect((await awaitRun(rerunId))['status']).toBe('completed');
+
+      // Hand the lease back — the worker claims it, the fetch finds the row
+      // destroyed, and the request fails with its clean error code.
+      must(
+        await admin
+          .from('report_requests')
+          .update({ status: 'queued', locked_until: null })
+          .eq('id', stagedId),
+      );
+      const staged = await awaitReportRequest(stagedId);
+      expect(staged.status).toBe('failed');
+      expect(staged.errorCode).toBe('REPORT_GENERATION_FAILED');
+
+      // The failed request is terminal for itself only: a fresh request for
+      // the same employee + month dedupes nothing and completes.
+      const fresh = await app.inject({
+        method: 'POST',
+        url: `${payslipsUrl}/${membershipA}/2026-09/pdf`,
+        headers: ownerHeaders(),
+      });
+      expect(fresh.statusCode).toBe(201);
+      const freshId = (JSON.parse(fresh.body) as { id: string }).id;
+      expect(freshId).not.toBe(stagedId);
+      expect(await awaitReportRequest(freshId)).toMatchObject({
+        status: 'ready',
+        errorCode: null,
+      });
+    },
+  );
+
+  pdfMaybeIt(
+    '23-8 — the employee surface: locked-only history, branched 404s, the self PDF',
+    async () => {
+      const employeeHeaders = () => ({
+        authorization: `Bearer ${bearerFor(employeeA)}`,
+      });
+
+      // Locked-only history: September HAS a payslip but is unlocked — it
+      // never leaks. October and November (locked) both appear, newest first.
+      const history = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me`,
+        headers: employeeHeaders(),
+      });
+      expect(history.statusCode).toBe(200);
+      const historyRows = JSON.parse(history.body) as PayslipApiRow[];
+      expect(historyRows.map((r) => r.month)).toEqual(['2026-11', '2026-10']);
+      expect(historyRows.find((r) => r.month === '2026-10')!.pdf.status).toBe(
+        'none',
+      );
+
+      // The three branched 404s, each in its own plain-English words.
+      const neverRan = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me/2026-08`,
+        headers: employeeHeaders(),
+      });
+      expect(neverRan.statusCode).toBe(404);
+      expect(neverRan.body).toContain(
+        "Payroll for 2026-08 hasn't been run for your company yet",
+      );
+
+      const unlocked = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me/2026-09`,
+        headers: employeeHeaders(),
+      });
+      expect(unlocked.statusCode).toBe(404);
+      expect(unlocked.body).toContain("isn't available yet");
+      expect(unlocked.body).toContain('once payroll locks the month');
+
+      // Locked month, but memberE was never in that run's population.
+      const noPayslip = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me/2026-10`,
+        headers: { authorization: `Bearer ${bearerFor(memberE)}` },
+      });
+      expect(noPayslip.statusCode).toBe(404);
+      expect(noPayslip.body).toContain('There is no payslip for you in 2026-10');
+
+      // A bad month is the wire 422.
+      const badMonth = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me/october`,
+        headers: employeeHeaders(),
+      });
+      expect(badMonth.statusCode).toBe(422);
+      expect(badMonth.body).toContain('YYYY-MM');
+
+      // The admin surface stays admin-only: 403 on both the list and the
+      // on-behalf PDF POST — and the queue pause is not an employee lever.
+      const adminList = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=2026-10`,
+        headers: employeeHeaders(),
+      });
+      expect(adminList.statusCode).toBe(403);
+      const membershipA = await membershipIdOf(employeeA);
+      const adminPost = await app.inject({
+        method: 'POST',
+        url: `${payslipsUrl}/${membershipA}/2026-10/pdf`,
+        headers: employeeHeaders(),
+      });
+      expect(adminPost.statusCode).toBe(403);
+      const employeePause = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/pause',
+        headers: employeeHeaders(),
+        payload: {},
+      });
+      expect(employeePause.statusCode).toBe(403);
+
+      // The employee-retry cycle (plan leg 5): an employee-owned request
+      // that FAILED is terminal for itself only. The employee re-requests
+      // through their own route and a fresh attempt lands and completes.
+      // (Staged deterministically — the same insert idiom as the leg-5
+      // supersession staging; on the locked October month a real failure
+      // cannot be manufactured, the row is never destroyed.)
+      const liveRow = await payslipOf(employeeA, '2026-10');
+      const octPayslipId = String(liveRow['id']);
+      const failedId = randomUUID();
+      must(
+        await admin.from('report_requests').insert({
+          id: failedId,
+          tenant_id: tenant,
+          requested_by: employeeA,
+          report_type: 'payslip',
+          params: {
+            month: '2026-10',
+            membershipId: membershipA,
+            payslipId: octPayslipId,
+          },
+          status: 'failed',
+          error_code: 'REPORT_GENERATION_FAILED',
+          completed_at: new Date().toISOString(),
+        }),
+      );
+
+      // The self PDF: queued through the idempotent route, a duplicate key
+      // replays the same request, the worker renders it, and the /me read
+      // carries the download URL that serves real PDF bytes.
+      const key = randomUUID();
+      const selfPost = () =>
+        app.inject({
+          method: 'POST',
+          url: `${payslipsUrl}/me/2026-10/pdf`,
+          headers: { ...employeeHeaders(), 'x-idempotency-key': key },
+        });
+      const selfReq = await selfPost();
+      expect(selfReq.statusCode).toBe(201);
+      const selfId = (JSON.parse(selfReq.body) as { id: string }).id;
+      // The failed request did not block the employee's re-request: a fresh
+      // row, never a reuse of the failed one.
+      expect(selfId).not.toBe(failedId);
+      const replay = await selfPost();
+      expect(replay.statusCode).toBe(201);
+      expect((JSON.parse(replay.body) as { id: string }).id).toBe(selfId);
+
+      expect(await awaitReportRequest(selfId)).toMatchObject({
+        status: 'ready',
+        errorCode: null,
+      });
+      const slip = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me/2026-10`,
+        headers: employeeHeaders(),
+      });
+      expect(slip.statusCode).toBe(200);
+      const view = JSON.parse(slip.body) as PayslipApiRow;
+      expect(view.pdf.status).toBe('ready');
+      expect(view.pdf.url).toBeTruthy();
+      const pdfRes = await fetch(view.pdf.url as string);
+      expect(pdfRes.status).toBe(200);
+      expect(
+        Buffer.from(await pdfRes.arrayBuffer()).subarray(0, 5).toString('ascii'),
+      ).toBe('%PDF-');
+
+      // And the history carries the same ready PDF for October.
+      const historyAfter = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}/me`,
+        headers: employeeHeaders(),
+      });
+      const historyAfterRows = JSON.parse(historyAfter.body) as PayslipApiRow[];
+      expect(historyAfterRows.find((r) => r.month === '2026-10')!.pdf.status).toBe(
+        'ready',
+      );
+
+      // Cross-tenant: the stranger company's admin reads zero of ours.
+      const stranger = await app.inject({
+        method: 'GET',
+        url: `${payslipsUrl}?month=2026-10`,
+        headers: { authorization: `Bearer ${bearerFor(otherOwner)}` },
+      });
+      expect(stranger.statusCode).toBe(200);
+      expect(JSON.parse(stranger.body)).toEqual([]);
+
+      // The run is done with the queue — lift the fence and prove it lifts.
+      const lifted = await app.inject({
+        method: 'POST',
+        url: '/api/v1/reports/queue/resume',
+        headers: ownerHeaders(),
+      });
+      expect(lifted.statusCode).toBe(200);
+      expect(JSON.parse(lifted.body)).toMatchObject({
+        paused: false,
+        pausedUntil: null,
+      });
     },
   );
 });

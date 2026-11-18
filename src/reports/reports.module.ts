@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { ReportsController } from './reports.controller';
 import { ReportRegistry } from './registry/report-registry';
+import { ReportQueueService } from './report-queue.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { StorageModule } from '../storage/storage.module';
 import { PgModule } from '../common/pg/pg.module';
@@ -29,6 +30,7 @@ import { ReportWorker } from './engine/report-worker';
   providers: [
     ReportsService,
     ReportRegistry,
+    ReportQueueService,
     IdempotencyInterceptor,
     ReportPipelineService,
     ReportWorker,

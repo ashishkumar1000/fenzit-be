@@ -1,4 +1,4 @@
-import { ReportParams } from './registry/report-definition';
+import { isRangeParams, ReportParams } from './registry/report-definition';
 import { ReportRequestStatus } from './enums/report-status.enum';
 
 /** A `report_requests` row as PostgREST returns it. */
@@ -35,8 +35,9 @@ export interface ReportFileResponse {
 }
 
 export interface ReportParamsResponse {
-  startDate: string;
-  endDate: string;
+  /** null for the payslip type (23-8) — it has no date range. */
+  startDate: string | null;
+  endDate: string | null;
   technicianIds: string[];
   /** Office ids for office-scoped reports (attendance); [] = all offices. */
   officeIds: string[];
@@ -58,7 +59,8 @@ export interface ReportStatusResponse {
 export interface ReportListItemResponse {
   id: string;
   reportType: string;
-  range: { startDate: string; endDate: string };
+  /** null dates for the payslip type (23-8) — it scopes by one month. */
+  range: { startDate: string | null; endDate: string | null };
   /** Selected technician count; null = all technicians of the tenant. */
   technicianCount: number | null;
   /** Selected office count (office-scoped reports); null when the report
@@ -72,10 +74,23 @@ export interface ReportListItemResponse {
 
 /** Deterministic artifact filename (also used by the engine upload path). */
 export function reportFilename(row: ReportRequestRow): string {
+  if (!isRangeParams(row.params)) {
+    return `payslip_${row.params.month}.pdf`;
+  }
   return `${row.report_type}_${row.params.start_date}_${row.params.end_date}.pdf`;
 }
 
 export function toParamsResponse(params: ReportParams): ReportParamsResponse {
+  if (!isRangeParams(params)) {
+    // Sparse-but-well-formed (23-8): a payslip request has no range or
+    // people selection — never `undefined` in the JSON.
+    return {
+      startDate: null,
+      endDate: null,
+      technicianIds: [],
+      officeIds: [],
+    };
+  }
   return {
     startDate: params.start_date,
     endDate: params.end_date,

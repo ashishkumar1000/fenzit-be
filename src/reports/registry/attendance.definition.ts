@@ -59,6 +59,10 @@ export const attendanceReportDefinition: ReportDefinition = {
   maxTechnicianIds: MAX_EMPLOYEES_PER_ATTENDANCE_REPORT,
 
   validateParams(raw: RawReportParams): ReportParams {
+    // Union guard (23-8): this definition only accepts the range shape.
+    if (!('startDate' in raw)) {
+      throw invalid('startDate and endDate are required for this report');
+    }
     const { startDate, endDate } = validateReportDateRange(
       raw.startDate,
       raw.endDate,

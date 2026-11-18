@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { payrollRunAdvisoryKey } from '../common/pg/advisory-keys';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { StorageService } from '../storage/storage.service';
 import { CALENDAR_DEFAULTS } from './payroll-month-status.service';
 import { employeePfCovered, resolvePfCovered } from './pf-config.service';
 import { resolveHeadsForMonth } from './deduction-heads.service';
@@ -79,6 +81,10 @@ interface PayslipInsert {
   payable_days: number;
   lop_days: number;
   paid_days: number;
+  /** Form V "days worked": present days with half_day as 0.5, over the kept
+   *  payable dates (presentation-only — the fixture requires it on the slip
+   *  but its buckets never sum to the month). */
+  days_worked: number;
   gross_earnings: string;
   pf_employee: string;
   pf_employer: string;
@@ -115,6 +121,7 @@ interface MonthComputation {
   /** One excess per employee whose deductions breached the cap. */
   excessLines: Array<{ membershipId: string; excess: string }>;
   establishmentName: string | null;
+  establishmentAddress: string | null;
   wagePeriodStart: string;
   wagePeriodEnd: string;
   divisorConvention: string;
@@ -142,6 +149,7 @@ export class PayrollRunEngineService {
   constructor(
     private readonly supabaseFactory: SupabaseClientFactory,
     private readonly pg: PgPoolFactory,
+    private readonly storageService: StorageService,
   ) {}
 
   async executeRun(
@@ -150,17 +158,43 @@ export class PayrollRunEngineService {
     month: string,
   ): Promise<void> {
     const admin = this.supabaseFactory.createAdmin();
+    // The initiating owner — captured at claim time below, read by the
+    // failure path in the catch too (audit rows need a real user uuid).
+    let runActor: string | null = null;
     try {
-      const { error: claimError } = await admin
+      // The claim also captures the initiating owner: the run-lifecycle
+      // audit rows (write_audit_row) take a real user uuid who is an active
+      // member of the tenant — the owner who enqueued the run is that actor.
+      const claim = await admin
         .from('payroll_runs')
         .update({ status: 'running', started_at: new Date().toISOString() })
         .eq('id', runId)
-        .eq('status', 'queued');
-      if (claimError) {
+        .eq('status', 'queued')
+        .select('initiated_by')
+        .single<{ initiated_by: string | null }>();
+      if (claim.error) {
         throw new Error('the run could not be claimed from the queue');
       }
+      runActor = claim.data?.initiated_by ?? null;
 
       const computed = await this.computeMonth(tenantId, month);
+
+      // 23-8: the payslip rows this run will destroy — read before the write
+      // transaction (runs are serialized per tenant+month, so nothing can
+      // insert into this month between here and the delete). After the commit
+      // these ids locate the payslip PDF requests minted from the destroyed
+      // rows, whose stored PDFs the cleanup below deletes.
+      const destroyed = await admin
+        .from('payroll_payslips')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('salary_period', month);
+      if (destroyed.error) {
+        throw new Error('the existing payslips could not be read');
+      }
+      const destroyedIds = ((destroyed.data ?? []) as Array<{ id: string }>).map(
+        (r) => r.id,
+      );
 
       await this.pg.withTransaction(async (tx) => {
         await tx.query(
@@ -209,15 +243,15 @@ export class PayrollRunEngineService {
                tenant_id, membership_id, user_id, run_id, salary_period, slip_number,
                employee_name, employee_code, father_name, mother_name, spouse_name,
                designation, department, pan, uan_number, bank_account_number, ifsc_code,
-               bank_name, date_of_joining, establishment_name,
+               bank_name, date_of_joining, establishment_name, establishment_address,
                wage_period_start, wage_period_end, divisor_convention, cutoff_day, pay_date,
-               payable_days, lop_days, paid_days, gross_earnings,
+               payable_days, lop_days, paid_days, days_worked, gross_earnings,
                pf_employee, pf_employer, tds, other_deductions, total_deductions, net_wages,
                earning_lines, deduction_lines, warnings, updated_at)
              values ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-                     $15,$16,$17,$18,$19::date,$20,$21::date,$22::date,$23,$24,$25,
-                     $26,$27,$28,$29,$30,$31,$32,$33,$34,$35,
-                     $36::jsonb,$37::jsonb,$38::jsonb, now())`,
+                     $15,$16,$17,$18,$19::date,$20,$21,$22::date,$23::date,$24,$25,$26,
+                     $27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,
+                     $38::jsonb,$39::jsonb,$40::jsonb, now())`,
             [
               tenantId,
               payslip.membership_id,
@@ -239,6 +273,7 @@ export class PayrollRunEngineService {
               facts?.bankName ?? null,
               facts?.joinDate ?? null,
               computed.establishmentName,
+              computed.establishmentAddress,
               computed.wagePeriodStart,
               computed.wagePeriodEnd,
               computed.divisorConvention,
@@ -247,6 +282,7 @@ export class PayrollRunEngineService {
               payslip.payable_days,
               payslip.lop_days,
               payslip.paid_days,
+              payslip.days_worked,
               payslip.gross_earnings,
               payslip.pf_employee,
               payslip.pf_employer,
@@ -287,8 +323,12 @@ export class PayrollRunEngineService {
         );
       });
 
+      if (destroyedIds.length > 0) {
+        await this.deleteSupersededPdfObjects(admin, tenantId, destroyedIds);
+      }
+
       await writeAuditRow(admin, this.logger, 'run', {
-        actorId: 'system',
+        actorId: runActor,
         tenantId,
         action: 'payroll.run_completed',
         targetUser: null,
@@ -308,13 +348,55 @@ export class PayrollRunEngineService {
         })
         .eq('id', runId);
       await writeAuditRow(admin, this.logger, 'run', {
-        actorId: 'system',
+        actorId: runActor,
         tenantId,
         action: 'payroll.run_failed',
         targetUser: null,
         details: { month, reason: message.slice(0, 300) },
       });
       throw e;
+    }
+  }
+
+  /**
+   * 23-8 regeneration semantics (owner decision 2026-11-18): after the
+   * destroy-and-replace commits, delete the stored PDFs minted from the
+   * destroyed payslip rows — a superseded slip's presigned URL dies with its
+   * row instead of surviving on the presign TTL. Runs strictly AFTER the
+   * transaction, never inside it: a missed delete degrades to the URL TTL,
+   * never to a failed run or a wrong PDF. The payslipId param filter is the
+   * discriminator — only payslip requests carry it (range reports don't), so
+   * no definition import is needed here. Best-effort end to end: deleteObject
+   * never throws, and a read failure only logs.
+   */
+  private async deleteSupersededPdfObjects(
+    admin: SupabaseClient,
+    tenantId: string,
+    destroyedIds: string[],
+  ): Promise<void> {
+    try {
+      const { data, error } = await admin
+        .from('report_requests')
+        .select('r2_key')
+        .eq('tenant_id', tenantId)
+        .in('params->>payslipId', destroyedIds)
+        .not('r2_key', 'is', null);
+      if (error) {
+        this.logger.warn(
+          `Superseded payslip PDF lookup failed (URLs degrade to their TTL): ${error.message}`,
+        );
+        return;
+      }
+      for (const row of (data ?? []) as Array<{ r2_key: string }>) {
+        if (row.r2_key) {
+          await this.storageService.deleteObject(row.r2_key);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        'Superseded payslip PDF cleanup failed (URLs degrade to their TTL)',
+        err,
+      );
     }
   }
 
@@ -468,11 +550,12 @@ export class PayrollRunEngineService {
 
     const tenantRes = await admin
       .from('tenants')
-      .select('company_name')
+      .select('company_name, address')
       .eq('id', tenantId)
-      .maybeSingle<{ company_name: string }>();
+      .maybeSingle<{ company_name: string; address: string | null }>();
     if (tenantRes.error) throw new Error('the company could not be loaded');
     const establishmentName = tenantRes.data?.company_name ?? null;
+    const establishmentAddress = tenantRes.data?.address ?? null;
 
     const overrideRes = await admin
       .from('payroll_run_overrides')
@@ -537,6 +620,7 @@ export class PayrollRunEngineService {
         recoveryUpdates: [],
         excessLines: [],
         establishmentName,
+        establishmentAddress,
         wagePeriodStart: firstDay,
         wagePeriodEnd: monthEndOf(month),
         divisorConvention,
@@ -727,6 +811,17 @@ export class PayrollRunEngineService {
 
       const kept = capPayable(payable, divisor);
       const payableDays = kept.length;
+      // Form V "days worked" (presentation-only): present days with
+      // half_day as 0.5, counted over the kept payable dates. Weekly offs
+      // and leave days contribute 0 — the buckets never sum to the month.
+      const daysWorked = roundMoney(
+        kept.reduce((sum, date) => {
+          const status = memberStatuses.get(date)?.status;
+          if (status === 'present') return sum + 1;
+          if (status === 'half_day') return sum + 0.5;
+          return sum;
+        }, 0),
+      );
       // LOP attribution is by OWNERSHIP over the uncapped owned-date set —
       // the November row's Oct-27 prior-period leave LOPs even though the
       // date is not payable in November.
@@ -879,6 +974,7 @@ export class PayrollRunEngineService {
         payable_days: payableDays,
         lop_days: lop.lopDays,
         paid_days: paid,
+        days_worked: daysWorked,
         gross_earnings: moneyText(gross),
         pf_employee: clampedPf,
         pf_employer: clampedPf,
@@ -926,6 +1022,7 @@ export class PayrollRunEngineService {
       recoveryUpdates,
       excessLines,
       establishmentName,
+      establishmentAddress,
       wagePeriodStart: firstDay,
       wagePeriodEnd: monthEndOf(month),
       divisorConvention,

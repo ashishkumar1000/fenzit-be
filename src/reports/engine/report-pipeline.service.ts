@@ -53,6 +53,21 @@ export class ReportPipelineService {
     try {
       const definition = this.definitionOrThrow(row.report_type);
       const data = await this.fetchData(definition, row, admin);
+      // Supersession gate (23-8) BEFORE the render: a mismatch fails the row
+      // cleanly, uploads nothing, and pays no pdfmake CPU for a dead slip.
+      // Best-effort by design — a re-run that destroys the row inside the
+      // verify→stamp window can still race the stamp; that window is
+      // milliseconds against an admin action, and the failed-at-fetch path
+      // catches the same re-run ordered the other way.
+      if (definition.verifyBeforeReady) {
+        await definition.verifyBeforeReady({
+          supabase: admin,
+          tenantId: row.tenant_id,
+          requestId: row.id,
+          params: row.params,
+          data,
+        });
+      }
       const doc = this.buildDocument(definition, data);
       const pdf = await this.renderer.render(doc);
       await this.uploadAndStampReady(admin, row, pdf);

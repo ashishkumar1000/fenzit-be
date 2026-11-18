@@ -33,6 +33,7 @@ export type Permission =
   | 'customer.write'
   | 'report.read'
   | 'report.request' // request and retry (a viewer may, decision 39)
+  | 'report.queue' // pause/resume the company's report queue (23-8) — admins only
   // attendance and leave
   | 'attendance.read' // all employees
   | 'attendance.manage'
@@ -45,6 +46,7 @@ export type Permission =
   // payroll configuration (epic 23): components, structures (CAP-1/2), and
   // later the calendar, heads and statutory config (CAP-4/6/8)
   | 'payroll.config' // company admin of this company only
+  | 'payroll.own' // an employee's own payslips (history, month, PDF) — story 23-8
   // lookups
   | 'places.search'
   // app roadblocks (platform only, super admin)
@@ -75,6 +77,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   'customer.write',
   'report.read',
   'report.request',
+  'report.queue',
   'attendance.read',
   'attendance.manage',
   'leave.read_all',
@@ -93,7 +96,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'tenant.validity.manage',
     ]),
     // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
-    // member.job_settings, member.employment, leave.types, payroll.config and job.approve sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
+    // member.job_settings, member.employment, leave.types, payroll.config, job.approve and payroll.own sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
     [Role.COMPANY_ADMIN]: new Set<Permission>([
       ...ADMIN_PERMISSIONS,
       'invite_sms.resend',
@@ -111,6 +114,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'customer.read',
       'attendance.own',
       'leave.own',
+      'payroll.own',
     ]),
     [Role.VIEWER]: new Set<Permission>([
       'job.read_all',

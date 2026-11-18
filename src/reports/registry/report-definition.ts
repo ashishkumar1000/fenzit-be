@@ -23,8 +23,15 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  */
 export type ReportDocument = Record<string, unknown>;
 
-/** Canonical params as stored in the `report_requests.params` jsonb column. */
-export interface ReportParams {
+/**
+ * Canonical params as stored in the `report_requests.params` jsonb column —
+ * a discriminated-by-shape union since story 23-8 (the payslip type). The
+ * range types carry the classic four fields; the payslip type carries the
+ * exact triple that pins ONE payslip row (no report_type marker in the
+ * stored jsonb — the `report_requests.report_type` column discriminates at
+ * rest, and the guards below discriminate in code).
+ */
+export interface RangeReportParams {
   /** Calendar date (YYYY-MM-DD), inclusive. */
   start_date: string;
   /** Calendar date (YYYY-MM-DD), inclusive. */
@@ -39,13 +46,44 @@ export interface ReportParams {
   office_ids: string[];
 }
 
+export interface PayslipReportParams {
+  /** Wage month (YYYY-MM) — the payslip's salary_period. */
+  month: string;
+  /** The employee's membership id (the payslip row's membership_id). */
+  membershipId: string;
+  /** The payslip row id the PDF renders from. */
+  payslipId: string;
+}
+
+export type ReportParams = RangeReportParams | PayslipReportParams;
+
+export function isRangeParams(
+  params: ReportParams,
+): params is RangeReportParams {
+  return 'start_date' in params;
+}
+
+export function isPayslipParams(
+  params: ReportParams,
+): params is PayslipReportParams {
+  return 'payslipId' in params;
+}
+
 /** Raw params exactly as they arrive on the create-request body. */
-export interface RawReportParams {
+export interface RangeRawParams {
   startDate: string;
   endDate: string;
   technicianIds?: string[] | null;
   officeIds?: string[] | null;
 }
+
+export interface PayslipRawParams {
+  month: string;
+  membershipId: string;
+  payslipId: string;
+}
+
+export type RawReportParams = RangeRawParams | PayslipRawParams;
 
 /**
  * What the engine hands a definition's fetcher: the admin Supabase client
@@ -72,6 +110,21 @@ export interface ReportFetchContext {
   maxRows: number;
 }
 
+/**
+ * What the pipeline hands a definition's pre-ready verification hook (23-8):
+ * the same tenant scoping as a fetch, plus the fetched data — so a
+ * snapshot-backed definition can re-verify its source row still exists with
+ * the same content before its PDF is uploaded and stamped ready. The hook
+ * runs OUTSIDE the fetch transaction (use `supabase`, not a pg client).
+ */
+export interface ReportVerifyContext {
+  supabase: SupabaseClient;
+  tenantId: string;
+  requestId: string;
+  params: ReportParams;
+  data: unknown;
+}
+
 export interface ReportDefinition {
   /** Stable registry key, e.g. 'technician_job_activity'. */
   readonly type: string;
@@ -95,6 +148,15 @@ export interface ReportDefinition {
   /** Builds the renderer document from the fetched data (story 12-5). */
   buildDocument?(data: unknown): ReportDocument;
   /**
+   * Optional last gate (23-8) — called after buildDocument + render, BEFORE
+   * the upload and the ready stamp. A throw → clean `failed` request and
+   * nothing is uploaded. Closes the fetch→render→upload supersession window
+   * for snapshot-backed reports: the payslip definition re-verifies its
+   * snapshot row still exists with the same slip_number/run_id it fetched,
+   * so a payslip destroyed by a re-run can never be delivered as a PDF.
+   */
+  verifyBeforeReady?(ctx: ReportVerifyContext): Promise<void>;
+  /**
    * Cap on explicitly selected people (21-1). Defaults to the service's
    * 25-technician cap; people-scoped reports with bigger rosters (the
    * attendance report's ~100-employee tenants) raise it — the row-unit
@@ -111,6 +173,6 @@ export interface ReportDefinition {
   validateAccess?(
     supabase: SupabaseClient,
     tenantId: string,
-    params: ReportParams,
+    params: RangeReportParams,
   ): Promise<void>;
 }
