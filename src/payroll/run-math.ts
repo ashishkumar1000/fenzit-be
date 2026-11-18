@@ -32,6 +32,11 @@ export function earnedLine(
 export interface DeductionLine {
   source: string;
   amount: number;
+  /** The payroll_recovery_lines row this line absorbs (23-9): the engine
+   *  reconciles the row's outstanding by id, never positionally — two rows
+   *  whose outstanding order disagrees with created_at order must not
+   *  mis-pair, and non-recovery lines never carry one. */
+  recoveryId?: string;
 }
 
 export interface CapResult {
@@ -64,7 +69,11 @@ export function capClamp(
   }
   const scale = cap / total;
   const scaled = lines
-    .map((l) => ({ source: l.source, amount: roundMoney(l.amount * scale) }))
+    .map((l) => ({
+      source: l.source,
+      amount: roundMoney(l.amount * scale),
+      ...(l.recoveryId ? { recoveryId: l.recoveryId } : {}),
+    }))
     .sort((a, b) => b.amount - a.amount);
   const drift = roundMoney(cap - scaled.reduce((sum, l) => sum + l.amount, 0));
   if (drift !== 0 && scaled.length > 0) {
@@ -81,19 +90,26 @@ export function capClamp(
 
 /**
  * The TDS projection: the CURRENT monthly structure × the months of
- * employment in the FY (never the post-LOP period gross), less the standard
- * deduction, less the TDS already deducted in the FY's prior periods,
- * spread over the remaining FY months INCLUDING the run month. A leaver's
- * final run deducts the full remaining estimate naturally (their employment
- * months end at the exit month).
+ * employment in the FY (never the post-LOP period gross), plus the run
+ * month's signed off-cycle amounts (23-9 — they join the projection's
+ * annual), less the standard deduction, less the TDS already deducted in
+ * the FY's prior periods, spread over the remaining FY months INCLUDING the
+ * run month. A leaver's FINAL run passes remainingFyMonths = 1 (the engine
+ * resolves the owner rule): the full remaining estimate deducts on that run
+ * — the calendar-based fyRemaining would otherwise spread it over months
+ * the leaver will never work.
  */
 export function tdsProjection(inputs: {
   monthlyStructure: number;
   monthsEmployedInFy: number;
   remainingFyMonths: number;
   priorFyTds: number;
+  /** The run month's signed off-cycle amounts (CAP-10), defaulting to none. */
+  offCycleAnnual?: number;
 }): string {
-  const annual = inputs.monthlyStructure * inputs.monthsEmployedInFy;
+  const annual =
+    inputs.monthlyStructure * inputs.monthsEmployedInFy +
+    (inputs.offCycleAnnual ?? 0);
   const taxable = annual - 75000;
   const assessed = taxable > 0 ? annualTax(taxable.toFixed(2)).total : '0.00';
   const remainingTotal = Math.max(0, Number(assessed) - inputs.priorFyTds);

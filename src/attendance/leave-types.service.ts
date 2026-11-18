@@ -6,10 +6,12 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import { leaveNotFound } from './leave.model';
+import { assertPayrollDatesEditable } from './payroll-date-gate';
 import {
   CreateLeaveTypeDto,
   LeaveTypeView,
@@ -25,13 +27,6 @@ interface LeaveTypeRow {
   paid: boolean;
   created_at: string;
   updated_at: string;
-}
-
-interface LeaveRequestTypingRow {
-  id: string;
-  tenant_id: string;
-  employee_id: string;
-  leave_type_id: string | null;
 }
 
 const LEAVE_TYPE_COLUMNS = 'id, tenant_id, name, paid, created_at, updated_at';
@@ -77,7 +72,10 @@ export function defaultPaidMarking(name: string): boolean {
 export class LeaveTypesService {
   private readonly logger = new Logger(LeaveTypesService.name);
 
-  constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseFactory: SupabaseClientFactory,
+    private readonly pg: PgPoolFactory,
+  ) {}
 
   async list(user: RequestUser): Promise<LeaveTypeView[]> {
     const tenantId = requireTenant(user);
@@ -277,6 +275,13 @@ export class LeaveTypesService {
    * Types (or un-types — null clears back to the untyped = paid default) one
    * existing request. The request id is the leave row's own id, the same one
    * the owner list hands back.
+   *
+   * 23-9 (the 23-7 follow-up's ledgered debt, closed here): the paid marking
+   * is what a locked month's run consumed — re-typing a frozen date would
+   * rewrite that input. The gate and the write now run as ONE transaction
+   * (the gate holds its shared advisory locks to commit, so no lock decision
+   * can land between check and write), on the same restructure the
+   * apply/approve paths got in the 23-7 follow-up.
    */
   async setRequestType(
     user: RequestUser,
@@ -291,89 +296,151 @@ export class LeaveTypesService {
     const tenantId = requireTenant(user);
     const admin = this.supabaseFactory.createAdmin();
 
-    const { data: request, error: requestError } = await admin
-      .from('leave_requests')
-      .select('id, tenant_id, employee_id, leave_type_id')
-      .eq('id', requestId)
-      .eq('tenant_id', tenantId)
-      .maybeSingle<LeaveRequestTypingRow>();
-    if (requestError) {
-      this.logger.error('Failed to read the leave request:', {
-        error: requestError,
-      });
-      throw internalError('Failed to set the leave type');
-    }
-    if (!request) throw leaveNotFound();
+    const result = await this.pg.withTransaction(async (tx) => {
+      const reqRes = await tx.query<{
+        id: string;
+        tenant_id: string;
+        employee_id: string;
+        leave_type_id: string | null;
+      }>(
+        `select id, tenant_id, employee_id, leave_type_id
+           from public.leave_requests
+          where id = $1::uuid and tenant_id = $2::uuid`,
+        [requestId, tenantId],
+      );
+      const request = reqRes.rows[0];
+      if (!request) throw leaveNotFound();
 
-    const currentType =
-      request.leave_type_id === null
-        ? null
-        : await this.readTypeRow(admin, tenantId, request.leave_type_id);
+      const datesRes = await tx.query<{ leave_date: string }>(
+        `select leave_date::text as leave_date
+           from public.leave_request_days
+          where leave_request_id = $1::uuid
+          order by leave_date asc`,
+        [requestId],
+      );
+      const dates = datesRes.rows.map((r) => r.leave_date);
 
-    let newTypeId = request.leave_type_id;
-    let newType: LeaveTypeRow | null = currentType;
-    if (dto.leaveTypeId !== undefined) {
-      if (dto.leaveTypeId === null) {
-        newTypeId = null;
-        newType = null;
-      } else if (currentType === null || currentType.id !== dto.leaveTypeId) {
-        newType = await this.readTypeRow(admin, tenantId, dto.leaveTypeId);
-        newTypeId = newType.id;
+      const readType = async (id: string): Promise<LeaveTypeRow> => {
+        const res = await tx.query<LeaveTypeRow>(
+          `select id, tenant_id, name, paid, created_at::text as created_at, updated_at::text as updated_at
+             from public.leave_types
+            where id = $1::uuid and tenant_id = $2::uuid`,
+          [id, tenantId],
+        );
+        if (!res.rows[0]) throw typeNotFound();
+        return res.rows[0];
+      };
+
+      const currentType =
+        request.leave_type_id === null
+          ? null
+          : await readType(request.leave_type_id);
+
+      let newTypeId = request.leave_type_id;
+      let newType: LeaveTypeRow | null = currentType;
+      if (dto.leaveTypeId !== undefined) {
+        if (dto.leaveTypeId === null) {
+          newTypeId = null;
+          newType = null;
+        } else if (currentType === null || currentType.id !== dto.leaveTypeId) {
+          newType = await readType(dto.leaveTypeId);
+          newTypeId = newType.id;
+        }
       }
-    }
 
-    // NULL reads as paid, so the audit and the answer state the marking the
-    // run will act on — the effective one, not just the raw flag.
-    const oldPaid = currentType === null ? true : currentType.paid;
-    const newPaid = newType === null ? true : newType.paid;
-    if (newTypeId === request.leave_type_id) {
+      // NULL reads as paid, so the audit and the answer state the marking the
+      // run will act on — the effective one, not just the raw flag.
+      const oldPaid = currentType === null ? true : currentType.paid;
+      const newPaid = newType === null ? true : newType.paid;
+      if (newTypeId === request.leave_type_id) {
+        // AD-6 own retry: a no-op re-type answers the current marking —
+        // audits nothing and never trips the date gate.
+        return {
+          requestId: request.id,
+          employeeId: request.employee_id,
+          leaveTypeId: request.leave_type_id,
+          paid: oldPaid,
+          oldPaid,
+          changed: false,
+        };
+      }
+
+      // The frozen-date gate, inside the write tx (23-9).
+      await assertPayrollDatesEditable(tx, tenantId, dates, 'retyped');
+
+      try {
+        const updated = await tx.query<{
+          id: string;
+          employee_id: string;
+          leave_type_id: string | null;
+        }>(
+          `update public.leave_requests
+              set leave_type_id = $1::uuid, updated_at = now()
+            where id = $2::uuid and tenant_id = $3::uuid
+            returning id, employee_id, leave_type_id`,
+          [newTypeId, requestId, tenantId],
+        );
+        if (updated.rows.length === 0) throw leaveNotFound();
+        return {
+          requestId: updated.rows[0].id,
+          employeeId: updated.rows[0].employee_id,
+          leaveTypeId: updated.rows[0].leave_type_id,
+          paid: newPaid,
+          oldPaid,
+          changed: true,
+        };
+      } catch (e: unknown) {
+        if (this.isForeignKeyViolation(e)) {
+          // The chosen type was deleted while this typing was in flight.
+          throw new ConflictException({
+            error_code: ErrorCode.LEAVE_TYPE_CHANGED,
+            message:
+              'The chosen leave type is no longer available — reload and try again',
+          });
+        }
+        throw e;
+      }
+    });
+
+    // Best-effort, post-commit: an audit failure never undoes the typing —
+    // and a no-op re-type audits nothing (the AD-6 retry writes nothing).
+    if (result.changed !== true) {
       return {
-        requestId: request.id,
-        employeeId: request.employee_id,
-        leaveTypeId: request.leave_type_id,
-        paid: oldPaid,
+        requestId: result.requestId,
+        employeeId: result.employeeId,
+        leaveTypeId: result.leaveTypeId,
+        paid: result.paid,
       };
     }
-
-    const { data: updated, error } = await admin
-      .from('leave_requests')
-      .update({ leave_type_id: newTypeId })
-      .eq('id', requestId)
-      .eq('tenant_id', tenantId)
-      .select('id, tenant_id, employee_id, leave_type_id')
-      .single<LeaveRequestTypingRow>();
-    if (error) {
-      if (error.code === 'PGRST116') throw leaveNotFound();
-      if (error.code === '23503') {
-        // The chosen type was deleted while this typing was in flight.
-        throw new ConflictException({
-          error_code: ErrorCode.LEAVE_TYPE_CHANGED,
-          message:
-            'The chosen leave type is no longer available — reload and try again',
-        });
-      }
-      this.logger.error('Failed to set the leave type:', { error });
-      throw internalError('Failed to set the leave type');
-    }
-
     await this.writeAudit(
       admin,
       user.userId,
       tenantId,
       'leave.request_typed',
-      request.employee_id,
+      result.employeeId,
       {
         changed_fields: ['leave_type_id'],
-        old_paid: oldPaid,
-        new_paid: newPaid,
+        old_paid: result.oldPaid,
+        new_paid: result.paid,
       },
     );
     return {
-      requestId: updated.id,
-      employeeId: updated.employee_id,
-      leaveTypeId: updated.leave_type_id,
-      paid: newPaid,
+      requestId: result.requestId,
+      employeeId: result.employeeId,
+      leaveTypeId: result.leaveTypeId,
+      paid: result.paid,
     };
+  }
+
+  /** A pg FK violation (23xxx family; typing cares about 23503 — the chosen
+   *  type row vanished while the write was in flight). */
+  private isForeignKeyViolation(e: unknown): boolean {
+    return (
+      typeof e === 'object' &&
+      e !== null &&
+      typeof (e as { code?: string }).code === 'string' &&
+      (e as { code: string }).code.startsWith('23503')
+    );
   }
 
   /** The row, or the plain-English 404 for anything outside this company. */

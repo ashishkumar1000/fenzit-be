@@ -21,6 +21,8 @@ import { PayrollPfConfigService } from './pf-config.service';
 import { PayrollPfExclusionService } from './pf-exclusion.service';
 import { PayrollPayslipsController } from './payroll-payslips.controller';
 import { PayrollPayslipsService } from './payroll-payslips.service';
+import { PayrollOffCycleController } from './payroll-offcycle.controller';
+import { PayrollOffCycleService } from './payroll-offcycle.service';
 import { SalaryStructuresController } from './salary-structures.controller';
 import { SalaryStructuresService } from './salary-structures.service';
 
@@ -47,6 +49,7 @@ import { SalaryStructuresService } from './salary-structures.service';
     PayrollStatutoryController,
     PayrollRunController,
     PayrollPayslipsController,
+    PayrollOffCycleController,
   ],
   providers: [
     PayrollComponentsService,
@@ -63,6 +66,7 @@ import { SalaryStructuresService } from './salary-structures.service';
     PayrollLockService,
     PayrollAuditService,
     PayrollPayslipsService,
+    PayrollOffCycleService,
   ],
 })
 export class PayrollModule {}

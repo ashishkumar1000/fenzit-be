@@ -20,7 +20,12 @@ function build(
     lockExists?: boolean;
     lockRowResult?: Record<string, unknown> | null;
     runRows?: Array<{ status: string }>;
-    stagedCount?: number;
+    stagedLines?: Array<{
+      label: string;
+      amount: string;
+      tag: string;
+      employee_name: string | null;
+    }>;
     insertRows?: Array<Record<string, unknown>>;
     rpcRejects?: unknown;
   } = {},
@@ -47,9 +52,7 @@ function build(
         return Promise.resolve({ rows: opts.runRows ?? [] });
       }
       if (sql.includes('payroll_off_cycle_lines')) {
-        return Promise.resolve({
-          rows: [{ count: String(opts.stagedCount ?? 0) }],
-        });
+        return Promise.resolve({ rows: opts.stagedLines ?? [] });
       }
       throw new Error(`unexpected SQL in the lock tx: ${sql}`);
     }),
@@ -169,7 +172,20 @@ describe('PayrollLockService — the gates (CAP-9)', () => {
   it('locks a completed month: the confirmation, the view, and the audit row', async () => {
     const t = build({
       runRows: [{ status: 'failed' }, { status: 'completed' }],
-      stagedCount: 2,
+      stagedLines: [
+        {
+          label: 'Festival bonus',
+          amount: '5000.00',
+          tag: 'bonus',
+          employee_name: 'Asha',
+        },
+        {
+          label: 'Advance clawback',
+          amount: '-1200.00',
+          tag: 'wage',
+          employee_name: 'Asha',
+        },
+      ],
       insertRows: [lockRow()],
     });
     const view = await t.service.lock(companyAdmin, '2026-10');
@@ -186,8 +202,22 @@ describe('PayrollLockService — the gates (CAP-9)', () => {
     expect(String(confirmation.statement)).toContain('2026-10');
     expect(String(confirmation.permanence)).toContain('cannot be undone');
     expect(String(confirmation.remedy)).toContain('off-cycle');
-    // The month already carries two staged lines — the confirmation says so.
-    expect(confirmation.stagedOffCycleLines).toBe(2);
+    // The month still carries two staged lines — the confirmation LISTS
+    // them (23-9: employee, label, amount, tag), a count is no longer enough.
+    expect(confirmation.stagedOffCycleLines).toEqual([
+      {
+        employee: 'Asha',
+        label: 'Festival bonus',
+        amount: '5000.00',
+        tag: 'bonus',
+      },
+      {
+        employee: 'Asha',
+        label: 'Advance clawback',
+        amount: '-1200.00',
+        tag: 'wage',
+      },
+    ]);
     expect(t.rpcCalls[0]['p_action']).toBe('payroll.month_locked');
     expect(t.rpcCalls[0]['p_details']).toEqual({ month: '2026-10' });
   });

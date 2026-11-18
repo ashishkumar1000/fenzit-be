@@ -20,8 +20,21 @@ import {
   earnedLine,
   monthsEmployedInFy,
   tdsProjection,
+  type CapResult,
   type DeductionLine,
 } from './run-math';
+import {
+  OFFCYCLE_DEDUCTION_PREFIX,
+  finalRunCap,
+  isFinalRun,
+  offCycleDeductionEntries,
+  offCycleEarningEntries,
+  offCycleFor,
+  pfBaseWithOffCycle,
+  tdsAnnualWithOffCycle,
+  type FinalRunCapResult,
+  type OffCycleLine,
+} from './offcycle-math';
 import { writeAuditRow } from './payroll.helpers';
 
 interface PopulationRow {
@@ -68,6 +81,20 @@ interface RecoveryRow {
   membership_id: string;
   month_raised: string;
   outstanding_amount: string;
+  original_amount: string;
+}
+
+/** 23-9: the run's off-cycle bookkeeping (CAP-10) — what the write tx must
+ *  flip staged → applied (the EXACT ids the computation consumed), which
+ *  staged lines stayed orphaned (the employee the run skipped), and the
+ *  recovery balance the summary reports. */
+interface OffCycleComputation {
+  consumedStagedIds: string[];
+  orphaned: Array<{ employee: string; label: string; amount: string }>;
+  stagedCount: number;
+  recoveryOutstandingBefore: string;
+  recoveryOutstandingAfter: string;
+  recoveryRaisedThisRun: string;
 }
 
 type StatusFact = {
@@ -120,6 +147,7 @@ interface MonthComputation {
   recoveryUpdates: Array<{ id: string; outstanding: string }>;
   /** One excess per employee whose deductions breached the cap. */
   excessLines: Array<{ membershipId: string; excess: string }>;
+  offCycle: OffCycleComputation;
   establishmentName: string | null;
   establishmentAddress: string | null;
   wagePeriodStart: string;
@@ -192,9 +220,9 @@ export class PayrollRunEngineService {
       if (destroyed.error) {
         throw new Error('the existing payslips could not be read');
       }
-      const destroyedIds = ((destroyed.data ?? []) as Array<{ id: string }>).map(
-        (r) => r.id,
-      );
+      const destroyedIds = (
+        (destroyed.data ?? []) as Array<{ id: string }>
+      ).map((r) => r.id);
 
       await this.pg.withTransaction(async (tx) => {
         await tx.query(
@@ -297,6 +325,22 @@ export class PayrollRunEngineService {
           );
         }
 
+        // 23-9 (CAP-10): the lines this run actually landed on payslips —
+        // flipped by their EXACT captured ids with a status re-check, so a
+        // line staged after the computation read (or re-targeted between the
+        // read and this tx) can never be marked applied for a payslip that
+        // does not carry it.
+        if (computed.offCycle.consumedStagedIds.length > 0) {
+          await tx.query(
+            `update public.payroll_off_cycle_lines
+                set status = 'applied', updated_at = now()
+              where tenant_id = $1::uuid and month = $2
+                and status = 'staged'
+                and id = any($3::uuid[])`,
+            [tenantId, month, computed.offCycle.consumedStagedIds],
+          );
+        }
+
         for (const recovery of computed.recoveryUpdates) {
           await tx.query(
             `update public.payroll_recovery_lines
@@ -305,6 +349,22 @@ export class PayrollRunEngineService {
             [tenantId, recovery.outstanding, recovery.id],
           );
         }
+        // 23-9 re-run idempotency: this month's own raised rows are the
+        // run's OUTPUT — a re-run recomputes them. Untouched rows
+        // (outstanding still equals the original) are deleted and re-raised
+        // below; a partially-absorbed row is left alone (its absorption
+        // progress belongs to a later month's run — the month_raised filter
+        // keeps this run from absorbing it). Without this, every breaching
+        // re-run would duplicate its excess.
+        await tx.query(
+          `delete from public.payroll_recovery_lines
+            where tenant_id = $1::uuid and month_raised = $2
+              and outstanding_amount = original_amount`,
+          [tenantId, month],
+        );
+        // A leaver's final run raises nothing (excessLines is empty there):
+        // an excess an exited employee can never absorb is reported in the
+        // summary, never planted as an eternal recovery row.
         for (const excess of computed.excessLines) {
           await tx.query(
             `insert into public.payroll_recovery_lines
@@ -398,6 +458,47 @@ export class PayrollRunEngineService {
         err,
       );
     }
+  }
+
+  /**
+   * 23-9 (CAP-9/CAP-10): the orphaned staged lines — whose employee the run
+   * skipped (or a zero-employee run) — listed with employee name, label and
+   * amount, never dropped. Names come from the run's population map;
+   * memberships outside it (removed after staging) get one batched fallback
+   * read, and a nameless membership degrades to a short id — observability,
+   * never an error.
+   */
+  private async orphanedStagedEntries(
+    admin: SupabaseClient,
+    tenantId: string,
+    staged: OffCycleLine[],
+    names: Map<string, string>,
+  ): Promise<Array<{ employee: string; label: string; amount: string }>> {
+    if (staged.length === 0) return [];
+    const missing = [...new Set(staged.map((l) => l.membershipId))].filter(
+      (id) => !names.has(id),
+    );
+    if (missing.length > 0) {
+      const res = await admin
+        .from('memberships')
+        .select('id, users!memberships_user_id_fkey(name)')
+        .eq('tenant_id', tenantId)
+        .in('id', missing);
+      if (!res.error) {
+        for (const row of (res.data ?? []) as unknown as Array<{
+          id: string;
+          users: { name: string | null } | null;
+        }>) {
+          names.set(row.id, row.users?.name ?? '');
+        }
+      }
+    }
+    return staged.map((l) => ({
+      employee:
+        names.get(l.membershipId) || `membership ${l.membershipId.slice(0, 8)}`,
+      label: l.label,
+      amount: moneyText(l.amount),
+    }));
   }
 
   /** All reads and per-employee computation — no writes, throws on failure. */
@@ -575,13 +676,56 @@ export class PayrollRunEngineService {
 
     const recoveryRes = await admin
       .from('payroll_recovery_lines')
-      .select('id, membership_id, month_raised, outstanding_amount')
+      .select(
+        'id, membership_id, month_raised, outstanding_amount, original_amount',
+      )
       .eq('tenant_id', tenantId)
       .gt('outstanding_amount', 0)
       .order('created_at', { ascending: true });
     if (recoveryRes.error)
       throw new Error('the recovery lines could not be loaded');
     const recoveries = (recoveryRes.data ?? []) as unknown as RecoveryRow[];
+    // 23-9 (CAP-10): month M's run is absorbable only by LATER months' runs
+    // — a re-run of M ignores the excess M itself raised (its own raised
+    // rows are recomputed in the write tx instead), and an October re-run
+    // never absorbs an excess November raised after a November-first run.
+    // The unfiltered read stays: the summary's outstanding balance covers
+    // every open row, including this month's own.
+    const absorbableRecoveries = recoveries.filter(
+      (r) => r.month_raised < month,
+    );
+
+    // 23-9 (CAP-10): the month's off-cycle lines, stable in created_at order.
+    // ALL statuses feed the computation — applied lines must survive a re-run
+    // with the line intact; staged lines are consumed (flipped applied) or
+    // orphaned (their employee the run skipped).
+    const offcycleRes = await admin
+      .from('payroll_off_cycle_lines')
+      .select('id, membership_id, label, amount, tag, status')
+      .eq('tenant_id', tenantId)
+      .eq('month', month)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true });
+    if (offcycleRes.error)
+      throw new Error('the off-cycle lines could not be loaded');
+    const offCycleLines: OffCycleLine[] = (
+      (offcycleRes.data ?? []) as unknown as Array<{
+        id: string;
+        membership_id: string;
+        label: string;
+        amount: string;
+        tag: string;
+        status: string;
+      }>
+    ).map((r) => ({
+      id: r.id,
+      membershipId: r.membership_id,
+      label: r.label,
+      amount: Number(r.amount),
+      tag: r.tag as 'wage' | 'bonus',
+      status: r.status as 'staged' | 'applied',
+    }));
+    const stagedOffCycle = offCycleLines.filter((l) => l.status === 'staged');
 
     // Prior-FY TDS per user, for the re-spread (the payslips this run is
     // about to destroy-and-replace are THIS month's only; earlier months'
@@ -606,6 +750,17 @@ export class PayrollRunEngineService {
     }
 
     if (population.length === 0) {
+      // Zero employees: every staged line for the month is orphaned —
+      // listed, never dropped (CAP-9/CAP-10).
+      const orphaned = await this.orphanedStagedEntries(
+        admin,
+        tenantId,
+        stagedOffCycle,
+        new Map(),
+      );
+      const outstanding = moneyText(
+        recoveries.reduce((sum, r) => sum + Number(r.outstanding_amount), 0),
+      );
       return {
         payslips: [],
         membershipFacts: new Map(),
@@ -616,9 +771,27 @@ export class PayrollRunEngineService {
           payslips: 0,
           skips: [],
           warnings: [],
+          offCycle: {
+            staged: stagedOffCycle.length,
+            applied: 0,
+            orphaned,
+          },
+          recovery: {
+            outstandingBefore: outstanding,
+            outstandingAfter: outstanding,
+            raisedThisRun: '0.00',
+          },
         },
         recoveryUpdates: [],
         excessLines: [],
+        offCycle: {
+          consumedStagedIds: [],
+          orphaned,
+          stagedCount: stagedOffCycle.length,
+          recoveryOutstandingBefore: outstanding,
+          recoveryOutstandingAfter: outstanding,
+          recoveryRaisedThisRun: '0.00',
+        },
         establishmentName,
         establishmentAddress,
         wagePeriodStart: firstDay,
@@ -744,11 +917,14 @@ export class PayrollRunEngineService {
     const warnings: string[] = [];
     const recoveryUpdates: Array<{ id: string; outstanding: string }> = [];
     const excessLines: Array<{ membershipId: string; excess: string }> = [];
+    let recoveryAbsorbed = 0;
     const recoveryByMember = new Map<string, RecoveryRow[]>();
-    for (const r of recoveries) {
+    const recoveryRowById = new Map<string, RecoveryRow>();
+    for (const r of absorbableRecoveries) {
       const bucket = recoveryByMember.get(r.membership_id) ?? [];
       bucket.push(r);
       recoveryByMember.set(r.membership_id, bucket);
+      recoveryRowById.set(r.id, r);
     }
 
     for (const member of population) {
@@ -852,14 +1028,22 @@ export class PayrollRunEngineService {
         );
       }
 
-      const earningLines = lineInputs.map((l) => ({
-        name: l.name,
-        amount: earnedLine(
-          evaluation.values.get(l.componentId) ?? 0,
-          divisor,
-          paid,
-        ),
-      }));
+      // 23-9 (CAP-10): the member's off-cycle lines. Positive lines are
+      // FLAT earning entries (never prorated by the divisor) appended to
+      // the break-up, so gross — and with it the 50%-cap basis — includes
+      // them by construction.
+      const memberOffCycle = offCycleFor(offCycleLines, member.id);
+      const earningLines = [
+        ...lineInputs.map((l) => ({
+          name: l.name,
+          amount: earnedLine(
+            evaluation.values.get(l.componentId) ?? 0,
+            divisor,
+            paid,
+          ),
+        })),
+        ...offCycleEarningEntries(memberOffCycle),
+      ];
       const gross = roundMoney(
         earningLines.reduce((sum, l) => sum + Number(l.amount), 0),
       );
@@ -885,9 +1069,13 @@ export class PayrollRunEngineService {
         switchCovered,
         excluded: excludedMembers.has(member.id),
       });
+      // 23-9 (CAP-10): a wage-tagged earning joins the PF base (arrear/
+      // correction is PF wages for the period); a bonus never does. The
+      // ceiling binds inside pfDeduction.
+      const pfBase = pfBaseWithOffCycle(earnedBasic, memberOffCycle);
       let pfEmployee = '0.00';
-      if (covered && earnedBasic > 0) {
-        pfEmployee = pfDeduction(moneyText(earnedBasic), ceiling).employee;
+      if (covered && pfBase > 0) {
+        pfEmployee = pfDeduction(moneyText(pfBase), ceiling).employee;
       }
       const pfOverride = overrides.get(`${member.id}:pf_employee`);
       if (pfOverride !== undefined) pfEmployee = moneyText(pfOverride);
@@ -896,14 +1084,21 @@ export class PayrollRunEngineService {
         amount: Number(pfEmployee),
       });
 
+      // 23-9 (CAP-10): the leaver's final run — the last run whose owned
+      // dates reach the employment window — deducts the TDS remainder IN
+      // FULL (remainingFyMonths = 1), never spread over months the leaver
+      // will not work. Every signed off-cycle amount joins the projection's
+      // annual.
+      const finalRun = isFinalRun(member.exit_date, month, cutoffOf);
       let tds = tdsProjection({
         monthlyStructure: structureTotal,
         monthsEmployedInFy: monthsEmployedInFy(
           member.join_date,
           member.exit_date,
         ),
-        remainingFyMonths: this.fyRemaining(month),
+        remainingFyMonths: finalRun ? 1 : this.fyRemaining(month),
         priorFyTds: priorTdsByUser.get(member.user_id) ?? 0,
+        offCycleAnnual: tdsAnnualWithOffCycle(0, memberOffCycle),
       });
       const tdsOverride = overrides.get(`${member.id}:tds`);
       if (tdsOverride !== undefined) tds = moneyText(tdsOverride);
@@ -926,30 +1121,71 @@ export class PayrollRunEngineService {
         deductionLines.push({
           source: `recovery:${recovery.month_raised}`,
           amount: Number(recovery.outstanding_amount),
+          recoveryId: recovery.id,
         });
       }
+      // 23-9 (CAP-10): negative off-cycle lines are recovery-style
+      // deductions inside the cap — with the deliberate `offcycle-recovery:`
+      // prefix, never mistaken for a payroll_recovery_lines row.
+      deductionLines.push(...offCycleDeductionEntries(memberOffCycle));
 
-      const capped = capClamp(deductionLines, gross);
-      let recoveryIndex = 0;
+      // The leaver's final run assigns deductions by its own rules (23-9):
+      // TDS and the recovery-shaped lines deduct in full past the 50% cap,
+      // the governed set caps as usual, net floors at zero, and the governed
+      // clamp excess is reported, never raised.
+      let capped: CapResult;
+      let finalRunOutcome: FinalRunCapResult | null = null;
+      if (finalRun) {
+        const isGoverned = (l: DeductionLine) =>
+          l.source === 'pf_employee' || l.source.startsWith('head:');
+        finalRunOutcome = finalRunCap({
+          gross,
+          governed: deductionLines.filter(isGoverned),
+          exempt: deductionLines.filter((l) => !isGoverned(l)),
+        });
+        capped = {
+          lines: finalRunOutcome.lines,
+          totalDeductions: finalRunOutcome.totalDeductions,
+          netWages: finalRunOutcome.netWages,
+          excess: finalRunOutcome.unabsorbableExcess,
+        };
+      } else {
+        capped = capClamp(deductionLines, gross);
+      }
+
+      // Recovery reconciliation is BY ROW ID (23-9): the shipped positional
+      // walk mis-paired whenever the outstanding order disagreed with the
+      // push order, and any recovery-shaped prefix would have corrupted the
+      // rows. Each line decrements exactly its own row.
       for (const line of capped.lines) {
-        if (!line.source.startsWith('recovery:')) continue;
-        const recovery = (recoveryByMember.get(member.id) ?? [])[recoveryIndex];
-        if (recovery) {
-          const outstanding = roundMoney(
-            Number(recovery.outstanding_amount) - line.amount,
-          );
-          recoveryUpdates.push({
-            id: recovery.id,
-            outstanding: moneyText(Math.max(0, outstanding)),
-          });
-          recoveryIndex += 1;
-        }
+        if (!line.recoveryId) continue;
+        const recovery = recoveryRowById.get(line.recoveryId);
+        if (!recovery) continue;
+        const absorbed = finalRunOutcome
+          ? (finalRunOutcome.absorbedByRow.get(line.recoveryId) ?? 0)
+          : line.amount;
+        recoveryAbsorbed += absorbed;
+        recoveryUpdates.push({
+          id: recovery.id,
+          outstanding: moneyText(
+            Math.max(
+              0,
+              roundMoney(Number(recovery.outstanding_amount) - absorbed),
+            ),
+          ),
+        });
       }
       if (capped.excess !== '0.00') {
-        excessLines.push({ membershipId: member.id, excess: capped.excess });
-        warnings.push(
-          `${member.employee_name}: deductions exceeded the 50% cap by ₹${capped.excess} — raised as a recovery on the next run`,
-        );
+        if (finalRun) {
+          warnings.push(
+            `${member.employee_name}: deductions exceeded the 50% cap by ₹${capped.excess} — uncollectable on this final run, reported for final settlement`,
+          );
+        } else {
+          excessLines.push({ membershipId: member.id, excess: capped.excess });
+          warnings.push(
+            `${member.employee_name}: deductions exceeded the 50% cap by ₹${capped.excess} — raised as a recovery on the next run`,
+          );
+        }
       }
 
       // The snapshot's statutory columns read the CLAMPED lines so the
@@ -964,7 +1200,9 @@ export class PayrollRunEngineService {
         capped.lines
           .filter(
             (l) =>
-              l.source.startsWith('head:') || l.source.startsWith('recovery:'),
+              l.source.startsWith('head:') ||
+              l.source.startsWith('recovery:') ||
+              l.source.startsWith(OFFCYCLE_DEDUCTION_PREFIX),
           )
           .reduce((sum, l) => sum + l.amount, 0),
       );
@@ -1006,6 +1244,55 @@ export class PayrollRunEngineService {
       }
     }
 
+    // 23-9 (CAP-10): consumption + orphan bookkeeping over the month's
+    // staged lines — consumed = their member got a payslip this run (the
+    // write tx flips exactly these ids applied); the rest are orphaned —
+    // listed with employee, label and amount, never dropped.
+    const paidMemberships = new Set(payslips.map((p) => p.membership_id));
+    const consumedStagedIds = stagedOffCycle
+      .filter((l) => paidMemberships.has(l.membershipId))
+      .map((l) => l.id);
+    const orphanedStaged = stagedOffCycle.filter(
+      (l) => !paidMemberships.has(l.membershipId),
+    );
+    const nameByMembership = new Map<string, string>();
+    for (const [id, facts] of membershipFacts) {
+      if (facts.employeeName) nameByMembership.set(id, facts.employeeName);
+    }
+    const orphaned = await this.orphanedStagedEntries(
+      admin,
+      tenantId,
+      orphanedStaged,
+      nameByMembership,
+    );
+    const recoveryOutstandingBefore = moneyText(
+      recoveries.reduce((sum, r) => sum + Number(r.outstanding_amount), 0),
+    );
+    // The re-run rewrite the write tx performs: this month's own UNTOUCHED
+    // raised rows are deleted and the freshly computed excess re-raised, so
+    // the after-balance must model that, not just absorption + raise.
+    const deletedUntouchedOwnRaised = recoveries
+      .filter(
+        (r) =>
+          r.month_raised === month &&
+          Number(r.outstanding_amount) === Number(r.original_amount),
+      )
+      .reduce((sum, r) => sum + Number(r.outstanding_amount), 0);
+    const recoveryRaisedThisRun = moneyText(
+      excessLines.reduce((sum, e) => sum + Number(e.excess), 0),
+    );
+    const recoveryOutstandingAfter = moneyText(
+      Math.max(
+        0,
+        roundMoney(
+          Number(recoveryOutstandingBefore) -
+            recoveryAbsorbed -
+            deletedUntouchedOwnRaised +
+            Number(recoveryRaisedThisRun),
+        ),
+      ),
+    );
+
     return {
       payslips,
       membershipFacts,
@@ -1015,12 +1302,30 @@ export class PayrollRunEngineService {
         payslips: payslips.length,
         skips,
         warnings,
+        offCycle: {
+          staged: stagedOffCycle.length,
+          applied: consumedStagedIds.length,
+          orphaned,
+        },
+        recovery: {
+          outstandingBefore: recoveryOutstandingBefore,
+          outstandingAfter: recoveryOutstandingAfter,
+          raisedThisRun: recoveryRaisedThisRun,
+        },
         divisor: divisorConvention,
         cutoff_day: cutoffDay,
         pay_date: payDate,
       },
       recoveryUpdates,
       excessLines,
+      offCycle: {
+        consumedStagedIds,
+        orphaned,
+        stagedCount: stagedOffCycle.length,
+        recoveryOutstandingBefore,
+        recoveryOutstandingAfter,
+        recoveryRaisedThisRun,
+      },
       establishmentName,
       establishmentAddress,
       wagePeriodStart: firstDay,

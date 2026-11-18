@@ -31,7 +31,9 @@ interface LockRow {
  * only failed ones — zero payslips) cannot be locked ("run payroll first");
  * a month with a run still queued or running cannot either (the lock would
  * freeze payslips the run is about to replace). The confirmation echoes the
- * permanence copy, the off-cycle remedy, and how many staged off-cycle lines
+ * permanence copy, the off-cycle remedy, and the staged off-cycle lines the
+ * month still carries (23-9 lists them — by lock time each is an orphan the
+ * admin can re-target to an unlocked month)
  * the month carries. Zero database functions.
  */
 @Injectable()
@@ -72,7 +74,7 @@ export class PayrollLockService {
     // past the run read below and execute against a locked month (the engine
     // re-probes the lock inside its write tx), and no correction can commit
     // between this decision and the lock insert.
-    const { row } = await this.pg.withTransaction(async (tx) => {
+    const row = await this.pg.withTransaction(async (tx) => {
       await tx.query(
         `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
         [payrollRunAdvisoryKey(tenantId, month)],
@@ -114,15 +116,29 @@ export class PayrollLockService {
         });
       }
 
-      // The remedy line counts what the month already owes off-cycle (story
-      // 9 builds the staging surface; the read keeps the confirmation true
-      // then).
-      const stagedRes = await tx.query<{ count: string }>(
-        `select count(*) from public.payroll_off_cycle_lines
-          where tenant_id = $1::uuid and month = $2 and status = 'staged'`,
+      // The remedy line LISTS what the month already owes off-cycle (23-9):
+      // every staged line by lock time is one the completed run did not
+      // consume — orphaned, and re-targetable to an unlocked month.
+      const stagedRes = await tx.query<{
+        label: string;
+        amount: string;
+        tag: string;
+        employee_name: string | null;
+      }>(
+        `select l.label, l.amount::text as amount, l.tag, u.name as employee_name
+           from public.payroll_off_cycle_lines l
+           join public.memberships m on m.id = l.membership_id
+           join public.users u on u.id = m.user_id
+          where l.tenant_id = $1::uuid and l.month = $2 and l.status = 'staged'
+          order by l.created_at asc, l.id asc`,
         [tenantId, month],
       );
-      const staged = Number(stagedRes.rows[0]?.count ?? 0);
+      const stagedLines = stagedRes.rows.map((r) => ({
+        employee: r.employee_name ?? 'unknown employee',
+        label: r.label,
+        amount: r.amount,
+        tag: r.tag,
+      }));
 
       const confirmation = {
         statement: `${month}'s payroll is now final — its payslips, deductions and attendance can no longer change`,
@@ -130,7 +146,7 @@ export class PayrollLockService {
           'A lock cannot be undone — there is no unlock. Re-running the month and editing its payslips are refused from now on.',
         remedy:
           'If something is missing after the lock, stage an off-cycle payout for it — that is how a locked month pays anything more.',
-        stagedOffCycleLines: staged,
+        stagedOffCycleLines: stagedLines,
       };
       const inserted = await tx.query<LockRow>(
         `insert into public.payroll_month_locks
@@ -148,7 +164,7 @@ export class PayrollLockService {
           message: `${month} is already locked — a lock is permanent and cannot be undone`,
         });
       }
-      return { row: inserted.rows[0], staged };
+      return inserted.rows[0];
     });
 
     // Best-effort, post-commit: an audit failure never undoes the lock.

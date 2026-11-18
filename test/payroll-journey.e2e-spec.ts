@@ -111,7 +111,6 @@ describe('Payroll journey (real DB, real routes)', () => {
   // plan forbids ("never a silent green" — this is a LOUD skip marker).
   const pdfMaybeIt = IS_REAL_R2 ? maybeIt : it.skip;
   if (!IS_REAL_R2) {
-    // eslint-disable-next-line no-console
     console.warn(
       '23-8 PDF legs SKIPPED — real CLOUDFLARE_R2_* credentials are required for the real upload pipeline',
     );
@@ -3701,7 +3700,7 @@ describe('Payroll journey (real DB, real routes)', () => {
   );
 
   maybeIt(
-    '23-6 — the recovery is absorbed by the next run once the override lifts',
+    '23-6 — the re-run that lifts the breach extinguishes its own untouched recovery (23-9 semantics)',
     async () => {
       const lift = await app.inject({
         method: 'PUT',
@@ -3724,34 +3723,35 @@ describe('Payroll journey (real DB, real routes)', () => {
       });
       expect(res.statusCode).toBe(202);
       const queued = JSON.parse(res.body) as { id: string };
-      const absorbed = await awaitRun(queued.id);
-      expect(absorbed['status']).toBe('completed');
+      const lifted = await awaitRun(queued.id);
+      expect(lifted['status']).toBe('completed');
 
       const a = await payslipOf(employeeA, '2026-10');
       const deductionLines = a['deduction_lines'] as Array<{
         source: string;
         amount: string;
       }>;
-      expect(deductionLines).toEqual(
-        expect.arrayContaining([
-          { source: 'recovery:2026-10', amount: '2646.15' },
-        ]),
-      );
-      // Deductions: PF 2,076.92 + TDS 0 + insurance 484.62 + PT 200 +
-      // recovery 2,646.15 = 5,407.69 → net 18,823.08.
+      // 23-9: month M's run is absorbable only by a LATER month — October's
+      // re-run neither absorbs its own excess nor keeps it once the breach
+      // is gone: the untouched raised row is deleted, nothing re-raised.
+      // Deductions: PF 2,076.92 + TDS 0 + insurance 484.62 + PT 200
+      // = 2,761.54 → net 21,469.23, no recovery line.
+      expect(deductionLines).toEqual([
+        { source: 'pf_employee', amount: '2076.92' },
+        { source: 'tds', amount: '0.00' },
+        { source: 'head:Insurance', amount: '484.62' },
+        { source: 'head:Professional Tax', amount: '200.00' },
+      ]);
       expect(a).toMatchObject({
-        total_deductions: '5407.69',
-        net_wages: '18823.08',
+        total_deductions: '2761.54',
+        net_wages: '21469.23',
       });
-      const { rows: recovery } = await pool.query<{
-        outstanding_amount: string;
-      }>(
-        `select outstanding_amount::text as outstanding_amount
-           from public.payroll_recovery_lines
+      const { rows: recovery } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_recovery_lines
           where tenant_id = $1 and month_raised = '2026-10'`,
         [tenant],
       );
-      expect(recovery[0]['outstanding_amount']).toBe('0.00');
+      expect(recovery[0]['n']).toBe(0);
 
       // The fixture's November row carries PT only — retire the head again
       // (the November leg runs with PF + PT, no insurance).
@@ -3888,9 +3888,11 @@ describe('Payroll journey (real DB, real routes)', () => {
       }>;
       expect(earningLines[0]).toEqual({ name: 'Basic', amount: '21153.85' });
 
-      // October's payslips are untouched by November's run.
+      // October's payslips are untouched by November's run — at the
+      // extinguished state the 23-9 rewrite pinned (no override, no
+      // insurance, no recovery row left).
       const oct = await payslipOf(employeeA, '2026-10');
-      expect(oct).toMatchObject({ net_wages: '18823.08' });
+      expect(oct).toMatchObject({ net_wages: '21469.23' });
     },
   );
 
@@ -4188,6 +4190,521 @@ describe('Payroll journey (real DB, real routes)', () => {
     },
   );
 
+  // ---- 23-9: off-cycle payout (CAP-10) — October is still unlocked here;
+  // the lock legs below freeze it, and the post-lock 409s ride on that. ----
+  const offcycle = { bonusLineId: '', orphanLineId: '' };
+
+  maybeIt(
+    '23-9 — the staged ₹5,000 bonus rides the fixture D+bonus row: gross, cap clamp, and PF unchanged',
+    async () => {
+      // Restore employee A's October to the fixture base: the half-day
+      // correction from the 23-6 legs goes away, the D-leg override and the
+      // insurance head come back.
+      must(
+        await admin
+          .from('attendance_day_overrides')
+          .delete()
+          .eq('tenant_id', tenant)
+          .eq('employee_id', employeeA)
+          .eq('work_date', '2026-10-21'),
+      );
+      const reenact = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Insurance',
+          kind: 'percent',
+          amount: '2',
+          basis: 'gross',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(reenact.statusCode).toBe(201);
+      const override = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${employeeA}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'tds',
+          amount: '12000.00',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(override.statusCode).toBe(200);
+
+      // Stage the bonus for unlocked October.
+      const staged = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/off-cycle-lines',
+        headers: ownerHeaders(),
+        payload: {
+          membershipId: await membershipIdOf(employeeA),
+          month: '2026-10',
+          label: 'Festival bonus',
+          amount: 5000,
+        },
+      });
+      expect(staged.statusCode).toBe(201);
+      const stagedBody = JSON.parse(staged.body) as {
+        id: string;
+        status: string;
+        tag: string;
+        amount: number;
+        employeeName: string | null;
+      };
+      offcycle.bonusLineId = stagedBody.id;
+      expect(stagedBody).toMatchObject({
+        status: 'staged',
+        tag: 'bonus', // the default tag
+        amount: 5000,
+      });
+      expect(stagedBody.employeeName).toBeTruthy();
+
+      // The same (employee, month, label) again is a 409 naming the dup.
+      const dup = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/off-cycle-lines',
+        headers: ownerHeaders(),
+        payload: {
+          membershipId: await membershipIdOf(employeeA),
+          month: '2026-10',
+          label: 'Festival bonus',
+          amount: 5000,
+        },
+      });
+      expect(dup.statusCode).toBe(409);
+      expect(
+        (JSON.parse(dup.body) as { error_code: string })['error_code'],
+      ).toBe('DUPLICATE_RESOURCE');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const done = await awaitRun(
+        (JSON.parse(res.body) as { id: string })['id'],
+      );
+      expect(done['status']).toBe('completed');
+
+      const a = await payslipOf(employeeA, '2026-10');
+      const aEarnings = a['earning_lines'] as Array<{
+        name: string;
+        amount: string;
+      }>;
+      expect(aEarnings).toEqual(
+        expect.arrayContaining([
+          { name: 'Off-cycle: Festival bonus', amount: '5000.00' },
+        ]),
+      );
+      // gross = Basic 17,307.69 + HRA 6,923.08 + the flat bonus = 29,230.77 —
+      // the cap basis includes the line (fixture G: D + bonus row).
+      expect(a).toMatchObject({ gross_earnings: '29230.77' });
+      // Percentage heads compute on the EARNED basis — the bonus is in the
+      // post-LOP gross, so insurance is 2% × 29,230.77 = 584.62 (CAP-6's
+      // basis rule; the fixture's "14,761.54" shorthand kept variant D's
+      // value). Deductions 14,861.54 > cap 14,615.39 → the clamp scales
+      // each line: PF 2,042.52 + TDS 11,801.24 + insurance+PT 771.63
+      // = 14,615.39; net 14,615.38; excess 246.15 raised.
+      expect(a).toMatchObject({
+        pf_employee: '2042.52',
+        tds: '11801.24',
+        other_deductions: '771.63',
+        total_deductions: '14615.39',
+        net_wages: '14615.38',
+      });
+      // The unclamped PF base is untouched by a BONUS (2,076.92 = 12% ×
+      // earned basic 17,307.69) — the wage-tag leg below proves the join.
+      const { rows: pf } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_recovery_lines
+          where tenant_id = $1 and month_raised = '2026-10'`,
+        [tenant],
+      );
+      expect(pf[0]['n']).toBe(1);
+      expect((done.summary ?? {})['recovery']).toMatchObject({
+        outstandingBefore: '0.00',
+        outstandingAfter: '246.15',
+        raisedThisRun: '246.15',
+      });
+      // No other employee's payslip moves (B rides its pf override).
+      const b = await payslipOf(empB, '2026-10');
+      expect(b).toMatchObject({
+        pf_employee: '1000.00',
+        pf_employer: '1000.00',
+      });
+    },
+  );
+
+  maybeIt(
+    '23-9 — the re-run keeps exactly one payslip with the line intact and re-raises its own excess without duplicating it',
+    async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const done = await awaitRun(
+        (JSON.parse(res.body) as { id: string })['id'],
+      );
+      expect(done['status']).toBe('completed');
+
+      expect(await payslipCount('2026-10')).toBeGreaterThan(0);
+      const a = await payslipOf(employeeA, '2026-10');
+      const aEarnings = a['earning_lines'] as Array<{ name: string }>;
+      expect(aEarnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'Off-cycle: Festival bonus' }),
+        ]),
+      );
+      expect(a).toMatchObject({ net_wages: '14615.38' });
+      // The line the run consumed is applied now.
+      const { rows: line } = await pool.query<{ status: string }>(
+        `select status from public.payroll_off_cycle_lines where id = $1`,
+        [offcycle.bonusLineId],
+      );
+      expect(line[0]['status']).toBe('applied');
+      // October's own raised recovery is NOT absorbed by its own re-run
+      // (month_raised filter) and NOT duplicated (untouched row deleted,
+      // fresh excess re-raised) — exactly one row, outstanding intact.
+      const { rows: recovery } = await pool.query<{
+        n: number;
+        outstanding: string;
+      }>(
+        `select count(*)::int as n,
+                (array_agg(outstanding_amount::text))[1] as outstanding
+           from public.payroll_recovery_lines
+          where tenant_id = $1 and month_raised = '2026-10'`,
+        [tenant],
+      );
+      expect(recovery[0]['n']).toBe(1);
+      expect(recovery[0]['outstanding']).toBe('246.15');
+      expect((done.summary ?? {})['recovery']).toMatchObject({
+        outstandingBefore: '246.15',
+        outstandingAfter: '246.15',
+        raisedThisRun: '246.15',
+      });
+    },
+  );
+
+  maybeIt(
+    '23-9 — a wage-tagged line joins the PF base; a bonus never does (empI, no clamp noise)',
+    async () => {
+      // empI (variant I: earned basic 19,230.77, PF 2,307.69): a ₹1,000
+      // wage arrear joins the PF wages → 12% × 20,230.77 = 2,427.69.
+      const staged = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/off-cycle-lines',
+        headers: ownerHeaders(),
+        payload: {
+          membershipId: await membershipIdOf(empI),
+          month: '2026-10',
+          label: 'Arrear wage',
+          amount: 1000,
+          tag: 'wage',
+        },
+      });
+      expect(staged.statusCode).toBe(201);
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      await awaitRun((JSON.parse(res.body) as { id: string })['id']);
+
+      const i = await payslipOf(empI, '2026-10');
+      const iEarnings = i['earning_lines'] as Array<{
+        name: string;
+        amount: string;
+      }>;
+      expect(iEarnings).toEqual(
+        expect.arrayContaining([
+          { name: 'Off-cycle: Arrear wage', amount: '1000.00' },
+        ]),
+      );
+      expect(i).toMatchObject({
+        pf_employee: '2427.69',
+        gross_earnings: '27923.08',
+      });
+    },
+  );
+
+  maybeIt(
+    '23-9 — a line whose employee the run skips stays staged: listed as orphaned, re-targeted to another unlocked month',
+    async () => {
+      // empNoPan has a structure but no join date in a moment: the staging
+      // gate is satisfied, the run then skips them.
+      const staged = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/off-cycle-lines',
+        headers: ownerHeaders(),
+        payload: {
+          membershipId: await membershipIdOf(empNoPan),
+          month: '2026-10',
+          label: 'Referral bonus',
+          amount: 2000,
+        },
+      });
+      expect(staged.statusCode).toBe(201);
+      offcycle.orphanLineId = (JSON.parse(staged.body) as { id: string }).id;
+
+      const cleared = await app.inject({
+        method: 'PATCH',
+        url: employmentUrl(empNoPan),
+        headers: ownerHeaders(),
+        payload: { joinDate: null },
+      });
+      expect(cleared.statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const done = await awaitRun(
+        (JSON.parse(res.body) as { id: string })['id'],
+      );
+      expect(done['status']).toBe('completed');
+
+      const summary = done.summary ?? {};
+      const orphaned = summary['offCycle'] as {
+        orphaned: Array<{ employee: string; label: string; amount: string }>;
+      };
+      expect(orphaned['orphaned']).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'Referral bonus',
+            amount: '2000.00',
+          }),
+        ]),
+      );
+      expect(orphaned['orphaned'][0]['employee']).toBeTruthy();
+      // Neither applied nor dropped: still staged in the DB.
+      const { rows: line } = await pool.query<{
+        status: string;
+        month: string;
+      }>(
+        `select status, month from public.payroll_off_cycle_lines where id = $1`,
+        [offcycle.orphanLineId],
+      );
+      expect(line[0]).toMatchObject({ status: 'staged', month: '2026-10' });
+
+      // The remedy: re-target to another unlocked month (the CURRENT month
+      // may even be locked — the target's state is what gates).
+      const restore = await app.inject({
+        method: 'PATCH',
+        url: employmentUrl(empNoPan),
+        headers: ownerHeaders(),
+        payload: { joinDate: '2026-09-01' },
+      });
+      expect(restore.statusCode).toBe(200);
+      const retarget = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/payroll/off-cycle-lines/${offcycle.orphanLineId}`,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(retarget.statusCode).toBe(200);
+      expect(JSON.parse(retarget.body)).toMatchObject({
+        month: '2026-11',
+        status: 'staged',
+      });
+
+      // A final October re-run (join date restored, the orphan now living
+      // on November) gives EMP-014 its October payslip back — the run
+      // surface is clean for the lock and snapshot legs below.
+      const res2 = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res2.statusCode).toBe(202);
+      expect(
+        (await awaitRun((JSON.parse(res2.body) as { id: string })['id']))[
+          'status'
+        ],
+      ).toBe('completed');
+      const { rows: back } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_payslips p
+           join public.memberships m on m.id = p.membership_id
+          where p.tenant_id = $1 and p.salary_period = '2026-10'
+            and m.user_id = $2`,
+        [tenant, empNoPan],
+      );
+      expect(back[0]['n']).toBe(1);
+    },
+  );
+
+  maybeIt(
+    '23-9 — November absorbs October’s raised recovery subject to the cap and consumes the re-targeted line',
+    async () => {
+      // Retire the D+bonus block's insurance head first so November prices
+      // exactly the fixture row (PF + TDS + PT) plus the absorption.
+      const { rows: insuranceRow } = await pool.query<{ id: string }>(
+        `select id from public.payroll_deduction_heads
+          where tenant_id = $1 and name = 'Insurance' limit 1`,
+        [tenant],
+      );
+      const retire = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${insuranceRow[0]['id']}/deactivate`,
+        headers: ownerHeaders(),
+        payload: { confirm: true },
+      });
+      expect(retire.statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(res.statusCode).toBe(202);
+      const done = await awaitRun(
+        (JSON.parse(res.body) as { id: string })['id'],
+      );
+      expect(done['status']).toBe('completed');
+
+      // The re-targeted orphan line rode the November run (applied now).
+      const { rows: line } = await pool.query<{ status: string }>(
+        `select status from public.payroll_off_cycle_lines where id = $1`,
+        [offcycle.orphanLineId],
+      );
+      expect(line[0]['status']).toBe('applied');
+      const noPan = await payslipOf(empNoPan, '2026-11');
+      expect(noPan['earning_lines']).toEqual(
+        expect.arrayContaining([
+          { name: 'Off-cycle: Referral bonus', amount: '2000.00' },
+        ]),
+      );
+
+      // October's ₹146.15 excess is absorbed by November's run (a LATER
+      // month absorbs; cap 14,807.70 not binding) — outstanding closes.
+      const a = await payslipOf(employeeA, '2026-11');
+      const aDeductions = a['deduction_lines'] as Array<{
+        source: string;
+        amount: string;
+      }>;
+      expect(aDeductions).toEqual(
+        expect.arrayContaining([
+          { source: 'recovery:2026-10', amount: '246.15' },
+        ]),
+      );
+      // PF 2,538.46 + TDS 0 + PT 200 + recovery 246.15 = 2,984.61; net
+      // 26,876.93 − 246.15 = 26,630.78 (the fixture November row minus the
+      // absorbed excess).
+      expect(a).toMatchObject({
+        total_deductions: '2984.61',
+        net_wages: '26630.78',
+      });
+      expect((done.summary ?? {})['recovery']).toMatchObject({
+        outstandingBefore: '246.15',
+        outstandingAfter: '0.00',
+        raisedThisRun: '0.00',
+      });
+      const { rows: open } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_recovery_lines
+          where tenant_id = $1 and outstanding_amount > 0`,
+        [tenant],
+      );
+      expect(open[0]['n']).toBe(0);
+    },
+  );
+
+  maybeIt(
+    '23-9 — the validation matrix refuses in plain English and writes nothing',
+    async () => {
+      const url = '/api/v1/payroll/off-cycle-lines';
+      const memberId = await membershipIdOf(employeeA);
+      const stage = (payload: Record<string, unknown>) =>
+        app.inject({
+          method: 'POST',
+          url,
+          headers: ownerHeaders(),
+          payload,
+        });
+
+      const zero = await stage({
+        membershipId: memberId,
+        month: '2026-10',
+        label: 'Zero bonus',
+        amount: 0,
+      });
+      expect(zero.statusCode).toBe(422);
+      expect(zero.body).toContain('cannot be zero');
+
+      const unacked = await stage({
+        membershipId: memberId,
+        month: '2026-10',
+        label: 'Clawback',
+        amount: -500,
+      });
+      expect(unacked.statusCode).toBe(422);
+      expect(unacked.body).toContain('employer-liability');
+
+      const future = await stage({
+        membershipId: memberId,
+        month: '2026-12',
+        label: 'Too early',
+        amount: 100,
+      });
+      expect(future.statusCode).toBe(422);
+      expect(future.body).toContain('has not started yet');
+
+      const belowBound = await stage({
+        membershipId: memberId,
+        month: '2026-08',
+        label: 'Before payroll',
+        amount: 100,
+      });
+      expect(belowBound.statusCode).toBe(422);
+      expect(belowBound.body).toContain('no payroll history');
+
+      // The owner's own membership is not an employee — the staging gate
+      // refuses before a structure is even looked for (the run population
+      // excludes admins; a staged line would orphan forever).
+      const notEmployee = await stage({
+        membershipId: await membershipIdOf(owner),
+        month: '2026-10',
+        label: 'Owner attempt',
+        amount: 100,
+      });
+      expect(notEmployee.statusCode).toBe(422);
+      expect(notEmployee.body).toContain('active employee');
+
+      // An employee token is 403 on the whole staging surface.
+      const forbidden = await app.inject({
+        method: 'POST',
+        url,
+        headers: { authorization: `Bearer ${bearerFor(employeeA)}` },
+        payload: {
+          membershipId: memberId,
+          month: '2026-10',
+          label: 'Employee attempt',
+          amount: 100,
+        },
+      });
+      expect(forbidden.statusCode).toBe(403);
+
+      // Nothing leaked through: still exactly the three lines this block staged.
+      const { rows: count } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.payroll_off_cycle_lines where tenant_id = $1`,
+        [tenant],
+      );
+      expect(count[0]['n']).toBe(3);
+    },
+  );
+
   maybeIt(
     '23-7 — a month with no completed run cannot be locked (run payroll first)',
     async () => {
@@ -4265,7 +4782,9 @@ describe('Payroll journey (real DB, real routes)', () => {
         'cannot be undone',
       );
       expect(String(lockBody.confirmation['remedy'])).toContain('off-cycle');
-      expect(lockBody.confirmation['stagedOffCycleLines']).toBe(0);
+      // 23-9: the confirmation LISTS the month's staged lines — by lock
+      // time this block consumed them all, so the list is empty.
+      expect(lockBody.confirmation['stagedOffCycleLines']).toEqual([]);
 
       // The readback: the lock row (API + DB) and the month-status flip.
       const readback = await app.inject({
@@ -4504,6 +5023,144 @@ describe('Payroll journey (real DB, real routes)', () => {
   );
 
   maybeIt(
+    '23-9 — a locked month refuses staging, and applied lines are immutable',
+    async () => {
+      const url = '/api/v1/payroll/off-cycle-lines';
+      const memberId = await membershipIdOf(employeeA);
+
+      // October locked (23-7): staging against it is the 409 with the
+      // remedy copy, no row.
+      const locked = await app.inject({
+        method: 'POST',
+        url,
+        headers: ownerHeaders(),
+        payload: {
+          membershipId: memberId,
+          month: '2026-10',
+          label: 'Post-lock payout',
+          amount: 1000,
+        },
+      });
+      expect(locked.statusCode).toBe(409);
+      expect(
+        (JSON.parse(locked.body) as { error_code: string })['error_code'],
+      ).toBe('PAYROLL_MONTH_LOCKED');
+
+      // Every line this block staged is applied — an edit answers the
+      // immutable-state refusal, not a silent money rewrite.
+      const applied = await app.inject({
+        method: 'PATCH',
+        url: `${url}/${offcycle.bonusLineId}`,
+        headers: ownerHeaders(),
+        payload: { amount: 999 },
+      });
+      expect(applied.statusCode).toBe(422);
+      expect(applied.body).toContain('already sits on');
+      const { rows: still } = await pool.query<{ amount: string }>(
+        `select amount::text as amount from public.payroll_off_cycle_lines
+          where id = $1`,
+        [offcycle.bonusLineId],
+      );
+      expect(still[0]['amount']).toBe('5000.00');
+    },
+  );
+
+  maybeIt(
+    '23-9 — re-typing a leave on a locked month’s dates is frozen: 409, post-cut-off stays live, a no-op audits nothing',
+    async () => {
+      const typeUrl = (requestId: string) =>
+        `/api/v1/attendance/leave/${requestId}/type`;
+      const { rows: unpaidType } = await pool.query<{ id: string }>(
+        `select id from public.leave_types where tenant_id = $1 and name = 'Unpaid Leave' limit 1`,
+        [tenant],
+      );
+      const { rows: casualType } = await pool.query<{ id: string }>(
+        `select id from public.leave_types where tenant_id = $1 and name = 'Casual Leave' limit 1`,
+        [tenant],
+      );
+
+      // A frozen pair: an approved unpaid day INSIDE October's owned window
+      // (the marking a locked month's run consumed).
+      const frozenId = await seedLeaveRequest({
+        dates: ['2026-10-20'],
+        state: 'approved',
+        leaveTypeId: unpaidType[0]['id'],
+      });
+      const frozen = await app.inject({
+        method: 'PATCH',
+        url: typeUrl(frozenId),
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: casualType[0]['id'] },
+      });
+      expect(frozen.statusCode).toBe(409);
+      expect(frozen.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(frozen.body).toContain('no longer be retyped');
+      // Nothing moved.
+      const { rows: frozenRow } = await pool.query<{ leave_type_id: string }>(
+        `select leave_type_id from public.leave_requests where id = $1`,
+        [frozenId],
+      );
+      expect(frozenRow[0]['leave_type_id']).toBe(unpaidType[0]['id']);
+
+      // A live pair: dates no locked month owns — past November's cut-off
+      // they belong to December, which never locked.
+      const liveId = await seedLeaveRequest({
+        dates: ['2026-11-27', '2026-11-28'],
+        state: 'approved',
+        leaveTypeId: unpaidType[0]['id'],
+        part: 'second_half',
+      });
+      const live = await app.inject({
+        method: 'PATCH',
+        url: typeUrl(liveId),
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: casualType[0]['id'] },
+      });
+      expect(live.statusCode).toBe(200);
+      // The catalog is mutable config (the 23-2 legs flip paid flags) —
+      // assert the answer against the target type's CURRENT marking.
+      const { rows: casualNow } = await pool.query<{ paid: boolean }>(
+        `select paid from public.leave_types where id = $1`,
+        [casualType[0]['id']],
+      );
+      expect(JSON.parse(live.body)).toMatchObject({
+        leaveTypeId: casualType[0]['id'],
+        paid: casualNow[0]['paid'],
+      });
+
+      // A no-op re-type (same type) answers 200 and audits nothing.
+      const { rows: auditBefore } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.audit_log
+          where tenant_id = $1 and action = 'leave.request_typed'`,
+        [tenant],
+      );
+      const noop = await app.inject({
+        method: 'PATCH',
+        url: typeUrl(liveId),
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: casualType[0]['id'] },
+      });
+      expect(noop.statusCode).toBe(200);
+      const { rows: auditAfter } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.audit_log
+          where tenant_id = $1 and action = 'leave.request_typed'`,
+        [tenant],
+      );
+      expect(auditAfter[0]['n']).toBe(auditBefore[0]['n']);
+
+      // Restore the live pair to unpaid so it never feeds a future run's
+      // LOP differently than the leave-type catalog says.
+      const restore = await app.inject({
+        method: 'PATCH',
+        url: typeUrl(liveId),
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: unpaidType[0]['id'] },
+      });
+      expect(restore.statusCode).toBe(200);
+    },
+  );
+
+  maybeIt(
     '23-7 — the audit trail reads back newest-first, payroll-scoped, tenant-scoped',
     async () => {
       const res = await app.inject({
@@ -4549,8 +5206,12 @@ describe('Payroll journey (real DB, real routes)', () => {
       // at 100 rows and run_completed is the OLDEST payroll action, so the
       // DB count is the durable existence witness (this suite only grows);
       // the actor check holds for whatever entries the window returns.
-      expect(await payrollAuditCount('payroll.run_completed')).toBeGreaterThan(0);
-      const runDone = entries.filter((e) => e.action === 'payroll.run_completed');
+      expect(await payrollAuditCount('payroll.run_completed')).toBeGreaterThan(
+        0,
+      );
+      const runDone = entries.filter(
+        (e) => e.action === 'payroll.run_completed',
+      );
       expect(runDone.every((e) => e.actorId === owner)).toBe(true);
       // The actor pin is durable too: zero run_completed rows with a
       // null or non-owner actor, regardless of the read window.
@@ -4651,9 +5312,11 @@ describe('Payroll journey (real DB, real routes)', () => {
   }
 
   /** One report request, polled to a terminal status straight from the DB. */
-  async function awaitReportRequest(
-    requestId: string,
-  ): Promise<{ status: string; errorCode: string | null; r2Key: string | null }> {
+  async function awaitReportRequest(requestId: string): Promise<{
+    status: string;
+    errorCode: string | null;
+    r2Key: string | null;
+  }> {
     const deadline = Date.now() + 90_000;
     for (;;) {
       const { rows } = await pool.query<{
@@ -4734,9 +5397,10 @@ describe('Payroll journey (real DB, real routes)', () => {
 
       // Employee A's row: the Form V field set verbatim (the fixture's
       // employment data), the establishment fields off the tenant, the
-      // final-run attendance (LOP 4.0 — the corrected half-day), and the
-      // Form V "days worked" bucket (present days, half 0.5, over the kept
-      // payable dates Oct 1–26; weekly offs and leave days contribute 0).
+      // attendance buckets (LOP 3.5 — the 23-9 block restored the corrected
+      // half-day away), and the Form V "days worked" bucket (present days
+      // over the kept payable dates Oct 1–26; weekly offs and leave days
+      // contribute 0). The money columns ride the 23-9 D+bonus state.
       const a = rows.find((r) => r.employeeCode === 'EMP-001')!;
       const { rows: tenantRow } = await pool.query<{
         company_name: string | null;
@@ -4755,19 +5419,20 @@ describe('Payroll journey (real DB, real routes)', () => {
         cutoffDay: 25,
         payDate: 1,
         payableDays: 26,
-        lopDays: 4,
-        paidDays: 22,
-        daysWorked: 15.5,
-        netWages: 21461.54,
+        lopDays: 3.5,
+        paidDays: 22.5,
+        daysWorked: 16,
+        netWages: 14615.38,
       });
       expect(a.earningLines).toEqual([
-        { name: 'Basic', amount: 16923.08 },
-        { name: 'House Rent', amount: 6769.23 },
+        { name: 'Basic', amount: 17307.69 },
+        { name: 'House Rent', amount: 6923.08 },
+        { name: 'Off-cycle: Festival bonus', amount: 5000 },
       ]);
       expect(a.deductionLines).toEqual(
         expect.arrayContaining([
-          { source: 'pf_employee', amount: 2030.77 },
-          { source: 'head:Professional Tax', amount: 200 },
+          { source: 'pf_employee', amount: 2042.52 },
+          { source: 'head:Professional Tax', amount: 196.69 },
         ]),
       );
 
@@ -4811,7 +5476,10 @@ describe('Payroll journey (real DB, real routes)', () => {
       expect(forever.statusCode).toBe(200);
       // toMatchObject: the response carries the panel's full state (who
       // paused it, when) — only the pause contract fields are pinned here.
-      expect(pauseBody(forever)).toMatchObject({ paused: true, pausedUntil: null });
+      expect(pauseBody(forever)).toMatchObject({
+        paused: true,
+        pausedUntil: null,
+      });
       // The timed bounds: minutes must be an int in 1–1440.
       const zero = await app.inject({
         method: 'POST',
@@ -4833,7 +5501,10 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: ownerHeaders(),
       });
       expect(resume.statusCode).toBe(200);
-      expect(pauseBody(resume)).toMatchObject({ paused: false, pausedUntil: null });
+      expect(pauseBody(resume)).toMatchObject({
+        paused: false,
+        pausedUntil: null,
+      });
       // The fence the rest of the run lives under: a day-long pause. The
       // pause self-expires even if this run dies mid-way.
       const fence = await app.inject({
@@ -4884,15 +5555,17 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: ownerHeaders(),
       });
       expect(history.statusCode).toBe(200);
-      const historyRows = (JSON.parse(history.body) as {
-        data: Array<{
-          reportType: string;
-          range: { startDate: string | null; endDate: string | null };
-          technicianCount: number | null;
-          officeCount: number | null;
-          status: string;
-        }>;
-      }).data;
+      const historyRows = (
+        JSON.parse(history.body) as {
+          data: Array<{
+            reportType: string;
+            range: { startDate: string | null; endDate: string | null };
+            technicianCount: number | null;
+            officeCount: number | null;
+            status: string;
+          }>;
+        }
+      ).data;
       const payslipHistory = historyRows.filter(
         (r) => r.reportType === 'payslip',
       );
@@ -5082,7 +5755,9 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: { authorization: `Bearer ${bearerFor(memberE)}` },
       });
       expect(noPayslip.statusCode).toBe(404);
-      expect(noPayslip.body).toContain('There is no payslip for you in 2026-10');
+      expect(noPayslip.body).toContain(
+        'There is no payslip for you in 2026-10',
+      );
 
       // A bad month is the wire 422.
       const badMonth = await app.inject({
@@ -5178,7 +5853,9 @@ describe('Payroll journey (real DB, real routes)', () => {
       const pdfRes = await fetch(view.pdf.url as string);
       expect(pdfRes.status).toBe(200);
       expect(
-        Buffer.from(await pdfRes.arrayBuffer()).subarray(0, 5).toString('ascii'),
+        Buffer.from(await pdfRes.arrayBuffer())
+          .subarray(0, 5)
+          .toString('ascii'),
       ).toBe('%PDF-');
 
       // And the history carries the same ready PDF for October.
@@ -5188,9 +5865,9 @@ describe('Payroll journey (real DB, real routes)', () => {
         headers: employeeHeaders(),
       });
       const historyAfterRows = JSON.parse(historyAfter.body) as PayslipApiRow[];
-      expect(historyAfterRows.find((r) => r.month === '2026-10')!.pdf.status).toBe(
-        'ready',
-      );
+      expect(
+        historyAfterRows.find((r) => r.month === '2026-10')!.pdf.status,
+      ).toBe('ready');
 
       // Cross-tenant: the stranger company's admin reads zero of ours.
       const stranger = await app.inject({

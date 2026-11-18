@@ -1,5 +1,6 @@
 import { InternalServerErrorException } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { LeaveTypesService, defaultPaidMarking } from './leave-types.service';
@@ -29,6 +30,14 @@ function build(
     listError?: { code?: string; message?: string } | null;
     rpcResult?: { data: unknown; error: unknown };
     rpcRejects?: unknown;
+    // setRequestType runs on a pg tx (23-9): these drive the stand-in tx's
+    // SQL-shape routing; everything else above stays supabase-builder based.
+    pgRequestRows?: Array<Record<string, unknown>>;
+    pgDayRows?: Array<{ leave_date: string }>;
+    pgTypeRows?: Array<Record<string, unknown>>;
+    pgUpdateRows?: Array<Record<string, unknown>>;
+    pgUpdateError?: { code: string; message: string } | null;
+    pgLockRows?: Array<{ month: string }>;
   } = {},
 ) {
   const insertPayloads: Array<Record<string, unknown>> = [];
@@ -36,6 +45,7 @@ function build(
   const updateRequestPayloads: Array<Record<string, unknown>> = [];
   const deletedFlags: string[] = [];
   const orderCalls: Array<unknown[]> = [];
+  const txQueries: Array<[string, unknown[]?]> = [];
 
   const mkBuilder = (table: string) => {
     const b: Record<string, unknown> = {};
@@ -141,7 +151,55 @@ function build(
   const factory = {
     createAdmin: jest.fn(() => admin),
   } as unknown as jest.Mocked<SupabaseClientFactory>;
-  const service = new LeaveTypesService(factory);
+
+  // The typing tx stand-in: routes by SQL shape — the service's routing
+  // changes fail loudly here (the payroll-lock spec's idiom).
+  const tx = {
+    query: jest.fn((sql: string, params?: unknown[]) => {
+      txQueries.push([sql, params]);
+      const trimmed = sql.trim().toLowerCase();
+      if (
+        trimmed.startsWith('select') &&
+        sql.includes('from public.leave_requests')
+      ) {
+        return Promise.resolve({ rows: opts.pgRequestRows ?? [] });
+      }
+      if (sql.includes('from public.leave_request_days')) {
+        return Promise.resolve({
+          rows: opts.pgDayRows ?? [{ leave_date: '2026-10-05' }],
+        });
+      }
+      if (
+        trimmed.startsWith('select') &&
+        sql.includes('from public.leave_types')
+      ) {
+        return Promise.resolve({ rows: opts.pgTypeRows ?? [] });
+      }
+      if (sql.includes('update public.leave_requests')) {
+        if (opts.pgUpdateError) return Promise.reject(opts.pgUpdateError);
+        return Promise.resolve({ rows: opts.pgUpdateRows ?? [] });
+      }
+      // The payroll-date gate's reads: no calendar rows (default cutoff 25),
+      // and locks only when the test stages a frozen month.
+      if (
+        sql.includes('payroll_calendar') ||
+        sql.includes('payroll_month_locks') ||
+        sql.includes('pg_advisory_xact_lock')
+      ) {
+        return Promise.resolve({ rows: opts.pgLockRows ?? [] });
+      }
+      return Promise.reject(
+        new Error(`unexpected SQL in the typing tx: ${sql}`),
+      );
+    }),
+  };
+  const pg = {
+    withTransaction: jest.fn((work: (c: unknown) => Promise<unknown>) =>
+      work(tx),
+    ),
+  } as unknown as jest.Mocked<PgPoolFactory>;
+
+  const service = new LeaveTypesService(factory, pg);
   return {
     service,
     from,
@@ -151,6 +209,7 @@ function build(
     updateRequestPayloads,
     deletedFlags,
     orderCalls,
+    txQueries,
   };
 }
 
@@ -499,10 +558,17 @@ describe('LeaveTypesService', () => {
     });
   });
 
-  describe('setRequestType — tri-state typing', () => {
+  describe('setRequestType — tri-state typing (pg tx, 23-9)', () => {
     it('absent key is untouched and returns the current effective marking', async () => {
-      const { service, updateRequestPayloads, rpc } = build({
-        requestRow: requestRow(),
+      const { service, txQueries, rpc } = build({
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
       });
       const result = await service.setRequestType(
         companyAdmin,
@@ -515,37 +581,67 @@ describe('LeaveTypesService', () => {
         leaveTypeId: null,
         paid: true, // untyped reads paid
       });
-      expect(updateRequestPayloads).toHaveLength(0);
+      expect(
+        txQueries.some((c) =>
+          String(c[0]).includes('update public.leave_requests'),
+        ),
+      ).toBe(false);
       expect(rpc).not.toHaveBeenCalled();
     });
 
     it('null clears the typing back to the untyped = paid default', async () => {
-      const { service, updateRequestPayloads, rpc } = build({
-        requestRow: requestRow({ leave_type_id: 'type-1' }),
-        row: typeRow(), // the current type, read for the effective marking
-        updateRequestResult: requestRow({ leave_type_id: null }),
+      const { service, txQueries, rpc } = build({
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: 'type-1',
+          },
+        ],
+        pgTypeRows: [typeRow()],
+        pgUpdateRows: [
+          { id: 'request-1', employee_id: 'employee-1', leave_type_id: null },
+        ],
       });
       const result = await service.setRequestType(companyAdmin, 'request-1', {
         leaveTypeId: null,
       });
       expect(result).toMatchObject({ leaveTypeId: null, paid: true });
-      expect(updateRequestPayloads[0]).toEqual({ leave_type_id: null });
+      const updateCall = txQueries.find((c) =>
+        String(c[0]).includes('update public.leave_requests'),
+      );
+      expect(updateCall?.[1]?.[0]).toBeNull(); // leave_type_id = null
       expect(rpc).toHaveBeenCalledTimes(1);
       expect(auditedRpc(rpc, 0).name).toBe('write_audit_row');
       expect(auditedRpc(rpc, 0).payload.p_action).toBe('leave.request_typed');
     });
 
     it('a value reads the type, writes the link, and audits the old/new paid flags', async () => {
-      const { service, updateRequestPayloads, rpc } = build({
-        requestRow: requestRow(),
-        row: typeRow({ id: 'type-2', name: 'Unpaid Leave', paid: false }),
-        updateRequestResult: requestRow({ leave_type_id: 'type-2' }),
+      const { service, rpc } = build({
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [
+          typeRow({ id: 'type-2', name: 'Unpaid Leave', paid: false }),
+        ],
+        pgUpdateRows: [
+          {
+            id: 'request-1',
+            employee_id: 'employee-1',
+            leave_type_id: 'type-2',
+          },
+        ],
       });
       const result = await service.setRequestType(companyAdmin, 'request-1', {
         leaveTypeId: 'type-2',
       });
       expect(result).toMatchObject({ leaveTypeId: 'type-2', paid: false });
-      expect(updateRequestPayloads[0]).toEqual({ leave_type_id: 'type-2' });
       expect(rpc).toHaveBeenCalledTimes(1);
       expect(auditedRpc(rpc, 0).name).toBe('write_audit_row');
       expect(auditedRpc(rpc, 0).payload.p_action).toBe('leave.request_typed');
@@ -558,8 +654,15 @@ describe('LeaveTypesService', () => {
 
     it('a foreign or unknown type id answers 404', async () => {
       const { service } = build({
-        requestRow: requestRow(),
-        row: null,
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [],
       });
       const { status, body } = await errorOf(() =>
         service.setRequestType(companyAdmin, 'request-1', {
@@ -572,9 +675,18 @@ describe('LeaveTypesService', () => {
 
     it('a type deleted mid-typing (23503) answers a typing-flavoured 409', async () => {
       const { service } = build({
-        requestRow: requestRow(),
-        row: typeRow({ id: 'type-2', name: 'Unpaid Leave', paid: false }),
-        updateRequestError: { code: '23503', message: 'foreign key' },
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [
+          typeRow({ id: 'type-2', name: 'Unpaid Leave', paid: false }),
+        ],
+        pgUpdateError: { code: '23503', message: 'foreign key' },
       });
       const { status, body } = await errorOf(() =>
         service.setRequestType(companyAdmin, 'request-1', {
@@ -586,21 +698,37 @@ describe('LeaveTypesService', () => {
       expect(String(body['message'])).toContain('no longer available');
     });
 
-    it('the request vanishing between read and write answers 404', async () => {
+    it('the request vanishing answers 404, and so does a write that touches nothing', async () => {
+      const missing = build({});
+      const a = await errorOf(() =>
+        missing.service.setRequestType(companyAdmin, 'stranger-1', {
+          leaveTypeId: 'type-1',
+        }),
+      );
+      expect(a.status).toBe(404);
+
       const { service } = build({
-        requestRow: requestRow(),
-        updateRequestError: { code: 'PGRST116', message: 'no rows' },
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [typeRow({ id: 'type-2', paid: false })],
+        pgUpdateRows: [],
       });
-      const { status } = await errorOf(() =>
+      const b = await errorOf(() =>
         service.setRequestType(companyAdmin, 'request-1', {
           leaveTypeId: 'type-2',
         }),
       );
-      expect(status).toBe(404);
+      expect(b.status).toBe(404);
     });
 
     it('a request of another company answers 404, no existence leak', async () => {
-      const { service } = build({ requestRow: null });
+      const { service } = build({ pgRequestRows: [] });
       const { status } = await errorOf(() =>
         service.setRequestType(companyAdmin, 'stranger-1', {
           leaveTypeId: 'type-1',
@@ -610,23 +738,47 @@ describe('LeaveTypesService', () => {
     });
 
     it('typing the same value again writes nothing and audits nothing', async () => {
-      const { service, updateRequestPayloads, rpc } = build({
-        requestRow: requestRow({ leave_type_id: 'type-1' }),
-        row: typeRow(),
+      const { service, txQueries, rpc } = build({
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: 'type-1',
+          },
+        ],
+        pgTypeRows: [typeRow()],
       });
       const result = await service.setRequestType(companyAdmin, 'request-1', {
         leaveTypeId: 'type-1',
       });
       expect(result.paid).toBe(true);
-      expect(updateRequestPayloads).toHaveLength(0);
+      expect(
+        txQueries.some((c) =>
+          String(c[0]).includes('update public.leave_requests'),
+        ),
+      ).toBe(false);
       expect(rpc).not.toHaveBeenCalled();
     });
 
     it('a failed audit entry does not undo the typing', async () => {
       const { service } = build({
-        requestRow: requestRow(),
-        row: typeRow({ id: 'type-2', paid: false }),
-        updateRequestResult: requestRow({ leave_type_id: 'type-2' }),
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [typeRow({ id: 'type-2', paid: false })],
+        pgUpdateRows: [
+          {
+            id: 'request-1',
+            employee_id: 'employee-1',
+            leave_type_id: 'type-2',
+          },
+        ],
         rpcResult: { data: null, error: { code: 'PT403', message: 'x' } },
       });
       await expect(
@@ -638,9 +790,22 @@ describe('LeaveTypesService', () => {
 
     it('a rejected audit write does not undo the typing either', async () => {
       const { service } = build({
-        requestRow: requestRow(),
-        row: typeRow({ id: 'type-2', paid: false }),
-        updateRequestResult: requestRow({ leave_type_id: 'type-2' }),
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [typeRow({ id: 'type-2', paid: false })],
+        pgUpdateRows: [
+          {
+            id: 'request-1',
+            employee_id: 'employee-1',
+            leave_type_id: 'type-2',
+          },
+        ],
         rpcRejects: new Error('network down'),
       });
       await expect(
@@ -648,6 +813,34 @@ describe('LeaveTypesService', () => {
           leaveTypeId: 'type-2',
         }),
       ).resolves.toMatchObject({ paid: false });
+    });
+
+    it('a frozen date refuses the re-type with 409 PAYROLL_MONTH_LOCKED and no write (23-9)', async () => {
+      const { service, txQueries, rpc } = build({
+        pgRequestRows: [
+          {
+            id: 'request-1',
+            tenant_id: 'tenant-A',
+            employee_id: 'employee-1',
+            leave_type_id: null,
+          },
+        ],
+        pgTypeRows: [typeRow({ id: 'type-2', paid: false })],
+        pgLockRows: [{ month: '2026-10' }],
+      });
+      const { status, body } = await errorOf(() =>
+        service.setRequestType(companyAdmin, 'request-1', {
+          leaveTypeId: 'type-2',
+        }),
+      );
+      expect(status).toBe(409);
+      expect(body).toMatchObject({ error_code: 'PAYROLL_MONTH_LOCKED' });
+      expect(
+        txQueries.some((c) =>
+          String(c[0]).includes('update public.leave_requests'),
+        ),
+      ).toBe(false);
+      expect(rpc).not.toHaveBeenCalled();
     });
   });
 
