@@ -85,6 +85,7 @@ function baseRouter(
     overlapping?: unknown[];
     checkedIn?: unknown[];
     holidays?: unknown[];
+    lockedMonths?: string[];
     updateCount?: number;
   } = {},
 ): Router {
@@ -149,6 +150,16 @@ function baseRouter(
     if (sql.includes('weekly_off_defaults')) return { rows: [] };
     if (sql.includes('from public.holidays'))
       return { rows: overrides.holidays ?? [] };
+    // The 23-7 payroll-lock gate (the leave write paths' freeze check).
+    if (sql.includes('payroll_month_locks')) {
+      const asked = params?.[1];
+      const months = (Array.isArray(asked) ? asked : [asked]).map(String);
+      const hits = (overrides.lockedMonths ?? []).filter((m) =>
+        months.includes(m),
+      );
+      return { rows: hits.map((month) => ({ month })) };
+    }
+    if (sql.includes('payroll_calendar')) return { rows: [] };
     // findOverlappingDays.
     if (sql.includes('d.state = any($5::text[])'))
       return { rows: overrides.overlapping ?? [] };
@@ -446,6 +457,59 @@ describe('LeaveService — apply (17-1)', () => {
     );
     expect(requestInsert?.params?.[7]).toBe(ADMIN); // created_by = the admin
   });
+
+  // ---- 23-7 follow-up: the payroll-lock freeze gate on the apply paths ----
+
+  it('refuses a self-apply whose dates a locked month owns — the gate answers before any eligibility fact is read', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({ lockedMonths: ['2026-10'] }),
+    );
+    const { status, body } = await rejectionOf(
+      // 2026-10-01..03 all sit on or before October's day-25 cut-off. The
+      // pin is placement: the gate answers before the eligibility facts are
+      // gathered at all, so the lock's 409 outranks every later rejection.
+      service.applyForSelf(user(EMPLOYEE), dto(), KEY),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+    expect(String(body['message'])).toContain('2026-10 is locked');
+    // Nothing written, and the eligibility facts were never gathered.
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(false);
+    expect(
+      queries.some((q) => q.sql.includes('d.state = any($5::text[])')),
+    ).toBe(false);
+  });
+
+  it('an on-behalf apply into a locked month refuses the same way (its days would land approved)', async () => {
+    const { service } = fakeTx(baseRouter({ lockedMonths: ['2026-10'] }));
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: EMPLOYEE,
+    });
+    const { body } = await rejectionOf(
+      service.applyOnBehalf(
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+        onBehalf,
+        KEY,
+      ),
+    );
+    expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+  });
+
+  it('an apply whose dates no locked month owns passes the gate untouched', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
+    const gateReads = queries.filter(
+      (q) =>
+        q.sql.includes('payroll_calendar') ||
+        q.sql.includes('payroll_month_locks'),
+    );
+    expect(gateReads).toHaveLength(2); // one calendar read + one lock read
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(true);
+  });
 });
 
 describe('LeaveService — approve / reject (17-2)', () => {
@@ -465,6 +529,46 @@ describe('LeaveService — approve / reject (17-2)', () => {
     );
     expect(notification?.params?.[1]).toBe(EMPLOYEE);
     expect(view.status).toBe('pending'); // fixture days stay pending — the journey proves the real update
+  });
+
+  // ---- 23-7 follow-up: the freeze gate on the action paths ----
+
+  it('refuses an approve whose pending days a locked month owns — the run already consumed them', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({ lockedMonths: ['2026-10'] }),
+    );
+    const { status, body } = await rejectionOf(
+      service.approve(
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+        REQ_DB_ID,
+      ),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+    expect(String(body['message'])).toContain('2026-10 is locked');
+    expect(
+      queries.some((q) => q.sql.includes('update public.leave_request_days')),
+    ).toBe(false);
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(false);
+  });
+
+  it('reject stays ungated: a pending day never fed the run, so frozen pending days can still be rejected', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({ lockedMonths: ['2026-10'] }),
+    );
+    await service.reject(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      'Duplicate request',
+    );
+    expect(
+      queries.some((q) => q.sql.includes('update public.leave_request_days')),
+    ).toBe(true);
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(true);
   });
 
   it('answers an own retry with 200 and NO second transition/event (AD-6)', async () => {

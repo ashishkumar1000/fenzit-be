@@ -385,4 +385,93 @@ describe('cancelLeaveOnDisable (D12 ripple)', () => {
       queries.some((q) => q.sql.includes('update public.leave_request_days')),
     ).toBe(false);
   });
+
+  it('23-7 follow-up: the APPROVED arm skips frozen dates but the pending arm and the unfrozen approved still sweep', async () => {
+    const { tx, queries } = fakeTx([
+      (sql) => {
+        if (sql.includes('from public.leave_requests r')) {
+          return {
+            rows: [
+              {
+                id: 'req-1',
+                request_id: '11111111-1111-4111-8111-111111111111',
+                start_date: '2026-10-01',
+                end_date: '2026-10-27',
+                pending: ['2026-10-02'],
+                approved: ['2026-10-24', '2026-10-27'],
+              },
+            ],
+          };
+        }
+        // The payroll-lock gate: October locked (cutoff-day same-day
+        // run+lock), November unlocked.
+        if (sql.includes('payroll_month_locks')) {
+          return { rows: [{ month: '2026-10' }] };
+        }
+        if (sql.includes('update public.leave_request_days')) {
+          return {
+            rows: [{ leave_date: '2026-10-02' }, { leave_date: '2026-10-27' }],
+          };
+        }
+        return undefined;
+      },
+    ]);
+    const swept = await cancelLeaveOnDisable(
+      tx,
+      TENANT,
+      EMPLOYEE,
+      '2026-10-01',
+    );
+    expect(swept).toBe(1);
+    const update = queries.find((q) =>
+      q.sql.includes('update public.leave_request_days'),
+    );
+    // 2026-10-24 is owned by locked October (frozen — skipped); 2026-10-27
+    // is owned by unlocked November (still swept); the pending day is
+    // unqualified by design.
+    expect(update?.params?.[2]).toEqual(['2026-10-02', '2026-10-27']);
+    const notification = queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(
+      (
+        JSON.parse(String(notification?.params?.[3])) as {
+          cancelledDates: string[];
+        }
+      ).cancelledDates,
+    ).toEqual(['2026-10-02', '2026-10-27']);
+  });
+
+  it('23-7 follow-up: an all-frozen approved arm sweeps the pending day alone', async () => {
+    const { tx, queries } = fakeTx([
+      (sql) => {
+        if (sql.includes('from public.leave_requests r')) {
+          return {
+            rows: [
+              {
+                id: 'req-1',
+                request_id: '11111111-1111-4111-8111-111111111111',
+                start_date: '2026-10-01',
+                end_date: '2026-10-27',
+                pending: ['2026-10-02'],
+                approved: ['2026-10-05'],
+              },
+            ],
+          };
+        }
+        if (sql.includes('payroll_month_locks')) {
+          return { rows: [{ month: '2026-10' }] };
+        }
+        if (sql.includes('update public.leave_request_days')) {
+          return { rows: [{ leave_date: '2026-10-02' }] };
+        }
+        return undefined;
+      },
+    ]);
+    await cancelLeaveOnDisable(tx, TENANT, EMPLOYEE, '2026-10-01');
+    const update = queries.find((q) =>
+      q.sql.includes('update public.leave_request_days'),
+    );
+    expect(update?.params?.[2]).toEqual(['2026-10-02']); // the frozen approved day is NOT cancelled
+  });
 });

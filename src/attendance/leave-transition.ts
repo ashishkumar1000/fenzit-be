@@ -12,6 +12,7 @@ import {
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { PG_OVERLAP_CONSTRAINT } from './leave.constants';
 import { findDaysForDisableSweep } from './leave.repository';
+import { frozenPayrollDates } from './payroll-date-gate';
 import {
   LEAVE_ENTITY_TYPE,
   ATTENDANCE_NOTIFICATION_EVENT,
@@ -176,6 +177,13 @@ export async function transitionLeaveDays(
  * effective date. Actor NULL (system); the employee is notified per
  * affected request. The 15-7 disableEnrolment flow calls this inside its
  * own transaction — locks are already held in the right order.
+ *
+ * The 23-7 follow-up carve-out: the pending arm stays UNGATED (a pending
+ * day never fed a run, and a disabled employee's queue must not keep
+ * ghosts), but the APPROVED arm skips any date a locked payroll month
+ * owns — under a same-day run+lock the cutoff-day "today" is frozen, and
+ * the sweep must not rewrite the input the run already consumed. The
+ * disable itself never fails for it (logged, like the check-in skip).
  */
 export async function cancelLeaveOnDisable(
   tx: PoolClient,
@@ -190,7 +198,22 @@ export async function cancelLeaveOnDisable(
     effectiveFrom,
   );
   for (const sweep of sweeps) {
-    const dates = [...sweep.pending, ...sweep.approved].sort((a, b) =>
+    const frozenApproved = await frozenPayrollDates(
+      tx,
+      tenantId,
+      sweep.approved,
+    );
+    const cancellableApproved = sweep.approved.filter(
+      (d) => !frozenApproved.has(d),
+    );
+    if (cancellableApproved.length !== sweep.approved.length) {
+      logger.warn('Disable sweep skipped frozen approved leave days', {
+        employeeId,
+        requestId: sweep.requestKey,
+        skippedDates: sweep.approved.filter((d) => frozenApproved.has(d)),
+      });
+    }
+    const dates = [...sweep.pending, ...cancellableApproved].sort((a, b) =>
       a.localeCompare(b),
     );
     if (dates.length === 0) continue;
@@ -270,4 +293,3 @@ export async function cancelLeaveOnDisable(
     );
   }
 }
-

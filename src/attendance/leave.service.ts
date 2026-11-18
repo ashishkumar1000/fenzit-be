@@ -42,6 +42,7 @@ import {
   readSpanFacts,
 } from './leave.repository';
 import { findActiveOverrideDates } from './corrections.repository';
+import { assertPayrollDatesEditable } from './payroll-date-gate';
 import {
   insertInitialLeaveDays,
   transitionLeaveDays,
@@ -240,6 +241,15 @@ export class LeaveService {
       input.dto.startDate,
       input.dto.endDate ?? input.dto.startDate,
     );
+
+    // 23-7 follow-up: the lock gate BEFORE the eligibility facts. A locked
+    // month is final, so its answer outranks the apply-window rules (and
+    // keeps the e2e answer stable against real-date drift). Both requesters
+    // are gated: an on-behalf apply writes approved days straight away, and
+    // a pending day on a frozen date could never be approved later either.
+    // The AD-6 replay check above has already returned, so replaying an
+    // apply that predates the lock still answers with its own request.
+    await assertPayrollDatesEditable(tx, input.tenantId, dates);
     const [
       enrolment,
       settings,
@@ -401,6 +411,18 @@ export class LeaveService {
       });
     }
 
+    // 23-7 follow-up: approving (or revoking) a frozen date would rewrite
+    // the input a locked month's run already consumed — refuse like a
+    // frozen correction does. reject is deliberately UNGATED: a pending day
+    // never fed the run, so rejecting it keeps the queue clean without
+    // touching frozen payslip input (the disable sweep's past-pending
+    // cancel is accepted on the same grounds). revoke's actionable dates
+    // are today-or-future, so its gate only fires under a same-day run+lock
+    // (the run opens on the cut-off day) — the backstop, not the norm.
+    if (config.cause === 'approve' || config.cause === 'owner_revoke') {
+      await assertPayrollDatesEditable(tx, tenantId, actionDates);
+    }
+
     const notification =
       config.cause === 'approve' ||
       config.cause === 'reject' ||
@@ -490,6 +512,11 @@ export class LeaveService {
         message: 'No future dates left to cancel',
       });
     }
+
+    // 23-7 follow-up: the same freeze backstop as revoke — actionable dates
+    // are today-or-future, so this only fires under a same-day run+lock,
+    // but a frozen date must refuse the same way a frozen correction does.
+    await assertPayrollDatesEditable(tx, tenantId, split.actionDates);
 
     await transitionLeaveDays(tx, {
       tenantId,

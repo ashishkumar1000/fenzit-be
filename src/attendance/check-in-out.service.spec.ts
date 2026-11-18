@@ -63,7 +63,10 @@ function dto(overrides: Partial<typeof OK_FIX> = {}): CheckInOutDto {
   return Object.assign(new CheckInOutDto(), { ...OK_FIX, ...overrides });
 }
 
-type QueryFn = (sql: string) => { rows: unknown[]; rowCount: number };
+type QueryFn = (
+  sql: string,
+  params?: unknown[],
+) => { rows: unknown[]; rowCount: number };
 
 /** Builds a fake tx whose answers come from `router`; everything recorded. */
 function fakeTx(router: QueryFn) {
@@ -72,7 +75,7 @@ function fakeTx(router: QueryFn) {
     queries,
     query: jest.fn((sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
-      return Promise.resolve(router(sql));
+      return Promise.resolve(router(sql, params));
     }),
   };
 }
@@ -97,10 +100,12 @@ function happyRouter(
     blockedUntil?: unknown;
     /** findActiveLeaveForDate (the AD-22 leave seam, spec-17 D3/D11). */
     leave?: unknown;
+    /** The 23-7 payroll-lock gate probe: rows the locks read answers. */
+    lockRows?: unknown[];
   } = {},
 ): QueryFn {
   let recordReads = 0;
-  return (sql) => {
+  return (sql, params) => {
     if (sql.includes('attendance_lock')) return { rows: [], rowCount: 0 };
     if (sql.includes('select now() as now'))
       return { rows: [{ now: new Date() }], rowCount: 1 };
@@ -142,6 +147,21 @@ function happyRouter(
     if (sql.includes('weekly_off_defaults'))
       return { rows: [{ valid: '[2026-01-01,)', days: [7] }], rowCount: 1 };
     if (sql.includes('from public.holidays')) return { rows: [], rowCount: 0 };
+    // The 23-7 payroll-lock gate probe (auto-cancel skip on a frozen date).
+    if (sql.includes('pg_advisory_xact_lock_shared'))
+      return { rows: [], rowCount: 0 };
+    if (sql.includes('payroll_calendar')) return { rows: [], rowCount: 0 };
+    if (sql.includes('payroll_month_locks')) {
+      // The locks read carries the candidate owners as an array — a lock row
+      // answers only when the gate actually asked for ITS month, so a
+      // wrong-month wiring fails loudly here instead of passing vacuously.
+      const asked = params?.[1];
+      const months = (Array.isArray(asked) ? asked : [asked]).map(String);
+      const hits = (overrides.lockRows ?? []).filter((r) =>
+        months.includes(String((r as { month: string }).month)),
+      );
+      return { rows: hits, rowCount: hits.length };
+    }
     // Epic 17 seam (spec-17 D3/D11): the active leave row for the date,
     // present only when the FR-9 specs inject one.
     if (sql.includes('from public.leave_request_days'))
@@ -521,7 +541,11 @@ describe('CheckInOutService — check-in (16-1)', () => {
 
     // The budget judges ONLY the counted outcomes — never too_far.
     const countQuery = tx.queries.find((q) => q.sql.includes('outcome = any'));
-    expect(countQuery?.params?.[1]).toEqual(['low_accuracy', 'mocked', 'stale_fix']);
+    expect(countQuery?.params?.[1]).toEqual([
+      'low_accuracy',
+      'mocked',
+      'stale_fix',
+    ]);
 
     const attemptInsert = tx.queries.find((q) =>
       q.sql.includes('insert into public.attendance_attempts'),
@@ -539,9 +563,7 @@ describe('CheckInOutService — check-in (16-1)', () => {
     );
     const svc = serviceWith(tx);
 
-    await rejectionOf(
-      svc.checkIn(tech, dto({ accuracyM: 150 }), CHECKIN_KEY),
-    );
+    await rejectionOf(svc.checkIn(tech, dto({ accuracyM: 150 }), CHECKIN_KEY));
     const attemptInsert = tx.queries.find((q) =>
       q.sql.includes('insert into public.attendance_attempts'),
     );
@@ -752,6 +774,42 @@ describe('CheckInOutService — check-in × leave (17-4, FR-9)', () => {
         leaveDate: '2026-09-28',
       });
     }
+  });
+
+  it('23-7 follow-up: a check-in on a date a locked month owns SKIPS the auto-cancel but the check-in still lands', async () => {
+    // The frozen-today backstop, successor-owned variant: day 28 sits past
+    // the day-25 cut-off, so OCTOBER owns 2026-09-28 and its lock freezes
+    // it. (The end-to-end-realistic shape is the own month locked on its
+    // cutoff day; the probe is owner-agnostic either way — this pins the
+    // skip wiring, not the ownership arithmetic, which the gate spec owns.)
+    const tx = fakeTx(
+      happyRouter({
+        leave: FULL_DAY_LEAVE,
+        preRecord: null,
+        record: RECORD,
+        lockRows: [{ month: '2026-10' }],
+      }),
+    );
+    const service = serviceWith(tx);
+    const response = (await service.checkIn(
+      tech,
+      dto({ confirmLeaveCancel: true }),
+      CHECKIN_KEY,
+    )) as CheckInResponse;
+    expect(response.workDate).toBe('2026-09-28');
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('update public.leave_request_days'),
+      ),
+    ).toBe(false);
+    expect(
+      tx.queries.some((q) => q.sql.includes('insert into public.leave_events')),
+    ).toBe(false);
+    expect(
+      tx.queries.some((q) =>
+        q.sql.includes('insert into public.attendance_records'),
+      ),
+    ).toBe(true);
   });
 
   it('a too_far fix with confirm stays 422 and leaves the leave untouched', async () => {

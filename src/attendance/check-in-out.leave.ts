@@ -4,6 +4,7 @@ import { findActiveLeaveForDate } from './leave.repository';
 import { transitionLeaveDays } from './leave-transition';
 import { readEmployeeName } from './leave.repository';
 import { readCompanyAdminIds } from './company-admins';
+import { hasFrozenPayrollDate } from './payroll-date-gate';
 
 /**
  * FR-9's accepted path (17-4, spec D11): a CONFIRMED check-in on a
@@ -40,6 +41,19 @@ export async function autoCancelLeaveForCheckIn(
     });
     return;
   }
+  // 23-7 follow-up: a same-day run+lock (the run opens on the cut-off day,
+  // the lock can follow immediately) can freeze TODAY. The auto-cancel
+  // must not rewrite frozen input — but it runs inside the check-in
+  // transaction, so it SKIPS the cancel (logged) instead of failing the
+  // check-in: the employee standing at the gate is operational reality,
+  // not a payslip edit.
+  if (await hasFrozenPayrollDate(tx, input.tenantId, [input.workDate])) {
+    logger.warn(
+      'Check-in auto-cancel skipped — the date is locked for payroll',
+      { employeeId: input.employeeId, workDate: input.workDate },
+    );
+    return;
+  }
   const adminIds = await readCompanyAdminIds(tx, input.tenantId);
   const employeeName = await readEmployeeName(
     tx,
@@ -57,12 +71,13 @@ export async function autoCancelLeaveForCheckIn(
     cause: 'checkin_auto_cancel',
     actorId: input.employeeId,
     reason: null,
-    notification: adminIds.length > 0
-      ? {
-          recipientIds: adminIds,
-          payload: { employeeName, leaveDate: input.workDate },
-          dedupeSuffix: input.workDate,
-        }
-      : null,
+    notification:
+      adminIds.length > 0
+        ? {
+            recipientIds: adminIds,
+            payload: { employeeName, leaveDate: input.workDate },
+            dedupeSuffix: input.workDate,
+          }
+        : null,
   });
 }

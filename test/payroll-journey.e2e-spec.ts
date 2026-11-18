@@ -4321,6 +4321,89 @@ describe('Payroll journey (real DB, real routes)', () => {
   );
 
   maybeIt(
+    '23-7 follow-up — the leave write paths freeze the same way: apply + approve refuse, reject stays live',
+    async () => {
+      // October is locked by the previous leg. An owner on-behalf apply
+      // covering a frozen date is refused WHOLE — and the gate answers
+      // before the eligibility facts, so this fixed fixture date needs no
+      // real-"today" arithmetic to stay stable across future runs.
+      const applyFrozen = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/leave/on-behalf',
+        headers: { ...ownerHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          employeeId: employeeA,
+          startDate: '2026-10-20',
+          endDate: '2026-10-21',
+          part: 'full_day',
+          reason: 'payroll lock leave probe',
+        },
+      });
+      expect(applyFrozen.statusCode).toBe(409);
+      expect(applyFrozen.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(applyFrozen.body).toContain('2026-10 is locked');
+      const { rows: written } = await pool.query<{
+        n: number;
+      }>(
+        `select count(*)::int as n from public.leave_requests
+          where tenant_id = $1 and reason = 'payroll lock leave probe'`,
+        [tenant],
+      );
+      expect(written[0].n).toBe(0); // the refusal left nothing behind
+
+      // A pending request seeded beside the lock cannot be approved after
+      // it — the run already consumed those days' LOP.
+      const approveId = await seedLeaveRequest({
+        dates: ['2026-10-08'],
+        state: 'pending',
+      });
+      const approve = await app.inject({
+        method: 'POST',
+        url: `/api/v1/attendance/leave/${approveId}/approve`,
+        headers: ownerHeaders(),
+      });
+      expect(approve.statusCode).toBe(409);
+      expect(approve.body).toContain('PAYROLL_MONTH_LOCKED');
+      const { rows: stillPending } = await pool.query<{ state: string }>(
+        `select state from public.leave_request_days
+          where leave_request_id = $1 order by leave_date`,
+        [approveId],
+      );
+      expect(stillPending.map((r) => r.state)).toEqual(['pending']); // no transition
+
+      // Reject stays UNGATED: a pending day never fed the run, so the
+      // owner can still clear the queue — the queue-hygiene half of the
+      // same freeze rule.
+      const rejectId = await seedLeaveRequest({
+        dates: ['2026-10-09'],
+        state: 'pending',
+      });
+      const reject = await app.inject({
+        method: 'POST',
+        url: `/api/v1/attendance/leave/${rejectId}/reject`,
+        headers: ownerHeaders(),
+        payload: { reason: 'stale after the lock' },
+      });
+      expect(reject.statusCode).toBe(200);
+
+      // And an approval on dates no locked month owns still works.
+      const futureId = await seedLeaveRequest({
+        dates: ['2026-12-10'],
+        state: 'pending',
+      });
+      const futureApprove = await app.inject({
+        method: 'POST',
+        url: `/api/v1/attendance/leave/${futureId}/approve`,
+        headers: ownerHeaders(),
+      });
+      expect(futureApprove.statusCode).toBe(200);
+      expect(
+        (JSON.parse(futureApprove.body) as { status: string }).status,
+      ).toBe('approved');
+    },
+  );
+
+  maybeIt(
     '23-7 — the attendance boundary: owned dates freeze, post-cut-off stay live',
     async () => {
       const correct = (workDate: string) =>
