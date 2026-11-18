@@ -4543,6 +4543,25 @@ describe('Payroll journey (real DB, real routes)', () => {
           .every((e) => e.actorId === owner),
       ).toBe(true);
 
+      // The run's completion entries carry the ENQUEUING owner as actor
+      // (23-8 review fold): the worker wrote them from the run row's
+      // initiated_by, never a worker-null actor. The read surface is capped
+      // at 100 rows and run_completed is the OLDEST payroll action, so the
+      // DB count is the durable existence witness (this suite only grows);
+      // the actor check holds for whatever entries the window returns.
+      expect(await payrollAuditCount('payroll.run_completed')).toBeGreaterThan(0);
+      const runDone = entries.filter((e) => e.action === 'payroll.run_completed');
+      expect(runDone.every((e) => e.actorId === owner)).toBe(true);
+      // The actor pin is durable too: zero run_completed rows with a
+      // null or non-owner actor, regardless of the read window.
+      const { rows: badActorRows } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.audit_log
+          where tenant_id = $1 and action = 'payroll.run_completed'
+            and (actor_user_id is null or actor_user_id <> $2)`,
+        [tenant, owner],
+      );
+      expect(badActorRows[0].n).toBe(0);
+
       // Another company's trail carries none of this company's locks.
       const foreign = await app.inject({
         method: 'GET',

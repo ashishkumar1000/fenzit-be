@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../../common/factories/supabase-client.factory';
 import { StorageService } from '../../storage/storage.service';
@@ -57,6 +58,7 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 mock report bytes');
 function makeDefinition(): ReportDefinition & {
   fetchData: jest.Mock;
   buildDocument: jest.Mock;
+  verifyBeforeReady: jest.Mock;
 } {
   return {
     type: 'technician_job_activity',
@@ -64,6 +66,9 @@ function makeDefinition(): ReportDefinition & {
     validateParams: jest.fn(),
     fetchData: jest.fn().mockResolvedValue({ jobs: [{ id: 'job-1' }] }),
     buildDocument: jest.fn().mockReturnValue({ content: [{ text: 'hi' }] }),
+    // 23-8: definitions MAY carry a supersession gate (the payslip does) —
+    // default mocks resolve, so the happy path stays the happy path.
+    verifyBeforeReady: jest.fn().mockResolvedValue(undefined),
   } as never;
 }
 
@@ -331,6 +336,84 @@ describe('ReportPipelineService (story 12-3)', () => {
       expect(qb.update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ReportRequestStatus.FAILED }),
       );
+    });
+  });
+
+  describe('the supersession gate (23-8)', () => {
+    beforeEach(() => {
+      mockAdmin();
+    });
+
+    it('runs after the fetch and BEFORE the build — the verify context is tenant/request/params/data', async () => {
+      await service.run(queuedRow);
+
+      expect(definition.verifyBeforeReady).toHaveBeenCalledTimes(1);
+      expect(definition.verifyBeforeReady).toHaveBeenCalledWith({
+        supabase: expect.objectContaining({
+          from: expect.any(Function),
+        }),
+        tenantId: TENANT_ID,
+        requestId: REQUEST_ID,
+        params: queuedRow.params,
+        data: { jobs: [{ id: 'job-1' }] },
+      });
+      // Order is the guarantee: no pdfmake CPU, no upload for a dead slip.
+      const [fetchOrder] = definition.fetchData.mock.invocationCallOrder;
+      const [verifyOrder] = definition.verifyBeforeReady.mock.invocationCallOrder;
+      const [buildOrder] = definition.buildDocument.mock.invocationCallOrder;
+      expect(fetchOrder).toBeLessThan(verifyOrder);
+      expect(verifyOrder).toBeLessThan(buildOrder);
+    });
+
+    it('a destroyed row (verify throws) fails cleanly: FAILED stamp, nothing built, rendered or uploaded', async () => {
+      definition.verifyBeforeReady.mockRejectedValue(
+        new BadRequestException({
+          error_code: ErrorCode.REPORT_GENERATION_FAILED,
+          message: 'This payslip was replaced by a newer payroll run',
+        }),
+      );
+
+      await service.run(queuedRow);
+
+      expect(definition.buildDocument).not.toHaveBeenCalled();
+      expect(renderer.render).not.toHaveBeenCalled();
+      expect(storageService.putObject).not.toHaveBeenCalled();
+      expect(updateQbs[0].update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ReportRequestStatus.FAILED,
+          error_code: ErrorCode.REPORT_GENERATION_FAILED,
+        }),
+      );
+      expect(updateQbs[0].eq).toHaveBeenCalledWith(
+        'status',
+        ReportRequestStatus.GENERATING,
+      );
+    });
+
+    it('a definition without a gate still runs the happy path (verify is optional)', async () => {
+      const { verifyBeforeReady, ...withoutVerify } = definition;
+      registry.get.mockReturnValue(withoutVerify as never);
+
+      await service.run(queuedRow);
+
+      expect(storageService.putObject).toHaveBeenCalledTimes(1);
+      expect(updateQbs[0].update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ReportRequestStatus.READY }),
+      );
+    });
+
+    it('a gate throwing a PLAIN error (no error_code) stamps the generic REPORT_GENERATION_FAILED', async () => {
+      definition.verifyBeforeReady.mockRejectedValue(new Error('gate exploded'));
+
+      await service.run(queuedRow);
+
+      expect(updateQbs[0].update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ReportRequestStatus.FAILED,
+          error_code: ErrorCode.REPORT_GENERATION_FAILED,
+        }),
+      );
+      expect(storageService.putObject).not.toHaveBeenCalled();
     });
   });
 });

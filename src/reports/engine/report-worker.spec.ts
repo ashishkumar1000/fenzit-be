@@ -25,10 +25,12 @@ function updateQb(result: { data: unknown; error: unknown }) {
   return qb;
 }
 
-/** The candidate select chain: select('id, attempt_count').eq[.lt].order.limit. */
+/** The candidate select chain: select('id, tenant_id, attempt_count')
+ *  .eq[.lt][.not].order.limit — `.not` is the 23-8 paused-tenant filter,
+ *  applied only when the paused set is non-empty. */
 function candidateQb(result: { data: unknown; error: unknown }) {
   const qb: Record<string, jest.Mock> & { then: jest.Mock } = {} as never;
-  for (const m of ['eq', 'lt', 'order', 'limit']) {
+  for (const m of ['eq', 'lt', 'not', 'order', 'limit']) {
     qb[m] = jest.fn().mockReturnValue(qb);
   }
   qb.select = jest.fn().mockReturnValue(qb);
@@ -75,6 +77,7 @@ describe('ReportWorker (story 12-3)', () => {
   let supabaseClientFactory: jest.Mocked<SupabaseClientFactory>;
   let pipeline: { run: jest.Mock };
   let registry: { get: jest.Mock };
+  let queue: { pausedTenantIds: jest.Mock };
 
   const CONFIG: Record<string, number> = {
     REPORT_POLL_INTERVAL_SECONDS: 5,
@@ -103,6 +106,7 @@ describe('ReportWorker (story 12-3)', () => {
   }) {
     let candidateRead = 0;
     const updatePayloads: Record<string, unknown>[] = [];
+    const candidateQbs: ReturnType<typeof candidateQb>[] = [];
     const insert = jest.fn().mockResolvedValue({ error: opts.notifError ?? null });
 
     const from = jest.fn((table: string) => {
@@ -123,7 +127,9 @@ describe('ReportWorker (story 12-3)', () => {
               candidateRead % 2 === 1
                 ? (opts.queued ?? { data: [], error: null })
                 : (opts.stranded ?? { data: [], error: null });
-            return candidateQb(result);
+            const qb = candidateQb(result);
+            candidateQbs.push(qb);
+            return qb;
           }
           throw new Error(`unexpected select ${cols}`);
         }),
@@ -138,7 +144,7 @@ describe('ReportWorker (story 12-3)', () => {
     });
     supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
 
-    return { from, insert, updatePayloads };
+    return { from, insert, updatePayloads, candidateQbs };
   }
 
   beforeEach(async () => {
@@ -176,6 +182,9 @@ describe('ReportWorker (story 12-3)', () => {
     supabaseClientFactory = module.get(SupabaseClientFactory);
     pipeline = module.get(ReportPipelineService);
     registry = module.get(ReportRegistry);
+    queue = module.get(ReportQueueService) as {
+      pausedTenantIds: jest.Mock;
+    };
   });
 
   afterEach(() => {
@@ -524,6 +533,182 @@ describe('ReportWorker (story 12-3)', () => {
       await tickOnce();
 
       expect(insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the per-tenant report-queue pause (23-8)', () => {
+    it('attaches the not.in paused-tenant filter to BOTH candidate queries — the SQL exclusion the fence runs on', async () => {
+      const { candidateQbs } = mockAdmin({});
+      queue.pausedTenantIds.mockResolvedValue(new Set(['tenant-uuid']));
+
+      worker.onApplicationBootstrap();
+      await tickOnce();
+
+      // The pinned contract is the filter ARGUMENTS (what the worker
+      // executes against Postgres); the row-level exclusion itself happens
+      // in the database, where the PostgREST `not.in` CSV idiom is the
+      // same one sync.service runs in production.
+      expect(candidateQbs).toHaveLength(2); // queued + stranded
+      for (const qb of candidateQbs) {
+        expect(qb.not).toHaveBeenCalledWith(
+          'tenant_id',
+          'in',
+          '(tenant-uuid)',
+        );
+      }
+      expect(pipeline.run).not.toHaveBeenCalled(); // no candidates came back
+    });
+
+    it('an empty pause set (no pause, or an expired one) skips the filter and claims again', async () => {
+      // The expired pause is filtered OUT by the queue service (its own
+      // spec pins that), so the worker sees an empty set — the filter is
+      // skipped entirely, never a meaningless `not.in.()`.
+      const { candidateQbs } = mockAdmin({
+        queued: {
+          data: [{ id: 'req-1', tenant_id: TENANT_ID, attempt_count: 0 }],
+          error: null,
+        },
+        updateResults: [
+          { data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null },
+        ],
+        row: { data: reportRow({ status: ReportRequestStatus.GENERATING }), error: null },
+      });
+
+      worker.onApplicationBootstrap();
+      await tickOnce();
+
+      for (const qb of candidateQbs) {
+        expect(qb.not).not.toHaveBeenCalled();
+      }
+      expect(pipeline.run).toHaveBeenCalledTimes(1);
+    });
+
+    it('other tenants keep flowing while one tenant is paused', async () => {
+      const { candidateQbs } = mockAdmin({
+        queued: {
+          data: [{ id: 'req-1', tenant_id: TENANT_ID, attempt_count: 0 }],
+          error: null,
+        },
+        updateResults: [
+          { data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null },
+        ],
+        row: { data: reportRow({ status: ReportRequestStatus.GENERATING }), error: null },
+      });
+      queue.pausedTenantIds.mockResolvedValue(new Set(['paused-tenant']));
+
+      worker.onApplicationBootstrap();
+      await tickOnce();
+
+      // Only the PAUSED tenant's ids are excluded, both queries.
+      for (const qb of candidateQbs) {
+        expect(qb.not).toHaveBeenCalledWith('tenant_id', 'in', '(paused-tenant)');
+      }
+      expect(pipeline.run).toHaveBeenCalledTimes(1);
+    });
+
+    it('the exclusive worker (test env) never consults the pause', async () => {
+      // Built fresh: REPORT_WORKER_EXCLUSIVE='true' — the pause's intended
+      // exemption (the fence protects against OTHER workers, and a test
+      // must not stall on its own pause).
+      const module2: TestingModule = await Test.createTestingModule({
+        providers: [
+          ReportWorker,
+          { provide: SupabaseClientFactory, useValue: { createAdmin: jest.fn() } },
+          { provide: ReportPipelineService, useValue: { run: jest.fn() } },
+          { provide: ReportRegistry, useValue: { get: jest.fn() } },
+          {
+            provide: ConfigService,
+            useValue: {
+              get: jest.fn(
+                (key: string) =>
+                  (({
+                    REPORT_WORKER_EXCLUSIVE: 'true',
+                    REPORT_WORKER_CONCURRENCY: 1,
+                  }) as Record<string, unknown>)[key],
+              ),
+            },
+          },
+          {
+            provide: ReportQueueService,
+            useValue: { pausedTenantIds: jest.fn() },
+          },
+        ],
+      }).compile();
+      const worker2 = module2.get<ReportWorker>(ReportWorker);
+      const factory2 = module2.get(SupabaseClientFactory) as jest.Mocked<SupabaseClientFactory>;
+      const queue2 = module2.get(ReportQueueService) as {
+        pausedTenantIds: jest.Mock;
+      };
+      const pipeline2 = module2.get(ReportPipelineService) as { run: jest.Mock };
+
+      let candidateRead = 0;
+      const from = jest.fn((table: string) => {
+        if (table !== 'report_requests') {
+          throw new Error(`unexpected table ${table}`);
+        }
+        return {
+          select: jest.fn((cols: string) => {
+            if (cols === '*') {
+              return readRowQb({
+                data: reportRow({ status: ReportRequestStatus.GENERATING }),
+                error: null,
+              });
+            }
+            candidateRead += 1;
+            return candidateQb(
+              candidateRead % 2 === 1
+                ? { data: [{ id: 'req-1', tenant_id: TENANT_ID, attempt_count: 0 }], error: null }
+                : { data: [], error: null },
+            );
+          }),
+          update: jest.fn().mockReturnValue(
+            updateQb({ data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null }),
+          ),
+        };
+      });
+      factory2.createAdmin.mockReturnValue({ from } as never);
+      queue2.pausedTenantIds.mockResolvedValue(new Set(['tenant-uuid']));
+
+      worker2.onApplicationBootstrap();
+      await tickOnce();
+      worker2.onModuleDestroy();
+
+      // The pause check never ran, and the claim went through anyway.
+      expect(queue2.pausedTenantIds).not.toHaveBeenCalled();
+      expect(pipeline2.run).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses to boot an exclusive worker in production (the pause voids there)', async () => {
+      const prevEnv = process.env['NODE_ENV'];
+      process.env['NODE_ENV'] = 'production';
+      try {
+        await expect(
+          Test.createTestingModule({
+            providers: [
+              ReportWorker,
+              { provide: SupabaseClientFactory, useValue: { createAdmin: jest.fn() } },
+              { provide: ReportPipelineService, useValue: { run: jest.fn() } },
+              { provide: ReportRegistry, useValue: { get: jest.fn() } },
+              {
+                provide: ConfigService,
+                useValue: {
+                  get: jest.fn(
+                    (key: string) =>
+                      ((
+                        { REPORT_WORKER_EXCLUSIVE: 'true' }
+                      ) as Record<string, unknown>)[key],
+                  ),
+                },
+              },
+              { provide: ReportQueueService, useValue: { pausedTenantIds: jest.fn() } },
+            ],
+          }).compile(),
+        ).rejects.toThrow(
+          'REPORT_WORKER_EXCLUSIVE is test-only — a deployed worker must respect the report-queue pause',
+        );
+      } finally {
+        process.env['NODE_ENV'] = prevEnv;
+      }
     });
   });
 });

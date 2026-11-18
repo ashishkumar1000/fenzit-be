@@ -74,7 +74,9 @@ export const payslipReportDefinition: ReportDefinition = {
 
   fetchData: fetchPayslipReportData,
   buildDocument: buildPayslipDocument,
-  // The "never delivered" guarantee: the snapshot row is re-verified AFTER
-  // fetch and render, BEFORE the upload and the ready stamp.
+  // The "never delivered" guarantee: the snapshot row is re-verified after
+  // fetch and BEFORE the render, any upload, and the ready stamp (23-8
+  // review patch — a superseded slip pays no pdfmake CPU and uploads
+  // nothing; the residual verify→stamp window is best-effort by design).
   verifyBeforeReady: verifyPayslipSnapshot,
 };

@@ -1148,6 +1148,88 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
       expect(storage.getPresignedReadUrl).not.toHaveBeenCalled();
     });
 
+    it('a ready PAYSLIP row answers the sparse params and the payslip_<month>.pdf filename (23-8)', async () => {
+      const payslipRow = {
+        ...readyRow,
+        report_type: 'payslip',
+        params: {
+          month: '2026-10',
+          membershipId: '00000000-0000-4000-8000-0000000000b1',
+          payslipId: '00000000-0000-4000-8000-0000000000c1',
+        },
+      };
+      mockStatusAdmin({ data: payslipRow, error: null });
+      storage.getPresignedReadUrl.mockResolvedValue(
+        'https://signed.example/slip.pdf',
+      );
+
+      const result = await service.getReportStatus(ownerUser, REQUEST_ID);
+
+      // Sparse-but-well-formed: a payslip request has no range or people
+      // selection — never `undefined` in the JSON.
+      expect(result.params).toEqual({
+        startDate: null,
+        endDate: null,
+        technicianIds: [],
+        officeIds: [],
+      });
+      expect(result.file).toEqual({
+        url: 'https://signed.example/slip.pdf',
+        sizeBytes: 123456,
+        filename: 'payslip_2026-10.pdf',
+      });
+    });
+
+    it('a queued PAYSLIP row answers the same sparse params with no file', async () => {
+      mockStatusAdmin({
+        data: {
+          ...readyRow,
+          report_type: 'payslip',
+          status: ReportRequestStatus.QUEUED,
+          params: { month: '2026-10', membershipId: 'm-uuid', payslipId: 'p-uuid' },
+        },
+        error: null,
+      });
+
+      const result = await service.getReportStatus(ownerUser, REQUEST_ID);
+
+      expect(result.params).toEqual({
+        startDate: null,
+        endDate: null,
+        technicianIds: [],
+        officeIds: [],
+      });
+      expect(result.file).toBeUndefined();
+      expect(storage.getPresignedReadUrl).not.toHaveBeenCalled();
+    });
+
+    it('a FAILED PAYSLIP row (destroyed by a re-run) answers sparse params with the engine error code', async () => {
+      mockStatusAdmin({
+        data: {
+          ...readyRow,
+          report_type: 'payslip',
+          status: ReportRequestStatus.FAILED,
+          error_code: ErrorCode.REPORT_GENERATION_FAILED,
+          params: { month: '2026-10', membershipId: 'm-uuid', payslipId: 'p-uuid' },
+        },
+        error: null,
+      });
+
+      const result = await service.getReportStatus(ownerUser, REQUEST_ID);
+
+      // Exactly what a superseded-by-rerun request answers: the sparse
+      // shape plus the error — no file, no presign.
+      expect(result.params).toEqual({
+        startDate: null,
+        endDate: null,
+        technicianIds: [],
+        officeIds: [],
+      });
+      expect(result.error).toEqual({ code: ErrorCode.REPORT_GENERATION_FAILED });
+      expect(result.file).toBeUndefined();
+      expect(storage.getPresignedReadUrl).not.toHaveBeenCalled();
+    });
+
     it('maps a PGRST116 single() miss to 404 RESOURCE_NOT_FOUND', async () => {
       mockStatusAdmin({
         data: null,

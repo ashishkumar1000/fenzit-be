@@ -96,9 +96,13 @@ export class ReportQueueService {
     const tenantId = requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
     const now = new Date().toISOString();
-    const pausedUntil = minutes
-      ? new Date(Date.now() + minutes * 60_000).toISOString()
-      : null;
+    // Timed iff minutes is a POSITIVE number — not a JS-falsy test: 0 is
+    // unreachable over HTTP (the DTO's @Min(1)) but a truthiness branch
+    // would silently make 0 read as "pause forever".
+    const pausedUntil =
+      minutes !== null && minutes > 0
+        ? new Date(Date.now() + minutes * 60_000).toISOString()
+        : null;
     const { error } = await admin
       .from('report_queue_pauses')
       .upsert({

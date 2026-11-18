@@ -148,12 +148,13 @@ export interface ReportDefinition {
   /** Builds the renderer document from the fetched data (story 12-5). */
   buildDocument?(data: unknown): ReportDocument;
   /**
-   * Optional last gate (23-8) — called after buildDocument + render, BEFORE
-   * the upload and the ready stamp. A throw → clean `failed` request and
-   * nothing is uploaded. Closes the fetch→render→upload supersession window
-   * for snapshot-backed reports: the payslip definition re-verifies its
-   * snapshot row still exists with the same slip_number/run_id it fetched,
-   * so a payslip destroyed by a re-run can never be delivered as a PDF.
+   * Optional last gate (23-8) — called after the fetch and BEFORE the
+   * render, any upload, and the ready stamp. A throw → clean `failed`
+   * request, nothing rendered, nothing uploaded. Closes the
+   * fetch→verify→render supersession window for snapshot-backed reports:
+   * the payslip definition re-verifies its snapshot row still exists with
+   * the same slip_number/run_id it fetched, so a payslip destroyed by a
+   * re-run can never be delivered as a PDF.
    */
   verifyBeforeReady?(ctx: ReportVerifyContext): Promise<void>;
   /**
