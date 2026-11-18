@@ -109,6 +109,15 @@ describe('Payroll journey (real DB, real routes)', () => {
   const memberE = randomUUID(); // remove audit after the join — the clean case
   const otherOwner = randomUUID();
   const platformAdmin = randomUUID(); // staff, no membership anywhere
+  // The 23-6 fixture variants: B (join Oct 20), C2 (exit Oct 10),
+  // E (join Oct 2), I (join Oct 3), the no-PAN/checkout-missing employee,
+  // and the never-enrolled skip.
+  const empB = randomUUID();
+  const empC2 = randomUUID();
+  const empE = randomUUID();
+  const empI = randomUUID();
+  const empNoPan = randomUUID();
+  const empSkip = randomUUID();
 
   const crew = [
     owner,
@@ -118,6 +127,12 @@ describe('Payroll journey (real DB, real routes)', () => {
     memberE,
     otherOwner,
     platformAdmin,
+    empB,
+    empC2,
+    empE,
+    empI,
+    empNoPan,
+    empSkip,
   ];
   const phones = Array.from({ length: crew.length }, (_, i) =>
     `7${Date.now()}${i}`.slice(-12).replace(/[^0-9]/g, ''),
@@ -778,6 +793,7 @@ describe('Payroll journey (real DB, real routes)', () => {
     state: 'pending' | 'approved';
     leaveTypeId?: string | null;
     employeeId?: string;
+    part?: 'full_day' | 'first_half' | 'second_half';
   }): Promise<string> {
     const employeeId = input.employeeId ?? employeeA;
     const created = must(
@@ -789,7 +805,7 @@ describe('Payroll journey (real DB, real routes)', () => {
           request_id: randomUUID(),
           start_date: input.dates[0],
           end_date: input.dates[input.dates.length - 1],
-          part: 'full_day',
+          part: input.part ?? 'full_day',
           reason: 'journey leave',
           created_by: owner,
           leave_type_id: input.leaveTypeId ?? null,
@@ -2713,6 +2729,1441 @@ describe('Payroll journey (real DB, real routes)', () => {
         [tenant],
       );
       expect(activeAfter[0].n).toBe(activeBefore[0].n);
+    },
+  );
+
+  // ------------------------------------------------------------- 23-6 legs
+  // The monthly run engine (CAP-3/5) — the canonical fixture's money rows
+  // verbatim. The seeding leg builds the attendance world (settings, office,
+  // enrolments, punches) and the typed leaves; every run leg asserts payslip
+  // snapshot rows straight from the DB.
+
+  const runsUrl = '/api/v1/payroll/runs';
+
+  /** A run view, polled to completion (the caller's bearer scopes it). */
+  async function awaitRun(
+    runId: string,
+    headers: Record<string, string> = ownerHeaders(),
+  ): Promise<{
+    status: string;
+    summary: Record<string, unknown> | null;
+    errorMessage: string | null;
+  }> {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `${runsUrl}/${runId}`,
+        headers,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        status: string;
+        summary: Record<string, unknown> | null;
+        errorMessage: string | null;
+      };
+      if (body.status === 'completed' || body.status === 'failed') return body;
+      if (Date.now() > deadline) {
+        throw new Error(`run ${runId} did not finish: ${body.status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+
+  /** The tenant's payslip row for one user and month, straight from the DB. */
+  async function payslipOf(
+    userId: string,
+    period: string,
+  ): Promise<Record<string, unknown>> {
+    const { rows } = await pool.query<Record<string, unknown>>(
+      `select p.*, p.payable_days::text as payable_days,
+              p.lop_days::text as lop_days, p.paid_days::text as paid_days,
+              p.gross_earnings::text as gross_earnings,
+              p.pf_employee::text as pf_employee, p.pf_employer::text as pf_employer,
+              p.tds::text as tds, p.other_deductions::text as other_deductions,
+              p.total_deductions::text as total_deductions,
+              p.net_wages::text as net_wages
+         from public.payroll_payslips p
+         join public.memberships m on m.id = p.membership_id
+        where p.tenant_id = $1 and p.salary_period = $2 and m.user_id = $3`,
+      [tenant, period, userId],
+    );
+    if (!rows[0]) {
+      throw new Error(`payslip missing for ${userId} in ${period}`);
+    }
+    return rows[0];
+  }
+
+  async function payslipCount(
+    period: string,
+    tenantId = tenant,
+  ): Promise<number> {
+    const { rows } = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.payroll_payslips
+        where tenant_id = $1 and salary_period = $2`,
+      [tenantId, period],
+    );
+    return rows[0].n;
+  }
+
+  /** Punches: one full-day record per date (IST timestamps). */
+  async function seedPunches(
+    employeeId: string,
+    dates: string[],
+    opts: { missingCheckoutOn?: string } = {},
+  ): Promise<void> {
+    const officeId = (
+      await pool.query<{ id: string }>(
+        `select id from public.attendance_offices where tenant_id = $1 limit 1`,
+        [tenant],
+      )
+    ).rows[0].id;
+    for (const date of dates) {
+      const missing = opts.missingCheckoutOn === date;
+      // The record's attempt ids carry an FK to attendance_attempts — seed
+      // the accepted attempt row first, then the record that cites it.
+      const attemptId = randomUUID();
+      must(
+        await admin.from('attendance_attempts').insert({
+          id: attemptId,
+          tenant_id: tenant,
+          employee_id: employeeId,
+          request_id: randomUUID(),
+          kind: 'check_in',
+          outcome: 'ok',
+          latitude: 12.9716,
+          longitude: 77.5946,
+          accuracy_m: 8,
+          distance_m: 12,
+          radius_m: 200,
+          mocked: false,
+          attempted_at: `${date}T09:30:00+05:30`,
+        }),
+      );
+      let checkoutAttemptId: string | null = null;
+      if (!missing) {
+        checkoutAttemptId = randomUUID();
+        must(
+          await admin.from('attendance_attempts').insert({
+            id: checkoutAttemptId,
+            tenant_id: tenant,
+            employee_id: employeeId,
+            request_id: randomUUID(),
+            kind: 'check_out',
+            outcome: 'ok',
+            latitude: 12.9716,
+            longitude: 77.5946,
+            accuracy_m: 8,
+            distance_m: 14,
+            radius_m: 200,
+            mocked: false,
+            attempted_at: `${date}T18:30:00+05:30`,
+          }),
+        );
+      }
+      must(
+        await admin.from('attendance_records').insert({
+          tenant_id: tenant,
+          employee_id: employeeId,
+          work_date: date,
+          office_id: officeId,
+          radius_m: 200,
+          checkin_at: `${date}T09:30:00+05:30`,
+          checkin_attempt_id: attemptId,
+          checkin_lat: 12.9716,
+          checkin_lng: 77.5946,
+          checkin_accuracy_m: 8,
+          checkin_distance_m: 12,
+          checkin_mocked: false,
+          checkout_at: missing ? null : `${date}T18:30:00+05:30`,
+          checkout_attempt_id: checkoutAttemptId,
+          checkout_lat: missing ? null : 12.9716,
+          checkout_lng: missing ? null : 77.5946,
+          checkout_accuracy_m: missing ? null : 8,
+          checkout_distance_m: missing ? null : 14,
+          checkout_mocked: missing ? null : false,
+        }),
+      );
+    }
+  }
+
+  async function seedStructureFor(
+    userId: string,
+    basicAmount = '20000.00',
+    effectiveFrom = '2026-09-01',
+  ): Promise<void> {
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${userId}/salary-structures`,
+      headers: ownerHeaders(),
+      payload: {
+        effectiveFrom,
+        lines: [
+          { componentId: basicComp.id, amount: basicAmount },
+          {
+            componentId: hraComp.id,
+            formula: {
+              kind: 'percent-of',
+              percent: 40,
+              of: { kind: 'component', componentId: basicComp.id },
+            },
+          },
+        ],
+      },
+    });
+    if (res.statusCode !== 200) {
+      throw new Error(`structure save failed: ${res.statusCode} ${res.body}`);
+    }
+  }
+
+  maybeIt(
+    '23-6 — the fixture world: variant memberships, the attendance grid, and the typed leaves',
+    async () => {
+      // The 23-4 leg left the calendar at fixed-30/cut-off 22 for October;
+      // the fixture base runs on fixed-26/cut-off 25.
+      const calendar = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          divisorConvention: 'fixed-26',
+          cutoffDay: 25,
+          payDate: 1,
+        },
+      });
+      expect(calendar.statusCode).toBe(200);
+
+      // Variant B is 2% of the earned gross (the 23-5 leg saved 2.5) — the
+      // same-date replace re-prices it so D's totals are the fixture's.
+      // The BASE variant runs with PT only ("no other heads"), so the head
+      // is retired right after re-pricing; the D leg re-enacts it (an
+      // identical re-save of a retired revision).
+      const reprice = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Insurance',
+          kind: 'percent',
+          amount: '2',
+          basis: 'gross',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(reprice.statusCode).toBe(201);
+      const { rows: insuranceId } = await pool.query<{ id: string }>(
+        `select id from public.payroll_deduction_heads
+          where tenant_id = $1 and name = 'Insurance' limit 1`,
+        [tenant],
+      );
+      const retire = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${insuranceId[0].id}/deactivate`,
+        headers: ownerHeaders(),
+        payload: { confirm: true },
+      });
+      expect(retire.statusCode).toBe(200);
+
+      // Variant memberships (active, employee role) with the fixture's
+      // employment windows.
+      const variants: Array<{
+        id: string;
+        code: string;
+        join: string;
+        exit?: string;
+      }> = [
+        { id: empB, code: 'EMP-010', join: '2026-10-20' },
+        { id: empC2, code: 'EMP-011', join: '2026-09-01', exit: '2026-10-10' },
+        { id: empE, code: 'EMP-012', join: '2026-10-02' },
+        { id: empI, code: 'EMP-013', join: '2026-10-03' },
+        { id: empNoPan, code: 'EMP-014', join: '2026-09-01' },
+        { id: empSkip, code: 'EMP-015', join: '2026-09-01' },
+      ];
+      must(
+        await admin.from('memberships').insert(
+          variants.map((v) => ({
+            user_id: v.id,
+            tenant_id: tenant,
+            role: 'employee',
+            status: 'active',
+            employee_code: v.code,
+            join_date: v.join,
+            exit_date: v.exit ?? null,
+          })),
+        ),
+      );
+      // The owner and the removed member carry structures: the population
+      // excludes both (fixture G). memberE joins the population with no
+      // structure (the not_configured skip); memberD has no join date (the
+      // missing_join_date skip).
+      must(
+        await admin
+          .from('memberships')
+          .update({ employee_code: 'EMP-002' })
+          .eq('user_id', owner)
+          .eq('tenant_id', tenant),
+      );
+      // The 23-1 legs may already have created these memberships — seed
+      // only the missing ones (the active-day unique would refuse a twin).
+      const { rows: existingMembers } = await pool.query<{ user_id: string }>(
+        `select user_id::text as user_id from public.memberships
+          where tenant_id = $1 and user_id = any($2::uuid[])`,
+        [tenant, [memberE, memberD]],
+      );
+      const present = new Set(existingMembers.map((r) => r.user_id));
+      const missing: Array<{
+        user_id: string;
+        tenant_id: string;
+        role: string;
+        status: string;
+        employee_code: string;
+      }> = [];
+      if (!present.has(memberE)) {
+        missing.push({
+          user_id: memberE,
+          tenant_id: tenant,
+          role: 'employee',
+          status: 'active',
+          employee_code: 'EMP-016',
+        });
+      }
+      if (!present.has(memberD)) {
+        missing.push({
+          user_id: memberD,
+          tenant_id: tenant,
+          role: 'employee',
+          status: 'active',
+          employee_code: 'EMP-017',
+        });
+      }
+      if (missing.length > 0) {
+        must(await admin.from('memberships').insert(missing));
+      }
+      // memberD keeps NO join date: the missing_join_date skip (never a
+      // null-prorated payslip). memberE (above) is the not_configured case.
+      // memberE becomes the not_configured case: an active employee with a
+      // join date and no structure. memberD keeps NO join date (cleared — a
+      // 23-1 leg may have set one): the missing_join_date skip, never a
+      // null-prorated payslip.
+      must(
+        await admin
+          .from('memberships')
+          .update({ status: 'active', join_date: '2026-09-01' })
+          .eq('user_id', memberE)
+          .eq('tenant_id', tenant),
+      );
+      must(
+        await admin
+          .from('memberships')
+          .update({ status: 'active', join_date: null })
+          .eq('user_id', memberD)
+          .eq('tenant_id', tenant),
+      );
+
+      // Structures for every variant but empSkip (the not_configured /
+      // never_enrolled split) and memberE (not_configured).
+      for (const v of variants) {
+        await seedStructureFor(v.id);
+      }
+      await seedStructureFor(owner);
+      const c2Structure = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/members/${memberC}/salary-structures`,
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-09-01',
+          lines: [{ componentId: basicComp.id, amount: '20000.00' }],
+        },
+      });
+      expect(c2Structure.statusCode).toBe(200);
+
+      // The attendance world: settings, one office, enrolments covering
+      // Sep 2026 → Mar 2027 for every running employee (NOT empSkip).
+      must(
+        await admin.from('attendance_settings').upsert(
+          {
+            tenant_id: tenant,
+            enabled: true,
+            setup_completed_at: new Date().toISOString(),
+          },
+          { onConflict: 'tenant_id' },
+        ),
+      );
+      const office = must(
+        await admin
+          .from('attendance_offices')
+          .insert({
+            tenant_id: tenant,
+            name: 'Journey Office',
+            latitude: 12.9716,
+            longitude: 77.5946,
+            radius_m: 200,
+          })
+          .select('id')
+          .single(),
+      );
+      const runEmployees = [employeeA, empB, empC2, empE, empI, empNoPan];
+      for (const employeeId of runEmployees) {
+        // The enrolment and its office assignment are mutually checking
+        // constraints — both land inside ONE transaction (the 23-1 backfill
+        // leg's transaction idiom).
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `insert into public.attendance_enrolments
+               (tenant_id, employee_id, valid, enabled_at)
+             values ($1::uuid, $2::uuid, '[2026-09-01,2027-04-01)'::daterange,
+                     '2026-09-01T00:00:00+05:30'::timestamptz)`,
+            [tenant, employeeId],
+          );
+          await client.query(
+            `insert into public.attendance_office_assignments
+               (tenant_id, employee_id, office_id, valid)
+             values ($1::uuid, $2::uuid, $3::uuid, '[2026-09-01,2027-04-01)'::daterange)`,
+            [tenant, employeeId, office.id],
+          );
+          await client.query('commit');
+        } catch (e) {
+          await client.query('rollback').catch(() => undefined);
+          throw e;
+        } finally {
+          client.release();
+        }
+      }
+
+      // The fixture's Sundays are weekly off (Oct 4, 11, 18, 25; Sep's
+      // Sundays too) — without the defaults every unpunched Sunday grades
+      // absent and LOPs.
+      must(
+        await admin.from('attendance_weekly_off_defaults').insert({
+          tenant_id: tenant,
+          valid: '[2026-09-01,2027-04-01)' as never,
+          days: [7], // Sunday = 7 in the ISO 1-7 convention
+        }),
+      );
+
+      // The fixture base runs with PT ₹200 — the 23-5 leg left a 250
+      // replacement in place; the same-date save restores it.
+      const ptRestore = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Professional Tax',
+          kind: 'flat',
+          amount: '200',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(ptRestore.statusCode).toBe(201);
+
+      // Punches on the working days of each kept window (Sundays and the
+      // leave days carry no record; I's Oct 20 stays unpunched = absent).
+      await seedPunches(employeeA, [
+        '2026-09-01',
+        '2026-09-02',
+        '2026-09-03',
+        '2026-09-04',
+        '2026-09-05',
+        '2026-09-07',
+        '2026-09-08',
+        '2026-09-09',
+        '2026-09-10',
+        '2026-09-11',
+        '2026-09-12',
+        '2026-09-14',
+        '2026-09-15',
+        '2026-09-16',
+        '2026-09-17',
+        '2026-09-18',
+        '2026-09-19',
+        '2026-09-21',
+        '2026-09-22',
+        '2026-09-23',
+        '2026-09-24',
+        '2026-09-25',
+        // Sep 26–30 are October-owned prior-period days — unpunched, they
+        // would grade absent and LOP.
+        '2026-09-26',
+        '2026-09-28',
+        '2026-09-29',
+        '2026-09-30',
+        '2026-10-01',
+        '2026-10-02',
+        '2026-10-03',
+        '2026-10-05',
+        '2026-10-08',
+        '2026-10-09',
+        '2026-10-10',
+        '2026-10-16',
+        '2026-10-17',
+        '2026-10-19',
+        '2026-10-20',
+        '2026-10-21',
+        '2026-10-22',
+        '2026-10-23',
+        '2026-10-24',
+        '2026-10-26',
+        '2026-10-27',
+        '2026-10-28',
+        '2026-10-29',
+        '2026-10-30',
+        '2026-10-31',
+      ]);
+      await seedPunches(empB, [
+        '2026-10-20',
+        '2026-10-21',
+        '2026-10-22',
+        '2026-10-23',
+        '2026-10-24',
+        '2026-10-26',
+        '2026-10-27',
+        '2026-10-28',
+        '2026-10-29',
+        '2026-10-30',
+        '2026-10-31',
+      ]);
+      await seedPunches(empC2, [
+        '2026-09-01',
+        '2026-09-02',
+        '2026-09-03',
+        '2026-09-04',
+        '2026-09-05',
+        '2026-09-07',
+        '2026-09-08',
+        '2026-09-09',
+        '2026-09-10',
+        '2026-09-11',
+        '2026-09-12',
+        '2026-09-14',
+        '2026-09-15',
+        '2026-09-16',
+        '2026-09-17',
+        '2026-09-18',
+        '2026-09-19',
+        '2026-09-21',
+        '2026-09-22',
+        '2026-09-23',
+        '2026-09-24',
+        '2026-09-25',
+        '2026-09-26',
+        '2026-09-28',
+        '2026-09-29',
+        '2026-09-30',
+        '2026-10-01',
+        '2026-10-02',
+        '2026-10-03',
+        '2026-10-05',
+        '2026-10-06',
+        '2026-10-07',
+        '2026-10-08',
+        '2026-10-09',
+        '2026-10-10',
+      ]);
+      await seedPunches(empE, [
+        '2026-10-02',
+        '2026-10-03',
+        '2026-10-06',
+        '2026-10-07',
+        '2026-10-08',
+        '2026-10-09',
+        '2026-10-10',
+        '2026-10-12',
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+        '2026-10-16',
+        '2026-10-17',
+        '2026-10-19',
+        '2026-10-20',
+        '2026-10-21',
+        '2026-10-22',
+        '2026-10-23',
+        '2026-10-24',
+        '2026-10-26',
+        '2026-10-27',
+      ]);
+      await seedPunches(empI, [
+        '2026-10-03',
+        '2026-10-05',
+        '2026-10-06',
+        '2026-10-07',
+        '2026-10-08',
+        '2026-10-09',
+        '2026-10-12',
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+        '2026-10-16',
+        '2026-10-17',
+        '2026-10-19',
+        '2026-10-21',
+        '2026-10-22',
+        '2026-10-23',
+        '2026-10-24',
+        '2026-10-27',
+        '2026-10-28',
+      ]);
+      // The no-PAN employee also carries a checkout_missing day (Oct 16).
+      await seedPunches(
+        empNoPan,
+        [
+          '2026-09-01',
+          '2026-09-02',
+          '2026-09-03',
+          '2026-09-04',
+          '2026-09-05',
+          '2026-09-07',
+          '2026-09-08',
+          '2026-09-09',
+          '2026-09-10',
+          '2026-09-11',
+          '2026-09-12',
+          '2026-09-14',
+          '2026-09-15',
+          '2026-09-16',
+          '2026-09-17',
+          '2026-09-18',
+          '2026-09-19',
+          '2026-09-21',
+          '2026-09-22',
+          '2026-09-23',
+          '2026-09-24',
+          '2026-09-25',
+          '2026-09-26',
+          '2026-09-28',
+          '2026-09-29',
+          '2026-09-30',
+          '2026-10-01',
+          '2026-10-02',
+          '2026-10-03',
+          '2026-10-05',
+          '2026-10-06',
+          '2026-10-07',
+          '2026-10-08',
+          '2026-10-09',
+          '2026-10-10',
+          '2026-10-12',
+          '2026-10-13',
+          '2026-10-14',
+          '2026-10-15',
+          '2026-10-16',
+          '2026-10-17',
+          '2026-10-19',
+          '2026-10-20',
+          '2026-10-21',
+          '2026-10-22',
+          '2026-10-23',
+          '2026-10-24',
+          '2026-10-26',
+          '2026-10-27',
+          '2026-10-28',
+          '2026-10-29',
+          '2026-10-30',
+          '2026-10-31',
+        ],
+        { missingCheckoutOn: '2026-10-16' },
+      );
+
+      // A paid type for the fixture's paid leaves (the keyword default).
+      const earned = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/leave/types',
+        headers: ownerHeaders(),
+        payload: { name: 'Earned Leave' },
+      });
+      expect(earned.statusCode).toBe(201);
+      const earnedId = (JSON.parse(earned.body) as { id: string }).id;
+      expect((JSON.parse(earned.body) as { paid: boolean }).paid).toBe(true);
+
+      // The 23-2 legs already seeded Oct 6–7 (approved, typed Unpaid) —
+      // retype that request to the paid Earned type instead of reseeding
+      // (the active-day unique would refuse a second request).
+      const { rows: casualPair } = await pool.query<{ id: string }>(
+        `select r.id::text as id
+           from public.leave_requests r
+           join public.leave_request_days d on d.leave_request_id = r.id
+          where r.tenant_id = $1 and d.employee_id = $2
+            and d.leave_date = '2026-10-06' limit 1`,
+        [tenant, employeeA],
+      );
+      const retype = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/${casualPair[0].id}/type`,
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: earnedId },
+      });
+      expect(retype.statusCode).toBe(200);
+      await seedLeaveRequest({
+        dates: ['2026-10-12'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+        part: 'second_half',
+      }); // unpaid half
+      await seedLeaveRequest({
+        dates: ['2026-10-05'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+        employeeId: empE,
+      });
+      await seedLeaveRequest({
+        dates: ['2026-10-10'],
+        state: 'approved',
+        leaveTypeId: earnedId,
+        employeeId: empI,
+        part: 'second_half',
+      }); // paid half
+      await seedLeaveRequest({
+        dates: ['2026-10-01', '2026-10-02'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+        employeeId: empI,
+      }); // before the join — never LOPs
+
+      // A's unpaid set, as the run will read it: Oct 12 (half), 13–15.
+      const { rows: unpaidDates } = await pool.query<{ leave_date: string }>(
+        `select d.leave_date::text as leave_date
+           from public.leave_request_days d
+           join public.leave_requests r on r.id = d.leave_request_id
+           join public.leave_types t on t.id = r.leave_type_id
+          where r.tenant_id = $1 and d.employee_id = $2
+            and d.state = 'approved' and t.paid = false
+          order by d.leave_date`,
+        [tenant, employeeA],
+      );
+      expect(unpaidDates.map((r) => r.leave_date)).toEqual([
+        '2026-10-12',
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+      ]);
+    },
+  );
+
+  maybeIt(
+    '23-6 — September runs on the ₹15,000 ceiling (PF 1,800.00)',
+    async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-09' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string; status: string };
+      expect(queued.status).toBe('queued');
+      const done = await awaitRun(queued.id);
+      expect(done.status).toBe('completed');
+
+      const slip = await payslipOf(employeeA, '2026-09');
+      expect(slip['pf_employee']).toBe('1800.00');
+      expect(slip['pf_employer']).toBe('1800.00');
+      // The ceiling binds: 12% × min(earned basic, 15,000) = 1,800.00.
+      expect(slip['divisor_convention']).toBe('fixed-26');
+      expect(slip['cutoff_day']).toBe(25);
+      expect(slip['slip_number']).toBe('PS-2026-09-0001');
+    },
+  );
+
+  maybeIt(
+    '23-6 — October: the base row and every variant, straight from the fixture',
+    async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const done = await awaitRun(queued.id);
+      expect(done.status).toBe('completed');
+
+      // The base row (employee A).
+      const base = await payslipOf(employeeA, '2026-10');
+      expect(base).toMatchObject({
+        payable_days: '26.00',
+        lop_days: '3.50',
+        paid_days: '22.50',
+        gross_earnings: '24230.77',
+        pf_employee: '2076.92',
+        pf_employer: '2076.92',
+        tds: '0.00',
+        other_deductions: '200.00',
+        total_deductions: '2276.92',
+        net_wages: '21953.85',
+      });
+      expect(base['slip_number']).toBe('PS-2026-10-0001');
+      expect(base['pan']).toBe('ABCPE1234F');
+      expect(base['uan_number']).toBe('101234567890');
+      expect(base['employee_code']).toBe('EMP-001');
+      expect(base['divisor_convention']).toBe('fixed-26');
+      const earningLines = base['earning_lines'] as Array<{
+        name: string;
+        amount: string;
+      }>;
+      expect(earningLines).toEqual([
+        { name: 'Basic', amount: '17307.69' },
+        { name: 'House Rent', amount: '6923.08' },
+      ]);
+
+      // Variant C: the Oct-20 joiner — 12 payable days, no leaves.
+      const c = await payslipOf(empB, '2026-10');
+      expect(c).toMatchObject({
+        payable_days: '12.00',
+        lop_days: '0.00',
+        paid_days: '12.00',
+        gross_earnings: '12923.08',
+        pf_employee: '1107.69',
+        net_wages: '11615.39',
+      });
+
+      // Variant C2: the Oct-10 leaver — 10 payable days, still in the run.
+      const c2 = await payslipOf(empC2, '2026-10');
+      expect(c2).toMatchObject({
+        payable_days: '10.00',
+        gross_earnings: '10769.23',
+        pf_employee: '923.08',
+        net_wages: '9646.15',
+      });
+
+      // Variant E: the Oct-2 joiner with one unpaid LOP day.
+      const e = await payslipOf(empE, '2026-10');
+      expect(e).toMatchObject({
+        payable_days: '26.00',
+        lop_days: '1.00',
+        paid_days: '25.00',
+        gross_earnings: '26923.08',
+        pf_employee: '2307.69',
+        net_wages: '24415.39',
+      });
+
+      // Variant I: the absent day is the only LOP; the pre-join leave and
+      // the paid half are not.
+      const i = await payslipOf(empI, '2026-10');
+      expect(i).toMatchObject({
+        payable_days: '26.00',
+        lop_days: '1.00',
+        paid_days: '25.00',
+        gross_earnings: '26923.08',
+        pf_employee: '2307.69',
+        net_wages: '24415.39',
+      });
+
+      // The no-PAN employee: blank PAN, the warning carried; the
+      // checkout_missing day paid and flagged.
+      const noPan = await payslipOf(empNoPan, '2026-10');
+      expect(noPan['pan']).toBeNull();
+      const noPanWarnings = noPan['warnings'] as string[];
+      expect(noPanWarnings.join(' ')).toContain('checkout_missing');
+
+      // The skips and exclusions: memberE not configured, empSkip never
+      // enrolled, the owner and the removed member absent from the run.
+      const summary = (done.summary ?? {}) as {
+        skips: Array<{ employee: string; reason: string }>;
+        employees: number;
+        payslips: number;
+        warnings: string[];
+      };
+      const reasons = Object.fromEntries(
+        summary.skips.map((s) => [s.employee, s.reason]),
+      );
+      expect(Object.values(reasons)).toContain('not_configured');
+      expect(Object.values(reasons)).toContain('never_enrolled');
+      expect(Object.values(reasons)).toContain('missing_join_date');
+      void reasons;
+      expect(summary.employees).toBe(9);
+      expect(summary.payslips).toBe(6);
+      expect(await payslipCount('2026-10')).toBe(6);
+      expect(summary.warnings.join(' ')).toContain('no PAN');
+      expect(
+        await pool.query(
+          `select 1 from public.payroll_payslips p
+             join public.memberships m on m.id = p.membership_id
+            where p.tenant_id = $1 and (m.user_id = $2 or m.user_id = $3)`,
+          [tenant, owner, memberC],
+        ),
+      ).toMatchObject({ rowCount: 0 });
+
+      // The TDS basis was the earning-line sum: A's structure × 6 months −
+      // 75,000 = 1,21,000 → below ₹4 lakh → 0.00 (the fixture's TDS row).
+      expect(base['tds']).toBe('0.00');
+    },
+  );
+
+  maybeIt(
+    '23-6 — variant D: the TDS override, the 50% clamp, and the recovery line',
+    async () => {
+      const ack = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${employeeA}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'tds',
+          amount: '12000.00',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(ack.statusCode).toBe(200);
+      expect(JSON.parse(ack.body)).toMatchObject({ amount: '12000.00' });
+
+      // The acknowledgment is not optional.
+      const unacked = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${empB}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'pf_employee',
+          amount: '100.00',
+          acknowledgedLiability: false,
+        },
+      });
+      expect(unacked.statusCode).toBe(422);
+      expect(unacked.body).toContain('employer-liability');
+
+      // The D variant ADDS the insurance head: the identical re-save
+      // re-enacts the retired revision.
+      const reenact = await app.inject({
+        method: 'POST',
+        url: headsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          name: 'Insurance',
+          kind: 'percent',
+          amount: '2',
+          basis: 'gross',
+          effectiveFrom: '2026-09-01',
+        },
+      });
+      expect(reenact.statusCode).toBe(201);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const done = await awaitRun(queued.id);
+      expect(done.status).toBe('completed');
+
+      const d = await payslipOf(employeeA, '2026-10');
+      // The override is ₹12,000 but the 50% cap clamps the DEDUCTED tds to
+      // 9,848.88 — the snapshot's statutory column reads the clamped line
+      // so the row, its lines and its totals can never disagree.
+      expect(d).toMatchObject({
+        tds: '9848.88',
+        total_deductions: '12115.39',
+        net_wages: '12115.38',
+      });
+      // The unabsorbable excess is a recovery line on the next run — and
+      // the run summary carries it.
+      const { rows: recovery } = await pool.query<{
+        outstanding_amount: string;
+      }>(
+        `select outstanding_amount::text as outstanding_amount
+           from public.payroll_recovery_lines
+          where tenant_id = $1 and month_raised = '2026-10'`,
+        [tenant],
+      );
+      expect(recovery).toHaveLength(1);
+      expect(recovery[0]['outstanding_amount']).toBe('2646.15');
+      expect((done.summary ?? {})['warnings']).toEqual(
+        expect.arrayContaining([expect.stringContaining('2646.15')]),
+      );
+    },
+  );
+
+  maybeIt(
+    '23-6 — the recovery is absorbed by the next run once the override lifts',
+    async () => {
+      const lift = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${employeeA}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'tds',
+          amount: '0.00',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(lift.statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const absorbed = await awaitRun(queued.id);
+      expect(absorbed['status']).toBe('completed');
+
+      const a = await payslipOf(employeeA, '2026-10');
+      const deductionLines = a['deduction_lines'] as Array<{
+        source: string;
+        amount: string;
+      }>;
+      expect(deductionLines).toEqual(
+        expect.arrayContaining([
+          { source: 'recovery:2026-10', amount: '2646.15' },
+        ]),
+      );
+      // Deductions: PF 2,076.92 + TDS 0 + insurance 484.62 + PT 200 +
+      // recovery 2,646.15 = 5,407.69 → net 18,823.08.
+      expect(a).toMatchObject({
+        total_deductions: '5407.69',
+        net_wages: '18823.08',
+      });
+      const { rows: recovery } = await pool.query<{
+        outstanding_amount: string;
+      }>(
+        `select outstanding_amount::text as outstanding_amount
+           from public.payroll_recovery_lines
+          where tenant_id = $1 and month_raised = '2026-10'`,
+        [tenant],
+      );
+      expect(recovery[0]['outstanding_amount']).toBe('0.00');
+
+      // The fixture's November row carries PT only — retire the head again
+      // (the November leg runs with PF + PT, no insurance).
+      const { rows: insuranceRow } = await pool.query<{ id: string }>(
+        `select id from public.payroll_deduction_heads
+          where tenant_id = $1 and name = 'Insurance' limit 1`,
+        [tenant],
+      );
+      const retire2 = await app.inject({
+        method: 'PUT',
+        url: `${headsUrl}/${insuranceRow[0].id}/deactivate`,
+        headers: ownerHeaders(),
+        payload: { confirm: true },
+      });
+      expect(retire2.statusCode).toBe(200);
+    },
+  );
+
+  maybeIt(
+    '23-6 — November: the structure revision and the prior-period leave (fixture G/F)',
+    async () => {
+      // The F revision: effective 2026-11-01 — basic 22,000, HRA 8,800.
+      const revision = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/members/${employeeA}/salary-structures`,
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-11-01',
+          lines: [
+            { componentId: basicComp.id, amount: '22000.00' },
+            {
+              componentId: hraComp.id,
+              formula: {
+                kind: 'percent-of',
+                percent: 40,
+                of: { kind: 'component', componentId: basicComp.id },
+              },
+            },
+          ],
+        },
+      });
+      if (revision.statusCode !== 200) {
+        throw new Error(
+          `revision failed: ${revision.statusCode} ${revision.body}`,
+        );
+      }
+
+      // The pre-cut-off gate: November is the current month and today is
+      // before its resolved cut-off (25) — the run refuses in plain English.
+      const early = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(early.statusCode).toBe(422);
+      expect(early.body).toContain('opens on day 25');
+
+      // A November-dated calendar row moves the cut-off to the 15th — the
+      // month-start-resolved gate re-reads it and the run opens today.
+      const novCalendar = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-11-01',
+          divisorConvention: 'fixed-26',
+          cutoffDay: 15,
+          payDate: 1,
+        },
+      });
+      expect(novCalendar.statusCode).toBe(200);
+
+      // G's Oct-27 leave is seeded AFTER October ran: it belongs to
+      // November's run as a prior-period day — October stays unchanged.
+      // November's own owned days need their punches too.
+      await seedPunches(employeeA, [
+        '2026-11-02',
+        '2026-11-03',
+        '2026-11-04',
+        '2026-11-05',
+        '2026-11-06',
+        '2026-11-07',
+        '2026-11-09',
+        '2026-11-10',
+        '2026-11-11',
+        '2026-11-12',
+        '2026-11-13',
+        '2026-11-14',
+        '2026-11-16',
+        '2026-11-17',
+        '2026-11-18',
+        '2026-11-19',
+        '2026-11-20',
+        '2026-11-21',
+        '2026-11-23',
+        '2026-11-24',
+        '2026-11-25',
+      ]);
+      await seedLeaveRequest({
+        dates: ['2026-10-27'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const novRun = await awaitRun(queued.id);
+      expect(novRun['status']).toBe('completed');
+
+      const nov = await payslipOf(employeeA, '2026-11');
+      // NOTE: 29,615.39 is the SUM OF THE ROUNDED EARNING LINES (the spec's
+      // rounding-once-per-line); the fixture's 29,615.38 shorthand rounds
+      // the structure total once. One paise — flagged for the owner's
+      // done_checkpoint adjudication.
+      expect(nov).toMatchObject({
+        payable_days: '26.00',
+        lop_days: '1.00',
+        paid_days: '25.00',
+        gross_earnings: '29615.39',
+        pf_employee: '2538.46',
+        tds: '0.00',
+        net_wages: '26876.93',
+      });
+      const earningLines = nov['earning_lines'] as Array<{
+        name: string;
+        amount: string;
+      }>;
+      expect(earningLines[0]).toEqual({ name: 'Basic', amount: '21153.85' });
+
+      // October's payslips are untouched by November's run.
+      const oct = await payslipOf(employeeA, '2026-10');
+      expect(oct).toMatchObject({ net_wages: '18823.08' });
+    },
+  );
+
+  maybeIt(
+    '23-6 — the owner-corrected half-day costs exactly half the daily wage',
+    async () => {
+      must(
+        await admin.from('attendance_day_overrides').insert({
+          tenant_id: tenant,
+          employee_id: employeeA,
+          work_date: '2026-10-21',
+          status: 'half_day',
+          created_by: owner,
+        }),
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const done = await awaitRun(queued.id);
+      expect(done['status']).toBe('completed');
+
+      const a = await payslipOf(employeeA, '2026-10');
+      // LOP 4.0 (3.5 + the corrected half) → earnings 23,692.31; the
+      // half-day LOP deduction = 538.46 = exactly half the daily wage.
+      expect(a).toMatchObject({
+        lop_days: '4.00',
+        paid_days: '22.00',
+        gross_earnings: '23692.31',
+        pf_employee: '2030.77',
+        net_wages: '21461.54',
+      });
+    },
+  );
+
+  maybeIt(
+    '23-6 — the divisor conventions table: 22,413.33 / 22,509.68, then back',
+    async () => {
+      // The owner-corrected half-day (the previous leg) persists — LOP 4.0
+      // on top of the 3.5 leave days — so these rows price paid = divisor − 4.
+      for (const [convention, expectedNet, expectedPf] of [
+        ['fixed-30', '21986.66', '2080.00'],
+        ['calendar', '22096.77', '2090.32'],
+      ] as const) {
+        const put = await app.inject({
+          method: 'PUT',
+          url: '/api/v1/payroll/calendar',
+          headers: ownerHeaders(),
+          payload: {
+            effectiveFrom: '2026-10-01',
+            divisorConvention: convention,
+            cutoffDay: 25,
+            payDate: 1,
+          },
+        });
+        expect(put.statusCode).toBe(200);
+        const run = await app.inject({
+          method: 'POST',
+          url: runsUrl,
+          headers: ownerHeaders(),
+          payload: { month: '2026-10' },
+        });
+        expect(run.statusCode).toBe(202);
+        const queued = JSON.parse(run.body) as { id: string };
+        const done = await awaitRun(queued.id);
+        expect(done['status']).toBe('completed');
+        const a = await payslipOf(employeeA, '2026-10');
+        expect(a).toMatchObject({
+          divisor_convention: convention,
+          net_wages: expectedNet,
+          pf_employee: expectedPf,
+        });
+      }
+      // Restore the fixture base.
+      const restore = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/payroll/calendar',
+        headers: ownerHeaders(),
+        payload: {
+          effectiveFrom: '2026-10-01',
+          divisorConvention: 'fixed-26',
+          cutoffDay: 25,
+          payDate: 1,
+        },
+      });
+      expect(restore.statusCode).toBe(200);
+    },
+  );
+
+  maybeIt(
+    '23-6 — the zero-employee company completes with no_employees and zero payslips',
+    async () => {
+      const strangerHeaders = () => ({
+        authorization: `Bearer ${bearerFor(otherOwner)}`,
+      });
+      const res = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: strangerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(res.statusCode).toBe(202);
+      const queued = JSON.parse(res.body) as { id: string };
+      const done = await awaitRun(queued.id, strangerHeaders());
+      expect(done.status).toBe('completed');
+      expect((done.summary ?? {})['status']).toBe('no_employees');
+      expect(await payslipCount('2026-10', otherTenant)).toBe(0);
+    },
+  );
+
+  maybeIt(
+    '23-6 — the pf override lands through a run; the failed run is atomic and retryable',
+    async () => {
+      // The pf_employee override (the TDS one is the D leg): B pays ₹1,000
+      // of PF instead of the computed 1,107.69 — employer share mirrors it.
+      const pfOverride = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${empB}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'pf_employee',
+          amount: '1000.00',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(pfOverride.statusCode).toBe(200);
+      // A bad field is refused by the wire contract.
+      const badField = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${empB}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'esi',
+          amount: '1.00',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(badField.statusCode).toBe(422);
+
+      const run = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(run.statusCode).toBe(202);
+      const queued = JSON.parse(run.body) as { id: string };
+      const done = await awaitRun(queued.id);
+      expect(done['status']).toBe('completed');
+      const b = await payslipOf(empB, '2026-10');
+      expect(b).toMatchObject({
+        pf_employee: '1000.00',
+        pf_employer: '1000.00',
+      });
+
+      // THE FAILED PATH: corrupt A's November structure (its formula cites
+      // a component outside the library) → the run fails AFTER the compute
+      // with ZERO payslip changes, the error is plain English, and a clean
+      // re-run completes.
+      const before = await payslipOf(employeeA, '2026-11');
+      const { rows: novStruct } = await pool.query<{ id: string }>(
+        `select s.id from public.salary_structures s
+           join public.memberships m on m.id = s.membership_id
+          where s.tenant_id = $1 and m.user_id = $2
+            and s.effective_from = '2026-11-01'`,
+        [tenant, employeeA],
+      );
+      must(
+        await admin
+          .from('salary_structures')
+          .update({
+            lines: [
+              {
+                componentId: basicComp.id,
+                formula: {
+                  kind: 'component',
+                  componentId: '99999999-9999-4999-8999-999999999999',
+                },
+              },
+            ],
+          })
+          .eq('id', novStruct[0].id),
+      );
+      const failing = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(failing.statusCode).toBe(202);
+      const failingId = (JSON.parse(failing.body) as { id: string }).id;
+      const failedRun = await awaitRun(failingId);
+      expect(failedRun['status']).toBe('failed');
+      expect(failedRun['errorMessage']).toContain('no longer evaluates');
+
+      // Atomicity: the previous run's payslip is byte-identical.
+      const after = await payslipOf(employeeA, '2026-11');
+      expect(after['net_wages']).toBe(before['net_wages']);
+      expect(after['slip_number']).toBe(before['slip_number']);
+
+      // Repair and retry: the failed run is terminal, the re-run completes.
+      must(
+        await admin
+          .from('salary_structures')
+          .update({
+            lines: [
+              { componentId: basicComp.id, amount: '22000.00' },
+              {
+                componentId: hraComp.id,
+                formula: {
+                  kind: 'percent-of',
+                  percent: 40,
+                  of: { kind: 'component', componentId: basicComp.id },
+                },
+              },
+            ],
+          })
+          .eq('id', novStruct[0].id),
+      );
+      const retry = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(retry.statusCode).toBe(202);
+      const retryId = (JSON.parse(retry.body) as { id: string }).id;
+      expect((await awaitRun(retryId))['status']).toBe('completed');
+
+      // The runs list answers newest-first; another company's run is 404.
+      const list = await app.inject({
+        method: 'GET',
+        url: runsUrl,
+        headers: ownerHeaders(),
+      });
+      expect(list.statusCode).toBe(200);
+      const runs = JSON.parse(list.body) as Array<{ month: string }>;
+      expect(runs.length).toBeGreaterThan(3);
+      const foreign = await app.inject({
+        method: 'GET',
+        url: `${runsUrl}/${queued.id}`,
+        headers: { authorization: `Bearer ${bearerFor(otherOwner)}` },
+      });
+      expect(foreign.statusCode).toBe(404);
+    },
+  );
+
+  maybeIt(
+    '23-6 — the rejections refuse in plain English and leave zero payslips',
+    async () => {
+      const beforeBound = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-08' },
+      });
+      expect(beforeBound.statusCode).toBe(422);
+      expect(beforeBound.body).toContain('2026-09');
+      expect(beforeBound.body).toContain('no payroll history');
+
+      const future = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-12' },
+      });
+      expect(future.statusCode).toBe(422);
+      expect(future.body).toContain('has not started yet');
+
+      for (const month of ['2026-08', '2026-12']) {
+        expect(await payslipCount(month)).toBe(0);
+      }
+      const bad = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: 'october' },
+      });
+      expect(bad.statusCode).toBe(422);
+      expect(bad.body).toContain('YYYY-MM');
+
+      // An employee token is 403 on the whole run surface.
+      const forbidden = await app.inject({
+        method: 'GET',
+        url: runsUrl,
+        headers: { authorization: `Bearer ${bearerFor(employeeA)}` },
+      });
+      expect(forbidden.statusCode).toBe(403);
     },
   );
 });
