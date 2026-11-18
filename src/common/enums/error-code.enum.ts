@@ -126,4 +126,16 @@ export enum ErrorCode {
   /** Google Play could not be asked for the live Android version (502).
    *  Retryable; a roadblock save that needs the check is refused, not guessed. */
   PLAY_UPSTREAM_ERROR = 'PLAY_UPSTREAM_ERROR',
+  /** The payroll month is permanently locked (409): re-running it, editing
+   *  its payslips, staging off-cycle lines against it, or correcting its
+   *  pre-cut-off attendance dates is refused. A lock has no unlock in v1. */
+  PAYROLL_MONTH_LOCKED = 'PAYROLL_MONTH_LOCKED',
+  /** The payroll month cannot be locked yet (409) — it has never completed a
+   *  run (no run at all, or only failed ones, so zero payslips exist). Run
+   *  payroll first. */
+  PAYROLL_MONTH_NOT_RUN = 'PAYROLL_MONTH_NOT_RUN',
+  /** The payroll month cannot be locked while a run for it is queued or
+   *  running (409) — the lock would freeze payslips the run is about to
+   *  replace. Wait for the run to finish, then lock. */
+  PAYROLL_RUN_IN_PROGRESS = 'PAYROLL_RUN_IN_PROGRESS',
 }

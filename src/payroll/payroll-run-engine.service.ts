@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
+import { payrollRunAdvisoryKey } from '../common/pg/advisory-keys';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { CALENDAR_DEFAULTS } from './payroll-month-status.service';
 import { employeePfCovered, resolvePfCovered } from './pf-config.service';
@@ -163,8 +164,8 @@ export class PayrollRunEngineService {
 
       await this.pg.withTransaction(async (tx) => {
         await tx.query(
-          `select pg_advisory_xact_lock(hashtextextended('payroll-run:' || $1::text || ':' || $2::text, 0))`,
-          [tenantId, month],
+          `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+          [payrollRunAdvisoryKey(tenantId, month)],
         );
         const claim = await tx.query<{ status: string }>(
           `select status from public.payroll_runs where id = $1::uuid for update`,
@@ -172,6 +173,19 @@ export class PayrollRunEngineService {
         );
         if (claim.rows[0]?.status !== 'running') {
           throw new Error('the run was superseded while computing');
+        }
+        // The lock probe: a lock decided while this run was queued (the
+        // enqueue side cannot see it) must fail the run here, inside the
+        // write tx, so zero payslip changes land against a final month.
+        const locked = await tx.query<{ month: string }>(
+          `select month from public.payroll_month_locks
+            where tenant_id = $1::uuid and month = $2`,
+          [tenantId, month],
+        );
+        if (locked.rows.length > 0) {
+          throw new Error(
+            `${month} is locked for payroll — the run cannot replace its payslips`,
+          );
         }
 
         await tx.query(

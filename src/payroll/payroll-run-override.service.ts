@@ -1,8 +1,14 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { isMonthKey } from './effective-dating';
+import { PayrollLockService } from './payroll-lock.service';
 import { moneyText } from './formula';
 import {
   internalError,
@@ -29,15 +35,18 @@ interface OverrideRow {
 /**
  * The per-employee, per-period run override (CAP-6): the admin replaces a
  * computed amount behind an employer-liability acknowledgment. The override
- * survives unlocked re-runs of its period and is immutable after lock (the
- * lock story refuses edits once month 9 ships the lock state). Zero database
- * functions.
+ * survives unlocked re-runs of its period; a locked month refuses new
+ * overrides (the override could never take effect — the locked month cannot
+ * re-run). Zero database functions.
  */
 @Injectable()
 export class PayrollRunOverrideService {
   private readonly logger = new Logger(PayrollRunOverrideService.name);
 
-  constructor(private readonly supabaseFactory: SupabaseClientFactory) {}
+  constructor(
+    private readonly supabaseFactory: SupabaseClientFactory,
+    private readonly lockService: PayrollLockService,
+  ) {}
 
   private readonly FIELDS = ['pf_employee', 'tds'] as const;
 
@@ -57,6 +66,14 @@ export class PayrollRunOverrideService {
       throw validationError(
         'an override needs the employer-liability acknowledgment — the run pays this amount and the employer carries the statutory exposure',
       );
+    }
+    // A locked month cannot re-run, so an override written now could never
+    // take effect — refuse it instead of accepting a silently dead write.
+    if (await this.lockService.isLocked(tenantId, dto.month)) {
+      throw new ConflictException({
+        error_code: ErrorCode.PAYROLL_MONTH_LOCKED,
+        message: `${dto.month} is locked for payroll — its payslip amounts can no longer be overridden`,
+      });
     }
     const admin = this.supabaseFactory.createAdmin();
 

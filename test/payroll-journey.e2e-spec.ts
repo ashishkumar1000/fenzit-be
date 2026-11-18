@@ -4166,4 +4166,316 @@ describe('Payroll journey (real DB, real routes)', () => {
       expect(forbidden.statusCode).toBe(403);
     },
   );
+
+  maybeIt(
+    '23-7 — a month with no completed run cannot be locked (run payroll first)',
+    async () => {
+      // Never ran: 2026-07 has no runs at all.
+      const neverRan = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/2026-07/lock',
+        headers: ownerHeaders(),
+      });
+      expect(neverRan.statusCode).toBe(409);
+      expect(neverRan.body).toContain('PAYROLL_MONTH_NOT_RUN');
+      expect(neverRan.body).toContain('run payroll first');
+
+      // Failed-only: a failed run row is still zero payslips — the same
+      // refusal, never a lock over nothing.
+      must(
+        await admin.from('payroll_runs').insert({
+          tenant_id: tenant,
+          month: '2026-07',
+          status: 'failed',
+          initiated_by: owner,
+          error_message: 'fixture: the executor died',
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+        }),
+      );
+      const failedOnly = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/2026-07/lock',
+        headers: ownerHeaders(),
+      });
+      expect(failedOnly.statusCode).toBe(409);
+      expect(failedOnly.body).toContain('PAYROLL_MONTH_NOT_RUN');
+      expect(await payslipCount('2026-07')).toBe(0);
+
+      // A bad month key is the 422, before any read.
+      const badKey = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/october/lock',
+        headers: ownerHeaders(),
+      });
+      expect(badKey.statusCode).toBe(422);
+      expect(badKey.body).toContain('YYYY-MM');
+    },
+  );
+
+  maybeIt(
+    '23-7 — October locks: the confirmation, the status flip, and every refusal',
+    async () => {
+      const before = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: ownerHeaders(),
+      });
+      expect(before.statusCode).toBe(200);
+      expect((JSON.parse(before.body) as { locked: boolean }).locked).toBe(
+        false,
+      );
+
+      const lock = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/2026-10/lock',
+        headers: ownerHeaders(),
+      });
+      expect(lock.statusCode).toBe(200);
+      const lockBody = JSON.parse(lock.body) as {
+        month: string;
+        lockedBy: string;
+        confirmation: Record<string, unknown>;
+      };
+      expect(lockBody.month).toBe('2026-10');
+      expect(lockBody.lockedBy).toBe(owner);
+      expect(String(lockBody.confirmation['statement'])).toContain('2026-10');
+      expect(String(lockBody.confirmation['permanence'])).toContain(
+        'cannot be undone',
+      );
+      expect(String(lockBody.confirmation['remedy'])).toContain('off-cycle');
+      expect(lockBody.confirmation['stagedOffCycleLines']).toBe(0);
+
+      // The readback: the lock row (API + DB) and the month-status flip.
+      const readback = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10/lock',
+        headers: ownerHeaders(),
+      });
+      expect(readback.statusCode).toBe(200);
+      expect(JSON.parse(readback.body)).toMatchObject({
+        month: '2026-10',
+        lockedBy: owner,
+      });
+      const { rows: lockRows } = await pool.query(
+        `select month, locked_by from public.payroll_month_locks
+          where tenant_id = $1 and month = '2026-10'`,
+        [tenant],
+      );
+      expect(lockRows).toHaveLength(1);
+      const statusAfter = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-10',
+        headers: ownerHeaders(),
+      });
+      expect((JSON.parse(statusAfter.body) as { locked: boolean }).locked).toBe(
+        true,
+      );
+
+      // An unlocked month has no lock row — a plain 404.
+      const unlocked = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/months/2026-11/lock',
+        headers: ownerHeaders(),
+      });
+      expect(unlocked.statusCode).toBe(404);
+
+      // Re-lock is a 409 naming the permanence — never a silent rewrite.
+      const slipsBefore = await payslipCount('2026-10');
+      const relock = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/2026-10/lock',
+        headers: ownerHeaders(),
+      });
+      expect(relock.statusCode).toBe(409);
+      expect(relock.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(relock.body).toContain('cannot be undone');
+
+      // Re-running a locked month is refused and touches zero payslips.
+      const rerun = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-10' },
+      });
+      expect(rerun.statusCode).toBe(409);
+      expect(rerun.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(await payslipCount('2026-10')).toBe(slipsBefore);
+
+      // A run override on a locked month is refused too — the month cannot
+      // re-run, so the override could never take effect.
+      const lockedOverride = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/payroll/employees/${employeeA}/run-override`,
+        headers: ownerHeaders(),
+        payload: {
+          month: '2026-10',
+          field: 'pf_employee',
+          amount: '1000',
+          acknowledgedLiability: true,
+        },
+      });
+      expect(lockedOverride.statusCode).toBe(409);
+      expect(lockedOverride.body).toContain('PAYROLL_MONTH_LOCKED');
+    },
+  );
+
+  maybeIt(
+    '23-7 — the attendance boundary: owned dates freeze, post-cut-off stay live',
+    async () => {
+      const correct = (workDate: string) =>
+        app.inject({
+          method: 'PUT',
+          url: `/api/v1/attendance/corrections/${employeeA}/${workDate}`,
+          headers: ownerHeaders(),
+          payload: { status: 'absent', note: 'payroll lock boundary probe' },
+        });
+
+      // Oct 20 is on/before October's resolved cut-off and October is
+      // locked — the correction is refused, naming the boundary. The
+      // resolved cut-off here is 25: the 23-6 fixture base re-established
+      // the Oct-1 row at fixed-26/cut-off 25 (the 23-4 leg's 22 was
+      // overwritten), so the gate must name THAT number.
+      const frozen = await correct('2026-10-20');
+      expect(frozen.statusCode).toBe(409);
+      expect(frozen.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(frozen.body).toContain('day-25');
+
+      // DELETE freezes identically through the same gate.
+      const frozenDelete = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/attendance/corrections/${employeeA}/2026-10-20`,
+        headers: ownerHeaders(),
+      });
+      expect(frozenDelete.statusCode).toBe(409);
+      expect(frozenDelete.body).toContain('PAYROLL_MONTH_LOCKED');
+
+      // Oct 27 is post-cut-off — owned by November's run, still editable
+      // while November is unlocked.
+      const live = await correct('2026-10-27');
+      expect(live.statusCode).toBe(200);
+
+      // November's run consumes the Oct-27 day (prior-period LOP) and
+      // completes even with October locked.
+      const nov = await app.inject({
+        method: 'POST',
+        url: runsUrl,
+        headers: ownerHeaders(),
+        payload: { month: '2026-11' },
+      });
+      expect(nov.statusCode).toBe(202);
+      const novId = (JSON.parse(nov.body) as { id: string }).id;
+      expect((await awaitRun(novId))['status']).toBe('completed');
+
+      // November locks; now it owns Oct 27 permanently.
+      const novLock = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payroll/months/2026-11/lock',
+        headers: ownerHeaders(),
+      });
+      expect(novLock.statusCode).toBe(200);
+
+      const nowFrozen = await correct('2026-10-27');
+      expect(nowFrozen.statusCode).toBe(409);
+      expect(nowFrozen.body).toContain('PAYROLL_MONTH_LOCKED');
+      expect(nowFrozen.body).toContain(
+        '2026-11 is locked for payroll and owns 2026-10-27',
+      );
+
+      // November's own pre-cut-off dates freeze with it.
+      const ownFrozen = await correct('2026-11-10');
+      expect(ownFrozen.statusCode).toBe(409);
+      expect(ownFrozen.body).toContain('2026-11 is locked');
+
+      // DELETE freezes identically — a removal is an edit of final payslip
+      // input too, through the same gate.
+      const frozenDeleteOwned = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/attendance/corrections/${employeeA}/2026-10-27`,
+        headers: ownerHeaders(),
+      });
+      expect(frozenDeleteOwned.statusCode).toBe(409);
+      expect(frozenDeleteOwned.body).toContain('PAYROLL_MONTH_LOCKED');
+    },
+  );
+
+  maybeIt(
+    '23-7 — the audit trail reads back newest-first, payroll-scoped, tenant-scoped',
+    async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/audit',
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const entries = JSON.parse(res.body) as Array<{
+        id: string;
+        createdAt: string;
+        actorId: string;
+        action: string;
+        targetUserId: string | null;
+        details: Record<string, unknown>;
+      }>;
+      expect(entries.length).toBeGreaterThan(0);
+      // Only payroll actions, newest first.
+      for (const entry of entries) {
+        expect(entry.action).toMatch(/^payroll\./);
+      }
+      for (let i = 1; i < entries.length; i += 1) {
+        expect(
+          new Date(entries[i - 1].createdAt).getTime(),
+        ).toBeGreaterThanOrEqual(new Date(entries[i].createdAt).getTime());
+      }
+      // The newest payroll write is the November lock; both locks are here.
+      expect(entries[0]['action']).toBe('payroll.month_locked');
+      const months = entries
+        .filter((e) => e.action === 'payroll.month_locked')
+        .map((e) => e.details['month']);
+      expect(months).toEqual(expect.arrayContaining(['2026-10', '2026-11']));
+      expect(await payrollAuditCount('payroll.month_locked')).toBe(2);
+      expect(
+        entries
+          .filter((e) => e.action === 'payroll.month_locked')
+          .every((e) => e.actorId === owner),
+      ).toBe(true);
+
+      // Another company's trail carries none of this company's locks.
+      const foreign = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/audit',
+        headers: { authorization: `Bearer ${bearerFor(otherOwner)}` },
+      });
+      expect(foreign.statusCode).toBe(200);
+      const foreignEntries = JSON.parse(foreign.body) as Array<{
+        action: string;
+        details: Record<string, unknown>;
+      }>;
+      // The whole payroll scope is tenant-scoped, not just the locks: zero
+      // of this company's rows leak across the tenant line. The stranger
+      // carries only the rows their OWN legs wrote — two calendar saves
+      // (the 23-4 cross-tenant revisions) and the zero-employee run — so
+      // anything outside that set is a leak.
+      expect(
+        foreignEntries.some((e) => e.action === 'payroll.month_locked'),
+      ).toBe(false);
+      for (const entry of foreignEntries.filter((e) =>
+        e.action.startsWith('payroll.'),
+      )) {
+        expect(['payroll.calendar_saved', 'payroll.run_completed']).toContain(
+          entry.action,
+        );
+        if (entry.action === 'payroll.run_completed') {
+          expect(entry.details['payslips']).toBe(0);
+        }
+      }
+
+      // An employee token is 403 on the trail.
+      const forbidden = await app.inject({
+        method: 'GET',
+        url: '/api/v1/payroll/audit',
+        headers: { authorization: `Bearer ${bearerFor(employeeA)}` },
+      });
+      expect(forbidden.statusCode).toBe(403);
+    },
+  );
 });

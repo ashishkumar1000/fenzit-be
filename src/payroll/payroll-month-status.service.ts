@@ -27,8 +27,8 @@ interface JoinDateRow {
 /**
  * What one run month looks like for payroll (CAP-3's acceptance surface and
  * the run engine's config read): the month-start-resolved calendar row (or
- * the defaults), the lock flag (false while no lock state exists — story 7
- * adds the state), and the first-payroll-month bound derived live from the
+ * the defaults), the lock flag (true once the permanent month lock exists —
+ * 23-7), and the first-payroll-month bound derived live from the
  * active employees' earliest join date. A month before the bound — or a
  * company with no join dates yet — is answered with a plain-English reason,
  * never a silent rejection. Zero database functions; explicit tenant filters.
@@ -52,10 +52,10 @@ export class PayrollMonthStatusService {
     }
     const admin = this.supabaseFactory.createAdmin();
 
-    // The two reads are independent — issue them together: this endpoint is
+    // The three reads are independent — issue them together: this endpoint is
     // the web UI's per-page-load and the run engine's per-run config read,
-    // so the parallel pair halves its wall-clock round-trips.
-    const [calendarRead, joinsRead] = await Promise.all([
+    // so the parallel batch halves its wall-clock round-trips.
+    const [calendarRead, joinsRead, lockRead] = await Promise.all([
       admin
         .from('payroll_calendar')
         .select('effective_from, divisor_convention, cutoff_day, pay_date')
@@ -72,6 +72,14 @@ export class PayrollMonthStatusService {
         .not('join_date', 'is', null)
         .order('join_date', { ascending: true })
         .limit(1),
+      // The lock flag (23-7): the (tenant_id, month) PK makes this a
+      // one-row-or-none read.
+      admin
+        .from('payroll_month_locks')
+        .select('month')
+        .eq('tenant_id', tenantId)
+        .eq('month', month)
+        .maybeSingle<{ month: string }>(),
     ]);
     if (calendarRead.error) {
       this.logger.error('Failed to read the payroll calendar:', {
@@ -82,6 +90,12 @@ export class PayrollMonthStatusService {
     if (joinsRead.error) {
       this.logger.error('Failed to read the join dates:', {
         error: joinsRead.error,
+      });
+      throw internalError('Failed to load the payroll month status');
+    }
+    if (lockRead.error) {
+      this.logger.error('Failed to read the month lock:', {
+        error: lockRead.error,
       });
       throw internalError('Failed to load the payroll month status');
     }
@@ -118,7 +132,7 @@ export class PayrollMonthStatusService {
       cutoffDay: resolved?.cutoffDay ?? CALENDAR_DEFAULTS.cutoffDay,
       payDate: resolved?.payDate ?? CALENDAR_DEFAULTS.payDate,
       effectiveFrom: resolved?.effectiveFrom ?? null,
-      locked: false, // the lock state arrives with the payroll-lock story.
+      locked: lockRead.data !== null,
       firstPayrollMonth,
       notRunnableReason,
     };

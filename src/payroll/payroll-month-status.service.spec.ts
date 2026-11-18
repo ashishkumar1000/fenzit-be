@@ -12,7 +12,7 @@ import {
  * resolution with the defaults when nothing governs, the bound derived live
  * from active employee join dates, and plain-English reasons for every
  * not-runnable answer. The fake routes calendar reads (ordered) vs
- * membership reads (join_date rows).
+ * membership reads (join_date rows) vs the month-lock probe (23-7).
  */
 function build(
   opts: {
@@ -20,12 +20,14 @@ function build(
     calendarError?: { code?: string; message: string } | null;
     joinRows?: Array<Record<string, unknown>>;
     joinsError?: { code?: string; message: string } | null;
+    lockRow?: Record<string, unknown> | null;
+    lockError?: { code?: string; message: string } | null;
   } = {},
 ) {
   const mkBuilder = (table: string) => {
     const b: Record<string, unknown> = {};
     let limitCount: number | null = null;
-    for (const name of ['eq', 'select']) {
+    for (const name of ['eq', 'select', 'maybeSingle']) {
       b[name] = jest.fn(() => b);
     }
     b['not'] = jest.fn(() => b);
@@ -40,6 +42,10 @@ function build(
           data: opts.calendarRows ?? [],
           error: opts.calendarError ?? null,
         });
+        return;
+      }
+      if (table === 'payroll_month_locks') {
+        resolve({ data: opts.lockRow ?? null, error: opts.lockError ?? null });
         return;
       }
       // memberships — the bound read. Postgres honours the order+limit, so
@@ -249,6 +255,25 @@ describe('PayrollMonthStatusService — the bound and its reasons', () => {
   });
 });
 
+describe('PayrollMonthStatusService — the lock flag (23-7)', () => {
+  it('a month with a lock row reads locked: true, others false', async () => {
+    const locked = build({
+      joinRows: [{ join_date: '2026-09-01' }],
+      lockRow: { month: '2026-10' },
+    });
+    expect(
+      (await locked.service.monthStatus(companyAdmin, '2026-10')).locked,
+    ).toBe(true);
+    const unlocked = build({ joinRows: [{ join_date: '2026-09-01' }] });
+    expect(
+      (await unlocked.service.monthStatus(companyAdmin, '2026-10')).locked,
+    ).toBe(false);
+    // The lock probe filtered to the asked month and asked for one row.
+    const b = builderOf(locked, 2);
+    expect(b['eq']).toHaveBeenCalledWith('month', '2026-10');
+  });
+});
+
 describe('PayrollMonthStatusService — boundaries', () => {
   it.each([
     ['2026-13', 'real month'],
@@ -277,6 +302,16 @@ describe('PayrollMonthStatusService — boundaries', () => {
     expect(err.status).toBe(500);
     expect(String(err.body['message'])).not.toContain('boom');
     expect(String(err.body['message'])).not.toContain('joining date');
+  });
+
+  it('a lock read failure is a 500, never a fake "unlocked" answer', async () => {
+    const t = build({
+      joinRows: [{ join_date: '2026-09-01' }],
+      lockError: { code: 'XX000', message: 'boom' },
+    });
+    const err = await httpError(t.service.monthStatus(companyAdmin, '2026-10'));
+    expect(err.status).toBe(500);
+    expect(String(err.body['message'])).not.toContain('boom');
   });
 
   it('a caller with no company is a 400 before any query', async () => {

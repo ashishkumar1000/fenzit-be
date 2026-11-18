@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -15,6 +20,7 @@ import {
 } from './payroll.helpers';
 import { PostPayrollRunDto, PayrollRunView } from './dto/payroll-run.dto';
 import { PayrollRunEngineService } from './payroll-run-engine.service';
+import { PayrollLockService } from './payroll-lock.service';
 
 interface RunRow {
   id: string;
@@ -35,8 +41,9 @@ const STALE_RUNNING_MS = 15 * 60 * 1000;
 /**
  * The run lifecycle (CAP-3): the owner enqueues a month, the engine executes
  * it in-process, the status polls. Acceptance gates — the first-payroll-month
- * bound, the future, and the cut-off day (tenant time) — each refuse in plain
- * English with zero payslips written. A queued or running run for the month
+ * bound, the future, the cut-off day (tenant time), and the permanent month
+ * lock (23-7) — each refuse in plain English with zero payslips written. A
+ * queued or running run for the month
  * is returned as-is (idempotent enqueue); a stale running row (an executor
  * that died) is reclaimed so the retry path never wedges.
  */
@@ -49,6 +56,7 @@ export class PayrollRunService {
     private readonly pg: PgPoolFactory,
     private readonly engine: PayrollRunEngineService,
     private readonly monthStatus: PayrollMonthStatusService,
+    private readonly lockService: PayrollLockService,
   ) {}
 
   async enqueue(
@@ -90,6 +98,16 @@ export class PayrollRunService {
           `the ${dto.month} run opens on day ${cutoff} of the month (the attendance cut-off) — today is day ${dayOfMonth}`,
         );
       }
+    }
+
+    // The permanent lock (23-7): a locked month's payslips are final — no
+    // re-run, ever (the override's "survives unlocked re-runs" story stops
+    // here too).
+    if (await this.lockService.isLocked(tenantId, dto.month)) {
+      throw new ConflictException({
+        error_code: ErrorCode.PAYROLL_MONTH_LOCKED,
+        message: `${dto.month} is locked for payroll — its payslips are final and cannot be re-run`,
+      });
     }
 
     // Idempotent enqueue + stale reclaim.

@@ -3,7 +3,11 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import type { PoolClient } from 'pg';
-import { CursorScope, decodeCursor, encodeCursor } from '../common/utils/cursor.util';
+import {
+  CursorScope,
+  decodeCursor,
+  encodeCursor,
+} from '../common/utils/cursor.util';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { dbNow } from './check-in-out.repository';
 import { toTenantOffsetIso } from './check-in-out.model';
@@ -27,6 +31,7 @@ import {
   type CorrectionEntry,
   type CorrectionValue,
 } from './correction.model';
+import { assertPayrollDateEditable } from './payroll-date-gate';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import {
   ackAttempts,
@@ -58,7 +63,11 @@ const CONTROL_CHARS =
 
 export interface PutCorrectionResponse {
   workDate: string;
-  override: { status: string | null; checkinAt: string | null; checkoutAt: string | null };
+  override: {
+    status: string | null;
+    checkinAt: string | null;
+    checkoutAt: string | null;
+  };
   correctedAt: string;
   actorId: string;
 }
@@ -128,7 +137,11 @@ export class CorrectionsService {
     owner: RequestUser,
     employeeId: string,
     workDate: string,
-    value: { status?: string | null; checkinAt?: string | null; checkoutAt?: string | null },
+    value: {
+      status?: string | null;
+      checkinAt?: string | null;
+      checkoutAt?: string | null;
+    },
     rawNote: string,
   ): Promise<PutCorrectionResponse> {
     const tenantId = requireTenant(owner);
@@ -136,6 +149,9 @@ export class CorrectionsService {
     this.assertEmployeeId(employeeId);
     this.assertWorkDate(workDate);
     return this.pg.withTransaction(async (tx) => {
+      // Gate 0: a locked payroll month owns this date — the edit is refused
+      // before any employee state is touched (23-7).
+      await assertPayrollDateEditable(tx, tenantId, workDate);
       await this.lockEmployee(tx, employeeId);
       const row = await this.dayRow(tx, tenantId, employeeId, workDate);
 
@@ -202,7 +218,12 @@ export class CorrectionsService {
         };
       } else {
         // Gate 4: instants anchor the work_date (16-2's string compares)
-        await this.validateInstants(tx, row, value.checkinAt ?? null, value.checkoutAt ?? null);
+        await this.validateInstants(
+          tx,
+          row,
+          value.checkinAt ?? null,
+          value.checkoutAt ?? null,
+        );
         newValue = {
           status: null,
           checkinAt: value.checkinAt
@@ -254,6 +275,9 @@ export class CorrectionsService {
     this.assertEmployeeId(employeeId);
     this.assertWorkDate(workDate);
     return this.pg.withTransaction(async (tx) => {
+      // Gate 0: a locked payroll month owns this date — even a removal is an
+      // edit of final payslip input, so it is refused (23-7).
+      await assertPayrollDateEditable(tx, tenantId, workDate);
       if (!(await employeeExistsInTenant(tx, tenantId, employeeId))) {
         throw attendanceEmployeeNotFound();
       }
@@ -274,7 +298,12 @@ export class CorrectionsService {
       }
 
       const oldValue = valueOfOverride(row.override, row.ctx.timezone);
-      const count = await softDeleteOverride(tx, tenantId, employeeId, workDate);
+      const count = await softDeleteOverride(
+        tx,
+        tenantId,
+        employeeId,
+        workDate,
+      );
       if (count > 0) {
         await insertCorrection(tx, {
           tenantId,
@@ -407,7 +436,11 @@ export class CorrectionsService {
       const last = page[page.length - 1];
       const nextCursor =
         hasMore && last
-          ? encodeCursor(last.id, new Date(last.created_at).toISOString(), scope)
+          ? encodeCursor(
+              last.id,
+              new Date(last.created_at).toISOString(),
+              scope,
+            )
           : null;
       return {
         data: page.map((r) => toCorrectionEntry(r, r.actor_name, timezone)),
@@ -417,7 +450,10 @@ export class CorrectionsService {
     });
   }
 
-  private async lockEmployee(tx: PoolClient, employeeId: string): Promise<void> {
+  private async lockEmployee(
+    tx: PoolClient,
+    employeeId: string,
+  ): Promise<void> {
     await tx.query('select public.attendance_lock_employee($1)', [employeeId]);
   }
 
@@ -449,10 +485,20 @@ export class CorrectionsService {
     employeeId: string,
     workDate: string,
   ): Promise<DayGridRow> {
-    const rows = await readDayStatusGrid(tx, tenantId, [employeeId], workDate, workDate);
+    const rows = await readDayStatusGrid(
+      tx,
+      tenantId,
+      [employeeId],
+      workDate,
+      workDate,
+    );
     const row = rows[0];
     if (!row) {
-      logger.error('Day grid returned no row', { tenantId, employeeId, workDate });
+      logger.error('Day grid returned no row', {
+        tenantId,
+        employeeId,
+        workDate,
+      });
       throw internalError('Failed to read the correction facts');
     }
     return row;
