@@ -70,6 +70,7 @@ function fixture(over: Partial<PayslipSnapshot> = {}): PayslipSnapshot {
       { source: 'head:Insurance', amount: 250 },
       { source: 'recovery:2026-09', amount: 100 },
     ],
+    leave_balances: [],
     ...over,
   };
 }
@@ -289,5 +290,62 @@ describe('buildPayslipDocument (23-8)', () => {
     expect(deductionLabel('recovery:2026-09')).toBe('Recovery (2026-09)');
     expect(deductionLabel('head:Insurance')).toBe('Insurance');
     expect(deductionLabel('pf_employee')).toBe('pf_employee');
+  });
+
+  describe('leave balances (23-13)', () => {
+    const withBalances = fixture({
+      leave_balances: [
+        {
+          code: 'earned',
+          name: 'Earned Leave',
+          accrued: 6,
+          availed: 1.5,
+          carryForward: 2,
+          remaining: 6.5,
+        },
+        {
+          code: 'sick',
+          name: 'Sick Leave',
+          accrued: 3,
+          availed: 0.5,
+          carryForward: 0,
+          remaining: 2.5,
+        },
+      ],
+    });
+
+    it('renders one row per captured type with day-count cells (never ₹)', () => {
+      const texts = allTexts(buildPayslipDocument(withBalances));
+      expect(has(texts, 'Leave balances')).toBe(true);
+      expect(has(texts, 'Earned Leave')).toBe(true);
+      expect(has(texts, 'Sick Leave')).toBe(true);
+      // Day counts render plainly (0.5, 2.5) — no rupee grouping on days.
+      expect(has(texts, '1.5')).toBe(true);
+      expect(has(texts, '2.5')).toBe(true);
+    });
+
+    it('sits between the attendance block and the deductions table', () => {
+      const texts = allTexts(buildPayslipDocument(withBalances));
+      const attendance = texts.indexOf('Overtime');
+      const leave = texts.indexOf('Leave balances');
+      const deductions = texts.indexOf('Deductions');
+      expect(attendance).toBeGreaterThan(-1);
+      expect(leave).toBeGreaterThan(attendance);
+      expect(deductions).toBeGreaterThan(leave);
+    });
+
+    it('a slip with nothing captured renders NO section at all — never an empty table', () => {
+      const texts = allTexts(buildPayslipDocument(fixture()));
+      expect(has(texts, 'Leave balances')).toBe(false);
+    });
+
+    it('null-safes a missing column the way the pre-migration rows read', () => {
+      const texts = allTexts(
+        buildPayslipDocument(
+          fixture({ leave_balances: undefined as unknown as [] }),
+        ),
+      );
+      expect(has(texts, 'Leave balances')).toBe(false);
+    });
   });
 });

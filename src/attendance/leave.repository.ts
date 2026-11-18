@@ -1,10 +1,10 @@
 import type { PoolClient } from 'pg';
+import type { AccrualTypeConfig } from './leave-balance.math';
 import {
   ACTIVE_LEAVE_STATES,
   DERIVED_STATUS_ORDER,
   type DerivedLeaveStatus,
   type LeaveDayState,
-  PG_OVERLAP_CONSTRAINT,
   PG_REQUEST_KEY_CONSTRAINT,
 } from './leave.constants';
 import { leaveTypeNotFound } from './leave.model';
@@ -89,19 +89,45 @@ export async function insertLeaveRequest(
   }
 }
 
-/** The catalog type the apply picked must belong to the same company. */
-export async function leaveTypeExistsInTenant(
+/**
+ * The catalog type the apply picked, as the accrual needs it — or null
+ * for anything outside this company. A legacy remnant (code NULL) or a
+ * disabled row comes back WITH its shape so the caller can refuse it
+ * upstream of the balance check.
+ */
+export async function readLeaveTypeConfig(
   tx: PoolClient,
   tenantId: string,
   leaveTypeId: string,
-): Promise<boolean> {
-  const result = await tx.query(
-    `select 1 from public.leave_types
-      where tenant_id = $1::uuid and id = $2::uuid
-      limit 1`,
+): Promise<AccrualTypeConfig | null> {
+  const result = await tx.query<{
+    id: string;
+    code: string | null;
+    name: string;
+    accrual_mode: string | null;
+    accrual_days: string;
+    carry_forward: boolean;
+    allow_over_balance: boolean;
+    enabled: boolean;
+  }>(
+    `select id, code, name, accrual_mode, accrual_days::text as accrual_days,
+            carry_forward, allow_over_balance, enabled
+       from public.leave_types
+      where tenant_id = $1::uuid and id = $2::uuid`,
     [tenantId, leaveTypeId],
   );
-  return (result.rowCount ?? 0) > 0;
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    accrualMode: row.accrual_mode as AccrualTypeConfig['accrualMode'],
+    accrualDays: Number(row.accrual_days),
+    carryForward: row.carry_forward,
+    allowOverBalance: row.allow_over_balance,
+    enabled: row.enabled,
+  };
 }
 
 /** The request's own id for an existing idempotency key (replay path). */

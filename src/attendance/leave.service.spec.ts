@@ -87,10 +87,13 @@ function baseRouter(
     holidays?: unknown[];
     lockedMonths?: string[];
     updateCount?: number;
+    leaveTypeRow?: Record<string, unknown> | null;
+    joinDateRow?: { join_date: string | null; exit_date: string | null } | null;
+    existingLeaveDays?: Array<Record<string, unknown>>;
+    leaveCredits?: Array<Record<string, unknown>>;
   } = {},
 ): Router {
-  let requestReads = 0;
-  return (sql, params?: unknown[]) => {
+  return (sql, params?: unknown[]): { rows: unknown[] } => {
     if (sql.includes('attendance_lock')) return { rows: [] };
     if (sql.includes('attendance_today'))
       return { rows: [{ today: '2026-09-29' }] };
@@ -105,7 +108,6 @@ function baseRouter(
       return { rows: overrides.replay ? [overrides.replay] : [] };
     // findRequestWithDays — the request read (and re-reads).
     if (sql.includes('from public.leave_requests') && sql.includes('id = $2')) {
-      requestReads += 1;
       return {
         rows:
           overrides.request !== undefined ? [overrides.request] : [REQUEST_ROW],
@@ -117,13 +119,13 @@ function baseRouter(
       sql.includes('from public.leave_request_days') &&
       sql.includes('state = any($2::text[])')
     )
-      return { rows: overrides.sourceDays ?? DAYS };
+      return { rows: (overrides.sourceDays ?? DAYS) as unknown[] };
     if (
       sql.includes('from public.leave_request_days') &&
       sql.includes('where leave_request_id = $1') &&
       sql.includes('order by leave_date')
     )
-      return { rows: overrides.days ?? DAYS };
+      return { rows: (overrides.days ?? DAYS) as unknown[] };
     // findLastEvent.
     if (sql.includes('from public.leave_events'))
       return { rows: overrides.lastEvent ? [overrides.lastEvent] : [] };
@@ -191,14 +193,41 @@ function baseRouter(
           },
         ],
       };
-    // CAP-12: the apply's leaveTypeExistsInTenant probe — only the known
-    // type answers "present" (rowCount is what the repository reads).
+    // CAP-12 + 23-13: the apply's type probe reads the full accrual shape
+    // now — enabled + code decide whether the request may carry the type.
     if (sql.includes('from public.leave_types')) {
       const known = params?.[1] === KNOWN_TYPE_ID;
-      return known
-        ? { rows: [{ ok: 1 }], rowCount: 1 }
-        : { rows: [], rowCount: 0 };
+      return {
+        rows:
+          known && overrides.leaveTypeRow !== null
+            ? [
+                overrides.leaveTypeRow ?? {
+                  id: KNOWN_TYPE_ID,
+                  code: 'earned',
+                  name: 'Earned Leave',
+                  accrual_mode: 'monthly',
+                  accrual_days: '1.00',
+                  carry_forward: true,
+                  allow_over_balance: false,
+                  enabled: true,
+                },
+              ]
+            : [],
+      };
     }
+    // 23-13: the balance-check reads (employment, existing consumption,
+    // manual credits — empty by default = no existing days, no credits).
+    if (sql.includes('join_date::text as join_date'))
+      return {
+        rows:
+          overrides.joinDateRow === undefined
+            ? [{ join_date: '2026-05-01', exit_date: null }]
+            : [overrides.joinDateRow],
+      };
+    if (sql.includes('from public.leave_balance_credits'))
+      return { rows: overrides.leaveCredits ?? [] };
+    if (sql.includes('d.employee_id = any($2::uuid[])'))
+      return { rows: overrides.existingLeaveDays ?? [] };
     if (sql.includes('insert into public.leave_requests'))
       return { rows: [REQUEST_ROW] };
     if (sql.includes('insert into public.leave_request_days'))
@@ -251,7 +280,7 @@ async function rejectionOf(
 
 describe('LeaveService — apply (17-1)', () => {
   it('locks tenant → employee, inserts the request, all-pending days, event and one notification per company admin', async () => {
-    const { tx, queries, service } = fakeTx(baseRouter());
+    const { queries, service } = fakeTx(baseRouter());
     const view = await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
     expect(queries[0].sql).toContain('attendance_lock_tenant');
     expect(queries[1].sql).toContain('attendance_lock_employee');
@@ -309,6 +338,287 @@ describe('LeaveService — apply (17-1)', () => {
     expect(
       queries.some((q) => q.sql.includes('insert into public.leave_requests')),
     ).toBe(false);
+  });
+
+  // ---- 23-13: the balance check (slotted after the facts, under the lock)
+
+  it('an apply within balance passes and the balance reads ran (23-13)', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.applyForSelf(
+      user(EMPLOYEE),
+      dto({ leaveTypeId: KNOWN_TYPE_ID }),
+      KEY,
+    );
+    // The check consumed the balance reads: employment + consumption +
+    // credits, INSIDE the same transaction.
+    expect(
+      queries.some((q) => q.sql.includes('join_date::text as join_date')),
+    ).toBe(true);
+    expect(
+      queries.some((q) => q.sql.includes('from public.leave_balance_credits')),
+    ).toBe(true);
+    const requestInsert = queries.find((q) =>
+      q.sql.includes('insert into public.leave_requests'),
+    );
+    expect(requestInsert).toBeDefined();
+  });
+
+  it('an apply over balance answers 422 LEAVE_INSUFFICIENT_BALANCE with both numbers (23-13)', async () => {
+    // Join May 2026, as-of Sep 29 → 5 accrued; 4 existing consumed days
+    // leave 1 — the 3-day request cannot fit.
+    const { queries, service } = fakeTx(
+      baseRouter({
+        existingLeaveDays: [
+          {
+            leave_date: '2026-08-03',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-04',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-05',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-06',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+        ],
+      }),
+    );
+    const { status, body } = await rejectionOf(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({ leaveTypeId: KNOWN_TYPE_ID }),
+        KEY,
+      ),
+    );
+    expect(status).toBe(422);
+    expect(body).toMatchObject({ error_code: 'LEAVE_INSUFFICIENT_BALANCE' });
+    const message = String(body['message']);
+    expect(message).toContain('Earned Leave');
+    expect(message).toContain('1 day left');
+    expect(message).toContain('needs 3 days');
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(false);
+  });
+
+  it('a disabled catalog type (or a legacy remnant) cannot carry a new request (23-13)', async () => {
+    for (const leaveTypeRow of [
+      {
+        id: KNOWN_TYPE_ID,
+        code: 'earned',
+        name: 'Earned Leave',
+        accrual_mode: 'monthly',
+        accrual_days: '1.00',
+        carry_forward: true,
+        allow_over_balance: false,
+        enabled: false,
+      },
+      {
+        id: KNOWN_TYPE_ID,
+        code: null,
+        name: 'Casual Leave',
+        accrual_mode: null,
+        accrual_days: '0.00',
+        carry_forward: false,
+        allow_over_balance: false,
+        enabled: false,
+      },
+    ]) {
+      const { queries, service } = fakeTx(baseRouter({ leaveTypeRow }));
+      const { status, body } = await rejectionOf(
+        service.applyForSelf(
+          user(EMPLOYEE),
+          dto({ leaveTypeId: KNOWN_TYPE_ID }),
+          KEY,
+        ),
+      );
+      expect(status).toBe(422);
+      expect(body).toMatchObject({ error_code: 'LEAVE_TYPE_DISABLED' });
+      expect(
+        queries.some((q) =>
+          q.sql.includes('insert into public.leave_requests'),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('a type that allows over-balance passes the same check that blocked it (23-13)', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        leaveTypeRow: {
+          id: KNOWN_TYPE_ID,
+          code: 'earned',
+          name: 'Earned Leave',
+          accrual_mode: 'monthly',
+          accrual_days: '1.00',
+          carry_forward: true,
+          allow_over_balance: true,
+          enabled: true,
+        },
+        existingLeaveDays: [
+          {
+            leave_date: '2026-08-03',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-04',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-05',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-06',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+        ],
+      }),
+    );
+    await expect(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({ leaveTypeId: KNOWN_TYPE_ID }),
+        KEY,
+      ),
+    ).resolves.toBeDefined();
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(true);
+  });
+
+  it('Comp-Off (mode none) skips the balance check entirely (23-13)', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        leaveTypeRow: {
+          id: KNOWN_TYPE_ID,
+          code: 'comp_off',
+          name: 'Comp-Off',
+          accrual_mode: 'none',
+          accrual_days: '0.00',
+          carry_forward: false,
+          allow_over_balance: false,
+          enabled: true,
+        },
+        existingLeaveDays: [
+          {
+            leave_date: '2026-08-03',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+        ],
+      }),
+    );
+    await expect(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({ leaveTypeId: KNOWN_TYPE_ID }),
+        KEY,
+      ),
+    ).resolves.toBeDefined();
+    expect(
+      queries.some((q) => q.sql.includes('from public.leave_balance_credits')),
+    ).toBe(false);
+  });
+
+  it('a zero-grant annual type refuses an apply (Bereavement before the owner sets the number)', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        leaveTypeRow: {
+          id: KNOWN_TYPE_ID,
+          code: 'bereavement',
+          name: 'Bereavement',
+          accrual_mode: 'annual',
+          accrual_days: '0.00',
+          carry_forward: false,
+          allow_over_balance: false,
+          enabled: true,
+        },
+      }),
+    );
+    const { status, body } = await rejectionOf(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({ leaveTypeId: KNOWN_TYPE_ID }),
+        KEY,
+      ),
+    );
+    // The grant is 0 → accrued 0 → the generic insufficient-balance 422
+    // IS the block; no dedicated gate exists.
+    expect(status).toBe(422);
+    expect(body).toMatchObject({ error_code: 'LEAVE_INSUFFICIENT_BALANCE' });
+    expect(String(body['message'])).toContain('Bereavement');
+  });
+
+  it('an untyped apply never runs a balance read (23-13)', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
+    expect(
+      queries.some((q) => q.sql.includes('from public.leave_balance_credits')),
+    ).toBe(false);
+    expect(
+      queries.some((q) => q.sql.includes('join_date::text as join_date')),
+    ).toBe(false);
+  });
+
+  it('a half-day consumes 0.5 — it fits where a full day would not (23-13)', async () => {
+    // 4 full + 1 half = 4.5 consumed → remaining 0.5; a HALF request fits.
+    const { service } = fakeTx(
+      baseRouter({
+        existingLeaveDays: [
+          {
+            leave_date: '2026-08-03',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-04',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-05',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-06',
+            part: 'full_day',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+          {
+            leave_date: '2026-08-07',
+            part: 'second_half',
+            leave_type_id: KNOWN_TYPE_ID,
+          },
+        ],
+      }),
+    );
+    await expect(
+      service.applyForSelf(
+        user(EMPLOYEE),
+        dto({
+          startDate: '2026-10-01',
+          endDate: '2026-10-01',
+          part: 'first_half',
+          leaveTypeId: KNOWN_TYPE_ID,
+        }),
+        KEY,
+      ),
+    ).resolves.toBeDefined();
   });
 
   it('replays the stored request with NO second write (AD-6)', async () => {

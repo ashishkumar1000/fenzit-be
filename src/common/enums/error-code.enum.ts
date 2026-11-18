@@ -112,9 +112,6 @@ export enum ErrorCode {
   /** The employment record changed between this read and write (409) — the
    *  database CHECK backstop caught a stale read; reload and retry. */
   EMPLOYMENT_RECORD_CHANGED = 'EMPLOYMENT_RECORD_CHANGED',
-  /** A leave type is referenced by existing leave requests and cannot be
-   *  deleted (409) — retype those requests first. */
-  LEAVE_TYPE_IN_USE = 'LEAVE_TYPE_IN_USE',
   /** The chosen leave type vanished while this typing was in flight (409) —
    *  the foreign-key RESTRICT backstop caught the race; reload and retry. */
   LEAVE_TYPE_CHANGED = 'LEAVE_TYPE_CHANGED',
@@ -139,4 +136,14 @@ export enum ErrorCode {
    *  running (409) — the lock would freeze payslips the run is about to
    *  replace. Wait for the run to finish, then lock. */
   PAYROLL_RUN_IN_PROGRESS = 'PAYROLL_RUN_IN_PROGRESS',
+  // Leave accrual (23-13)
+  /** The request needs more days of this type than the derived balance
+   *  holds (422); the message carries both numbers. */
+  LEAVE_INSUFFICIENT_BALANCE = 'LEAVE_INSUFFICIENT_BALANCE',
+  /** The leave type is a disabled catalog row or an unmatched legacy
+   *  remnant: applies and re-typing onto it are refused (422). */
+  LEAVE_TYPE_DISABLED = 'LEAVE_TYPE_DISABLED',
+  /** The leave type is an unmatched legacy remnant (code NULL) — a
+   *  read-only row whose values the owner cannot edit (409). */
+  LEAVE_TYPE_NOT_CONFIGURABLE = 'LEAVE_TYPE_NOT_CONFIGURABLE',
 }

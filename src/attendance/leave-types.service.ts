@@ -9,64 +9,72 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
-import { internalError, requireTenant } from './attendance-rpc.helpers';
+import {
+  internalError,
+  requireTenant,
+  writeAuditRpc,
+} from './attendance-rpc.helpers';
 import { leaveNotFound } from './leave.model';
 import { assertPayrollDatesEditable } from './payroll-date-gate';
 import {
-  CreateLeaveTypeDto,
   LeaveTypeView,
+  PatchLeaveTypeValuesDto,
   SetLeaveRequestTypeDto,
-  UpdateLeaveTypeDto,
 } from './dto/leave-type.dto';
 
-/** One catalog row as stored. */
+/** One catalog row as stored (numeric days arrive as text). */
 interface LeaveTypeRow {
   id: string;
   tenant_id: string;
+  code: string | null;
   name: string;
+  accrual_mode: string | null;
+  /** PostgREST answers a numeric as a JSON number; the pg-tx read as text. */
+  accrual_days: string | number;
+  carry_forward: boolean;
+  allow_over_balance: boolean;
   paid: boolean;
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 }
 
-const LEAVE_TYPE_COLUMNS = 'id, tenant_id, name, paid, created_at, updated_at';
+// The PostgREST select string. PostgREST strips inner whitespace, so a
+// `::text as alias` cast parses as a bogus type name — and its alias
+// grammar cannot follow a cast either. Plain `accrual_days` arrives as a
+// JSON number (the view Number()-wraps it); the pg-tx queries use real SQL
+// and keep their `::text as` casts.
+const LEAVE_TYPE_COLUMNS =
+  'id, tenant_id, code, name, accrual_mode, accrual_days, carry_forward, allow_over_balance, paid, enabled, created_at, updated_at';
 
-/** How a create/update/delete/typing answer reads on the wire. */
+/** How a catalog answer reads on the wire. */
 export function toLeaveTypeView(row: LeaveTypeRow): LeaveTypeView {
   return {
     id: row.id,
+    code: row.code,
     name: row.name,
+    accrualMode: row.accrual_mode,
+    accrualDays: Number(row.accrual_days),
+    carryForward: row.carry_forward,
+    allowOverBalance: row.allow_over_balance,
     paid: row.paid,
+    enabled: row.enabled,
+    configurable: row.code !== null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 /**
- * The confirmed create-time default (owner, 2026-11-17): names containing
- * the words unpaid or LOP default to UNPAID, everything else — casual,
- * sick, earned, and any name matching no keyword — defaults to PAID. Both
- * keywords are word-scoped (a compound that merely contains the letters is
- * not a match), and an explicit `paid` in the body always wins.
- */
-export function defaultPaidMarking(name: string): boolean {
-  const normalised = name.toLowerCase();
-  const hasWord = (keyword: string): boolean =>
-    new RegExp(`(^|[^a-z])${keyword}([^a-z]|$)`).test(normalised);
-  if (hasWord('unpaid') || hasWord('lop')) {
-    return false;
-  }
-  return true;
-}
-
-/**
- * The paid/unpaid leave-type catalog (CAP-12) and the typing of existing
- * requests. Config rows are mutable: a payroll run resolves the marking at
- * execution time, so a reclassification reaches the next run unchanged —
- * nothing snapshots here. Zero database functions: every read and write is a
- * guarded table statement with an explicit tenant filter, and each mutation
- * writes one `write_audit_row` entry carrying changed-field names and the
- * old/new paid flag only (never the names).
+ * The FIXED leave-type catalog (23-13): every company carries exactly
+ * Earned Leave, Sick Leave, Bereavement and Comp-Off — types cannot be
+ * created or deleted, and names, codes and accrual modes are inherent.
+ * The owner edits VALUES only (rate/grant, carry-forward, over-balance,
+ * paid, enabled). Rows that predate the fixed catalog and matched no
+ * code are read-only remnants (code NULL, never enabled). Zero database
+ * functions: every read and write is a guarded table statement with an
+ * explicit tenant filter, and each mutation writes one `write_audit_row`
+ * entry carrying the changed-field names and old/new pairs.
  */
 @Injectable()
 export class LeaveTypesService {
@@ -77,6 +85,7 @@ export class LeaveTypesService {
     private readonly pg: PgPoolFactory,
   ) {}
 
+  /** The owner's catalog view: the fixed four plus any legacy remnants. */
   async list(user: RequestUser): Promise<LeaveTypeView[]> {
     const tenantId = requireTenant(user);
     const { data, error } = await this.supabaseFactory
@@ -92,82 +101,90 @@ export class LeaveTypesService {
     return ((data ?? []) as unknown as LeaveTypeRow[]).map(toLeaveTypeView);
   }
 
-  async create(
-    user: RequestUser,
-    dto: CreateLeaveTypeDto,
-  ): Promise<LeaveTypeView & { appliedDefault?: 'paid' | 'unpaid' }> {
+  /** The employee catalog: enabled types only, Comp-Off included (the app
+   *  renders its "owner approves" shape from accrualMode none). */
+  async listEnabled(user: RequestUser): Promise<LeaveTypeView[]> {
     const tenantId = requireTenant(user);
-    const admin = this.supabaseFactory.createAdmin();
-    const name = dto.name.trim();
-    const defaulted = dto.paid === undefined || dto.paid === null;
-    const paid = defaulted ? defaultPaidMarking(name) : (dto.paid as boolean);
-
-    await this.refuseDuplicateName(admin, tenantId, name, null);
-    const conflict = () =>
-      new ConflictException({
-        error_code: ErrorCode.DUPLICATE_RESOURCE,
-        message: `A leave type called "${name}" already exists in your company`,
-      });
-
-    const { data, error } = await admin
+    const { data, error } = await this.supabaseFactory
+      .createAdmin()
       .from('leave_types')
-      .insert({ tenant_id: tenantId, name, paid })
       .select(LEAVE_TYPE_COLUMNS)
-      .single<LeaveTypeRow>();
+      .eq('tenant_id', tenantId)
+      .eq('enabled', true)
+      .order('name', { ascending: true });
     if (error) {
-      if (error.code === '23505') throw conflict();
-      this.logger.error('Failed to create the leave type:', { error });
-      throw internalError('Failed to create the leave type');
+      this.logger.error('Failed to list the enabled leave types:', { error });
+      throw internalError('Failed to list the leave types');
     }
-
-    await this.writeAudit(
-      admin,
-      user.userId,
-      tenantId,
-      'leave.type_created',
-      null,
-      { changed_fields: ['name', 'paid'], new_paid: data.paid },
-    );
-    const view = toLeaveTypeView(data);
-    return defaulted
-      ? { ...view, appliedDefault: paid ? 'paid' : 'unpaid' }
-      : view;
+    return ((data ?? []) as unknown as LeaveTypeRow[]).map(toLeaveTypeView);
   }
 
-  async update(
+  /**
+   * Values-only PATCH. Name, code and accrual mode are absent from the
+   * DTO — the global pipe silently strips such body keys, so a rename
+   * attempt lands as the no-change answer with no audit and nothing
+   * non-editable can persist.
+   */
+  async patchValues(
     user: RequestUser,
     id: string,
-    dto: UpdateLeaveTypeDto,
+    dto: PatchLeaveTypeValuesDto,
   ): Promise<LeaveTypeView> {
     const tenantId = requireTenant(user);
     const admin = this.supabaseFactory.createAdmin();
 
     const row = await this.readTypeRow(admin, tenantId, id);
+    if (row.code === null) {
+      throw notConfigurable();
+    }
+    // The mode rules (the DB checks are the backstop): mode-none types
+    // have no accrual to configure; carry-forward and the over-balance
+    // escape are monthly-only knobs.
+    if (
+      dto.accrualDays !== undefined &&
+      dto.accrualDays > 0 &&
+      row.accrual_mode === 'none'
+    ) {
+      throw modeRule('This leave type has no accrual to configure');
+    }
+    if (dto.carryForward === true && row.accrual_mode !== 'monthly') {
+      throw modeRule('Only monthly-accruing leave can carry forward');
+    }
+    if (dto.allowOverBalance === true && row.accrual_mode !== 'monthly') {
+      throw modeRule(
+        'Only monthly-accruing leave can allow over-balance applies',
+      );
+    }
 
-    // No clear verb on either field: null (or a name that trims empty) is a
-    // refused edit, not a removal — a catalog entry is renamed or re-marked.
-    if (dto.name === null) {
-      throw notClearable('name cannot be removed — rename the type instead');
-    }
-    if (dto.paid === null) {
-      throw notClearable('paid must be true or false — it cannot be cleared');
-    }
-    const newName =
-      dto.name === undefined ? undefined : dto.name.trim() || null;
-    if (newName === null) {
-      throw notClearable('name must not be empty or whitespace');
-    }
-
-    const updates: Record<string, string | boolean> = {};
+    const updates: Record<string, string | boolean | number> = {};
     const changedFields: string[] = [];
-    if (newName !== undefined && newName !== row.name) {
-      await this.refuseDuplicateName(admin, tenantId, newName, id);
-      updates['name'] = newName;
-      changedFields.push('name');
+    const oldValues: Record<string, unknown> = {};
+    const newValues: Record<string, unknown> = {};
+    const track = (
+      column: string,
+      next: string | boolean | number,
+      current: string | boolean | number,
+    ): void => {
+      if (next === current) return;
+      updates[column] = next;
+      changedFields.push(column);
+      oldValues[column] = current;
+      newValues[column] = next;
+    };
+    if (dto.accrualDays !== undefined) {
+      track('accrual_days', dto.accrualDays, Number(row.accrual_days));
     }
-    if (dto.paid !== undefined && dto.paid !== row.paid) {
-      updates['paid'] = dto.paid;
-      changedFields.push('paid');
+    if (dto.carryForward !== undefined) {
+      track('carry_forward', dto.carryForward, row.carry_forward);
+    }
+    if (dto.allowOverBalance !== undefined) {
+      track('allow_over_balance', dto.allowOverBalance, row.allow_over_balance);
+    }
+    if (dto.paid !== undefined) {
+      track('paid', dto.paid, row.paid);
+    }
+    if (dto.enabled !== undefined) {
+      track('enabled', dto.enabled, row.enabled);
     }
     if (changedFields.length === 0) {
       return toLeaveTypeView(row);
@@ -184,12 +201,6 @@ export class LeaveTypesService {
       .select(LEAVE_TYPE_COLUMNS)
       .single<LeaveTypeRow>();
     if (error) {
-      if (error.code === '23505') {
-        throw new ConflictException({
-          error_code: ErrorCode.DUPLICATE_RESOURCE,
-          message: `A leave type called "${updates['name']}" already exists in your company`,
-        });
-      }
       if (error.code === 'PGRST116') {
         // The type vanished between this read and the write.
         throw typeNotFound();
@@ -206,69 +217,11 @@ export class LeaveTypesService {
       null,
       {
         changed_fields: changedFields,
-        old_paid: row.paid,
-        new_paid: updated.paid,
+        old: oldValues,
+        new: newValues,
       },
     );
     return toLeaveTypeView(updated);
-  }
-
-  async remove(user: RequestUser, id: string): Promise<void> {
-    const tenantId = requireTenant(user);
-    const admin = this.supabaseFactory.createAdmin();
-    const row = await this.readTypeRow(admin, tenantId, id);
-
-    // A type that requests still reference cannot go: the run joins requests
-    // to their type, so the references must be retyped first. The foreign
-    // key's RESTRICT is the backstop for a race between probe and delete.
-    const inUse = () =>
-      new ConflictException({
-        error_code: ErrorCode.LEAVE_TYPE_IN_USE,
-        message:
-          'This leave type is used by existing leave requests and cannot be deleted',
-      });
-    const { data: references, error: probeError } = await admin
-      .from('leave_requests')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .eq('leave_type_id', id)
-      .limit(1);
-    if (probeError) {
-      this.logger.error('Failed to probe the leave type references:', {
-        error: probeError,
-      });
-      throw internalError('Failed to delete the leave type');
-    }
-    if ((references as Array<{ id: string }> | null)?.length) throw inUse();
-
-    // The delete returns the rows it actually removed: a race that removed
-    // the row first answers 404 and writes no audit entry.
-    const { data: deletedRows, error } = await admin
-      .from('leave_types')
-      .delete()
-      .eq('id', id)
-      .eq('tenant_id', tenantId)
-      .select('id');
-    if (error) {
-      if (error.code === '23503') throw inUse();
-      this.logger.error('Failed to delete the leave type:', { error });
-      throw internalError('Failed to delete the leave type');
-    }
-    if (!(deletedRows as Array<{ id: string }> | null)?.length) {
-      throw new NotFoundException({
-        error_code: ErrorCode.RESOURCE_NOT_FOUND,
-        message: 'The leave type is not in this company',
-      });
-    }
-
-    await this.writeAudit(
-      admin,
-      user.userId,
-      tenantId,
-      'leave.type_deleted',
-      null,
-      { changed_fields: ['name', 'paid'], old_paid: row.paid },
-    );
   }
 
   /**
@@ -282,6 +235,14 @@ export class LeaveTypesService {
    * (the gate holds its shared advisory locks to commit, so no lock decision
    * can land between check and write), on the same restructure the
    * apply/approve paths got in the 23-7 follow-up.
+   *
+   * 23-13: the swap holds the target employee's advisory lock — a re-type
+   * moves a type bucket, so it must serialise against the apply-time balance
+   * check and the credit path like every other balance-mutating write. It
+   * performs NO balance check by design (the owner's correction tool for
+   * mis-typed leave; consumption re-derives). A legacy remnant or a disabled
+   * type cannot be SET on a request; a request already carrying one may keep
+   * it (no-op) or be re-typed off it.
    */
   async setRequestType(
     user: RequestUser,
@@ -311,6 +272,12 @@ export class LeaveTypesService {
       const request = reqRes.rows[0];
       if (!request) throw leaveNotFound();
 
+      // The per-employee write lock (reentrant — the apply path's own lock
+      // is already gone by the time an owner re-types).
+      await tx.query('select public.attendance_lock_employee($1)', [
+        request.employee_id,
+      ]);
+
       const datesRes = await tx.query<{ leave_date: string }>(
         `select leave_date::text as leave_date
            from public.leave_request_days
@@ -322,7 +289,9 @@ export class LeaveTypesService {
 
       const readType = async (id: string): Promise<LeaveTypeRow> => {
         const res = await tx.query<LeaveTypeRow>(
-          `select id, tenant_id, name, paid, created_at::text as created_at, updated_at::text as updated_at
+          `select id, tenant_id, name, code, accrual_mode, accrual_days::text as accrual_days,
+                  carry_forward, allow_over_balance, paid, enabled,
+                  created_at::text as created_at, updated_at::text as updated_at
              from public.leave_types
             where id = $1::uuid and tenant_id = $2::uuid`,
           [id, tenantId],
@@ -343,8 +312,12 @@ export class LeaveTypesService {
           newTypeId = null;
           newType = null;
         } else if (currentType === null || currentType.id !== dto.leaveTypeId) {
-          newType = await readType(dto.leaveTypeId);
-          newTypeId = newType.id;
+          const target = await readType(dto.leaveTypeId);
+          if (target.code === null || !target.enabled) {
+            throw typeUnavailable();
+          }
+          newType = target;
+          newTypeId = target.id;
         }
       }
 
@@ -463,36 +436,10 @@ export class LeaveTypesService {
     return data;
   }
 
-  /** Create and rename both stop here first; PATCH passes its own id to exclude itself. */
-  private async refuseDuplicateName(
-    admin: ReturnType<SupabaseClientFactory['createAdmin']>,
-    tenantId: string,
-    name: string,
-    excludeId: string | null,
-  ): Promise<void> {
-    let probe = admin
-      .from('leave_types')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .eq('name', name);
-    if (excludeId !== null) probe = probe.neq('id', excludeId);
-    const { data: clash, error } = await probe.maybeSingle<{ id: string }>();
-    if (error) {
-      this.logger.error('Failed to probe the leave type name:', { error });
-      throw internalError('Failed to save the leave type');
-    }
-    if (clash) {
-      throw new ConflictException({
-        error_code: ErrorCode.DUPLICATE_RESOURCE,
-        message: `A leave type called "${name}" already exists in your company`,
-      });
-    }
-  }
-
   /**
-   * The audit entry names what changed and the paid flags — never the type
-   * names. A failed entry must not undo the save, so both a resolved error
-   * and a rejection (network) log and move on.
+   * The audit entry names what changed and the old/new pairs — never the
+   * type names. Best-effort: a failed entry logs and moves on, never
+   * undoing the save.
    */
   private async writeAudit(
     admin: ReturnType<SupabaseClientFactory['createAdmin']>,
@@ -502,31 +449,36 @@ export class LeaveTypesService {
     targetUserId: string | null,
     details: Record<string, unknown>,
   ): Promise<void> {
-    try {
-      const auditCall = (await admin.rpc('write_audit_row', {
-        p_actor: actorId,
-        p_action: action,
-        p_tenant_id: tenantId,
-        p_target_user: targetUserId,
-        p_details: details,
-      })) as { error: { code?: string; message?: string } | null };
-      if (auditCall.error) {
-        this.logger.error('Failed to write the leave-type audit entry:', {
-          error: auditCall.error,
-        });
-      }
-    } catch (rejection: unknown) {
-      this.logger.error('Failed to write the leave-type audit entry:', {
-        error: rejection,
-      });
-    }
+    await writeAuditRpc(admin, this.logger, 'leave-type', {
+      actorId,
+      tenantId,
+      action,
+      targetUserId,
+      details,
+    });
   }
 }
 
-function notClearable(message: string): UnprocessableEntityException {
+function notConfigurable(): ConflictException {
+  return new ConflictException({
+    error_code: ErrorCode.LEAVE_TYPE_NOT_CONFIGURABLE,
+    message:
+      'This is a legacy leave type kept read-only — its values cannot be edited',
+  });
+}
+
+function modeRule(message: string): UnprocessableEntityException {
   return new UnprocessableEntityException({
     error_code: ErrorCode.VALIDATION_ERROR,
     message,
+  });
+}
+
+function typeUnavailable(): UnprocessableEntityException {
+  return new UnprocessableEntityException({
+    error_code: ErrorCode.LEAVE_TYPE_DISABLED,
+    message:
+      'This leave type is not available — it is disabled or a legacy type kept read-only',
   });
 }
 

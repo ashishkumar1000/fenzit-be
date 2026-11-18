@@ -50,9 +50,7 @@ export function requireTenant(user: RequestUser): string {
 }
 
 /** 500 with the pinned error-code body (never leak raw DB errors). */
-export function internalError(
-  message: string,
-): InternalServerErrorException {
+export function internalError(message: string): InternalServerErrorException {
   return new InternalServerErrorException({
     error_code: ErrorCode.INTERNAL_SERVER_ERROR,
     message,
@@ -92,4 +90,43 @@ export async function resolveTenantToday(
     throw internalError('Failed to resolve tenant date');
   }
   return data as string;
+}
+
+/**
+ * One audit entry per real mutation, through the shared write_audit_row
+ * rpc (the existing RPC, reused — never duplicated). A failed entry must
+ * not undo the save it describes, so both a resolved error and a rejection
+ * (network) log and move on. The entry names what changed — never record
+ * names or other display data the audit does not need.
+ */
+export async function writeAuditRpc(
+  admin: Admin,
+  logger: Logger,
+  label: string,
+  entry: {
+    actorId: string;
+    tenantId: string;
+    action: string;
+    targetUserId: string | null;
+    details: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    const auditCall = (await admin.rpc('write_audit_row', {
+      p_actor: entry.actorId,
+      p_action: entry.action,
+      p_tenant_id: entry.tenantId,
+      p_target_user: entry.targetUserId,
+      p_details: entry.details,
+    })) as { error: { code?: string; message?: string } | null };
+    if (auditCall.error) {
+      logger.error(`Failed to write the ${label} audit entry:`, {
+        error: auditCall.error,
+      });
+    }
+  } catch (rejection: unknown) {
+    logger.error(`Failed to write the ${label} audit entry:`, {
+      error: rejection,
+    });
+  }
 }

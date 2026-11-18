@@ -1,18 +1,15 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
-  Post,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
-  ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
   ApiResponse,
@@ -21,19 +18,17 @@ import {
 import { Can } from '../common/decorators/can.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
-import {
-  CreateLeaveTypeDto,
-  LeaveTypeCreatedView,
-  LeaveTypeView,
-  UpdateLeaveTypeDto,
-} from './dto/leave-type.dto';
+import { LeaveTypeView, PatchLeaveTypeValuesDto } from './dto/leave-type.dto';
 import { LeaveTypesService } from './leave-types.service';
 
 /**
- * The company's paid/unpaid leave-type catalog (CAP-12). Company-admin only
- * (`leave.types` sits outside ADMIN_PERMISSIONS — tenant payroll config is
- * not platform-staff business). Plain table writes, no database functions;
- * one audit entry per mutation.
+ * The company's FIXED leave-type catalog (23-13). Every company carries
+ * exactly Earned Leave, Sick Leave, Bereavement and Comp-Off — types
+ * cannot be created or deleted (those routes retired), so the owner edits
+ * VALUES only. Company-admin only (`leave.types` sits outside
+ * ADMIN_PERMISSIONS — tenant payroll config is not platform-staff
+ * business). Plain table writes, no database functions; one audit entry
+ * per mutation.
  */
 @ApiTags('Attendance')
 @ApiBearerAuth()
@@ -46,39 +41,15 @@ export class LeaveTypesController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'The company leave catalog, name-ascending: each type is a name plus its paid marking',
+      'The company leave catalog: the fixed four types (plus any legacy remnants kept read-only), name-ascending',
   })
   @ApiOkResponse({
     type: [LeaveTypeView],
-    description: 'Every type of this company (possibly empty)',
+    description: 'Every type of this company',
   })
   @ApiResponse({ status: 403, description: 'Not a company admin' })
   list(@CurrentUser() user: RequestUser) {
     return this.leaveTypesService.list(user);
-  }
-
-  @Post()
-  @Can('leave.types')
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({
-    summary:
-      'Add a type. Without an explicit paid flag the marking defaults by keyword: casual/sick/earned → paid, unpaid/LOP → unpaid, anything else → paid — the answer says which default it applied.',
-  })
-  @ApiCreatedResponse({
-    type: LeaveTypeCreatedView,
-    description: 'The created type, with appliedDefault when one was applied',
-  })
-  @ApiResponse({
-    status: 409,
-    description: 'A type with this name already exists in the company',
-  })
-  @ApiResponse({
-    status: 422,
-    description: 'Bad name (empty or over 60 characters) or a non-boolean paid',
-  })
-  @ApiResponse({ status: 403, description: 'Not a company admin' })
-  create(@CurrentUser() user: RequestUser, @Body() dto: CreateLeaveTypeDto) {
-    return this.leaveTypesService.create(user, dto);
   }
 
   @Patch(':id')
@@ -86,48 +57,29 @@ export class LeaveTypesController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Rename a type and/or flip its paid marking. Neither field can be cleared — null is refused.',
+      "Edit a type's VALUES: accrual rate/grant, carry-forward, over-balance, paid, enabled. Names, codes and accrual modes are inherent to the fixed catalog; a legacy remnant is read-only.",
   })
   @ApiOkResponse({
     type: LeaveTypeView,
-    description: 'The type as now stored',
+    description:
+      'The type as now stored (the unchanged answer carries no audit entry)',
   })
   @ApiResponse({
     status: 409,
-    description: 'The new name is already used by another type',
+    description: 'The type is a legacy remnant (LEAVE_TYPE_NOT_CONFIGURABLE)',
   })
   @ApiResponse({
     status: 422,
-    description: 'name or paid sent as null (no clear verb)',
+    description:
+      'accrualDays above 0 on Comp-Off, or carryForward/allowOverBalance on a non-monthly type, or bad values',
   })
   @ApiResponse({ status: 404, description: 'The type is not in this company' })
   @ApiResponse({ status: 403, description: 'Not a company admin' })
-  update(
+  patchValues(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateLeaveTypeDto,
+    @Body() dto: PatchLeaveTypeValuesDto,
   ) {
-    return this.leaveTypesService.update(user, id, dto);
-  }
-
-  @Delete(':id')
-  @Can('leave.types')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({
-    summary:
-      'Remove an unused type. A type that existing leave requests reference is refused — retype those requests first.',
-  })
-  @ApiResponse({ status: 204, description: 'Deleted' })
-  @ApiResponse({
-    status: 409,
-    description: 'The type is referenced by existing leave requests',
-  })
-  @ApiResponse({ status: 404, description: 'The type is not in this company' })
-  @ApiResponse({ status: 403, description: 'Not a company admin' })
-  remove(
-    @CurrentUser() user: RequestUser,
-    @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<void> {
-    return this.leaveTypesService.remove(user, id);
+    return this.leaveTypesService.patchValues(user, id, dto);
   }
 }

@@ -16,6 +16,7 @@ import { accessToken } from './helpers/auth-test-utils';
 import { purgeCompanyChildren } from './helpers/attendance-company-fixture';
 import { deleteAuditRows } from './helpers/rls-seed';
 import { monthsEmployedInFy, tdsProjection } from '../src/payroll/run-math';
+import { accruedMonthly, fyOf } from '../src/attendance/leave-balance.math';
 
 /**
  * The payroll module's real-DB JOURNEY suite, opened by story 23-1 (CAP-13,
@@ -249,6 +250,49 @@ describe('Payroll journey (real DB, real routes)', () => {
           timezone: TZ,
         },
       ]),
+    );
+    // The FIXED leave catalog (23-13): the journey's tenant is created
+    // directly, so it seeds what company setup now seeds for real ones —
+    // the migration only ensured the catalog for tenants that predate it.
+    must(
+      (await admin.from('leave_types').upsert(
+        [
+          {
+            name: 'Earned Leave',
+            code: 'earned',
+            accrual_mode: 'monthly',
+            accrual_days: 1,
+            carry_forward: true,
+          },
+          {
+            name: 'Sick Leave',
+            code: 'sick',
+            accrual_mode: 'monthly',
+            accrual_days: 0.5,
+            carry_forward: false,
+          },
+          {
+            name: 'Bereavement',
+            code: 'bereavement',
+            accrual_mode: 'annual',
+            accrual_days: 0,
+            carry_forward: false,
+          },
+          {
+            name: 'Comp-Off',
+            code: 'comp_off',
+            accrual_mode: 'none',
+            accrual_days: 0,
+            carry_forward: false,
+          },
+        ].map((t) => ({
+          tenant_id: tenant,
+          ...t,
+          paid: true,
+          enabled: true,
+        })),
+        { onConflict: 'tenant_id,code', ignoreDuplicates: true },
+      )) as { data: null; error: { message: string } | null },
     );
     // Codes are explicit so Employee A carries the fixture's EMP-001; the
     // insert trigger keeps a caller-supplied code untouched.
@@ -742,22 +786,23 @@ describe('Payroll journey (real DB, real routes)', () => {
   const casualLeave: { id: string } = { id: '' };
   const unpaidLeave: { id: string } = { id: '' };
 
-  /** Catalog rows of the throwaway tenant, by name. */
-  async function leaveTypeRowByName(
-    name: string,
+  /** Catalog rows of the throwaway tenant, by the fixed code. */
+  async function leaveTypeRowByCode(
+    code: string,
   ): Promise<Record<string, unknown>> {
     const { rows } = await pool.query<{
       id: string;
       name: string;
       paid: boolean;
+      code: string | null;
     }>(
-      `select id::text, name, paid
+      `select id::text, name, paid, code
          from public.leave_types
-        where tenant_id = $1 and name = $2`,
-      [tenant, name],
+        where tenant_id = $1 and code = $2`,
+      [tenant, code],
     );
     if (!rows[0]) {
-      throw new Error(`leave type "${name}" missing in tenant ${tenant}`);
+      throw new Error(`leave type "${code}" missing in tenant ${tenant}`);
     }
     return rows[0];
   }
@@ -852,68 +897,133 @@ describe('Payroll journey (real DB, real routes)', () => {
   }
 
   maybeIt(
-    '23-2 — the owner creates the catalog: keyword defaults apply and say so',
+    '23-2 — the FIXED catalog ships seeded: the owner reads it, the ids ride the journey',
     async () => {
-      const casual = await app.inject({
-        method: 'POST',
+      const res = await app.inject({
+        method: 'GET',
         url: '/api/v1/attendance/leave/types',
         headers: ownerHeaders(),
-        payload: { name: 'Casual Leave' },
       });
-      expect(casual.statusCode).toBe(201);
-      const casualBody = JSON.parse(casual.body) as {
+      expect(res.statusCode).toBe(200);
+      const rows = JSON.parse(res.body) as Array<{
         id: string;
+        code: string | null;
+        name: string;
+        accrualMode: string | null;
+        accrualDays: number;
+        carryForward: boolean;
+        allowOverBalance: boolean;
         paid: boolean;
-        appliedDefault?: string;
-      };
-      expect(casualBody.paid).toBe(true);
-      expect(casualBody.appliedDefault).toBe('paid');
-      casualLeave.id = casualBody.id;
-
-      const unpaid = await app.inject({
-        method: 'POST',
-        url: '/api/v1/attendance/leave/types',
-        headers: ownerHeaders(),
-        payload: { name: 'Unpaid Leave' },
-      });
-      expect(unpaid.statusCode).toBe(201);
-      const unpaidBody = JSON.parse(unpaid.body) as {
-        id: string;
-        paid: boolean;
-        appliedDefault?: string;
-      };
-      expect(unpaidBody.paid).toBe(false);
-      expect(unpaidBody.appliedDefault).toBe('unpaid');
-      unpaidLeave.id = unpaidBody.id;
-
-      expect(await leaveTypeRowByName('Casual Leave')).toMatchObject({
+        enabled: boolean;
+        configurable: boolean;
+      }>;
+      // The migration ensured exactly the fixed four — all enabled, with
+      // the canonical shapes, no remnants in a fresh tenant.
+      expect(rows.map((r) => r.code).sort()).toEqual([
+        'bereavement',
+        'comp_off',
+        'earned',
+        'sick',
+      ]);
+      const earned = rows.find((r) => r.code === 'earned')!;
+      const sick = rows.find((r) => r.code === 'sick')!;
+      expect(earned).toMatchObject({
+        name: 'Earned Leave',
+        accrualMode: 'monthly',
+        accrualDays: 1,
+        carryForward: true,
+        allowOverBalance: false,
         paid: true,
+        enabled: true,
+        configurable: true,
       });
-      expect(await leaveTypeRowByName('Unpaid Leave')).toMatchObject({
-        paid: false,
+      expect(sick).toMatchObject({
+        name: 'Sick Leave',
+        accrualMode: 'monthly',
+        accrualDays: 0.5,
+        carryForward: false,
+        paid: true,
+        enabled: true,
       });
+      expect(rows.find((r) => r.code === 'bereavement')).toMatchObject({
+        name: 'Bereavement',
+        accrualMode: 'annual',
+        accrualDays: 0,
+        paid: true,
+        enabled: true,
+      });
+      expect(rows.find((r) => r.code === 'comp_off')).toMatchObject({
+        name: 'Comp-Off',
+        accrualMode: 'none',
+        accrualDays: 0,
+        paid: true,
+        enabled: true,
+      });
+      // The journey's typing legs ride the shipped rows: sick plays the
+      // paid-typed type until the reclassifying leg flips it; earned plays
+      // the unpaid one (the next leg flips it before the first seed).
+      casualLeave.id = sick.id;
+      unpaidLeave.id = earned.id;
     },
   );
 
   maybeIt(
-    '23-2 — a duplicate catalog name is a 409 naming it; the catalog does not grow',
+    '23-2 — values-only PATCH: the unpaid marking is set by PATCH, impossible mode values refuse, the create/delete routes are retired',
     async () => {
-      const res = await app.inject({
+      // earned plays the journey's UNPAID type — the PATCH that makes it
+      // so (mutable config; the run resolves the marking at execution
+      // time).
+      const flip = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+        headers: ownerHeaders(),
+        payload: { paid: false },
+      });
+      expect(flip.statusCode).toBe(200);
+      expect(await leaveTypeRowByCode('earned')).toMatchObject({ paid: false });
+
+      // The fixed catalog refuses what its modes cannot mean: an annual
+      // grant never carries forward, Comp-Off has no accrual to configure.
+      const bereavementId = (await leaveTypeRowByCode('bereavement'))[
+        'id'
+      ] as string;
+      const compOffId = (await leaveTypeRowByCode('comp_off'))['id'] as string;
+      const cfRefused = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${bereavementId}`,
+        headers: ownerHeaders(),
+        payload: { carryForward: true },
+      });
+      expect(cfRefused.statusCode).toBe(422);
+      expect(cfRefused.body).toContain('carry forward');
+      const accrualRefused = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${compOffId}`,
+        headers: ownerHeaders(),
+        payload: { accrualDays: 1 },
+      });
+      expect(accrualRefused.statusCode).toBe(422);
+      expect(accrualRefused.body).toContain('no accrual to configure');
+
+      // The catalog cannot grow or shrink: both retired routes answer 404.
+      const retiredPost = await app.inject({
         method: 'POST',
         url: '/api/v1/attendance/leave/types',
         headers: ownerHeaders(),
         payload: { name: 'Casual Leave' },
       });
-      expect(res.statusCode).toBe(409);
-      expect((JSON.parse(res.body) as { error_code: string }).error_code).toBe(
-        'DUPLICATE_RESOURCE',
-      );
-      expect(res.body).toContain('Casual Leave');
+      expect(retiredPost.statusCode).toBe(404);
+      const retiredDelete = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+        headers: ownerHeaders(),
+      });
+      expect(retiredDelete.statusCode).toBe(404);
       const { rows } = await pool.query<{ n: number }>(
         'select count(*)::int as n from public.leave_types where tenant_id = $1',
         [tenant],
       );
-      expect(rows[0].n).toBe(2);
+      expect(rows[0].n).toBe(4); // the catalog did not grow
     },
   );
 
@@ -1020,29 +1130,47 @@ describe('Payroll journey (real DB, real routes)', () => {
   );
 
   maybeIt(
-    '23-2 — a type referenced by leave requests cannot be deleted',
+    '23-2 — a disabled type cannot be set on requests: the re-type guard (the delete route retired)',
     async () => {
-      // A SECOND request referencing the type: the in-use probe must stay
-      // multi-row-safe (limit(1)), not a single-row read that would error
-      // the moment a second reference exists.
-      await seedLeaveRequest({
+      // The fixture's Oct 6-7 approved days (typed earned-as-unpaid) —
+      // seeded exactly as the old delete leg did; they feed the run.
+      const seededId = await seedLeaveRequest({
         dates: ['2026-10-06', '2026-10-07'],
         state: 'approved',
         leaveTypeId: unpaidLeave.id,
       });
 
-      const res = await app.inject({
-        method: 'DELETE',
-        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+      // Disable Comp-Off, then try to SET it on the request: refused 422,
+      // the link untouched. Re-enabling restores the catalog for the later
+      // legs (Comp-Off must be applicable).
+      const compOffId = (await leaveTypeRowByCode('comp_off'))['id'] as string;
+      const disable = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${compOffId}`,
         headers: ownerHeaders(),
+        payload: { enabled: false },
       });
-      expect(res.statusCode).toBe(409);
-      expect((JSON.parse(res.body) as { error_code: string }).error_code).toBe(
-        'LEAVE_TYPE_IN_USE',
-      );
-      expect(await leaveTypeRowByName('Unpaid Leave')).toMatchObject({
-        paid: false,
+      expect(disable.statusCode).toBe(200);
+      const guarded = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/${seededId}/type`,
+        headers: ownerHeaders(),
+        payload: { leaveTypeId: compOffId },
       });
+      expect(guarded.statusCode).toBe(422);
+      expect(
+        (JSON.parse(guarded.body) as { error_code: string }).error_code,
+      ).toBe('LEAVE_TYPE_DISABLED');
+      expect(await leaveTypingOf(seededId)).toMatchObject({
+        leave_type_id: unpaidLeave.id,
+      });
+      const reEnable = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${compOffId}`,
+        headers: ownerHeaders(),
+        payload: { enabled: true },
+      });
+      expect(reEnable.statusCode).toBe(200);
     },
   );
 
@@ -3388,20 +3516,15 @@ describe('Payroll journey (real DB, real routes)', () => {
         { missingCheckoutOn: '2026-10-16' },
       );
 
-      // A paid type for the fixture's paid leaves (the keyword default).
-      const earned = await app.inject({
-        method: 'POST',
-        url: '/api/v1/attendance/leave/types',
-        headers: ownerHeaders(),
-        payload: { name: 'Earned Leave' },
-      });
-      expect(earned.statusCode).toBe(201);
-      const earnedId = (JSON.parse(earned.body) as { id: string }).id;
-      expect((JSON.parse(earned.body) as { paid: boolean }).paid).toBe(true);
+      // A paid type for the fixture's paid leaves: the fixed catalog's
+      // Bereavement — shipped paid and never flipped by the journey.
+      const paidTypeId = (await leaveTypeRowByCode('bereavement'))[
+        'id'
+      ] as string;
 
-      // The 23-2 legs already seeded Oct 6–7 (approved, typed Unpaid) —
-      // retype that request to the paid Earned type instead of reseeding
-      // (the active-day unique would refuse a second request).
+      // The 23-2 legs already seeded Oct 6–7 (approved, typed earned-as-
+      // unpaid) — retype that request to the paid type instead of
+      // reseeding (the active-day unique would refuse a second request).
       const { rows: casualPair } = await pool.query<{ id: string }>(
         `select r.id::text as id
            from public.leave_requests r
@@ -3414,7 +3537,7 @@ describe('Payroll journey (real DB, real routes)', () => {
         method: 'PATCH',
         url: `/api/v1/attendance/leave/${casualPair[0].id}/type`,
         headers: ownerHeaders(),
-        payload: { leaveTypeId: earnedId },
+        payload: { leaveTypeId: paidTypeId },
       });
       expect(retype.statusCode).toBe(200);
       await seedLeaveRequest({
@@ -3432,7 +3555,7 @@ describe('Payroll journey (real DB, real routes)', () => {
       await seedLeaveRequest({
         dates: ['2026-10-10'],
         state: 'approved',
-        leaveTypeId: earnedId,
+        leaveTypeId: paidTypeId,
         employeeId: empI,
         part: 'second_half',
       }); // paid half
@@ -5485,27 +5608,24 @@ describe('Payroll journey (real DB, real routes)', () => {
     async () => {
       const typeUrl = (requestId: string) =>
         `/api/v1/attendance/leave/${requestId}/type`;
-      const { rows: unpaidType } = await pool.query<{ id: string }>(
-        `select id from public.leave_types where tenant_id = $1 and name = 'Unpaid Leave' limit 1`,
-        [tenant],
-      );
-      const { rows: casualType } = await pool.query<{ id: string }>(
-        `select id from public.leave_types where tenant_id = $1 and name = 'Casual Leave' limit 1`,
-        [tenant],
-      );
+      // The frozen marking rides the journey's unpaid type (earned, flipped
+      // by the values-PATCH leg); the re-type target is sick — any enabled
+      // fixed type works, the answer asserts against its CURRENT marking.
+      const unpaidTypeId = unpaidLeave.id;
+      const retargetId = casualLeave.id;
 
       // A frozen pair: an approved unpaid day INSIDE October's owned window
       // (the marking a locked month's run consumed).
       const frozenId = await seedLeaveRequest({
         dates: ['2026-10-20'],
         state: 'approved',
-        leaveTypeId: unpaidType[0]['id'],
+        leaveTypeId: unpaidTypeId,
       });
       const frozen = await app.inject({
         method: 'PATCH',
         url: typeUrl(frozenId),
         headers: ownerHeaders(),
-        payload: { leaveTypeId: casualType[0]['id'] },
+        payload: { leaveTypeId: retargetId },
       });
       expect(frozen.statusCode).toBe(409);
       expect(frozen.body).toContain('PAYROLL_MONTH_LOCKED');
@@ -5515,31 +5635,31 @@ describe('Payroll journey (real DB, real routes)', () => {
         `select leave_type_id from public.leave_requests where id = $1`,
         [frozenId],
       );
-      expect(frozenRow[0]['leave_type_id']).toBe(unpaidType[0]['id']);
+      expect(frozenRow[0]['leave_type_id']).toBe(unpaidTypeId);
 
       // A live pair: dates no locked month owns — past November's cut-off
       // they belong to December, which never locked.
       const liveId = await seedLeaveRequest({
         dates: ['2026-11-27', '2026-11-28'],
         state: 'approved',
-        leaveTypeId: unpaidType[0]['id'],
+        leaveTypeId: unpaidTypeId,
         part: 'second_half',
       });
       const live = await app.inject({
         method: 'PATCH',
         url: typeUrl(liveId),
         headers: ownerHeaders(),
-        payload: { leaveTypeId: casualType[0]['id'] },
+        payload: { leaveTypeId: retargetId },
       });
       expect(live.statusCode).toBe(200);
       // The catalog is mutable config (the 23-2 legs flip paid flags) —
       // assert the answer against the target type's CURRENT marking.
       const { rows: casualNow } = await pool.query<{ paid: boolean }>(
         `select paid from public.leave_types where id = $1`,
-        [casualType[0]['id']],
+        [retargetId],
       );
       expect(JSON.parse(live.body)).toMatchObject({
-        leaveTypeId: casualType[0]['id'],
+        leaveTypeId: retargetId,
         paid: casualNow[0]['paid'],
       });
 
@@ -5553,7 +5673,7 @@ describe('Payroll journey (real DB, real routes)', () => {
         method: 'PATCH',
         url: typeUrl(liveId),
         headers: ownerHeaders(),
-        payload: { leaveTypeId: casualType[0]['id'] },
+        payload: { leaveTypeId: retargetId },
       });
       expect(noop.statusCode).toBe(200);
       const { rows: auditAfter } = await pool.query<{ n: number }>(
@@ -5569,7 +5689,7 @@ describe('Payroll journey (real DB, real routes)', () => {
         method: 'PATCH',
         url: typeUrl(liveId),
         headers: ownerHeaders(),
-        payload: { leaveTypeId: unpaidType[0]['id'] },
+        payload: { leaveTypeId: unpaidTypeId },
       });
       expect(restore.statusCode).toBe(200);
     },
@@ -5710,6 +5830,14 @@ describe('Payroll journey (real DB, real routes)', () => {
     netWages: number;
     earningLines: Array<{ name: string; amount: number }>;
     deductionLines: Array<{ source: string; amount: number }>;
+    leaveBalances: Array<{
+      code: string;
+      name: string;
+      accrued: number;
+      availed: number;
+      carryForward: number;
+      remaining: number;
+    }>;
     pdf: { status: string; url?: string };
   };
 
@@ -6263,6 +6391,39 @@ describe('Payroll journey (real DB, real routes)', () => {
       });
       expect(slip.statusCode).toBe(200);
       const view = JSON.parse(slip.body) as PayslipApiRow;
+      // 23-13: the frozen leave-balance snapshot, captured as of the
+      // pay-period's last day (Oct 31) — hard numbers, because the capture
+      // anchors: the fixture's consumption to that day (Oct 6-7 retyped to
+      // bereavement, the Oct 12 half and the Oct 27 prior-period day on
+      // earned, Oct 13-15 on sick — the 23-8 PDF legs re-run October, so
+      // the re-capture already saw G's prior-period day), the grant still
+      // 0, and the PDF renders exactly this section (name-ordered rows).
+      expect(view.leaveBalances).toEqual([
+        {
+          code: 'bereavement',
+          name: 'Bereavement',
+          accrued: 0,
+          availed: 2,
+          carryForward: 0,
+          remaining: -2,
+        },
+        {
+          code: 'earned',
+          name: 'Earned Leave',
+          accrued: 2,
+          availed: 1.5,
+          carryForward: 0,
+          remaining: 0.5,
+        },
+        {
+          code: 'sick',
+          name: 'Sick Leave',
+          accrued: 1,
+          availed: 3,
+          carryForward: 0,
+          remaining: -2,
+        },
+      ]);
       expect(view.pdf.status).toBe('ready');
       expect(view.pdf.url).toBeTruthy();
       const pdfRes = await fetch(view.pdf.url as string);
@@ -6304,6 +6465,626 @@ describe('Payroll journey (real DB, real routes)', () => {
         paused: false,
         pausedUntil: null,
       });
+    },
+  );
+
+  // The 23-13 balance legs anchor their applies and consumption to the
+  // CURRENT financial year (December 2026 / 2027 dates read through
+  // fyOf(today)). Once FY2026 ends — April 1, 2027 — the current-FY read
+  // no longer buckets those dates and the legs would fail confusingly.
+  // They retire LOUDLY (the IS_REAL_R2 idiom) instead; re-derive them
+  // against the new FY when the sprint touches this story again.
+  const balanceLegsActive = (() => {
+    const now = new Date();
+    return now.getTime() < Date.UTC(2027, 3, 1);
+  })();
+  const maybeItFy = balanceLegsActive ? maybeIt : it.skip;
+  if (!balanceLegsActive) {
+    console.warn(
+      '23-13 balance legs SKIPPED — the journey ran after FY2026; re-derive them against the new FY',
+    );
+  }
+
+  // ---------------------------------------------------------- 23-13 legs
+  // The earned-leave accrual program: the derived balances, the apply-time
+  // check, the manual credits, the CF chain, and the frozen payslip
+  // section (pinned up in the 23-8 employee leg). The journey runs at the
+  // real date, so every run-date-dependent number is computed in-leg from
+  // the shipped math — nothing here hardcodes a run date; the frozen
+  // October snapshot pins HARD numbers because the capture anchors at Oct
+  // 31. All applies land in December 2026 or 2027: September and November
+  // are locked months by now, and a locked date refuses any apply.
+  // November's run is the last one before these legs — the credit POSTs
+  // below never reach a frozen snapshot.
+
+  const balancesUrlOf = (employeeId: string) =>
+    `/api/v1/attendance/leave/${employeeId}/balances`;
+  const creditsUrl = '/api/v1/attendance/leave/credits';
+  const employeeHeaders = () => ({
+    authorization: `Bearer ${bearerFor(employeeA)}`,
+  });
+
+  interface BalanceApiRow {
+    typeId: string;
+    code: string;
+    name: string;
+    accrualMode: string;
+    accrualDays: number;
+    paid: boolean;
+    enabled: boolean;
+    credits: number;
+    accrued: number;
+    carryForward: number;
+    consumed: number;
+    remaining: number;
+  }
+
+  async function readOwnBalances(): Promise<BalanceApiRow[]> {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/attendance/me/leave/balances',
+      headers: employeeHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body) as BalanceApiRow[];
+  }
+
+  async function readBalances(employeeId: string): Promise<BalanceApiRow[]> {
+    const res = await app.inject({
+      method: 'GET',
+      url: balancesUrlOf(employeeId),
+      headers: ownerHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body) as BalanceApiRow[];
+  }
+
+  function balanceOf(rows: BalanceApiRow[], code: string): BalanceApiRow {
+    const row = rows.find((r) => r.code === code);
+    if (!row) throw new Error(`no balance row for ${code}`);
+    return row;
+  }
+
+  async function postCredit(payload: {
+    userId: string;
+    leaveTypeId: string;
+    year: number;
+    days: number;
+  }): Promise<number> {
+    const res = await app.inject({
+      method: 'POST',
+      url: creditsUrl,
+      headers: ownerHeaders(),
+      payload,
+    });
+    return res.statusCode;
+  }
+
+  maybeIt(
+    '23-13 — the employee catalog read: enabled types only, Comp-Off without a balance',
+    async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/me/leave/types',
+        headers: employeeHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const rows = JSON.parse(res.body) as Array<{
+        code: string | null;
+        accrualMode: string | null;
+        accrualDays: number;
+        enabled: boolean;
+      }>;
+      // Every fixed type is visible to the employee — Comp-Off included
+      // (the app renders "owner approves" from accrualMode none).
+      expect(rows.map((r) => r.code).sort()).toEqual([
+        'bereavement',
+        'comp_off',
+        'earned',
+        'sick',
+      ]);
+      expect(rows.every((r) => r.enabled)).toBe(true);
+      expect(rows.find((r) => r.code === 'comp_off')).toMatchObject({
+        accrualMode: 'none',
+      });
+      // ...and the balances read EXCLUDES Comp-Off (nothing to derive).
+      const balances = await readOwnBalances();
+      expect(balances.map((r) => r.code).sort()).toEqual([
+        'bereavement',
+        'earned',
+        'sick',
+      ]);
+    },
+  );
+
+  maybeItFy(
+    '23-13 — the derived balances: both surfaces answer the same derivation',
+    async () => {
+      const mine = await readOwnBalances();
+      const owned = await readBalances(employeeA);
+      expect(mine).toEqual(owned);
+
+      // The absolute accrual comes from the shipped math over the
+      // employee's join date and the tenant-local today.
+      const { rows } = await pool.query<{ join_date: string }>(
+        `select join_date::text as join_date from public.memberships
+          where tenant_id = $1 and user_id = $2`,
+        [tenant, employeeA],
+      );
+      const joinDate = rows[0].join_date;
+      const { rows: todayRows } = await pool.query<{ today: string }>(
+        `select (now() at time zone $1)::date::text as today`,
+        [TZ],
+      );
+      const today = todayRows[0].today;
+
+      // The fixture's earned consumption to date: Oct 12 (half), Oct 20
+      // (the 23-9 leg's frozen pair), Oct 27 (the November leg's
+      // prior-period day) and the Nov 27-28 halves (the 23-9 live pair,
+      // restored to earned) = 3.5. Oct 13-15 sit on sick; Oct 6-7 on
+      // bereavement (the 23-6 retype).
+      expect(balanceOf(mine, 'earned')).toMatchObject({
+        accrualMode: 'monthly',
+        accrualDays: 1,
+        credits: 0,
+        accrued: accruedMonthly(1, joinDate, fyOf(today), today),
+        carryForward: 0,
+        consumed: 3.5,
+      });
+      expect(balanceOf(mine, 'sick')).toMatchObject({
+        accrualMode: 'monthly',
+        accrualDays: 0.5,
+        accrued: accruedMonthly(0.5, joinDate, fyOf(today), today),
+        carryForward: 0,
+        consumed: 3,
+      });
+      expect(balanceOf(mine, 'bereavement')).toMatchObject({
+        accrualMode: 'annual',
+        accrued: 0, // the grant is still 0 — the owner has not set it
+        carryForward: 0,
+        consumed: 2,
+        remaining: -2,
+      });
+      // remaining = credits + accrued + carryForward - consumed, on every
+      // row, on the rounded numbers.
+      for (const row of mine) {
+        expect(row.remaining).toBe(
+          row.credits + row.accrued + row.carryForward - row.consumed,
+        );
+      }
+    },
+  );
+
+  maybeIt(
+    '23-13 — a foreign employee answers 404 without leaking',
+    async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: balancesUrlOf(randomUUID()),
+        headers: ownerHeaders(),
+      });
+      expect(res.statusCode).toBe(404);
+      expect((JSON.parse(res.body) as { error_code: string }).error_code).toBe(
+        'RESOURCE_NOT_FOUND',
+      );
+    },
+  );
+
+  maybeItFy(
+    '23-13 — the apply-time check: a half consumes 0.5, the refusal carries the numbers, the allow path escapes',
+    async () => {
+      // Calibrate the earned balance DOWN to exactly 0.5 with one negative
+      // credit on the current FY — a date-proof setup (the balance's size
+      // otherwise depends on today's month). The credit only moves
+      // credits, so remaining moves 1:1 with it.
+      const before = balanceOf(await readBalances(employeeA), 'earned');
+      const { rows: todayRows } = await pool.query<{ today: string }>(
+        `select (now() at time zone $1)::date::text as today`,
+        [TZ],
+      );
+      const fy = fyOf(todayRows[0].today);
+      const calibration = before.remaining - 0.5;
+      expect(
+        await postCredit({
+          userId: employeeA,
+          leaveTypeId: unpaidLeave.id,
+          year: fy,
+          days: -calibration,
+        }),
+      ).toBe(201);
+      const zeroed = balanceOf(await readBalances(employeeA), 'earned');
+      expect(zeroed.remaining).toBe(0.5);
+
+      // A HALF day fits exactly: it consumes 0.5 — pending days debit
+      // immediately, no approval needed.
+      const half = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2026-12-01',
+          endDate: '2026-12-01',
+          part: 'first_half',
+          reason: 'journey half',
+          leaveTypeId: unpaidLeave.id,
+        },
+      });
+      expect(half.statusCode).toBe(201);
+      const afterHalf = balanceOf(await readBalances(employeeA), 'earned');
+      expect(afterHalf.consumed).toBe(zeroed.consumed + 0.5);
+      expect(afterHalf.remaining).toBe(0);
+
+      // A FULL day cannot fit: 422 with both numbers in the message.
+      const refused = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2026-12-02',
+          endDate: '2026-12-02',
+          reason: 'journey over',
+          leaveTypeId: unpaidLeave.id,
+        },
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(
+        (JSON.parse(refused.body) as { error_code: string }).error_code,
+      ).toBe('LEAVE_INSUFFICIENT_BALANCE');
+      const refusedBody = JSON.parse(refused.body) as { message: string };
+      expect(refusedBody.message).toContain('you have 0 days left');
+      expect(refusedBody.message).toContain('needs 1 day');
+
+      // The escape hatch: the same apply succeeds once the type allows
+      // over-balance — a negative remaining is allowed through.
+      const allow = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+        headers: ownerHeaders(),
+        payload: { allowOverBalance: true },
+      });
+      expect(allow.statusCode).toBe(200);
+      const escaped = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2026-12-02',
+          endDate: '2026-12-02',
+          reason: 'journey over',
+          leaveTypeId: unpaidLeave.id,
+        },
+      });
+      expect(escaped.statusCode).toBe(201);
+      const afterEscape = balanceOf(await readBalances(employeeA), 'earned');
+      expect(afterEscape.consumed).toBe(afterHalf.consumed + 1);
+      expect(afterEscape.remaining).toBe(-1);
+      const restore = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${unpaidLeave.id}`,
+        headers: ownerHeaders(),
+        payload: { allowOverBalance: false },
+      });
+      expect(restore.statusCode).toBe(200);
+    },
+  );
+
+  maybeItFy(
+    '23-13 — the carry-forward chain: manual credits, the floor at zero, freed days restore',
+    async () => {
+      // The chain needs an employee whose join PREDATES the FY boundary:
+      // employeeA joined in FY2026, so no prior FY exists to carry from
+      // (pinned on employeeA below). empJ joins May 2025 — FY2025.
+      const empJ = randomUUID();
+      must(
+        await admin.from('users').insert({
+          id: empJ,
+          country_code: '+91',
+          phone_number: `9${Date.now()}`.slice(0, 10),
+          name: 'payroll journey early joiner',
+        }),
+      );
+      must(
+        await admin.from('memberships').insert({
+          user_id: empJ,
+          tenant_id: tenant,
+          role: 'employee',
+          status: 'active',
+          employee_code: 'EMP-018',
+          join_date: '2025-05-01',
+        }),
+      );
+
+      // Twelve approved FY2025 day rows on earned (seeded directly — the
+      // apply window rules are 17-1's, not this pin's). The tenant's
+      // Sunday default only starts 2026-09-01, so every 2025 day works.
+      await seedLeaveRequest({
+        dates: [
+          '2025-11-03',
+          '2025-11-04',
+          '2025-11-05',
+          '2025-11-06',
+          '2025-11-07',
+          '2025-12-01',
+          '2025-12-02',
+          '2025-12-03',
+          '2026-01-05',
+          '2026-01-06',
+          '2026-02-02',
+          '2026-02-03',
+        ],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+        employeeId: empJ,
+      });
+      // Credit FY2025 with 5: unused = 5 credits + 11 full-FY accrual
+      // (May..March) - 12 consumed = +4 → the chain carries 4 into the
+      // current FY — and the 2025 credits never leak into the current
+      // FY's own credits bucket.
+      expect(
+        await postCredit({
+          userId: empJ,
+          leaveTypeId: unpaidLeave.id,
+          year: 2025,
+          days: 5,
+        }),
+      ).toBe(201);
+      const carried = balanceOf(await readBalances(empJ), 'earned');
+      expect(carried.carryForward).toBe(4);
+      expect(carried.credits).toBe(0); // year-scoped buckets
+      const { rows: todayRowsJ } = await pool.query<{ today: string }>(
+        `select (now() at time zone $1)::date::text as today`,
+        [TZ],
+      );
+      expect(carried.accrued).toBe(
+        accruedMonthly(
+          1,
+          '2025-05-01',
+          fyOf(todayRowsJ[0].today),
+          todayRowsJ[0].today,
+        ),
+      );
+
+      // The FLOOR: over-consume the completed FY (12 more approved days)
+      // and the unused goes NEGATIVE — it must NOT carry as debt.
+      const overdraw = await seedLeaveRequest({
+        dates: [
+          '2026-01-07',
+          '2026-01-08',
+          '2026-01-09',
+          '2026-02-04',
+          '2026-02-05',
+          '2026-02-06',
+          '2026-02-09',
+          '2026-02-10',
+          '2026-03-02',
+          '2026-03-03',
+          '2026-03-04',
+          '2026-03-05',
+        ],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+        employeeId: empJ,
+      });
+      // unused = 5 + 11 - 24 = -8 → floored at 0.
+      expect(balanceOf(await readBalances(empJ), 'earned').carryForward).toBe(
+        0,
+      );
+
+      // More credits lift the completed FY back into the black: unused =
+      // 30 + 11 - 24 = 17 → carries 17.
+      expect(
+        await postCredit({
+          userId: empJ,
+          leaveTypeId: unpaidLeave.id,
+          year: 2025,
+          days: 25,
+        }),
+      ).toBe(201);
+      expect(balanceOf(await readBalances(empJ), 'earned').carryForward).toBe(
+        17,
+      );
+
+      // Cancelling the overdraw frees its days (the legal freeing
+      // transition — approved days never go straight to rejected):
+      // unused = 30 + 11 - 12 = 29 — restored with zero extra code.
+      await pool.query(
+        `update public.leave_request_days
+            set state = 'cancelled'
+          where leave_request_id = $1 and state = 'approved'`,
+        [overdraw],
+      );
+      expect(balanceOf(await readBalances(empJ), 'earned').carryForward).toBe(
+        29,
+      );
+
+      // The annual grant NEVER carries — even with its own unused year.
+      const bereavementId = (await leaveTypeRowByCode('bereavement'))[
+        'id'
+      ] as string;
+      expect(
+        await postCredit({
+          userId: empJ,
+          leaveTypeId: bereavementId,
+          year: 2025,
+          days: 3,
+        }),
+      ).toBe(201);
+      expect(
+        balanceOf(await readBalances(empJ), 'bereavement').carryForward,
+      ).toBe(0);
+
+      // And employeeA (joined in FY2026) has no prior FY to carry from.
+      expect(
+        balanceOf(await readBalances(employeeA), 'earned').carryForward,
+      ).toBe(0);
+    },
+  );
+
+  maybeIt(
+    '23-13 — Comp-Off applies without a check; a disabled type refuses; its credits refuse',
+    async () => {
+      const compOffId = (await leaveTypeRowByCode('comp_off'))['id'] as string;
+      // Comp-Off: no accrual, no balance check — any day, owner approves.
+      const compOff = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2026-12-03',
+          endDate: '2026-12-03',
+          reason: 'journey comp-off',
+          leaveTypeId: compOffId,
+        },
+      });
+      expect(compOff.statusCode).toBe(201);
+
+      // A credit onto Comp-Off is invisible dead data — refused.
+      const deadCredit = await app.inject({
+        method: 'POST',
+        url: creditsUrl,
+        headers: ownerHeaders(),
+        payload: {
+          userId: employeeA,
+          leaveTypeId: compOffId,
+          year: 2026,
+          days: 1,
+        },
+      });
+      expect(deadCredit.statusCode).toBe(422);
+      expect(deadCredit.body).toContain('no accrual balance');
+
+      // A disabled type refuses applies (and re-typing — pinned in 23-2).
+      const disable = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${compOffId}`,
+        headers: ownerHeaders(),
+        payload: { enabled: false },
+      });
+      expect(disable.statusCode).toBe(200);
+      const refused = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2026-12-04',
+          endDate: '2026-12-04',
+          reason: 'journey disabled',
+          leaveTypeId: compOffId,
+        },
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(
+        (JSON.parse(refused.body) as { error_code: string }).error_code,
+      ).toBe('LEAVE_TYPE_DISABLED');
+      const reEnable = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/attendance/leave/types/${compOffId}`,
+        headers: ownerHeaders(),
+        payload: { enabled: true },
+      });
+      expect(reEnable.statusCode).toBe(200);
+    },
+  );
+
+  maybeItFy(
+    '23-13 — an FY-spanning request debits each segment to its own FY',
+    async () => {
+      // Generous current-FY headroom first, so the refusal below can only
+      // come from the FUTURE segment.
+      const { rows: todayRows } = await pool.query<{ today: string }>(
+        `select (now() at time zone $1)::date::text as today`,
+        [TZ],
+      );
+      const fy = fyOf(todayRows[0].today);
+      expect(
+        await postCredit({
+          userId: employeeA,
+          leaveTypeId: unpaidLeave.id,
+          year: fy,
+          days: 50,
+        }),
+      ).toBe(201);
+      const before = balanceOf(await readBalances(employeeA), 'earned');
+
+      // Mar 30-31 2027 bucket to FY2026; Apr 1 2027 buckets to FY2027 —
+      // whose credits are 0, so the FUTURE segment refuses (credits only:
+      // no accrual basis, no carry-forward yet).
+      const spanning = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2027-03-30',
+          endDate: '2027-04-01',
+          reason: 'journey spanning',
+          leaveTypeId: unpaidLeave.id,
+        },
+      });
+      expect(spanning.statusCode).toBe(422);
+      expect(
+        (JSON.parse(spanning.body) as { error_code: string }).error_code,
+      ).toBe('LEAVE_INSUFFICIENT_BALANCE');
+      expect(
+        (JSON.parse(spanning.body) as { message: string }).message,
+      ).toContain('needs 1 day');
+
+      // Credit FY2027 with exactly the future segment's need → the same
+      // request now fits.
+      expect(
+        await postCredit({
+          userId: employeeA,
+          leaveTypeId: unpaidLeave.id,
+          year: 2027,
+          days: 1,
+        }),
+      ).toBe(201);
+      const retry = await app.inject({
+        method: 'POST',
+        url: '/api/v1/attendance/me/leave',
+        headers: { ...employeeHeaders(), 'x-idempotency-key': randomUUID() },
+        payload: {
+          startDate: '2027-03-30',
+          endDate: '2027-04-01',
+          reason: 'journey spanning',
+          leaveTypeId: unpaidLeave.id,
+        },
+      });
+      expect(retry.statusCode).toBe(201);
+
+      // The current FY debited TWO days (Mar 30-31) — the Apr 1 day is
+      // invisible here, bucketed to FY2027.
+      const after = balanceOf(await readBalances(employeeA), 'earned');
+      expect(after.consumed).toBe(before.consumed + 2);
+      const { rows: dayCount } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.leave_request_days d
+           join public.leave_requests r on r.id = d.leave_request_id
+          where r.tenant_id = $1 and d.employee_id = $2
+            and d.leave_date between '2027-03-30' and '2027-04-01'`,
+        [tenant, employeeA],
+      );
+      expect(dayCount[0].n).toBe(3);
+    },
+  );
+
+  maybeItFy(
+    '23-13 — off-day rows carry no debit (the Sunday default)',
+    async () => {
+      const before = balanceOf(await readBalances(employeeA), 'earned');
+      // Sun Dec 6 + Mon Dec 7, seeded directly (the apply window rules are
+      // not this pin): TWO approved day rows, ONE debit.
+      const seededId = await seedLeaveRequest({
+        dates: ['2026-12-06', '2026-12-07'],
+        state: 'approved',
+        leaveTypeId: unpaidLeave.id,
+      });
+      const { rows: dayCount } = await pool.query<{ n: number }>(
+        `select count(*)::int as n from public.leave_request_days
+          where leave_request_id = $1 and state = 'approved'`,
+        [seededId],
+      );
+      expect(dayCount[0].n).toBe(2);
+      const after = balanceOf(await readBalances(employeeA), 'earned');
+      expect(after.consumed).toBe(before.consumed + 1);
     },
   );
 });

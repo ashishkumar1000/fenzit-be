@@ -1,4 +1,5 @@
 import { ReportRequestStatus } from '../../reports/enums/report-status.enum';
+import type { PayslipLeaveBalance } from '../../attendance/dto/leave-balance.dto';
 
 /**
  * A `payroll_payslips` row as PostgREST returns it — the Form V + product
@@ -49,17 +50,16 @@ export interface PayslipRow {
   earning_lines: Array<{ name: string; amount: number }>;
   /** [{ source, amount }] — source: pf_employee | tds | head:<name> | recovery:<month>. */
   deduction_lines: Array<{ source: string; amount: number }>;
+  /** [{ code, name, accrued, availed, carryForward, remaining }] — captured
+   *  as of the pay-period's last day (23-13), enabled accrual types only. */
+  leave_balances: PayslipLeaveBalance[];
   warnings: string[];
   created_at: string;
 }
 
 /** The PDF-request state joined onto a payslip (none = no request yet). */
 export type PayslipPdfStatus =
-  | 'none'
-  | 'queued'
-  | 'running'
-  | 'ready'
-  | 'failed';
+  'none' | 'queued' | 'running' | 'ready' | 'failed';
 
 export interface PayslipPdf {
   status: PayslipPdfStatus;
@@ -107,6 +107,7 @@ export interface PayslipView {
   netWages: number;
   earningLines: Array<{ name: string; amount: number }>;
   deductionLines: Array<{ source: string; amount: number }>;
+  leaveBalances: PayslipLeaveBalance[];
   warnings: string[];
   createdAt: string;
   pdf: PayslipPdf;

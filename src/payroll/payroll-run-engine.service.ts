@@ -12,6 +12,10 @@ import { evaluateStructure, moneyText, roundMoney } from './formula';
 import type { StoredLine } from './salary-structures.service';
 import { computeDayStatus } from '../common/day-status/day-status.model';
 import { readDayStatusGrid } from '../common/day-status/grid-reader';
+import {
+  captureForRun,
+  type EmploymentFacts,
+} from '../attendance/leave-balance.service';
 import { isMonthKey } from './effective-dating';
 import { capPayable, lopWindow, payableWindow } from './run-window';
 import { assembleLop } from './run-lop';
@@ -121,6 +125,9 @@ interface PayslipInsert {
   net_wages: string;
   earning_lines: unknown;
   deduction_lines: unknown;
+  /** 23-13: the leave-balance snapshot as of the pay-period's last day
+   *  (enabled accrual-bearing types), frozen with the rest of the row. */
+  leave_balances: unknown;
   warnings: string[];
 }
 
@@ -275,11 +282,11 @@ export class PayrollRunEngineService {
                wage_period_start, wage_period_end, divisor_convention, cutoff_day, pay_date,
                payable_days, lop_days, paid_days, days_worked, gross_earnings,
                pf_employee, pf_employer, tds, other_deductions, total_deductions, net_wages,
-               earning_lines, deduction_lines, warnings, updated_at)
+               earning_lines, deduction_lines, leave_balances, warnings, updated_at)
              values ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                      $15,$16,$17,$18,$19::date,$20,$21,$22::date,$23::date,$24,$25,$26,
                      $27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,
-                     $38::jsonb,$39::jsonb,$40::jsonb, now())`,
+                     $38::jsonb,$39::jsonb,$40::jsonb,$41::jsonb, now())`,
             [
               tenantId,
               payslip.membership_id,
@@ -320,6 +327,7 @@ export class PayrollRunEngineService {
               payslip.net_wages,
               JSON.stringify(payslip.earning_lines),
               JSON.stringify(payslip.deduction_lines),
+              JSON.stringify(payslip.leave_balances),
               JSON.stringify(payslip.warnings),
             ],
           );
@@ -922,6 +930,22 @@ export class PayrollRunEngineService {
       }
     }
 
+    // 23-13: the leave-balance snapshot for the whole population, one
+    // batched read set, anchored as of the pay-period's last day. Members
+    // without a join date never reach capture (they skip below too).
+    const employmentByUser = new Map<string, EmploymentFacts>();
+    for (const m of population) {
+      if (m.join_date) {
+        employmentByUser.set(m.user_id, {
+          joinDate: m.join_date,
+          exitDate: m.exit_date,
+        });
+      }
+    }
+    const leaveBalancesByUser = await this.pg.withTransaction((tx) =>
+      captureForRun(tx, tenantId, employmentByUser, monthEndOf(month)),
+    );
+
     // -- per-employee computation -------------------------------------------
     const payslips: PayslipInsert[] = [];
     const membershipFacts = new Map<string, MemberFacts>();
@@ -1237,6 +1261,7 @@ export class PayrollRunEngineService {
           source: l.source,
           amount: moneyText(l.amount),
         })),
+        leave_balances: leaveBalancesByUser.get(member.user_id) ?? [],
         warnings: payslipWarnings,
       });
       if (lop.noAttendanceDates.length > 0) {

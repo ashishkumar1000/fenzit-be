@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/enums/error-code.enum';
+import type { PayslipLeaveBalance } from '../../attendance/dto/leave-balance.dto';
 import {
   isPayslipParams,
   type ReportFetchContext,
@@ -52,6 +53,9 @@ export interface PayslipSnapshot {
   net_wages: number;
   earning_lines: Array<{ name: string; amount: number }>;
   deduction_lines: Array<{ source: string; amount: number }>;
+  /** 23-13: captured as of the pay-period's last day, enabled accrual
+   *  types only — the PDF renders the section only when it is non-empty. */
+  leave_balances: PayslipLeaveBalance[];
 }
 
 const SNAPSHOT_COLUMNS = [
@@ -93,6 +97,7 @@ const SNAPSHOT_COLUMNS = [
   'net_wages',
   'earning_lines',
   'deduction_lines',
+  'leave_balances',
 ].join(', ');
 
 /** The pipeline maps this code straight onto the request row — a clean

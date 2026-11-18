@@ -18,6 +18,7 @@ import { MeLeaveController } from './me-leave.controller';
 import { LeaveController } from './leave.controller';
 import { LeaveTypesService } from './leave-types.service';
 import { LeaveTypesController } from './leave-types.controller';
+import { LeaveBalanceService } from './leave-balance.service';
 import { DayStatusesService } from './day-status.read';
 import { DayStatusesController } from './day-statuses.controller';
 import { CorrectionsService } from './corrections.service';
@@ -70,6 +71,7 @@ import { StorageModule } from '../storage/storage.module';
     LeaveService,
     LeaveReadService,
     LeaveTypesService,
+    LeaveBalanceService,
     DayStatusesService,
     CorrectionsService,
     DashboardService,

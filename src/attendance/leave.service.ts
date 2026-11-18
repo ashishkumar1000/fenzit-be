@@ -35,12 +35,14 @@ import {
   findRequestIdByKey,
   insertLeaveRequest,
   employeeExistsInTenant,
-  leaveTypeExistsInTenant,
+  readLeaveTypeConfig,
   readEnrolmentFloor,
   readEmployeeName,
   readSettingsGate,
   readSpanFacts,
 } from './leave.repository';
+import { assertBalanceForApply } from './leave-balance.service';
+import type { AccrualTypeConfig } from './leave-balance.math';
 import { findActiveOverrideDates } from './corrections.repository';
 import { assertPayrollDatesEditable } from './payroll-date-gate';
 import {
@@ -218,16 +220,25 @@ export class LeaveService {
     }
 
     // CAP-12: a named catalog type must belong to this company; absent or
-    // null keeps the request untyped, which reads as paid.
+    // null keeps the request untyped, which reads as paid. 23-13: a
+    // disabled row or a legacy remnant cannot carry a new request.
     let leaveTypeId: string | null = null;
+    let balanceType: AccrualTypeConfig | null = null;
     if (input.dto.leaveTypeId) {
-      const known = await leaveTypeExistsInTenant(
+      const type = await readLeaveTypeConfig(
         tx,
         input.tenantId,
         input.dto.leaveTypeId,
       );
-      if (!known) throw leaveTypeNotFound();
+      if (!type) throw leaveTypeNotFound();
+      if (type.code === null || !type.enabled) {
+        throw leaveRejectionToException({
+          errorCode: ErrorCode.LEAVE_TYPE_DISABLED,
+          message: 'This leave type is no longer available to apply for',
+        });
+      }
       leaveTypeId = input.dto.leaveTypeId;
+      balanceType = type;
     }
 
     const shape = validateApplyShape({
@@ -301,6 +312,24 @@ export class LeaveService {
       overrideDates,
     });
     if (rejection) throw leaveRejectionToException(rejection);
+
+    // 23-13: the balance check, still under the per-employee advisory lock
+    // — pending days debit immediately, so the check sees exactly what the
+    // approval would keep. Per-FY segment, off days carry no debit, and a
+    // type that allows over-balance (and mode-none/untyped applies) skips
+    // it entirely.
+    if (balanceType) {
+      await assertBalanceForApply(
+        tx,
+        input.tenantId,
+        input.employeeId,
+        balanceType,
+        dates,
+        input.dto.part,
+        spanFacts,
+        today,
+      );
+    }
 
     const request = await insertLeaveRequest(tx, {
       tenantId: input.tenantId,

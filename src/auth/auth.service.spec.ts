@@ -13,10 +13,7 @@ import {
 import { AuthService, REALTIME_TOKEN_TTL_SECONDS } from './auth.service';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
 import { InviteSmsService } from './invite-sms/invite-sms.service';
-import {
-  SmsDeliveryProvider,
-  SmsDeliveryError,
-} from './sms-delivery.provider';
+import { SmsDeliveryProvider, SmsDeliveryError } from './sms-delivery.provider';
 import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -64,9 +61,7 @@ function loginAdmin(opts: {
     activateUserEq,
     activateStatusEq,
     memberships,
-    from: jest.fn((table: string) =>
-      table === 'users' ? users : memberships,
-    ),
+    from: jest.fn((table: string) => (table === 'users' ? users : memberships)),
   };
 }
 
@@ -80,13 +75,16 @@ const userRow = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-// startCompanyValidity writes tenants.update(...).eq(...).is(...).
+// startCompanyValidity writes tenants.update(...).eq(...).is(...); the
+// 23-13 catalog seed upserts leave_types — both ride the same fallback
+// builder every non-table-routed from() call lands on.
 const validityWrite = () => ({
   update: jest.fn().mockReturnValue({
     eq: jest.fn().mockReturnValue({
       is: jest.fn().mockResolvedValue({ error: null }),
     }),
   }),
+  upsert: jest.fn().mockResolvedValue({ error: null }),
 });
 
 describe('AuthService', () => {
@@ -208,7 +206,10 @@ describe('AuthService', () => {
       const prevEcho = process.env['OTP_DEV_ECHO'];
       process.env['OTP_DEV_ECHO'] = 'true';
       try {
-        const dto: SendOtpDto = { countryCode: '+91', phoneNumber: '1234567890' };
+        const dto: SendOtpDto = {
+          countryCode: '+91',
+          phoneNumber: '1234567890',
+        };
         otpSessionStore.increment.mockResolvedValue({
           count: 1,
           windowRemainingSeconds: 600,
@@ -251,9 +252,7 @@ describe('AuthService', () => {
         }),
       });
       // Nobody received anything — the session must not linger verifyable.
-      expect(otpSessionStore.delete).toHaveBeenCalledWith(
-        expect.any(String),
-      );
+      expect(otpSessionStore.delete).toHaveBeenCalledWith(expect.any(String));
     });
 
     it('a provider TIMEOUT answers 502 OTP_SEND_FAILED but KEEPS the session (the SMS may still arrive)', async () => {
@@ -571,15 +570,20 @@ describe('AuthService', () => {
     };
 
     it('should return tenant, created=true, and fresh JWT on first call (201 path)', async () => {
+      const upsert = jest.fn().mockResolvedValue({ error: null });
       const mockAdmin = {
         rpc: jest.fn().mockResolvedValue({
           data: [{ ...rpcRow, inserted: true }],
           error: null,
         }),
-        from: jest.fn().mockReturnValue({
-          insert: jest.fn().mockResolvedValue({ error: null }),
-          ...validityWrite(),
-        }),
+        from: jest.fn((table: string) =>
+          table === 'leave_types'
+            ? { upsert }
+            : {
+                insert: jest.fn().mockResolvedValue({ error: null }),
+                ...validityWrite(),
+              },
+        ),
       };
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
       jwtService.signAsync.mockResolvedValueOnce('fresh-owner-jwt');
@@ -593,6 +597,54 @@ describe('AuthService', () => {
         createdBy: ownerUser.userId,
         companyName: 'Jobzo Services',
       });
+      // The FIXED catalog (23-13) seeds with the setup: the four codes,
+      // their inherent modes and defaults, idempotent on (tenant_id, code).
+      expect(upsert).toHaveBeenCalledTimes(1);
+      const [rows, options] = upsert.mock.calls[0] as unknown as [
+        Array<Record<string, unknown>>,
+        { onConflict: string; ignoreDuplicates: boolean },
+      ];
+      expect(rows.map((r) => r.code).sort()).toEqual([
+        'bereavement',
+        'comp_off',
+        'earned',
+        'sick',
+      ]);
+      expect(rows.find((r) => r['code'] === 'earned')).toMatchObject({
+        accrual_mode: 'monthly',
+        accrual_days: 1,
+        carry_forward: true,
+        paid: true,
+        enabled: true,
+        tenant_id: 'tenant-uuid',
+      });
+      expect(options).toEqual({
+        onConflict: 'tenant_id,code',
+        ignoreDuplicates: true,
+      });
+    });
+
+    it('a failed catalog seed fails the setup with 500 (the retry heals it)', async () => {
+      const mockAdmin = {
+        rpc: jest.fn().mockResolvedValue({
+          data: [{ ...rpcRow, inserted: true }],
+          error: null,
+        }),
+        from: jest.fn((table: string) =>
+          table === 'leave_types'
+            ? {
+                upsert: jest
+                  .fn()
+                  .mockResolvedValue({ error: { message: 'db down' } }),
+              }
+            : validityWrite(),
+        ),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+
+      await expect(service.setupCompany(ownerUser, dto)).rejects.toThrow(
+        InternalServerErrorException,
+      );
     });
 
     it('should save the owner name on their users row when provided', async () => {
@@ -958,9 +1010,9 @@ describe('AuthService', () => {
 
     it('should throw BadRequestException when the caller has no tenantId (company not set up)', async () => {
       const noTenantAdmin: RequestUser = { ...adminUser, tenantId: null };
-      await expect(
-        service.inviteMember(noTenantAdmin, dto),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.inviteMember(noTenantAdmin, dto)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(supabaseClientFactory.createAdmin).not.toHaveBeenCalled();
     });
 
@@ -980,9 +1032,9 @@ describe('AuthService', () => {
       };
       const mockAdmin = makeMockAdmin({ validSkills: [{ id: SKILL_ID }] });
       supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
-      await expect(
-        service.inviteMember(adminUser, dtoWithTwo),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.inviteMember(adminUser, dtoWithTwo)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(mockAdmin.rpc).not.toHaveBeenCalled();
     });
 
@@ -1116,7 +1168,11 @@ describe('AuthService', () => {
       const otp = await arrangeLiveSession();
       const admin = loginAdmin({
         user: userRow({ id: userId, name: 'Ravi Kumar' }),
-        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+        membership: {
+          tenant_id: tenantId,
+          role: 'employee',
+          status: 'invited',
+        },
       });
       supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
 
@@ -1150,7 +1206,11 @@ describe('AuthService', () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
         loginAdmin({
           user: userRow({ id: userId }),
-          membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+          membership: {
+            tenant_id: tenantId,
+            role: 'employee',
+            status: 'invited',
+          },
           activateError: { message: 'db down' },
         }) as never,
       );
@@ -1221,7 +1281,11 @@ describe('AuthService', () => {
       const otp = await arrangeLiveSession();
       const admin = loginAdmin({
         user: userRow({ id: userId, disabled: true }),
-        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+        membership: {
+          tenant_id: tenantId,
+          role: 'employee',
+          status: 'invited',
+        },
       });
       supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
 
@@ -1303,7 +1367,11 @@ describe('AuthService', () => {
       const otp = await arrangeLiveSession();
       const admin = loginAdmin({
         user: userRow({ id: userId }),
-        membership: { tenant_id: tenantId, role: 'employee', status: 'invited' },
+        membership: {
+          tenant_id: tenantId,
+          role: 'employee',
+          status: 'invited',
+        },
         activateError: { message: 'write failed' },
       });
       supabaseClientFactory.createAdmin.mockReturnValue(admin as never);

@@ -13,6 +13,8 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiCreatedResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -24,6 +26,7 @@ import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { LeaveService } from './leave.service';
 import { LeaveReadService } from './leave-read.service';
 import { LeaveTypesService } from './leave-types.service';
+import { LeaveBalanceService } from './leave-balance.service';
 import {
   ListLeaveQueryDto,
   OnBehalfLeaveDto,
@@ -31,6 +34,11 @@ import {
   RevokeLeaveDto,
 } from './dto/leave.dto';
 import { SetLeaveRequestTypeDto } from './dto/leave-type.dto';
+import {
+  CreditLeaveDto,
+  CreditView,
+  LeaveBalanceView,
+} from './dto/leave-balance.dto';
 import { Can } from '../common/decorators/can.decorator';
 
 /** AD-6: UUID v4, generated per user tap by the app. */
@@ -51,7 +59,55 @@ export class LeaveController {
     private readonly leaveService: LeaveService,
     private readonly leaveReadService: LeaveReadService,
     private readonly leaveTypesService: LeaveTypesService,
+    private readonly leaveBalanceService: LeaveBalanceService,
   ) {}
+
+  @Get(':employeeId/balances')
+  @Can('leave.read_all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'One employee\u2019s derived leave balances for the current April-March FY — credits + accrued + carry-forward - consumed per accrual-bearing type',
+  })
+  @ApiOkResponse({
+    type: [LeaveBalanceView],
+    description:
+      'One row per accrual-bearing type (disabled ones included — their consumed days still count); Comp-Off never appears (no balance)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The employee is not in this company',
+  })
+  employeeBalances(
+    @CurrentUser() user: RequestUser,
+    @Param('employeeId', ParseUUIDPipe) employeeId: string,
+  ) {
+    return this.leaveBalanceService.readEmployeeBalances(user, employeeId);
+  }
+
+  @Post('credits')
+  @Can('leave.types')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      'Add one manual balance credit (or a negative correction) — per employee, per type, per FY; corrections are offsetting rows, never edits',
+  })
+  @ApiCreatedResponse({
+    type: CreditView,
+    description: 'The stored credit (source manual)',
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      'days 0 / over 366 in magnitude / over 2 decimals, a malformed year, or a credit target with no accrual balance (Comp-Off)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The employee or the leave type is not in this company',
+  })
+  credit(@CurrentUser() user: RequestUser, @Body() dto: CreditLeaveDto) {
+    return this.leaveBalanceService.applyCredit(user, dto);
+  }
 
   @Get()
   @Can('leave.read_all')

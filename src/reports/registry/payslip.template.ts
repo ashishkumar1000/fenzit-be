@@ -31,6 +31,8 @@ import type { PayslipSnapshot } from './payslip.data';
  *    the per-line rounding contract).
  *  - Total attendance = payable / LOP / paid days + days worked; overtime
  *    ₹0.00 (no overtime surface exists).
+ *  - Leave balances = the leave_balances snapshot (as of the pay-period's
+ *    last day), per enabled accrual-bearing type; omitted when empty.
  *  - Deductions: PF (pf_employee), ESI = the deduction line whose source
  *    normalises (trim, case-insensitive, "head:" stripped) to "esi" — else
  *    ₹0.00 (best-effort name matching; no ESI computation exists), TDS =
@@ -70,6 +72,14 @@ function inr(amount: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+/** A day count as the leave table's every cell — plain, no ₹ grouping
+ *  (0.5, 8, 12.5); the captured values are already 2dp-rounded. A corrupt
+ *  (non-numeric) figure renders the dash placeholder — never "NaN". */
+function days(amount: number): string {
+  const value = Number(amount);
+  return Number.isFinite(value) ? value.toString() : '—';
 }
 
 /** "01 November 2026" — the resolved pay date off the snapshot (salary
@@ -199,6 +209,9 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
     inr(Number(line.amount)),
   ]);
 
+  // -- leave balances (23-13) -------------------------------------------
+  const leaveBalanceRows = slip.leave_balances ?? [];
+
   const content: Content[] = [
     // Establishment header + date of issue (Form V's first mandated field).
     {
@@ -327,6 +340,30 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
       ],
       ['Overtime', '₹0.00'],
     ]),
+    // 23-13: the leave balances as of the pay-period's last day, frozen in
+    // the snapshot. Omitted entirely when the run captured nothing (every
+    // type disabled or none accrues) — a slip never renders an empty table.
+    ...(leaveBalanceRows.length > 0
+      ? [
+          sectionTitle('Leave balances'),
+          dataTable(
+            [
+              { header: 'Leave type', width: '*' },
+              { header: 'Accrued', width: 80, align: 'right' },
+              { header: 'Availed', width: 80, align: 'right' },
+              { header: 'Carried forward', width: 110, align: 'right' },
+              { header: 'Balance', width: 80, align: 'right' },
+            ],
+            leaveBalanceRows.map((row) => [
+              { text: row.name },
+              { text: days(row.accrued), alignment: 'right' as const },
+              { text: days(row.availed), alignment: 'right' as const },
+              { text: days(row.carryForward), alignment: 'right' as const },
+              { text: days(row.remaining), alignment: 'right' as const },
+            ]),
+          ),
+        ]
+      : []),
     sectionTitle('Deductions'),
     dataTable(
       [

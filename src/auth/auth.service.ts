@@ -14,10 +14,7 @@ import { randomInt } from 'crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
-import {
-  SmsDeliveryProvider,
-  SmsDeliveryError,
-} from './sms-delivery.provider';
+import { SmsDeliveryProvider, SmsDeliveryError } from './sms-delivery.provider';
 import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -27,6 +24,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { MembershipRole, Role } from '../common/enums/role.enum';
 import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
 import { memberRpcException } from '../common/members/member-rpc-error';
+import { seedLeaveCatalog } from '../attendance/leave-catalog.seed';
 import { startCompanyValidity } from './tenant-validity';
 import {
   InviteSmsService,
@@ -180,11 +178,9 @@ export class AuthService {
       // `number` is the approved template's single variable slot — the
       // copy reads "Your FENZIT Login OTP is ##number## …" (see
       // SMS_TEMPLATES.OTP_LOGIN).
-      await this.smsDeliveryProvider.send(
-        e164,
-        SMS_TEMPLATES.OTP_LOGIN,
-        { number: otp },
-      );
+      await this.smsDeliveryProvider.send(e164, SMS_TEMPLATES.OTP_LOGIN, {
+        number: otp,
+      });
       this.logger.log(
         JSON.stringify({
           event: 'otp_delivery',
@@ -262,9 +258,7 @@ export class AuthService {
   }
 
   private acceptsPreReleaseMasterOtp(otpCode: string): boolean {
-    return (
-      this.preReleaseMasterEnabled() && otpCode === PRE_RELEASE_MASTER_OTP
-    );
+    return this.preReleaseMasterEnabled() && otpCode === PRE_RELEASE_MASTER_OTP;
   }
 
   /**
@@ -444,11 +438,18 @@ export class AuthService {
       .select('tenant_id, role, status')
       .eq('user_id', userId)
       .neq('status', 'removed')
-      .maybeSingle<{ tenant_id: string; role: MembershipRole; status: string }>();
+      .maybeSingle<{
+        tenant_id: string;
+        role: MembershipRole;
+        status: string;
+      }>();
 
     if (error) {
       this.logger.error('Failed to read membership at login:', { error });
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to sign in' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to sign in',
+      });
     }
     if (!live) {
       // No live membership. A removed row tells the app to say "no access"
@@ -462,7 +463,10 @@ export class AuthService {
         this.logger.error('Failed to read removed membership at login:', {
           error: removedError,
         });
-        throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to sign in' });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to sign in',
+        });
       }
       return {
         tenantId: null,
@@ -558,7 +562,10 @@ export class AuthService {
         this.logger.error('Failed to validate skill IDs:', {
           error: skillValidationError,
         });
-        throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to validate skill IDs' });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to validate skill IDs',
+        });
       }
 
       if (!validSkills || validSkills.length !== skillIds.length) {
@@ -599,13 +606,19 @@ export class AuthService {
         });
       }
       this.logger.error('Failed to create member invite:', { error });
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to create invite' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to create invite',
+      });
     }
 
     const row = (data as Array<Record<string, unknown>> | null)?.[0];
     if (!row) {
       this.logger.error('invite_member returned no rows');
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to create invite' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to create invite',
+      });
     }
     // The invite is already saved. The SMS step never rolls it back and never
     // throws; its outcome is returned as sms_status.
@@ -666,6 +679,23 @@ export class AuthService {
     }
 
     const row = rows[0];
+
+    // The FIXED leave catalog (23-13): every company starts with the four
+    // types — the migration ensured them for the tenants that predate this,
+    // and company setup seeds them here. Idempotent, so a retry after a
+    // failed setup heals the rows; a seed failure fails the setup exactly
+    // like the validity write below does.
+    try {
+      await seedLeaveCatalog(admin, row['id'] as string);
+    } catch (catalogError: unknown) {
+      this.logger.error('Failed to seed the leave catalog:', {
+        error: catalogError,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to set up company',
+      });
+    }
 
     // New company: subscription runs 90 days from now (CAP-3). A failure here
     // fails the setup; the owner retries and the repeat call sets it.
@@ -786,7 +816,8 @@ export class AuthService {
     phoneNumber: string,
     supabaseClient: SupabaseClient,
   ): Promise<UserIdentityRow> {
-    const columns = 'id, country_code, phone_number, name, platform_admin, disabled';
+    const columns =
+      'id, country_code, phone_number, name, platform_admin, disabled';
     const { data: existing, error } = await supabaseClient
       .from('users')
       .select(columns)
@@ -798,7 +829,8 @@ export class AuthService {
       this.logger.error('Failed to query user:', { error });
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'We could not sign you in right now. Please try again in a few minutes.',
+        message:
+          'We could not sign you in right now. Please try again in a few minutes.',
       });
     }
 
@@ -839,7 +871,8 @@ export class AuthService {
       });
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'We could not sign you in right now. Please try again in a few minutes.',
+        message:
+          'We could not sign you in right now. Please try again in a few minutes.',
       });
     }
 

@@ -12,7 +12,10 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { StorageService } from '../storage/storage.service';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ReportRequestStatus } from '../reports/enums/report-status.enum';
-import { MAX_IN_FLIGHT_REPORTS, PT_IN_FLIGHT_LIMIT } from '../reports/reports.service';
+import {
+  MAX_IN_FLIGHT_REPORTS,
+  PT_IN_FLIGHT_LIMIT,
+} from '../reports/reports.service';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { isMonthKey } from './effective-dating';
 import { PayrollMonthStatusService } from './payroll-month-status.service';
@@ -88,6 +91,7 @@ const PAYSLIP_COLUMNS = [
   'net_wages',
   'earning_lines',
   'deduction_lines',
+  'leave_balances',
   'warnings',
   'created_at',
 ].join(', ');
@@ -197,7 +201,11 @@ export class PayrollPayslipsService {
     if (!isMonthKey(month)) {
       throw validationError('month must be a real month written as YYYY-MM');
     }
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(membershipId)) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        membershipId,
+      )
+    ) {
       throw validationError('membershipId must be a valid employee id');
     }
     const admin = this.supabaseFactory.createAdmin();
@@ -207,7 +215,11 @@ export class PayrollPayslipsService {
       .eq('tenant_id', tenantId)
       .eq('membership_id', membershipId)
       .eq('salary_period', month)
-      .maybeSingle<{ id: string; membership_id: string; salary_period: string }>();
+      .maybeSingle<{
+        id: string;
+        membership_id: string;
+        salary_period: string;
+      }>();
     if (error) {
       this.logger.error('Failed to load the payslip for a PDF request:', {
         error,
@@ -268,7 +280,9 @@ export class PayrollPayslipsService {
     if (status.notRunnableReason) {
       // Out of the runnable bound (before the first payroll month, or no
       // join dates yet): the month cannot have been run at all.
-      throw this.notFound(`Payroll for ${month} hasn't been run for your company yet`);
+      throw this.notFound(
+        `Payroll for ${month} hasn't been run for your company yet`,
+      );
     }
     if (!status.locked) {
       throw this.notFound(
@@ -395,7 +409,10 @@ export class PayrollPayslipsService {
         .select('id, params, status, r2_key, created_at')
         .eq('tenant_id', tenantId)
         .eq('report_type', 'payslip')
-        .in('params->>payslipId', rows.map((row) => row.id))
+        .in(
+          'params->>payslipId',
+          rows.map((row) => row.id),
+        )
         .order('created_at', { ascending: false })
         .order('id', { ascending: false });
       if (error) {
@@ -462,6 +479,14 @@ export class PayrollPayslipsService {
       deductionLines: (row.deduction_lines ?? []).map((line) => ({
         source: line.source,
         amount: Number(line.amount),
+      })),
+      leaveBalances: (row.leave_balances ?? []).map((entry) => ({
+        code: entry.code,
+        name: entry.name,
+        accrued: Number(entry.accrued),
+        availed: Number(entry.availed),
+        carryForward: Number(entry.carryForward),
+        remaining: Number(entry.remaining),
       })),
       warnings: row.warnings ?? [],
       createdAt: row.created_at,

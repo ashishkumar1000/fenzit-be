@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiOkResponse,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -22,12 +23,14 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { LeaveService } from './leave.service';
 import { LeaveReadService } from './leave-read.service';
+import { LeaveTypesService } from './leave-types.service';
+import { LeaveBalanceService } from './leave-balance.service';
+import { LeaveTypeView } from './dto/leave-type.dto';
+import { LeaveBalanceView } from './dto/leave-balance.dto';
 import {
   ApplyLeaveDto,
   ListLeaveQueryDto,
   PreviewApplyQueryDto,
-  RejectLeaveDto,
-  RevokeLeaveDto,
 } from './dto/leave.dto';
 import { Can } from '../common/decorators/can.decorator';
 
@@ -39,6 +42,8 @@ const UUID_V4_PATTERN =
  * The employee's leave routes (17-1..17-4). The employee id comes ONLY
  * from the JWT (`@CurrentUser`) — never from the client (NFR-1). Apply
  * requires the X-Idempotency-Key (AD-6); cancel is state-guarded, no key.
+ * 23-13 adds the catalog read (enabled types only) and the derived
+ * balance read (current FY, accrual-bearing types).
  */
 @ApiTags('Attendance')
 @ApiBearerAuth()
@@ -47,7 +52,40 @@ export class MeLeaveController {
   constructor(
     private readonly leaveService: LeaveService,
     private readonly leaveReadService: LeaveReadService,
+    private readonly leaveTypesService: LeaveTypesService,
+    private readonly leaveBalanceService: LeaveBalanceService,
   ) {}
+
+  @Get('types')
+  @Can('leave.own')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'FR-12 apply form: the enabled leave types of this company — Comp-Off included (accrualMode none renders "owner approves", no balance)',
+  })
+  @ApiOkResponse({
+    type: [LeaveTypeView],
+    description: 'The enabled catalog types with their accrual shape',
+  })
+  listTypes(@CurrentUser() user: RequestUser) {
+    return this.leaveTypesService.listEnabled(user);
+  }
+
+  @Get('balances')
+  @Can('leave.own')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'This employee\u2019s derived leave balances for the current April-March FY — credits + accrued + carry-forward - consumed per accrual-bearing type',
+  })
+  @ApiOkResponse({
+    type: [LeaveBalanceView],
+    description:
+      'One row per accrual-bearing type (disabled ones included — their consumed days still count); Comp-Off never appears (no balance)',
+  })
+  balances(@CurrentUser() user: RequestUser) {
+    return this.leaveBalanceService.readOwnBalances(user);
+  }
 
   @Get('preview')
   @Can('leave.own')
