@@ -1,4 +1,3 @@
-import { HttpException } from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -66,8 +65,11 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     notRunnableReason?: string | null;
     lockRows?: Array<{ month: string }>;
     freshStatus?: string;
+    freshMonth?: string;
+    freshMembership?: string;
     insertReject?: { code: string; message: string };
     insertRows?: Array<Record<string, unknown>>;
+    deleteRows?: Array<Record<string, unknown>>;
     today?: string;
   };
 
@@ -95,12 +97,27 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
           return Promise.resolve({
             rows:
               opts.freshStatus !== undefined
-                ? [{ status: opts.freshStatus }]
+                ? [
+                    {
+                      status: opts.freshStatus,
+                      month: opts.freshMonth ?? '2026-10',
+                      membership_id: opts.freshMembership ?? MEMBER_A,
+                    },
+                  ]
                 : [],
           });
         }
+        if (s.startsWith('delete from public.payroll_off_cycle_lines')) {
+          return Promise.resolve({
+            rows: opts.deleteRows ?? [{ id: LINE_ID }],
+          });
+        }
         if (s.startsWith('insert into public.payroll_off_cycle_lines')) {
-          if (opts.insertReject) return Promise.reject(opts.insertReject);
+          if (opts.insertReject) {
+            return Promise.reject(
+              Object.assign(new Error('unique race'), opts.insertReject),
+            );
+          }
           return Promise.resolve({
             rows: opts.insertRows ?? [{ ...lineRow(), acknowledged: false }],
           });
@@ -123,13 +140,22 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
       ),
     } as unknown as jest.Mocked<PgPoolFactory>;
 
-    const rpc = jest.fn().mockResolvedValue({ data: null, error: null });
+    const rpcCalls: Array<[string, Record<string, unknown>]> = [];
+    const rpc = jest.fn((fn: string, payload: Record<string, unknown>) => {
+      rpcCalls.push([fn, payload]);
+      return Promise.resolve({ data: null, error: null });
+    });
+    const eqCalls: Array<[string, unknown]> = [];
     const from = jest.fn((table: string) => {
       const single = (result: { data: unknown; error: unknown }) => {
         const b: Record<string, unknown> = {};
-        for (const name of ['eq', 'order', 'limit', 'lte', 'in']) {
+        for (const name of ['order', 'limit', 'lte', 'in']) {
           b[name] = jest.fn(() => b);
         }
+        b['eq'] = jest.fn((col: string, val: unknown) => {
+          eqCalls.push([col, val]);
+          return b;
+        });
         b['select'] = jest.fn(() => b);
         b['maybeSingle'] = jest.fn(() => Promise.resolve(result));
         b['then'] = (resolve: (v: unknown) => void) => resolve(result);
@@ -149,18 +175,19 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     const supabaseClientFactory = {
       createAdmin: jest.fn(() => ({ from, rpc })),
     } as unknown as jest.Mocked<SupabaseClientFactory>;
+    const monthStatusFn = jest.fn().mockResolvedValue({
+      firstPayrollMonth:
+        opts.firstPayrollMonth === undefined
+          ? '2026-09'
+          : opts.firstPayrollMonth,
+      notRunnableReason:
+        opts.notRunnableReason === undefined
+          ? 'The first payroll month is 2026-09 — earlier months have no payroll history'
+          : opts.notRunnableReason,
+    });
     const monthStatus = {
-      monthStatus: jest.fn().mockResolvedValue({
-        firstPayrollMonth:
-          opts.firstPayrollMonth === undefined
-            ? '2026-09'
-            : opts.firstPayrollMonth,
-        notRunnableReason:
-          opts.notRunnableReason === undefined
-            ? 'The first payroll month is 2026-09 — earlier months have no payroll history'
-            : opts.notRunnableReason,
-      }),
-    } as unknown as jest.Mocked<PayrollMonthStatusService>;
+      monthStatus: monthStatusFn,
+    } as unknown as PayrollMonthStatusService;
 
     const service = new PayrollOffCycleService(
       supabaseClientFactory,
@@ -172,9 +199,12 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
       service,
       txQueries,
       rpc,
+      rpcCalls,
       from,
       monthStatus,
+      monthStatusFn,
       tx,
+      eqCalls,
     };
   }
 
@@ -206,7 +236,7 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     expect(insert?.[1]?.[5]).toBe('bonus'); // the default tag
     expect(insert?.[1]?.[6]).toBe(false); // positive line never acknowledged
     expect(t.rpc).toHaveBeenCalledTimes(1);
-    expect(t.rpc.mock.calls[0][1]['p_action']).toBe('payroll.offcycle_staged');
+    expect(t.rpcCalls[0][1]['p_action']).toBe('payroll.offcycle_staged');
   });
 
   it('refuses zero with plain English, writing nothing and auditing nothing', async () => {
@@ -268,7 +298,7 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     );
     expect(status).toBe(422);
     expect(String(body['message'])).toContain('has not started yet');
-    expect(t.monthStatus.monthStatus).not.toHaveBeenCalled();
+    expect(t.monthStatusFn).not.toHaveBeenCalled();
   });
 
   it('refuses a month before the first payroll month with the bound reason', async () => {
@@ -375,7 +405,7 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     expect(keyCalls).toHaveLength(2);
     expect(String(keyCalls[0][1]?.[0])).toContain(':2026-10');
     expect(String(keyCalls[1][1]?.[0])).toContain(':2026-11');
-    expect(t.rpc.mock.calls[0][1]['p_action']).toBe('payroll.offcycle_updated');
+    expect(t.rpcCalls[0][1]['p_action']).toBe('payroll.offcycle_updated');
   });
 
   it('answers 409 on an applied line — the money already sits on payslips', async () => {
@@ -441,5 +471,122 @@ describe('PayrollOffCycleService — staging (23-9)', () => {
     );
     expect(status).toBe(409);
     expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+  });
+
+  it('edits an acknowledged negative line WITHOUT re-asking the acknowledgment — the stored liability stands', async () => {
+    const t = build({
+      line: {
+        data: lineRow({ amount: '-1200.00', label: 'Advance clawback' }),
+        error: null,
+      },
+      freshStatus: 'staged',
+      insertRows: [
+        lineRow({ amount: '-1200.00', label: 'Fixed label', month: '2026-11' }),
+      ],
+    });
+    // A label-only edit and the orphan re-target (month-only) both pass.
+    const view = await t.service.update(adminUser, LINE_ID, {
+      month: '2026-11',
+    });
+    expect(view.month).toBe('2026-11');
+    const update = t.txQueries.find((c) =>
+      String(c[0]).startsWith('update public.payroll_off_cycle_lines'),
+    );
+    expect(update?.[1]?.[4]).toBe('-1200.00'); // amount unchanged
+    expect(update?.[1]?.[6]).toBe(true); // acknowledged stays
+    expect(t.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('a NEW negative amount still re-asks the acknowledgment', async () => {
+    const t = build({ line: { data: lineRow(), error: null } });
+    const { status, body } = await errorOf(() =>
+      t.service.update(adminUser, LINE_ID, { amount: -100 }),
+    );
+    expect(status).toBe(422);
+    expect(String(body['message'])).toContain('employer-liability');
+  });
+
+  it('refuses NaN and Infinity — IsNumber alone lets them through', async () => {
+    const t = build();
+    for (const amount of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const { status, body } = await errorOf(() =>
+        t.service.create(adminUser, createDto({ amount })),
+      );
+      expect(status).toBe(422);
+      expect(String(body['message'])).toContain('real number');
+    }
+    expect(t.rpc).not.toHaveBeenCalled();
+  });
+
+  it('the tenant-scope filter is present on every list read (cross-tenant isolation)', async () => {
+    const t = build({
+      list: { data: [lineRow()], error: null },
+      member: { data: [memberRow], error: null },
+    });
+    await t.service.list(adminUser, undefined);
+    expect(t.eqCalls).toContainEqual(['tenant_id', TENANT]);
+  });
+
+  it('detects a concurrent re-target under the keys and answers 409 OFFCYCLE_LINE_CHANGED', async () => {
+    const t = build({
+      line: { data: lineRow({ month: '2026-10' }), error: null },
+      freshStatus: 'staged',
+      freshMonth: '2026-11', // another editor already moved the line
+    });
+    const { status, body } = await errorOf(() =>
+      t.service.update(adminUser, LINE_ID, { month: '2026-11' }),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.OFFCYCLE_LINE_CHANGED);
+    expect(
+      t.txQueries.some((c) =>
+        String(c[0]).startsWith('update public.payroll_off_cycle_lines'),
+      ),
+    ).toBe(false);
+    expect(t.rpc).not.toHaveBeenCalled();
+  });
+
+  it('cancels a staged line: the delete runs under the month key with the lock re-checked, then audits', async () => {
+    const t = build({ line: { data: lineRow(), error: null } });
+    await t.service.remove(adminUser, LINE_ID);
+    const sqls = t.txQueries.map((c) => String(c[0]));
+    const keyAt = sqls.findIndex((s) => s.includes('pg_advisory_xact_lock'));
+    const lockAt = sqls.findIndex((s) => s.includes('payroll_month_locks'));
+    const deleteAt = sqls.findIndex((s) =>
+      s.startsWith('delete from public.payroll_off_cycle_lines'),
+    );
+    expect(keyAt).toBeLessThan(lockAt);
+    expect(lockAt).toBeLessThan(deleteAt);
+    expect(String(t.txQueries[keyAt][1]?.[0])).toContain(':2026-10');
+    expect(t.rpcCalls[0][1]['p_action']).toBe('payroll.offcycle_cancelled');
+  });
+
+  it('an applied line cannot be cancelled', async () => {
+    const t = build({
+      line: { data: lineRow({ status: 'applied' }), error: null },
+    });
+    const { status, body } = await errorOf(() =>
+      t.service.remove(adminUser, LINE_ID),
+    );
+    expect(status).toBe(422);
+    expect(String(body['message'])).toContain('cannot be cancelled');
+    expect(t.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a locked month refuses the cancel inside the tx', async () => {
+    const t = build({
+      line: { data: lineRow(), error: null },
+      lockRows: [{ month: '2026-10' }],
+    });
+    const { status, body } = await errorOf(() =>
+      t.service.remove(adminUser, LINE_ID),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+    expect(
+      t.txQueries.some((c) =>
+        String(c[0]).startsWith('delete from public.payroll_off_cycle_lines'),
+      ),
+    ).toBe(false);
   });
 });

@@ -8,7 +8,11 @@ import {
   PAGE_MARGINS,
 } from '../templates/brand-kit/brand-theme';
 import { FONT_SEMIBOLD } from '../templates/brand-kit/brand-assets';
-import { dataTable, pageFooter, sectionTitle } from '../templates/brand-kit/page-chrome';
+import {
+  dataTable,
+  pageFooter,
+  sectionTitle,
+} from '../templates/brand-kit/page-chrome';
 import type { ReportDocument } from './report-definition';
 import type { PayslipSnapshot } from './payslip.data';
 
@@ -36,12 +40,27 @@ import type { PayslipSnapshot } from './payslip.data';
  */
 
 const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ];
 
 /** pdfmake's Margins is a fixed tuple — arrays lose that in inference. */
-function margins(a: number, b: number, c: number, d: number): [number, number, number, number] {
+function margins(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+): [number, number, number, number] {
   return [a, b, c, d];
 }
 
@@ -68,10 +87,19 @@ export function resolvedPayDate(
 }
 
 /** A head/recovery source as a human label: "head:Insurance" → "Insurance",
- *  "recovery:2026-09" → "Recovery (2026-09)". */
-function deductionLabel(source: string): string {
+ *  "recovery:2026-09" → "Recovery (2026-09)",
+ *  "offcycle-recovery:Advance clawback" → "Off-cycle: Advance clawback"
+ *  (the earning-side "Off-cycle:" convention, on the deductions side). */
+// Mirrors OFFCYCLE_DEDUCTION_PREFIX in src/payroll/offcycle-math.ts — kept
+// literal here so the template stays a dependency-free pure module.
+const OFFCYCLE_RECOVERY_SOURCE_PREFIX = 'offcycle-recovery:';
+
+export function deductionLabel(source: string): string {
   if (source.startsWith('recovery:')) {
     return `Recovery (${source.slice('recovery:'.length)})`;
+  }
+  if (source.startsWith(OFFCYCLE_RECOVERY_SOURCE_PREFIX)) {
+    return `Off-cycle: ${source.slice(OFFCYCLE_RECOVERY_SOURCE_PREFIX.length)}`;
   }
   return source.startsWith('head:') ? source.slice('head:'.length) : source;
 }
@@ -79,7 +107,10 @@ function deductionLabel(source: string): string {
 /** "esi" under the agreed normalisation: strip the head: prefix, trim,
  *  lower-case (a saved head is recorded as `head:<name>`). */
 function normalisedSource(source: string): string {
-  return source.replace(/^head:/, '').trim().toLowerCase();
+  return source
+    .replace(/^head:/, '')
+    .trim()
+    .toLowerCase();
 }
 
 function blank(value: string | null | undefined): string {
@@ -222,7 +253,17 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
       margin: margins(0, 0, 0, 10),
     },
     {
-      canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 1, lineColor: brand.border }],
+      canvas: [
+        {
+          type: 'line',
+          x1: 0,
+          y1: 0,
+          x2: 515,
+          y2: 0,
+          lineWidth: 1,
+          lineColor: brand.border,
+        },
+      ],
       margin: margins(0, 0, 0, 10),
     },
     sectionTitle('Employee', 'user'),
@@ -248,7 +289,10 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
       ['Slip number', slip.slip_number],
       ['Payment date', payDate],
       ['Wage divisor', dash(slip.divisor_convention)],
-      ['Attendance cut-off day', slip.cutoff_day == null ? '—' : String(slip.cutoff_day)],
+      [
+        'Attendance cut-off day',
+        slip.cutoff_day == null ? '—' : String(slip.cutoff_day),
+      ],
     ]),
     sectionTitle('Wage-rate break-up'),
     dataTable(
@@ -257,7 +301,10 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
         { header: 'Earned amount (₹)', width: 130, align: 'right' },
       ],
       [
-        ...earningRows.map((row) => [{ text: row[0] }, { text: row[1], alignment: 'right' as const }]),
+        ...earningRows.map((row) => [
+          { text: row[0] },
+          { text: row[1], alignment: 'right' as const },
+        ]),
         [
           { text: 'Gross wages payable', bold: true, fontSize: 9.5 },
           {
@@ -274,7 +321,10 @@ export function buildPayslipDocument(data: unknown): ReportDocument {
       ['Payable days', String(Number(slip.payable_days))],
       ['Loss-of-pay days', String(Number(slip.lop_days))],
       ['Paid days', String(Number(slip.paid_days))],
-      ['Days worked', slip.days_worked == null ? '—' : String(Number(slip.days_worked))],
+      [
+        'Days worked',
+        slip.days_worked == null ? '—' : String(Number(slip.days_worked)),
+      ],
       ['Overtime', '₹0.00'],
     ]),
     sectionTitle('Deductions'),

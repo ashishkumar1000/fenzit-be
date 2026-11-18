@@ -133,6 +133,7 @@ export class PayrollOffCycleService {
           label: dto.label,
           amount: dto.amount,
           tag: dto.tag ?? 'bonus',
+          acknowledged: dto.amount < 0,
         },
       },
     );
@@ -149,6 +150,7 @@ export class PayrollOffCycleService {
       )
       .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(200);
     if (month) {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
@@ -210,8 +212,14 @@ export class PayrollOffCycleService {
 
     const month = dto.month ?? line.month;
     const membershipId = dto.membershipId ?? line.membership_id;
+    // An unchanged amount keeps the acknowledgment the line already holds
+    // (create enforced it) — only a NEW negative amount re-asks for it.
+    // Without this, every label/month/employee edit of a recovery line —
+    // including the orphan re-target remedy — would 422.
     const amount = dto.amount ?? Number(line.amount);
-    this.assertAmount(amount, dto.acknowledged === true);
+    const acknowledged =
+      dto.acknowledged === true || (dto.amount === undefined && amount < 0);
+    this.assertAmount(amount, acknowledged);
     this.assertLabel(dto.label);
     const employee = await this.validateTarget(
       user,
@@ -231,11 +239,16 @@ export class PayrollOffCycleService {
             [payrollRunAdvisoryKey(tenantId, m)],
           );
         }
-        // Re-read under the keys: the line may have been consumed while the
-        // reads above ran.
-        const fresh = await tx.query<{ status: string }>(
-          `select status from public.payroll_off_cycle_lines
-          where id = $1::uuid and tenant_id = $2::uuid`,
+        // Re-read under the keys with the row locked: a concurrent editor's
+        // retarget (a different month/employee than the stale pre-tx read)
+        // is a conflict — refusing beats clobbering their write.
+        const fresh = await tx.query<{
+          status: string;
+          month: string;
+          membership_id: string;
+        }>(
+          `select status, month, membership_id from public.payroll_off_cycle_lines
+          where id = $1::uuid and tenant_id = $2::uuid for update`,
           [id, tenantId],
         );
         if (fresh.rows.length === 0) {
@@ -244,10 +257,21 @@ export class PayrollOffCycleService {
             message: 'No off-cycle line with that id in your company',
           });
         }
-        if (fresh.rows[0].status !== 'staged') {
+        const freshRow = fresh.rows[0];
+        if (freshRow.status !== 'staged') {
           throw validationError(
             'This line already sits on its month payslips — stage a new line for any further change',
           );
+        }
+        if (
+          freshRow.month !== line.month ||
+          freshRow.membership_id !== line.membership_id
+        ) {
+          throw new ConflictException({
+            error_code: ErrorCode.OFFCYCLE_LINE_CHANGED,
+            message:
+              'This line was re-targeted while you were editing it — reload it and try again',
+          });
         }
         await this.assertMonthUnlocked(tx, tenantId, month);
         const res = await tx.query<LineRow>(
@@ -296,10 +320,96 @@ export class PayrollOffCycleService {
         tenantId,
         action: 'payroll.offcycle_updated',
         targetUser: employee.userId,
-        details: { id, month, label: updated.label, amount },
+        details: {
+          id,
+          old: {
+            membershipId: line.membership_id,
+            month: line.month,
+            label: line.label,
+            amount: Number(line.amount),
+            tag: line.tag,
+          },
+          new: {
+            membershipId: updated.membership_id,
+            month: updated.month,
+            label: updated.label,
+            amount: Number(updated.amount),
+            tag: updated.tag,
+          },
+        },
       },
     );
     return this.toView(updated, employee.name);
+  }
+
+  /**
+   * Cancel a staged line (owner decision, code review 2026-11-18): a line
+   * staged by mistake can be withdrawn while its month is unlocked — the
+   * run never sees it. Applied lines are immutable, as on update.
+   */
+  async remove(user: RequestUser, id: string): Promise<void> {
+    const tenantId = requireTenant(user);
+    const admin = this.supabaseFactory.createAdmin();
+    const { data: line, error } = await admin
+      .from('payroll_off_cycle_lines')
+      .select('id, membership_id, month, label, amount, status')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle<LineRow>();
+    if (error) {
+      this.logger.error('Failed to read the off-cycle line:', { error });
+      throw internalError('Failed to cancel the off-cycle line');
+    }
+    if (!line) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'No off-cycle line with that id in your company',
+      });
+    }
+    if (line.status === 'applied') {
+      throw validationError(
+        'This line already sits on its month payslips — it cannot be cancelled',
+      );
+    }
+
+    await this.pg.withTransaction(async (tx) => {
+      await tx.query(
+        `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+        [payrollRunAdvisoryKey(tenantId, line.month)],
+      );
+      await this.assertMonthUnlocked(tx, tenantId, line.month);
+      const res = await tx.query<{ id: string }>(
+        `delete from public.payroll_off_cycle_lines
+          where id = $1::uuid and tenant_id = $2::uuid and status = 'staged'
+          returning id`,
+        [id, tenantId],
+      );
+      if (res.rows.length === 0) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'No off-cycle line with that id in your company',
+        });
+      }
+    });
+
+    // Best-effort, post-commit: an audit failure never undoes the cancel.
+    await writeAuditRow(
+      this.supabaseFactory.createAdmin(),
+      this.logger,
+      'off-cycle cancel',
+      {
+        actorId: user.userId,
+        tenantId,
+        action: 'payroll.offcycle_cancelled',
+        targetUser: null,
+        details: {
+          id,
+          month: line.month,
+          label: line.label,
+          amount: Number(line.amount),
+        },
+      },
+    );
   }
 
   /** Zero rejected; a negative line is a recovery and needs the
@@ -307,6 +417,10 @@ export class PayrollOffCycleService {
    *  trims to nothing would die on the DDL's btrim check as an unmapped
    *  23514 — refuse it here in plain English. */
   private assertAmount(amount: number, acknowledged: boolean): void {
+    // IsNumber accepts NaN and JSON's 1e999 (Infinity) — neither is money.
+    if (!Number.isFinite(amount)) {
+      throw validationError('amount must be a real number');
+    }
     if (amount === 0) {
       throw validationError(
         'an off-cycle amount cannot be zero — use a positive earning or a negative recovery',
@@ -450,7 +564,11 @@ export class PayrollOffCycleService {
   private async tenantToday(tenantId: string): Promise<string> {
     return this.pg.withTransaction(async (tx) => {
       const res = await tx.query<{ today: string }>(
-        `select (now() at time zone (select timezone from public.tenants where id = $1::uuid))::date::text as today`,
+        `select coalesce(
+           (select (now() at time zone (select timezone from public.tenants
+                     where id = $1::uuid))::date::text),
+           (select (now() at time zone 'UTC')::date::text)
+         ) as today`,
         [tenantId],
       );
       return res.rows[0]?.today ?? '';

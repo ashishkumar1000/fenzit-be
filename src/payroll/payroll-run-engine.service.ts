@@ -365,11 +365,23 @@ export class PayrollRunEngineService {
         // A leaver's final run raises nothing (excessLines is empty there):
         // an excess an exited employee can never absorb is reported in the
         // summary, never planted as an eternal recovery row.
+        // A surviving PARTIALLY-ABSORBED own-month row (a later month already
+        // took part of it) cannot be deleted — this run's fresh excess MERGES
+        // into it instead of inserting: both amounts grow, so original −
+        // outstanding (the absorption already deducted from the employee)
+        // is preserved. A plain insert would violate the
+        // (tenant, membership, month_raised) unique and fail the run.
         for (const excess of computed.excessLines) {
           await tx.query(
             `insert into public.payroll_recovery_lines
                (tenant_id, membership_id, month_raised, original_amount, outstanding_amount)
-             values ($1::uuid, $2::uuid, $3, $4, $4)`,
+             values ($1::uuid, $2::uuid, $3, $4, $4)
+             on conflict (tenant_id, membership_id, month_raised) do update
+               set original_amount =
+                     public.payroll_recovery_lines.original_amount + excluded.original_amount,
+                   outstanding_amount =
+                     public.payroll_recovery_lines.outstanding_amount + excluded.outstanding_amount,
+                   updated_at = now()`,
             [tenantId, excess.membershipId, month, excess.excess],
           );
         }
@@ -1089,7 +1101,7 @@ export class PayrollRunEngineService {
       // FULL (remainingFyMonths = 1), never spread over months the leaver
       // will not work. Every signed off-cycle amount joins the projection's
       // annual.
-      const finalRun = isFinalRun(member.exit_date, month, cutoffOf);
+      const finalRun = isFinalRun(member.exit_date, month);
       let tds = tdsProjection({
         monthlyStructure: structureTotal,
         monthsEmployedInFy: monthsEmployedInFy(

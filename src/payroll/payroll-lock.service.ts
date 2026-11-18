@@ -145,7 +145,7 @@ export class PayrollLockService {
         permanence:
           'A lock cannot be undone — there is no unlock. Re-running the month and editing its payslips are refused from now on.',
         remedy:
-          'If something is missing after the lock, stage an off-cycle payout for it — that is how a locked month pays anything more.',
+          'If something is missing after the lock, stage it as an off-cycle line on the NEXT open month — a locked month cannot take new lines, but the next run can carry the money.',
         stagedOffCycleLines: stagedLines,
       };
       const inserted = await tx.query<LockRow>(

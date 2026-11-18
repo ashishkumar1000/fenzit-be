@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -91,15 +92,47 @@ export class PayrollOffCycleController {
   })
   @ApiResponse({ status: 200, description: 'The updated line' })
   @ApiResponse({
+    status: 422,
+    description:
+      'The line is applied, or the edited amount is an unacknowledged negative',
+  })
+  @ApiResponse({
     status: 409,
     description:
-      'The line is applied, the target month is locked, or the (employee, month, label) already exists',
+      'The target month is locked (PAYROLL_MONTH_LOCKED), the (employee, month, label) already exists (DUPLICATE_RESOURCE), or the line was re-targeted concurrently (OFFCYCLE_LINE_CHANGED)',
   })
+  @ApiResponse({ status: 404, description: 'The line is not in this company' })
+  @ApiResponse({ status: 403, description: 'Not a company admin' })
   update(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateOffCycleLineDto,
   ): Promise<OffCycleLineView> {
     return this.offCycleService.update(user, id, dto);
+  }
+
+  @Delete('off-cycle-lines/:id')
+  @Can('payroll.config')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary:
+      'Cancel a STAGED line (a staging made by mistake); applied lines are immutable and the month must still be unlocked',
+  })
+  @ApiResponse({ status: 204, description: 'Cancelled' })
+  @ApiResponse({
+    status: 422,
+    description: 'The line is applied',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'PAYROLL_MONTH_LOCKED — the month is locked',
+  })
+  @ApiResponse({ status: 404, description: 'The line is not in this company' })
+  @ApiResponse({ status: 403, description: 'Not a company admin' })
+  remove(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    return this.offCycleService.remove(user, id);
   }
 }

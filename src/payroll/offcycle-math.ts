@@ -92,27 +92,23 @@ export function tdsAnnualWithOffCycle(
   return structureAnnual + lines.reduce((sum, l) => sum + l.amount, 0);
 }
 
-function nextMonth(month: string): string {
-  const [y, m] = month.split('-').map(Number);
-  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
-}
-
 /**
  * The leaver's final run: the LAST run whose owned dates reach the
  * employment window — the run month OWNS the exit date (its month when the
  * day is on or before that month's cut-off, else the successor's). Exit
  * exactly on the cut-off → the own month's final run.
  */
-export function isFinalRun(
-  exitDate: string | null,
-  month: string,
-  cutoffOf: (m: string) => number,
-): boolean {
-  if (!exitDate) return false;
-  const own = exitDate.slice(0, 7);
-  const cutoff = cutoffOf(own);
-  const owner = Number(exitDate.slice(8, 10)) <= cutoff ? own : nextMonth(own);
-  return owner === month;
+/**
+ * The final-run owner rule (CAP-6/10): the leaver's LAST slip — the run of
+ * the month the exit date falls in — is the final run. The day-based
+ * cut-off ownership (exit ≤ cut-off → own month, else successor) governs
+ * only LEAVE dates (lopWindow/ownedByRun): a successor-month run SKIPS a
+ * leaver whose employment ended the month before (empty payable window),
+ * so handing finality to it would leave the leaver's TDS spread over
+ * months they never work and their recoveries unsettled forever.
+ */
+export function isFinalRun(exitDate: string | null, month: string): boolean {
+  return exitDate !== null && exitDate.slice(0, 7) === month;
 }
 
 export interface FinalRunCapInput {
@@ -189,16 +185,21 @@ export function finalRunCap(input: FinalRunCapInput): FinalRunCapResult {
   );
 
   const absorbedByRow = new Map<string, number>();
-  const recoveryLines: DeductionLine[] = recoveries.map((l) => {
+  const recoveryLines: DeductionLine[] = [];
+  for (const l of recoveries) {
     const absorbed = Math.min(l.amount, headroom);
     headroom = roundMoney(headroom - absorbed);
     if (l.recoveryId) absorbedByRow.set(l.recoveryId, absorbed);
-    return {
-      source: l.source,
-      amount: roundMoney(absorbed),
-      recoveryId: l.recoveryId,
-    };
-  });
+    // A row that absorbs nothing stays off the slip (a ₹0.00 deduction row
+    // would read as nonsense) — its outstanding simply never moves.
+    if (absorbed > 0) {
+      recoveryLines.push({
+        source: l.source,
+        amount: roundMoney(absorbed),
+        recoveryId: l.recoveryId,
+      });
+    }
+  }
 
   const lines = [
     ...governed,

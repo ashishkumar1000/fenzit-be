@@ -1,4 +1,8 @@
-import { buildPayslipDocument, resolvedPayDate } from './payslip.template';
+import {
+  buildPayslipDocument,
+  deductionLabel,
+  resolvedPayDate,
+} from './payslip.template';
 import type { PayslipSnapshot } from './payslip.data';
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/enums/error-code.enum';
@@ -99,7 +103,7 @@ describe('buildPayslipDocument (23-8)', () => {
     expect(Array.isArray(doc.pageMargins)).toBe(true);
     expect(doc.footer).toBeDefined();
     const strip = (doc.footer as (p: number, t: number) => unknown)(1, 9) as {
-      stack: [{ columns: [{ text: string }, unknown] }];
+      stack: Array<{ columns: Array<{ text: string }> }>;
     };
     expect(strip.stack[1].columns[0].text).toContain(
       'Private — contains employee wage details',
@@ -108,9 +112,9 @@ describe('buildPayslipDocument (23-8)', () => {
 
   it('cites Form V under the Code on Wages (Central) Rules, 2026 — not the Contract Labour rules', () => {
     const texts = allTexts(buildPayslipDocument(fixture()));
-    expect(has(texts, 'Form V · Code on Wages (Central) Rules, 2026, rule 52')).toBe(
-      true,
-    );
+    expect(
+      has(texts, 'Form V · Code on Wages (Central) Rules, 2026, rule 52'),
+    ).toBe(true);
     expect(has(texts, 'Contract Labour')).toBe(false);
   });
 
@@ -145,7 +149,9 @@ describe('buildPayslipDocument (23-8)', () => {
     const texts = allTexts(buildPayslipDocument(fixture()));
     // A double-render regression (PF/TDS rendering again as stored lines)
     // must FAIL here — `has()` alone cannot see a second row.
-    expect(texts.filter((t) => t === 'Employee PF contribution')).toHaveLength(1);
+    expect(texts.filter((t) => t === 'Employee PF contribution')).toHaveLength(
+      1,
+    );
     expect(texts.filter((t) => t === 'ESI')).toHaveLength(1);
     expect(texts.filter((t) => t === 'TDS (income tax)')).toHaveLength(1);
     expect(texts.filter((t) => t === 'Total deductions')).toHaveLength(1);
@@ -173,7 +179,9 @@ describe('buildPayslipDocument (23-8)', () => {
   it('matches ESI through the head: prefix too (head:esi normalises to esi)', () => {
     const lines = fixture().deduction_lines.filter((l) => l.source !== 'esi');
     lines.push({ source: 'head:esi', amount: 140 });
-    const texts = allTexts(buildPayslipDocument(fixture({ deduction_lines: lines })));
+    const texts = allTexts(
+      buildPayslipDocument(fixture({ deduction_lines: lines })),
+    );
     // One ESI row, from the normalised line — not a second, and the bare
     // 'esi' source never leaks as a label.
     expect(texts.filter((t) => t === 'ESI')).toHaveLength(1);
@@ -182,7 +190,9 @@ describe('buildPayslipDocument (23-8)', () => {
 
   it('renders ESI as ₹0.00 when no esi line exists (best-effort matching, no fabrication)', () => {
     const lines = fixture().deduction_lines.filter((l) => l.source !== 'esi');
-    const texts = allTexts(buildPayslipDocument(fixture({ deduction_lines: lines })));
+    const texts = allTexts(
+      buildPayslipDocument(fixture({ deduction_lines: lines })),
+    );
     expect(has(texts, 'ESI')).toBe(true);
     // The EXACT cell: a substring ('0.00') would match any amount ending
     // in .00 — the ESI row's value must literally be 0.00.
@@ -270,5 +280,14 @@ describe('buildPayslipDocument (23-8)', () => {
         error_code: ErrorCode.REPORT_GENERATION_FAILED,
       });
     }
+  });
+
+  it('labels an off-cycle recovery source in plain English, not the raw prefix (23-9 review)', () => {
+    expect(deductionLabel('offcycle-recovery:Advance clawback')).toBe(
+      'Off-cycle: Advance clawback',
+    );
+    expect(deductionLabel('recovery:2026-09')).toBe('Recovery (2026-09)');
+    expect(deductionLabel('head:Insurance')).toBe('Insurance');
+    expect(deductionLabel('pf_employee')).toBe('pf_employee');
   });
 });

@@ -28,8 +28,6 @@ const line = (overrides: Partial<OffCycleLine> = {}): OffCycleLine => ({
   ...overrides,
 });
 
-const cutoffOf = () => 25;
-
 describe('offcycle-math — the line joins', () => {
   it('positive lines join the earning break-up as FLAT entries, never prorated', () => {
     const entries = offCycleEarningEntries([
@@ -86,20 +84,25 @@ describe('offcycle-math — the line joins', () => {
 });
 
 describe('offcycle-math — the final-run owner rule', () => {
-  it('an exit ON the cut-off day is owned by its own month (October owns Oct 25)', () => {
-    expect(isFinalRun('2026-10-25', '2026-10', cutoffOf)).toBe(true);
-    expect(isFinalRun('2026-10-25', '2026-11', cutoffOf)).toBe(false);
+  it('an exit in the run month makes THAT run final — every day of the exit month', () => {
+    expect(isFinalRun('2026-10-25', '2026-10')).toBe(true);
+    expect(isFinalRun('2026-10-27', '2026-10')).toBe(true);
+    expect(isFinalRun('2026-10-25', '2026-11')).toBe(false);
+    expect(isFinalRun('2026-10-27', '2026-11')).toBe(false);
   });
 
-  it('an exit AFTER the cut-off is owned by the successor month (the Oct-27 leaver ends in November)', () => {
-    expect(isFinalRun('2026-10-27', '2026-11', cutoffOf)).toBe(true);
-    expect(isFinalRun('2026-10-27', '2026-10', cutoffOf)).toBe(false);
+  it('the successor month never runs a leaver whose employment ended the month before — the empty payable window skips them, so finality belongs to the exit month (2026-11-18 review: the day-based LOP ownership must not govern which slip is final)', () => {
+    // The old rule handed finality for an Oct-27 exit to November — but
+    // November's run skips the leaver, leaving the TDS spread over months
+    // they never work and recoveries unsettled.
+    expect(isFinalRun('2026-10-27', '2026-10')).toBe(true);
+    expect(isFinalRun('2026-10-27', '2026-11')).toBe(false);
   });
 
   it('no exit date is never a final run; an unrelated month never is either', () => {
-    expect(isFinalRun(null, '2026-10', cutoffOf)).toBe(false);
-    expect(isFinalRun('2026-10-10', '2026-12', cutoffOf)).toBe(false);
-    expect(isFinalRun('2026-10-10', '2026-10', cutoffOf)).toBe(true); // pre-cutoff exit: own month
+    expect(isFinalRun(null, '2026-10')).toBe(false);
+    expect(isFinalRun('2026-10-10', '2026-12')).toBe(false);
+    expect(isFinalRun('2026-10-10', '2026-10')).toBe(true); // pre-cutoff exit: own month
   });
 });
 
@@ -193,6 +196,20 @@ describe('offcycle-math — the final-run cap', () => {
     });
     expect(r.netWages).toBe('0.00');
     expect(r.absorbedByRow.get('r-1')).toBe(0);
+    expect(r.lines).toEqual([]); // a ₹0.00 recovery row never prints
+  });
+
+  it('a row that absorbs nothing stays off the slip — the map still records its zero', () => {
+    const r = finalRunCap({
+      gross: 3000,
+      governed: [{ source: 'pf_employee', amount: 1000 }],
+      exempt: [{ source: 'tds', amount: 2000 }, recovery('r-1', 700)],
+    });
+    // headroom = 3000 − 1000 − 2000 = 0 → r-1 absorbs nothing.
+    expect(r.absorbedByRow.get('r-1')).toBe(0);
+    expect(
+      r.lines.find((l) => l.source === 'recovery:2026-09'),
+    ).toBeUndefined();
   });
 });
 
