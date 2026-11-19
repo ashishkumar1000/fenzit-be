@@ -107,6 +107,7 @@ export class EnrolmentsService {
       name: m.name,
       country_code: m.countryCode,
       phone_number: m.phoneNumber,
+      employeeCode: m.employeeCode,
       status: m.status,
       avatarKey: m.avatarKey,
     }));
@@ -141,6 +142,7 @@ export class EnrolmentsService {
         ...(state ? toAccessStateResponse(state) : NONE_STATE),
         employeeId: t.id,
         employeeName: t.name || phone || 'Unknown employee',
+        employeeCode: t.employeeCode ?? null,
         phone,
         avatarUrl: avatarUrlFor(avatarUrls, t.avatarKey),
         // Fail closed: only an active membership can be tracked.

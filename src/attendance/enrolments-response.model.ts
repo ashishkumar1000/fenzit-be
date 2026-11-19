@@ -146,6 +146,9 @@ export function toAccessStateResponse(
 export interface EnrolmentOverviewResponse extends AccessStateResponse {
   employeeId: string;
   employeeName: string;
+  /** The human-readable EMP code (CAP on memberships; null for a legacy
+   *  row the backfill missed) — the pickers search/display it. */
+  employeeCode: string | null;
   phone: string;
   /** Short-lived link to the person's photo, or null when none is set. */
   avatarUrl: string | null;
