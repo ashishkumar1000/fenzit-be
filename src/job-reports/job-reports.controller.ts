@@ -73,11 +73,15 @@ export class ApprovalQueueController {
   @Can('job.read_own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'My pending jobs: jobs I created that wait for owner approval, oldest first',
+    summary:
+      'My pending jobs: jobs I created that wait for owner approval, oldest first',
   })
   @ApiResponse({ status: 200, description: 'Cursor-paginated pending jobs' })
   @ApiResponse({ status: 403, description: 'Not an employee of this company' })
-  listMine(@CurrentUser() user: RequestUser, @Query() query: OwnPendingQueryDto) {
+  listMine(
+    @CurrentUser() user: RequestUser,
+    @Query() query: OwnPendingQueryDto,
+  ) {
     return this.approvalQueueService.listOwn(user, query);
   }
 

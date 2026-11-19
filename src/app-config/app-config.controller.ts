@@ -2,10 +2,7 @@ import { Controller, Get, Res } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 import { Public } from '../common/decorators/public.decorator';
-import {
-  AppConfigPayload,
-  AppConfigService,
-} from './app-config.service';
+import { AppConfigPayload, AppConfigService } from './app-config.service';
 
 @ApiTags('config')
 @Controller('config')
@@ -34,7 +31,9 @@ export class AppConfigController {
       },
     },
   })
-  async getApp(@Res({ passthrough: true }) reply: FastifyReply): Promise<AppConfigPayload> {
+  async getApp(
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<AppConfigPayload> {
     const { payload, etag } = await this.appConfigService.getAppConfig();
     // Direct hits (bypassing the worker) still get sane shared-cache
     // headers; on the worker path it overrides Cache-Control with its own

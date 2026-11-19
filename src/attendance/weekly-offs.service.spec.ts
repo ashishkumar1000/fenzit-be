@@ -33,12 +33,23 @@ function resultQueue(fallback: RpcResult, ...queued: RpcResult[]) {
 function flexQb(defaultResult: RpcResult) {
   const queue = resultQueue(defaultResult);
   const qb: Record<string, jest.Mock> = {};
-  for (const m of ['select', 'eq', 'neq', 'is', 'order', 'in', 'update', 'maybeSingle', 'single']) {
+  for (const m of [
+    'select',
+    'eq',
+    'neq',
+    'is',
+    'order',
+    'in',
+    'update',
+    'maybeSingle',
+    'single',
+  ]) {
     qb[m] = jest.fn().mockReturnValue(qb);
   }
   // Awaiting the chain consumes exactly one queued result.
   (qb as unknown as { then: unknown }).then = jest.fn(
-    (resolve: (v: RpcResult) => unknown) => Promise.resolve(resolve(queue.next())),
+    (resolve: (v: RpcResult) => unknown) =>
+      Promise.resolve(resolve(queue.next())),
   );
   return { qb, queue };
 }
@@ -134,13 +145,15 @@ describe('WeeklyOffsService (story 15-5)', () => {
    * records) and per-name RPC queues. Unqueued results default to success
    * with null data, so tests queue only what they assert on.
    */
-  function mockAdmin(opts: {
-    defaults?: RpcResult[];
-    overrides?: RpcResult[];
-    users?: RpcResult[];
-    tenants?: RpcResult[];
-    rpc?: Record<string, RpcResult[]>;
-  } = {}) {
+  function mockAdmin(
+    opts: {
+      defaults?: RpcResult[];
+      overrides?: RpcResult[];
+      users?: RpcResult[];
+      tenants?: RpcResult[];
+      rpc?: Record<string, RpcResult[]>;
+    } = {},
+  ) {
     const defaultsQb = flexQb({ data: [], error: null });
     for (const r of opts.defaults ?? []) defaultsQb.queue.push(r);
     const overridesQb = flexQb({ data: [], error: null });
@@ -149,7 +162,10 @@ describe('WeeklyOffsService (story 15-5)', () => {
     for (const r of opts.users ?? []) usersQb.queue.push(r);
 
     // Unqueued tenants read = a tenant that never saved the everyone rule.
-    const tenantsQb = flexQb({ data: { weekly_off_configured_at: null }, error: null });
+    const tenantsQb = flexQb({
+      data: { weekly_off_configured_at: null },
+      error: null,
+    });
     for (const r of opts.tenants ?? []) tenantsQb.queue.push(r);
 
     const rpcs = new Map<string, ReturnType<typeof rpcQueue>>();
@@ -224,22 +240,36 @@ describe('WeeklyOffsService (story 15-5)', () => {
         next: null,
         history: [],
       });
-      expect(q.rpc).toHaveBeenCalledWith('attendance_today', { p_tenant_id: TENANT_ID });
+      expect(q.rpc).toHaveBeenCalledWith('attendance_today', {
+        p_tenant_id: TENANT_ID,
+      });
     });
 
     it('picks the covering range as default, the earliest future edit as next, history ascending', async () => {
-      const q = seeded(mockAdmin({
-        defaults: [
-          {
-            data: [
-              { ...defaultRow, id: 'wo-past', valid: '[2026-09-01,2026-09-20)', days: [1] },
-              defaultRow,
-              { ...defaultRow, id: 'wo-next', valid: '[2026-10-05,)', days: [7] },
-            ],
-            error: null,
-          },
-        ],
-      }));
+      const q = seeded(
+        mockAdmin({
+          defaults: [
+            {
+              data: [
+                {
+                  ...defaultRow,
+                  id: 'wo-past',
+                  valid: '[2026-09-01,2026-09-20)',
+                  days: [1],
+                },
+                defaultRow,
+                {
+                  ...defaultRow,
+                  id: 'wo-next',
+                  valid: '[2026-10-05,)',
+                  days: [7],
+                },
+              ],
+              error: null,
+            },
+          ],
+        }),
+      );
 
       await expect(service.getWeeklyOffs(ownerUser)).resolves.toEqual({
         configured: true,
@@ -254,7 +284,9 @@ describe('WeeklyOffsService (story 15-5)', () => {
     });
 
     it('scopes the read to the tenant', async () => {
-      const q = seeded(mockAdmin({ defaults: [{ data: [defaultRow], error: null }] }));
+      const q = seeded(
+        mockAdmin({ defaults: [{ data: [defaultRow], error: null }] }),
+      );
 
       await service.getWeeklyOffs(ownerUser);
 
@@ -274,7 +306,9 @@ describe('WeeklyOffsService (story 15-5)', () => {
     });
 
     it('maps a read failure to 500 INTERNAL_SERVER_ERROR', async () => {
-      seeded(mockAdmin({ defaults: [{ data: null, error: { code: 'XX000' } }] }));
+      seeded(
+        mockAdmin({ defaults: [{ data: null, error: { code: 'XX000' } }] }),
+      );
 
       await expectErrorCode(
         service.getWeeklyOffs(ownerUser),
@@ -286,10 +320,15 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
   describe('setWeeklyOffDefault', () => {
     it('calls attendance_set_weekly_off_default and responds with the resolved default', async () => {
-      const q = seeded(mockAdmin({
-        defaults: [{ data: [defaultRow], error: null }],
-      }));
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          defaults: [{ data: [defaultRow], error: null }],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await expect(
         service.setWeeklyOffDefault(ownerUser, { days: [6, 7] }),
@@ -308,7 +347,10 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('passes an explicit effectiveFrom through (the RPC clamps past dates)', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({ data: null, error: null }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await service.setWeeklyOffDefault(ownerUser, {
         days: [7],
@@ -323,7 +365,10 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('allows an empty days array — the explicit clear (all 7 days working)', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({ data: null, error: null }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await service.setWeeklyOffDefault(ownerUser, { days: [] });
 
@@ -347,10 +392,17 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps the RPC PT422 backstop to 422 ATTENDANCE_NO_WORKING_DAYS', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({
-        data: null,
-        error: { code: 'PT422', hint: 'ATTENDANCE_NO_WORKING_DAYS', message: 'seven' },
-      }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT422',
+            hint: 'ATTENDANCE_NO_WORKING_DAYS',
+            message: 'seven',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.setWeeklyOffDefault(ownerUser, { days: [6] }),
@@ -361,10 +413,13 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps the days-CHECK violation (23514) to 422 ATTENDANCE_NO_WORKING_DAYS', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({
-        data: null,
-        error: { code: '23514', message: 'check violation' },
-      }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({
+          data: null,
+          error: { code: '23514', message: 'check violation' },
+        }),
+      );
 
       await expectErrorCode(
         service.setWeeklyOffDefault(ownerUser, { days: [6] }),
@@ -375,10 +430,17 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps the unknown-tenant PT404 (ATTENDANCE_TENANT_NOT_FOUND hint) to 404', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_TENANT_NOT_FOUND', message: 'no tenant' },
-      }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_TENANT_NOT_FOUND',
+            message: 'no tenant',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.setWeeklyOffDefault(ownerUser, { days: [6] }),
@@ -389,10 +451,13 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps any other RPC failure to 500', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_default', rpcQueue({
-        data: null,
-        error: { code: 'XX000', message: 'boom' },
-      }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_default',
+        rpcQueue({
+          data: null,
+          error: { code: 'XX000', message: 'boom' },
+        }),
+      );
 
       await expectErrorCode(
         service.setWeeklyOffDefault(ownerUser, { days: [6] }),
@@ -424,30 +489,40 @@ describe('WeeklyOffsService (story 15-5)', () => {
     it('groups rows per employee, resolves names, sorts by employeeName', async () => {
       const empB = '00000000-0000-4000-8000-0000000000eb';
       const empA = '00000000-0000-4000-8000-0000000000ea';
-      const q = seeded(mockAdmin({
-        overrides: [
-          {
-            data: [
-              { ...overrideRow, employee_id: empB, days: [5] },
-              { ...overrideRow, employee_id: empA, valid: '[2026-10-05,)', days: [1] },
-            ],
-            error: null,
-          },
-        ],
-        users: [
-          {
-            data: [
-              member(empA, 'Alpha Singh', '+91', '9999900001'),
-              member(empB, 'Zeta Kumar', '+91', '9999900002'),
-            ],
-            error: null,
-          },
-        ],
-      }));
+      const q = seeded(
+        mockAdmin({
+          overrides: [
+            {
+              data: [
+                { ...overrideRow, employee_id: empB, days: [5] },
+                {
+                  ...overrideRow,
+                  employee_id: empA,
+                  valid: '[2026-10-05,)',
+                  days: [1],
+                },
+              ],
+              error: null,
+            },
+          ],
+          users: [
+            {
+              data: [
+                member(empA, 'Alpha Singh', '+91', '9999900001'),
+                member(empB, 'Zeta Kumar', '+91', '9999900002'),
+              ],
+              error: null,
+            },
+          ],
+        }),
+      );
 
       const result = await service.listOverrides(ownerUser);
 
-      expect(result.map((r) => r.employeeName)).toEqual(['Alpha Singh', 'Zeta Kumar']);
+      expect(result.map((r) => r.employeeName)).toEqual([
+        'Alpha Singh',
+        'Zeta Kumar',
+      ]);
       expect(result[0]).toEqual({
         employeeId: empA,
         employeeName: 'Alpha Singh',
@@ -466,26 +541,39 @@ describe('WeeklyOffsService (story 15-5)', () => {
     it('gives an override its employee a photo link, and null when they have none', async () => {
       const empA = '00000000-0000-4000-8000-0000000000ea';
       const empB = '00000000-0000-4000-8000-0000000000eb';
-      seeded(mockAdmin({
-        overrides: [
-          {
-            data: [
-              { ...overrideRow, employee_id: empA, valid: '[2026-10-05,)', days: [1] },
-              { ...overrideRow, employee_id: empB, days: [5] },
-            ],
-            error: null,
-          },
-        ],
-        users: [
-          {
-            data: [
-              member(empA, 'Alpha Singh', '+91', '9999900001', 'avatars/a/p.jpg'),
-              member(empB, 'Zeta Kumar', '+91', '9999900002'),
-            ],
-            error: null,
-          },
-        ],
-      }));
+      seeded(
+        mockAdmin({
+          overrides: [
+            {
+              data: [
+                {
+                  ...overrideRow,
+                  employee_id: empA,
+                  valid: '[2026-10-05,)',
+                  days: [1],
+                },
+                { ...overrideRow, employee_id: empB, days: [5] },
+              ],
+              error: null,
+            },
+          ],
+          users: [
+            {
+              data: [
+                member(
+                  empA,
+                  'Alpha Singh',
+                  '+91',
+                  '9999900001',
+                  'avatars/a/p.jpg',
+                ),
+                member(empB, 'Zeta Kumar', '+91', '9999900002'),
+              ],
+              error: null,
+            },
+          ],
+        }),
+      );
 
       const result = await service.listOverrides(ownerUser);
 
@@ -496,34 +584,38 @@ describe('WeeklyOffsService (story 15-5)', () => {
     });
 
     it('falls back to the reassembled E.164 number, then Unknown employee', async () => {
-      const q = seeded(mockAdmin({
-        overrides: [
-          {
-            data: [
-              { ...overrideRow, employee_id: EMPLOYEE_ID },
-              {
-                ...overrideRow,
-                employee_id: '00000000-0000-4000-8000-0000000000ec',
-              },
-            ],
-            error: null,
-          },
-        ],
-        users: [
-          {
-            data: [
-              // No name — the phone fallback the RPCs also use (20260927000003).
-              member(EMPLOYEE_ID, null, '+91', '9999900003'),
-            ],
-            error: null,
-          },
-        ],
-      }));
+      const q = seeded(
+        mockAdmin({
+          overrides: [
+            {
+              data: [
+                { ...overrideRow, employee_id: EMPLOYEE_ID },
+                {
+                  ...overrideRow,
+                  employee_id: '00000000-0000-4000-8000-0000000000ec',
+                },
+              ],
+              error: null,
+            },
+          ],
+          users: [
+            {
+              data: [
+                // No name — the phone fallback the RPCs also use (20260927000003).
+                member(EMPLOYEE_ID, null, '+91', '9999900003'),
+              ],
+              error: null,
+            },
+          ],
+        }),
+      );
 
       const result = await service.listOverrides(ownerUser);
       const byId = new Map(result.map((r) => [r.employeeId, r.employeeName]));
       expect(byId.get(EMPLOYEE_ID)).toBe('+919999900003');
-      expect(byId.get('00000000-0000-4000-8000-0000000000ec')).toBe('Unknown employee');
+      expect(byId.get('00000000-0000-4000-8000-0000000000ec')).toBe(
+        'Unknown employee',
+      );
     });
 
     it('requires a tenant — 400 before any client call', async () => {
@@ -542,15 +634,25 @@ describe('WeeklyOffsService (story 15-5)', () => {
     const dto = { days: [5] };
 
     it('calls the override RPC scoped to the employee and returns the picked detail', async () => {
-      const q = seeded(mockAdmin({
-        overrides: [{ data: [overrideRow], error: null }],
-        users: [
-          { data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')], error: null },
-        ],
-      }));
-      q.rpcs.set('attendance_set_weekly_off_override', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          overrides: [{ data: [overrideRow], error: null }],
+          users: [
+            {
+              data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')],
+              error: null,
+            },
+          ],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_set_weekly_off_override',
+        rpcQueue({ data: null, error: null }),
+      );
 
-      await expect(service.setOverride(ownerUser, EMPLOYEE_ID, dto)).resolves.toEqual({
+      await expect(
+        service.setOverride(ownerUser, EMPLOYEE_ID, dto),
+      ).resolves.toEqual({
         employeeId: EMPLOYEE_ID,
         employeeName: 'Ravi Kumar',
         avatarUrl: null,
@@ -564,14 +666,19 @@ describe('WeeklyOffsService (story 15-5)', () => {
         p_effective_from: null,
       });
       // The detail re-read is employee-scoped.
-      expect(q.overridesQb.qb.eq).toHaveBeenCalledWith('employee_id', EMPLOYEE_ID);
+      expect(q.overridesQb.qb.eq).toHaveBeenCalledWith(
+        'employee_id',
+        EMPLOYEE_ID,
+      );
     });
 
     it('rejects all seven days with 422 ATTENDANCE_NO_WORKING_DAYS before any DB call', async () => {
       const q = seeded(mockAdmin());
 
       await expectErrorCode(
-        service.setOverride(ownerUser, EMPLOYEE_ID, { days: [1, 2, 3, 4, 5, 6, 7] }),
+        service.setOverride(ownerUser, EMPLOYEE_ID, {
+          days: [1, 2, 3, 4, 5, 6, 7],
+        }),
         422,
         ErrorCode.ATTENDANCE_NO_WORKING_DAYS,
       );
@@ -580,10 +687,17 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps the non-member PT404 to 404 ATTENDANCE_EMPLOYEE_NOT_FOUND', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_set_weekly_off_override', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_EMPLOYEE_NOT_FOUND', message: 'not member' },
-      }));
+      q.rpcs.set(
+        'attendance_set_weekly_off_override',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+            message: 'not member',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.setOverride(ownerUser, EMPLOYEE_ID, dto),
@@ -593,13 +707,22 @@ describe('WeeklyOffsService (story 15-5)', () => {
     });
 
     it('maps an empty days override through (works all 7 days)', async () => {
-      const q = seeded(mockAdmin({
-        overrides: [{ data: [{ ...overrideRow, days: [] }], error: null }],
-        users: [{ data: [member(EMPLOYEE_ID, 'Ravi', '+91', '1')], error: null }],
-      }));
-      q.rpcs.set('attendance_set_weekly_off_override', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          overrides: [{ data: [{ ...overrideRow, days: [] }], error: null }],
+          users: [
+            { data: [member(EMPLOYEE_ID, 'Ravi', '+91', '1')], error: null },
+          ],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_set_weekly_off_override',
+        rpcQueue({ data: null, error: null }),
+      );
 
-      await expect(service.setOverride(ownerUser, EMPLOYEE_ID, { days: [] })).resolves.toEqual({
+      await expect(
+        service.setOverride(ownerUser, EMPLOYEE_ID, { days: [] }),
+      ).resolves.toEqual({
         employeeId: EMPLOYEE_ID,
         employeeName: 'Ravi',
         avatarUrl: null,
@@ -615,11 +738,21 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
   describe('removeOverride', () => {
     it('calls the removal RPC and returns the post-removal detail (current null once nothing covers today)', async () => {
-      const q = seeded(mockAdmin({
-        overrides: [{ data: [], error: null }],
-        users: [{ data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')], error: null }],
-      }));
-      q.rpcs.set('attendance_remove_weekly_off_override', rpcQueue({ data: null, error: null }));
+      const q = seeded(
+        mockAdmin({
+          overrides: [{ data: [], error: null }],
+          users: [
+            {
+              data: [member(EMPLOYEE_ID, 'Ravi Kumar', '+91', '9999900004')],
+              error: null,
+            },
+          ],
+        }),
+      );
+      q.rpcs.set(
+        'attendance_remove_weekly_off_override',
+        rpcQueue({ data: null, error: null }),
+      );
 
       await expect(
         service.removeOverride(ownerUser, EMPLOYEE_ID, {}),
@@ -630,18 +763,26 @@ describe('WeeklyOffsService (story 15-5)', () => {
         current: null,
         next: null,
       });
-      expect(q.rpc).toHaveBeenCalledWith('attendance_remove_weekly_off_override', {
-        p_tenant_id: TENANT_ID,
-        p_employee_id: EMPLOYEE_ID,
-        p_effective_from: null,
-      });
+      expect(q.rpc).toHaveBeenCalledWith(
+        'attendance_remove_weekly_off_override',
+        {
+          p_tenant_id: TENANT_ID,
+          p_employee_id: EMPLOYEE_ID,
+          p_effective_from: null,
+        },
+      );
     });
 
     it('passes an explicit effectiveFrom through', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_remove_weekly_off_override', rpcQueue({ data: null, error: null }));
+      q.rpcs.set(
+        'attendance_remove_weekly_off_override',
+        rpcQueue({ data: null, error: null }),
+      );
 
-      await service.removeOverride(ownerUser, EMPLOYEE_ID, { effectiveFrom: '2026-10-05' });
+      await service.removeOverride(ownerUser, EMPLOYEE_ID, {
+        effectiveFrom: '2026-10-05',
+      });
 
       expect(q.rpc).toHaveBeenCalledWith(
         'attendance_remove_weekly_off_override',
@@ -651,10 +792,17 @@ describe('WeeklyOffsService (story 15-5)', () => {
 
     it('maps the non-member PT404 to 404 (removal of a foreign employee)', async () => {
       const q = seeded(mockAdmin());
-      q.rpcs.set('attendance_remove_weekly_off_override', rpcQueue({
-        data: null,
-        error: { code: 'PT404', hint: 'ATTENDANCE_EMPLOYEE_NOT_FOUND', message: 'not member' },
-      }));
+      q.rpcs.set(
+        'attendance_remove_weekly_off_override',
+        rpcQueue({
+          data: null,
+          error: {
+            code: 'PT404',
+            hint: 'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+            message: 'not member',
+          },
+        }),
+      );
 
       await expectErrorCode(
         service.removeOverride(ownerUser, EMPLOYEE_ID, {}),

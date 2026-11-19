@@ -189,11 +189,13 @@ describe('the DB pool gauges', () => {
     setDbPoolStats(() => ({ total: 5, idle: 3, waiting: 1 }));
 
     const seen = await runBatch(callbacks);
-    expect(seen).toEqual(DB_POOL_STATES.map((state) => ({
-      gauge: METRIC_DB_POOL_CONNECTIONS,
-      value: { total: 5, idle: 3, waiting: 1 }[state],
-      attributes: { state },
-    })));
+    expect(seen).toEqual(
+      DB_POOL_STATES.map((state) => ({
+        gauge: METRIC_DB_POOL_CONNECTIONS,
+        value: { total: 5, idle: 3, waiting: 1 }[state],
+        attributes: { state },
+      })),
+    );
   });
 
   it('no seam registered → the callback observes nothing (module absent)', async () => {

@@ -99,7 +99,11 @@ describe('TechnicianJobActivityFlags — computeFlags (story 12-5)', () => {
     it('an open job whose start is still in the future raises no flag', () => {
       const flags = computeFlags(
         data([
-          job({ id: 'j1', status: 'scheduled', scheduledStart: '2026-09-21T04:00:00Z' }),
+          job({
+            id: 'j1',
+            status: 'scheduled',
+            scheduledStart: '2026-09-21T04:00:00Z',
+          }),
         ]),
         NOW,
       );
@@ -147,7 +151,7 @@ describe('TechnicianJobActivityFlags — computeFlags (story 12-5)', () => {
       expect(flags).toEqual([]);
     });
 
-    it("an open job past its start wins over the proof rule (flags do not double-fire)", () => {
+    it('an open job past its start wins over the proof rule (flags do not double-fire)', () => {
       // A completed job is never open, but an open job with no proof must
       // surface as the overdue flag only.
       const flags = computeFlags(
@@ -170,14 +174,18 @@ describe('TechnicianJobActivityFlags — computeFlags (story 12-5)', () => {
 
   describe('cancelled', () => {
     it("flags a cancelled job as 'Cancelled'", () => {
-      const flags = computeFlags(data([job({ id: 'j1', status: 'cancelled' })]), NOW);
+      const flags = computeFlags(
+        data([job({ id: 'j1', status: 'cancelled' })]),
+        NOW,
+      );
 
       expect(flags).toEqual([
         {
           jobNumber: 'J-j1',
           technicianName: 'Ravi',
           kind: 'Cancelled',
-          detail: 'This job was cancelled. Please check if the customer needs help.',
+          detail:
+            'This job was cancelled. Please check if the customer needs help.',
         },
       ]);
     });

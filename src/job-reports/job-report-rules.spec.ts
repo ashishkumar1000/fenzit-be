@@ -99,14 +99,20 @@ describe('outcomeOf: the four employee-job outcomes', () => {
   });
   it('a completed job stays approved', () => {
     expect(
-      outcomeOf(job({ createdBy: EMP_A, status: 'completed', decidedAt: HOURS(0) })),
+      outcomeOf(
+        job({ createdBy: EMP_A, status: 'completed', decidedAt: HOURS(0) }),
+      ),
     ).toBe('approved');
   });
   it('a cancelled job is its own bucket, whether it was pending or approved', () => {
     expect(
-      outcomeOf(job({ createdBy: EMP_A, status: 'cancelled', decidedAt: HOURS(0) })),
+      outcomeOf(
+        job({ createdBy: EMP_A, status: 'cancelled', decidedAt: HOURS(0) }),
+      ),
     ).toBe('cancelled');
-    expect(outcomeOf(job({ createdBy: EMP_A, status: 'cancelled' }))).toBe('cancelled');
+    expect(outcomeOf(job({ createdBy: EMP_A, status: 'cancelled' }))).toBe(
+      'cancelled',
+    );
   });
 });
 

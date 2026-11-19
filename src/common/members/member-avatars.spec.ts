@@ -56,8 +56,12 @@ describe('presignAvatarUrls', () => {
     ]);
 
     expect(presignReadUrl).toHaveBeenCalledTimes(2);
-    expect(urls.get('avatars/a.jpg')).toBe('https://signed.example/avatars/a.jpg');
-    expect(urls.get('avatars/b.jpg')).toBe('https://signed.example/avatars/b.jpg');
+    expect(urls.get('avatars/a.jpg')).toBe(
+      'https://signed.example/avatars/a.jpg',
+    );
+    expect(urls.get('avatars/b.jpg')).toBe(
+      'https://signed.example/avatars/b.jpg',
+    );
     expect(urls.size).toBe(2);
   });
 
@@ -74,7 +78,9 @@ describe('presignAvatarUrls', () => {
     ]);
 
     expect(urls.has('avatars/bad.jpg')).toBe(false);
-    expect(urls.get('avatars/good.jpg')).toBe('https://signed.example/avatars/good.jpg');
+    expect(urls.get('avatars/good.jpg')).toBe(
+      'https://signed.example/avatars/good.jpg',
+    );
   });
 });
 
@@ -84,7 +90,9 @@ describe('avatarUrlFor', () => {
     expect(avatarUrlFor(urls, null)).toBeNull();
     expect(avatarUrlFor(urls, undefined)).toBeNull();
     expect(avatarUrlFor(urls, 'avatars/other.jpg')).toBeNull();
-    expect(avatarUrlFor(urls, 'avatars/a.jpg')).toBe('https://signed.example/a');
+    expect(avatarUrlFor(urls, 'avatars/a.jpg')).toBe(
+      'https://signed.example/a',
+    );
   });
 });
 
@@ -95,7 +103,12 @@ describe('avatarUrlsByUserId', () => {
 
   it('returns an empty map without reading when there are no people', async () => {
     const { storage } = storageSigning();
-    const result = await avatarUrlsByUserId(storage, {} as SupabaseClient, TENANT, []);
+    const result = await avatarUrlsByUserId(
+      storage,
+      {} as SupabaseClient,
+      TENANT,
+      [],
+    );
     expect(result.size).toBe(0);
     expect(mockList).not.toHaveBeenCalled();
   });
@@ -107,10 +120,12 @@ describe('avatarUrlsByUserId', () => {
     ]);
     const { storage } = storageSigning();
 
-    const byUser = await avatarUrlsByUserId(storage, {} as SupabaseClient, TENANT, [
-      'u1',
-      'u2',
-    ]);
+    const byUser = await avatarUrlsByUserId(
+      storage,
+      {} as SupabaseClient,
+      TENANT,
+      ['u1', 'u2'],
+    );
 
     expect(byUser.get('u1')).toBe('https://signed.example/avatars/u1.jpg');
     expect(byUser.has('u2')).toBe(false);
@@ -120,9 +135,12 @@ describe('avatarUrlsByUserId', () => {
     mockList.mockRejectedValue(new Error('db down'));
     const { storage, presignReadUrl } = storageSigning();
 
-    const byUser = await avatarUrlsByUserId(storage, {} as SupabaseClient, TENANT, [
-      'u1',
-    ]);
+    const byUser = await avatarUrlsByUserId(
+      storage,
+      {} as SupabaseClient,
+      TENANT,
+      ['u1'],
+    );
 
     expect(byUser.size).toBe(0);
     expect(presignReadUrl).not.toHaveBeenCalled();
@@ -135,7 +153,12 @@ describe('avatarUrlsByUserId', () => {
     const { storage } = storageSigning();
     const ids = Array.from({ length: 450 }, (_, i) => `u${i}`);
 
-    const byUser = await avatarUrlsByUserId(storage, {} as SupabaseClient, TENANT, ids);
+    const byUser = await avatarUrlsByUserId(
+      storage,
+      {} as SupabaseClient,
+      TENANT,
+      ids,
+    );
 
     expect(mockList).toHaveBeenCalledTimes(3);
     for (const call of mockList.mock.calls) {

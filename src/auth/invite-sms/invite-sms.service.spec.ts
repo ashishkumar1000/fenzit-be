@@ -90,7 +90,7 @@ function harness(opts: {
   const config = { getOrThrow: jest.fn().mockReturnValue(HASH_KEY) };
 
   const service = new InviteSmsService(
-    { send } as never,
+    { send },
     factory as never,
     config as never,
   );
@@ -192,17 +192,25 @@ describe('InviteSmsService.sendInviteSms', () => {
 // Indian number must share one cap slot, and a rejected audit write must not
 // turn a sent text into a thrown error.
 describe('InviteSmsService: one person, one cap slot', () => {
-  const SPELLINGS = ['9876543210', '09876543210', '919876543210', '098765 43210'];
+  const SPELLINGS = [
+    '9876543210',
+    '09876543210',
+    '919876543210',
+    '098765 43210',
+  ];
 
-  it.each(SPELLINGS)('hashes %s to the same cap key as the plain number', async typed => {
-    const plain = harness({});
-    await plain.service.sendInviteSms(REQUEST);
-    const h = harness({});
-    await h.service.sendInviteSms({ ...REQUEST, phoneNumber: typed });
-    expect(h.rpc.mock.calls[0][1].p_phone_hash).toBe(
-      plain.rpc.mock.calls[0][1].p_phone_hash,
-    );
-  });
+  it.each(SPELLINGS)(
+    'hashes %s to the same cap key as the plain number',
+    async (typed) => {
+      const plain = harness({});
+      await plain.service.sendInviteSms(REQUEST);
+      const h = harness({});
+      await h.service.sendInviteSms({ ...REQUEST, phoneNumber: typed });
+      expect(h.rpc.mock.calls[0][1].p_phone_hash).toBe(
+        plain.rpc.mock.calls[0][1].p_phone_hash,
+      );
+    },
+  );
 
   it('sends the text to the canonical number, not the typed spelling', async () => {
     const h = harness({});
@@ -253,7 +261,7 @@ describe('InviteSmsService: failed sends, retries and masking', () => {
     await expect(h.service.sendInviteSms(REQUEST)).resolves.toBe('sent');
 
     expect(netSlots(h)).toBe(1);
-    expect(h.auditInsert.mock.calls.map(c => c[0].outcome)).toEqual([
+    expect(h.auditInsert.mock.calls.map((c) => c[0].outcome)).toEqual([
       'failed',
       'sent',
     ]);
@@ -295,7 +303,9 @@ describe('InviteSmsService: failed sends, retries and masking', () => {
       .mockImplementation(() => undefined);
     try {
       const h = harness({
-        send: jest.fn().mockRejectedValue(new SmsDeliveryError('nope', 'error')),
+        send: jest
+          .fn()
+          .mockRejectedValue(new SmsDeliveryError('nope', 'error')),
       });
       await h.service.sendInviteSms(REQUEST);
       expect(warn).toHaveBeenCalled();

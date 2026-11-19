@@ -36,7 +36,10 @@ const EMPLOYEE_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f1';
 const OFFICE_ID = 'f2e0a5c7-1b9d-4a5c-8b6d-0000000000f2';
 const TODAY = '2026-09-29'; // Tuesday
 
-const settingsGateRow = { enabled: true, setup_completed_at: '2026-09-01T00:00:00+00:00' };
+const settingsGateRow = {
+  enabled: true,
+  setup_completed_at: '2026-09-01T00:00:00+00:00',
+};
 const enrolmentRow = {
   employee_id: EMPLOYEE_ID,
   valid: '[2026-09-01,)',
@@ -94,7 +97,15 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
     if (!queue) throw new Error(`unexpected table ${table}`);
     const qb: Record<string, unknown> = {};
     for (const m of [
-      'select', 'eq', 'is', 'order', 'in', 'update', 'upsert', 'maybeSingle', 'single',
+      'select',
+      'eq',
+      'is',
+      'order',
+      'in',
+      'update',
+      'upsert',
+      'maybeSingle',
+      'single',
     ]) {
       qb[m] = jest.fn().mockReturnValue(qb);
     }
@@ -117,19 +128,27 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
    */
   function baseFacts(sql: string): SqlResult {
     if (sql.includes('attendance_today')) return { rows: [{ today: TODAY }] };
-    if (sql.includes('from public.tenants where')) return { rows: [{ timezone: 'Asia/Kolkata' }] };
-    if (sql.includes('from public.attendance_settings')) return { rows: [settingsGateRow] };
-    if (sql.includes('from public.attendance_enrolments')) return { rows: [enrolmentRow] };
-    if (sql.includes('from public.attendance_office_assignments')) return { rows: [assignmentRow] };
-    if (sql.includes('from public.attendance_weekly_off_overrides')) return { rows: [] };
+    if (sql.includes('from public.tenants where'))
+      return { rows: [{ timezone: 'Asia/Kolkata' }] };
+    if (sql.includes('from public.attendance_settings'))
+      return { rows: [settingsGateRow] };
+    if (sql.includes('from public.attendance_enrolments'))
+      return { rows: [enrolmentRow] };
+    if (sql.includes('from public.attendance_office_assignments'))
+      return { rows: [assignmentRow] };
+    if (sql.includes('from public.attendance_weekly_off_overrides'))
+      return { rows: [] };
     if (sql.includes('from public.attendance_weekly_off_defaults'))
       return { rows: [{ valid: '[2026-01-01,)', days: [7] }] };
     if (sql.includes('from public.holidays')) return { rows: [] };
-    if (sql.includes('from public.attendance_office_rules')) return { rows: [ruleRow] };
-    if (sql.includes('from public.attendance_records')) return { rows: [presentRecordRow] };
+    if (sql.includes('from public.attendance_office_rules'))
+      return { rows: [ruleRow] };
+    if (sql.includes('from public.attendance_records'))
+      return { rows: [presentRecordRow] };
     if (sql.includes('from public.attendance_attempts')) return { rows: [] };
     if (sql.includes('from public.leave_request_days')) return { rows: [] };
-    if (sql.includes('from public.attendance_day_overrides')) return { rows: [] };
+    if (sql.includes('from public.attendance_day_overrides'))
+      return { rows: [] };
     if (sql.includes('distinct on')) return { rows: [] }; // grid: newest audit entry per day
     if (sql.startsWith('select count(*)::text as n from public.memberships'))
       return { rows: [{ n: '1' }] };
@@ -211,7 +230,13 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
       expect(body.to).toBe(TO);
       expect(body.days).toHaveLength(7);
       expect(body.days.map((d: { workDate: string }) => d.workDate)).toEqual([
-        '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04',
+        '2026-09-28',
+        '2026-09-29',
+        '2026-09-30',
+        '2026-10-01',
+        '2026-10-02',
+        '2026-10-03',
+        '2026-10-04',
       ]);
       // The record day: present, full-day credit, AD-7 tenant-offset instants.
       expect(body.days[0]).toMatchObject({
@@ -252,7 +277,8 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
     it('422 ATTENDANCE_INVALID_RANGE for a 63-day span (cap 62, before any per-date work)', async () => {
       const res = await app.inject({
         method: 'GET',
-        url: '/api/v1/attendance/day-statuses?employeeId=' +
+        url:
+          '/api/v1/attendance/day-statuses?employeeId=' +
           `${EMPLOYEE_ID}&from=2026-08-01&to=2026-10-02`,
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
@@ -264,7 +290,8 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
       // 2026-09-01 → 2026-11-01 is exactly 62 days; one past the cap is 422.
       const exact = await app.inject({
         method: 'GET',
-        url: '/api/v1/attendance/day-statuses?employeeId=' +
+        url:
+          '/api/v1/attendance/day-statuses?employeeId=' +
           `${EMPLOYEE_ID}&from=2026-09-01&to=2026-11-01`,
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
@@ -339,7 +366,9 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
 
   describe('GET /attendance/me/day-statuses (technician)', () => {
     it('200 — own range read, identity from the JWT (no employeeId key)', async () => {
-      tableQueues.set('attendance_access_state', [{ data: accessViewRow, error: null }]);
+      tableQueues.set('attendance_access_state', [
+        { data: accessViewRow, error: null },
+      ]);
 
       const res = await app.inject({
         method: 'GET',
@@ -383,7 +412,9 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
     });
 
     it('422 ATTENDANCE_INVALID_RANGE for a reversed range and 200 at the exact 62-day cap (G2-P12)', async () => {
-      tableQueues.set('attendance_access_state', [{ data: accessViewRow, error: null }]);
+      tableQueues.set('attendance_access_state', [
+        { data: accessViewRow, error: null },
+      ]);
 
       const reversed = await app.inject({
         method: 'GET',
@@ -391,7 +422,9 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
         headers: { authorization: `Bearer ${techJwt()}` },
       });
       expect(reversed.statusCode).toBe(422);
-      expect(JSON.parse(reversed.body).error_code).toBe('ATTENDANCE_INVALID_RANGE');
+      expect(JSON.parse(reversed.body).error_code).toBe(
+        'ATTENDANCE_INVALID_RANGE',
+      );
 
       const exact = await app.inject({
         method: 'GET',
@@ -403,7 +436,9 @@ describe('Day-statuses HTTP boundary (e2e, 18-1)', () => {
     });
 
     it('422 for an impossible from date (AttendanceCalendarDateConstraint)', async () => {
-      tableQueues.set('attendance_access_state', [{ data: accessViewRow, error: null }]);
+      tableQueues.set('attendance_access_state', [
+        { data: accessViewRow, error: null },
+      ]);
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/attendance/me/day-statuses?from=2026-02-30&to=2026-02-30',

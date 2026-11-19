@@ -114,7 +114,10 @@ export async function readEmployeeNames(
       avatar_key: m.avatarKey,
     }));
   } catch (err) {
-    logger.error('Failed to read employee names for weekly off', err instanceof Error ? err.stack : String(err));
+    logger.error(
+      'Failed to read employee names for weekly off',
+      err instanceof Error ? err.stack : String(err),
+    );
     // The failure is in the members read — name the message accordingly (the
     // review: the thrown message misattributed it to the overrides table).
     throw internalError('Failed to read employee names');

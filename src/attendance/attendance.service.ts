@@ -30,9 +30,7 @@ const PT_SETUP_STATE_CONFLICT = 'PT409';
 export class AttendanceService {
   private readonly logger = new Logger(AttendanceService.name);
 
-  constructor(
-    private readonly supabaseClientFactory: SupabaseClientFactory,
-  ) {}
+  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
 
   /**
    * FR-1 resume state. Rows are created on demand — no settings row means
@@ -89,7 +87,10 @@ export class AttendanceService {
       this.readSettings(admin, user),
       this.readProgress(admin, user),
     ]);
-    return { state: toSetupStateResponse(settings, progress), created: !existing };
+    return {
+      state: toSetupStateResponse(settings, progress),
+      created: !existing,
+    };
   }
 
   /**
@@ -225,7 +226,7 @@ export class AttendanceService {
     const { data, error } = await admin
       .from('attendance_settings')
       .select('*')
-      .eq('tenant_id', user.tenantId as string)
+      .eq('tenant_id', user.tenantId)
       .maybeSingle<AttendanceSettingsRow>();
     if (error) {
       this.logger.error('Failed to read attendance settings:', { error });
@@ -244,7 +245,7 @@ export class AttendanceService {
     const { data, error } = await admin
       .from('attendance_setup_progress')
       .select('*')
-      .eq('tenant_id', user.tenantId as string)
+      .eq('tenant_id', user.tenantId)
       .maybeSingle<AttendanceSetupProgressRow>();
     if (error) {
       this.logger.error('Failed to read attendance setup progress:', { error });

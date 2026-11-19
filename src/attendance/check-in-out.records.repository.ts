@@ -132,7 +132,9 @@ export async function updateRecordCheckout(
   if (result.rowCount !== 1) {
     // The pre-check under the employee lock makes this unreachable unless
     // the row moved underneath us — fail loud rather than half-write.
-    logger.error('Check-out update matched no open record', { recordId: s.recordId });
+    logger.error('Check-out update matched no open record', {
+      recordId: s.recordId,
+    });
     throw internalError('Failed to record check-out');
   }
 }

@@ -36,7 +36,10 @@ export class CountryCodesService {
       this.logger.error(
         `Failed to list country codes (code=${error.code ?? 'none'})`,
       );
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Failed to load country codes' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to load country codes',
+      });
     }
 
     const rows = (data ?? []) as CountryCodeRow[];

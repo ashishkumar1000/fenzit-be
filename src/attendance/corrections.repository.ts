@@ -155,7 +155,7 @@ export async function softDeleteOverride(
  * AD-10 / D5: clears the fake-location marker. The cast order matters —
  * `attempted_at AT TIME ZONE $tz` renders the tenant-local wall time, whose
  * `::date` equals `dateInTz`'s Intl computation (both read the IANA
-*tz database). Rows are kept (the dispute view, AD-4).
+ *tz database). Rows are kept (the dispute view, AD-4).
  */
 export async function ackAttempts(
   tx: PoolClient,
@@ -172,12 +172,7 @@ export async function ackAttempts(
      where tenant_id = $1::uuid and employee_id = $2::uuid
        and outcome = 'mocked' and acknowledged_at is null
        and (attempted_at at time zone $3::text)::date = $4::date`,
-    [
-      input.tenantId,
-      input.employeeId,
-      input.timezone,
-      input.workDate,
-    ],
+    [input.tenantId, input.employeeId, input.timezone, input.workDate],
   );
   return result.rowCount ?? 0;
 }

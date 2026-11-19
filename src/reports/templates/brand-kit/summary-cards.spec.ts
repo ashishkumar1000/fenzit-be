@@ -9,9 +9,11 @@ import { summaryCardRow, SummaryCard } from './summary-cards';
 
 /** Flattens one card column to its inner stack (chip node first, if any). */
 function cardStack(row: ReturnType<typeof summaryCardRow>, index: number) {
-  const column = (row as unknown as {
-    columns: { table: { body: [Record<string, unknown>[]] } }[];
-  }).columns[index];
+  const column = (
+    row as unknown as {
+      columns: { table: { body: [Record<string, unknown>[]] } }[];
+    }
+  ).columns[index];
   return (column.table.body[0][0] as { stack: Record<string, unknown>[] })
     .stack;
 }
@@ -41,7 +43,10 @@ describe('summary-cards — summaryCardRow', () => {
   });
 
   it('renders label (dark) then value (accent or dark) without a chip or caption when optional fields are absent', () => {
-    const stack = cardStack(summaryCardRow([{ label: 'Total jobs', value: '42' }]), 0);
+    const stack = cardStack(
+      summaryCardRow([{ label: 'Total jobs', value: '42' }]),
+      0,
+    );
 
     expect(stack).toHaveLength(2); // no icon → no chip
     expect(stack[0]).toMatchObject({
@@ -82,7 +87,10 @@ describe('summary-cards — summaryCardRow', () => {
 
     expect(stack[1]).toMatchObject({ text: 'Completed' });
     expect(stack[2]).toMatchObject({ text: '38', color: brand.done });
-    expect(stack[3]).toMatchObject({ text: '95% finish rate', color: brand.textMuted });
+    expect(stack[3]).toMatchObject({
+      text: '95% finish rate',
+      color: brand.textMuted,
+    });
   });
 
   it.each([
@@ -97,9 +105,9 @@ describe('summary-cards — summaryCardRow', () => {
       0,
     );
     const chip = stack[0] as { table: { body: [Record<string, unknown>[]] } };
-    expect(
-      (chip.table.body[0][0] as { fillColor: string }).fillColor,
-    ).toBe(expectedTint);
+    expect((chip.table.body[0][0] as { fillColor: string }).fillColor).toBe(
+      expectedTint,
+    );
   });
 
   it('honours explicit tint and iconColor overrides over the derived ones', () => {
@@ -126,10 +134,15 @@ describe('summary-cards — summaryCardRow', () => {
   });
 
   it('cards sit on the white surface with the shared padding', () => {
-    const row = summaryCardRow([{ label: 'Total jobs', value: '42' }]) as unknown as {
+    const row = summaryCardRow([
+      { label: 'Total jobs', value: '42' },
+    ]) as unknown as {
       columns: { table: { body: [Record<string, unknown>[]] } }[];
     };
-    const cell = row.columns[0].table.body[0][0] as { fillColor: string; margin: number[] };
+    const cell = row.columns[0].table.body[0][0] as {
+      fillColor: string;
+      margin: number[];
+    };
     expect(cell.fillColor).toBe(CARD.background);
     expect(cell.margin).toEqual([
       CARD.padding,

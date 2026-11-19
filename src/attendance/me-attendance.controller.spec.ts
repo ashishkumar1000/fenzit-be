@@ -98,9 +98,9 @@ describe('MeAttendanceController — technician reads + check-in/out (15-7/15-10
       const checkIn = jest.fn().mockResolvedValue({ workDate: '2026-09-28' });
       const controller = controllerWith({}, { checkIn });
 
-      await expect(
-        controller.checkIn(tech, validKey, fixDto),
-      ).resolves.toEqual({ workDate: '2026-09-28' });
+      await expect(controller.checkIn(tech, validKey, fixDto)).resolves.toEqual(
+        { workDate: '2026-09-28' },
+      );
       expect(checkIn).toHaveBeenCalledWith(tech, fixDto, validKey);
     });
 
@@ -128,7 +128,7 @@ describe('MeAttendanceController — technician reads + check-in/out (15-7/15-10
       // The guard throws synchronously, before a promise exists.
       let err: unknown;
       try {
-        controller.checkIn(tech, key as string | undefined, fixDto);
+        controller.checkIn(tech, key, fixDto);
       } catch (e) {
         err = e;
       }
@@ -157,9 +157,9 @@ describe('MeAttendanceController — technician reads + check-in/out (15-7/15-10
 
   describe('route metadata', () => {
     it('is mounted at attendance/me', () => {
-      expect(
-        Reflect.getMetadata(PATH_METADATA, MeAttendanceController),
-      ).toBe('attendance/me');
+      expect(Reflect.getMetadata(PATH_METADATA, MeAttendanceController)).toBe(
+        'attendance/me',
+      );
     });
 
     it.each([
@@ -188,7 +188,7 @@ describe('MeAttendanceController — technician reads + check-in/out (15-7/15-10
       (handler: keyof MeAttendanceController) => {
         const needed = Reflect.getMetadata(
           CAN_KEY,
-          MeAttendanceController.prototype[handler] as object,
+          MeAttendanceController.prototype[handler],
         ) as Permission[] | undefined;
 
         expect(needed).toEqual(['attendance.own']);

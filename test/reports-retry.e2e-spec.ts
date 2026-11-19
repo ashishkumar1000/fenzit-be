@@ -137,9 +137,7 @@ describe('Reports retry (e2e)', () => {
         return builder;
       }),
       single: jest.fn(() =>
-        Promise.resolve(
-          opts?.row ?? { data: failedRow, error: null },
-        ),
+        Promise.resolve(opts?.row ?? { data: failedRow, error: null }),
       ),
     } as never;
     builder.then = jest.fn((resolve: (v: unknown) => unknown) =>
@@ -268,9 +266,7 @@ describe('Reports retry (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(409);
-      expect(JSON.parse(response.body).error_code).toBe(
-        'REPORT_NOT_RETRYABLE',
-      );
+      expect(JSON.parse(response.body).error_code).toBe('REPORT_NOT_RETRYABLE');
       // The UPDATE chain was never issued — only the fetch's createAdmin call.
       expect(from).toHaveBeenCalledTimes(1);
       expect(captured.update).toHaveLength(0);
@@ -286,9 +282,7 @@ describe('Reports retry (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(409);
-      expect(JSON.parse(response.body).error_code).toBe(
-        'REPORT_NOT_RETRYABLE',
-      );
+      expect(JSON.parse(response.body).error_code).toBe('REPORT_NOT_RETRYABLE');
     });
   });
 

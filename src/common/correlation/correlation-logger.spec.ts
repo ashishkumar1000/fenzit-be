@@ -1,8 +1,5 @@
 import { ConsoleLogger, Logger } from '@nestjs/common';
-import {
-  CorrelationContext,
-  runWithCorrelation,
-} from './correlation.context';
+import { CorrelationContext, runWithCorrelation } from './correlation.context';
 import { CorrelationLogger, correlationLogFields } from './correlation-logger';
 
 const CONTEXT: CorrelationContext = {
@@ -18,7 +15,9 @@ describe('CorrelationLogger', () => {
 
   beforeEach(() => {
     logger = new CorrelationLogger();
-    logSpy = jest.spyOn(ConsoleLogger.prototype, 'log').mockImplementation(() => {});
+    logSpy = jest
+      .spyOn(ConsoleLogger.prototype, 'log')
+      .mockImplementation(() => {});
     logSpy.mockClear();
   });
 
@@ -48,7 +47,9 @@ describe('CorrelationLogger', () => {
 
     const arg = (logSpy.mock.calls[0] as unknown[])[0] as string;
     expect(arg).toContain('Processing report request');
-    expect(arg.endsWith(JSON.stringify(correlationLogFields(CONTEXT)))).toBe(true);
+    expect(arg.endsWith(JSON.stringify(correlationLogFields(CONTEXT)))).toBe(
+      true,
+    );
   });
 
   it('passes the message through untouched when there is no ALS store', () => {
@@ -106,11 +107,15 @@ describe('CorrelationLogger wiring (the app.useLogger delegation)', () => {
       .spyOn(ConsoleLogger.prototype, 'log')
       .mockImplementation(() => {});
 
-    runWithCorrelation(CONTEXT, () => new Logger('SomeService').log('doing work'));
+    runWithCorrelation(CONTEXT, () =>
+      new Logger('SomeService').log('doing work'),
+    );
 
     expect(spy).toHaveBeenCalledTimes(1);
     const arg = (spy.mock.calls[0] as unknown[])[0] as string;
     expect(arg).toContain('doing work');
-    expect(arg).toContain('"correlation_id":"11111111-2222-4333-8444-555555555555"');
+    expect(arg).toContain(
+      '"correlation_id":"11111111-2222-4333-8444-555555555555"',
+    );
   });
 });

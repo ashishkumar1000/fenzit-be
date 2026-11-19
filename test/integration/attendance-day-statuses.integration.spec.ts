@@ -24,9 +24,7 @@ import {
 } from '../../src/common/day-status/day-status.model';
 import { CorrectionsService } from '../../src/attendance/corrections.service';
 import { buildDayContext } from '../../src/attendance/day-context.read';
-import {
-  findActiveOverrideDates,
-} from '../../src/attendance/corrections.repository';
+import { findActiveOverrideDates } from '../../src/attendance/corrections.repository';
 import { LeaveService } from '../../src/attendance/leave.service';
 import { LeaveReadService } from '../../src/attendance/leave-read.service';
 import { MeAttendanceService } from '../../src/attendance/me-attendance.service';
@@ -40,7 +38,8 @@ jest.setTimeout(120_000);
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
 const IS_REAL_DB =
   DATABASE_URL !== '' &&
   !DATABASE_URL.includes('test:test') &&
@@ -72,11 +71,12 @@ const nonSundayFuture = (today: string, n: number): string => {
   return dayOffset(today, k);
 };
 const bodyOf = (e: unknown): { error_code?: string; message?: string } =>
-  (e instanceof Error && 'getResponse' in e
-    ? (
-        (e as import('@nestjs/common').HttpException).getResponse() as Record<string, unknown>
-      )
-    : {}) as { error_code?: string; message?: string };
+  e instanceof Error && 'getResponse' in e
+    ? ((e as import('@nestjs/common').HttpException).getResponse() as Record<
+        string,
+        unknown
+      >)
+    : {};
 
 describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', () => {
   const maybeIt = IS_REAL_DB ? it : it.skip;
@@ -154,7 +154,15 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
             checkin_at, checkin_attempt_id, checkin_lat, checkin_lng,
             checkin_accuracy_m, checkin_distance_m, checkin_mocked)
          values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false)`,
-        [TENANT, employeeId, dateOverride, officeId, ruleId, checkin, attemptIn],
+        [
+          TENANT,
+          employeeId,
+          dateOverride,
+          officeId,
+          ruleId,
+          checkin,
+          attemptIn,
+        ],
       );
       return;
     }
@@ -175,7 +183,17 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
           checkout_accuracy_m, checkout_distance_m, checkout_mocked)
        values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false,
                $8, $9, 12.97, 77.59, 10, 40, false)`,
-      [TENANT, employeeId, dateOverride, officeId, ruleId, checkin, attemptIn, checkout, attemptOut],
+      [
+        TENANT,
+        employeeId,
+        dateOverride,
+        officeId,
+        ruleId,
+        checkin,
+        attemptIn,
+        checkout,
+        attemptOut,
+      ],
     );
   };
 
@@ -222,7 +240,9 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
       createAdmin: () => admin,
     } as unknown as SupabaseClientFactory);
     leaveService = new LeaveService(pg);
-    leaveRead = new LeaveReadService(pg, { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never);
+    leaveRead = new LeaveReadService(pg, {
+      presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+    } as never);
 
     // A seeding failure must never leave the throwaway tenant behind: the
     // delete cascades every scaffold row (review G2-P14). seedScaffold is
@@ -316,7 +336,7 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     // Sunday offsets: dow 0 (Sunday) means "today" itself is one — the
     // probes then read LAST Sunday (today-7) and the one before (-14).
     const dow = new Date(`${todayIso}T00:00:00Z`).getUTCDay();
-    const lastPastSunday = iso(-((dow === 0 ? 7 : dow) as number));
+    const lastPastSunday = iso(-(dow === 0 ? 7 : dow));
     const priorSunday = iso(-((dow === 0 ? 7 : dow) + 7));
 
     const anchors = {
@@ -348,10 +368,22 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     );
 
     // ---- records (every check-in needs its attempt row) --------------------
-    await seedRecord(d.present, ist(d.present, '09:25:00'), ist(d.present, '18:40:00'));
+    await seedRecord(
+      d.present,
+      ist(d.present, '09:25:00'),
+      ist(d.present, '18:40:00'),
+    );
     await seedRecord(d.half, ist(d.half, '10:00:00'), ist(d.half, '15:00:00'));
-    await seedRecord(d.halfLeave, ist(d.halfLeave, '09:00:00'), ist(d.halfLeave, '13:30:00'));
-    await seedRecord(d.holiday, ist(d.holiday, '09:30:00'), ist(d.holiday, '18:30:00'));
+    await seedRecord(
+      d.halfLeave,
+      ist(d.halfLeave, '09:00:00'),
+      ist(d.halfLeave, '13:30:00'),
+    );
+    await seedRecord(
+      d.holiday,
+      ist(d.holiday, '09:30:00'),
+      ist(d.holiday, '18:30:00'),
+    );
     await seedRecord(d.ckm, ist(d.ckm, '09:45:00'), null);
     await seedRecord(d.timesSub, ist(d.timesSub, '10:15:00'), null);
 
@@ -405,10 +437,9 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
       );
       // leave_events RESTRICTs direct leave_requests deletes
       // (leave_events_request_fkey) — it goes before the requests.
-      await pool.query(
-        'delete from public.leave_events where tenant_id = $1',
-        [TENANT],
-      );
+      await pool.query('delete from public.leave_events where tenant_id = $1', [
+        TENANT,
+      ]);
       await pool.query(
         'delete from public.leave_requests where tenant_id = $1',
         [TENANT],
@@ -467,137 +498,166 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     }
   });
 
-  maybeIt('the 10-rule grid matrix grades every seeded date (FR-10)', function () {
-    const byDate = new Map(grid.map((r) => [r.workDate, r]));
-    const outcome = (date: string): DayStatusOutcome => {
-      const row = byDate.get(date);
-      if (!row) throw new Error(`no grid row for ${date}`);
-      return computeDayStatus(row);
-    };
+  maybeIt(
+    'the 10-rule grid matrix grades every seeded date (FR-10)',
+    function () {
+      const byDate = new Map(grid.map((r) => [r.workDate, r]));
+      const outcome = (date: string): DayStatusOutcome => {
+        const row = byDate.get(date);
+        if (!row) throw new Error(`no grid row for ${date}`);
+        return computeDayStatus(row);
+      };
 
-    expect(outcome(d.notTracked).status).toBe('not_tracked'); // rule 2
-    const present = outcome(d.present);
-    expect(present.status).toBe('present');
-    expect(present.daysWorked).toBe(1);
-    expect(present.workedMinutes).toBe(555);
-    expect(present.lateMinutes).toBe(0);
-    expect(outcome(d.half)).toMatchObject({ status: 'half_day', daysWorked: 0.5 });
-    expect(outcome(d.leaveApproved)).toMatchObject({
-      status: 'leave',
-      leaveCredit: 1,
-      daysWorked: 0,
-    });
-    expect(outcome(d.halfLeave)).toMatchObject({
-      status: 'half_day_leave',
-      daysWorked: 0.5,
-      leaveCredit: 0.5,
-    });
-    const ckm = outcome(d.ckm);
-    expect(ckm.status).toBe('checkout_missing');
-    expect(ckm.markers).toContain('checkout_missing');
-    expect(outcome(d.absent).status).toBe('absent');
-    const corrected = outcome(d.correctedStatus);
-    expect(corrected.status).toBe('present');
-    expect(corrected.daysWorked).toBe(1);
-    expect(corrected.markers).toContain('corrected');
-    const timesSub = outcome(d.timesSub);
-    expect(timesSub.status).toBe('half_day');
-    expect(timesSub.checkinSource).toBe('gps');
-    expect(timesSub.checkoutSource).toBe('manual');
-    expect(timesSub.lateMinutes).toBe(30);
-    expect(timesSub.daysWorked).toBe(0.5);
-    const holiday = outcome(d.holiday);
-    expect(holiday.status).toBe('worked_on_holiday');
-    expect(holiday.workedOnHolidayCredit).toBe(1);
-    expect(holiday.workedMinutes).toBe(540);
-    expect(holiday.lateMinutes).toBeNull(); // no Late/Early on off-day statuses
-    const sunWork = outcome(d.sunWork);
-    expect(sunWork.status).toBe('worked_on_holiday');
-    expect(sunWork.workedOnHolidayCredit).toBe(0); // manual check-in stayed open
-    expect(sunWork.markers).toContain('corrected');
-    expect(sunWork.markers).toContain('checkout_missing');
-    expect(outcome(d.sunOff).status).toBe('weekly_off'); // rule 4
-    const todayIsSunday = isSunday(today);
-    expect(outcome(today).status).toBe(todayIsSunday ? 'weekly_off' : 'not_checked_in_yet');
-    expect(outcome(d.future)).toMatchObject({
-      status: todayIsSunday ? 'weekly_off' : 'not_checked_in_yet',
-    });
-    expect(outcome(d.future).markers).toContain('leave_pending'); // rides the row
-  });
+      expect(outcome(d.notTracked).status).toBe('not_tracked'); // rule 2
+      const present = outcome(d.present);
+      expect(present.status).toBe('present');
+      expect(present.daysWorked).toBe(1);
+      expect(present.workedMinutes).toBe(555);
+      expect(present.lateMinutes).toBe(0);
+      expect(outcome(d.half)).toMatchObject({
+        status: 'half_day',
+        daysWorked: 0.5,
+      });
+      expect(outcome(d.leaveApproved)).toMatchObject({
+        status: 'leave',
+        leaveCredit: 1,
+        daysWorked: 0,
+      });
+      expect(outcome(d.halfLeave)).toMatchObject({
+        status: 'half_day_leave',
+        daysWorked: 0.5,
+        leaveCredit: 0.5,
+      });
+      const ckm = outcome(d.ckm);
+      expect(ckm.status).toBe('checkout_missing');
+      expect(ckm.markers).toContain('checkout_missing');
+      expect(outcome(d.absent).status).toBe('absent');
+      const corrected = outcome(d.correctedStatus);
+      expect(corrected.status).toBe('present');
+      expect(corrected.daysWorked).toBe(1);
+      expect(corrected.markers).toContain('corrected');
+      const timesSub = outcome(d.timesSub);
+      expect(timesSub.status).toBe('half_day');
+      expect(timesSub.checkinSource).toBe('gps');
+      expect(timesSub.checkoutSource).toBe('manual');
+      expect(timesSub.lateMinutes).toBe(30);
+      expect(timesSub.daysWorked).toBe(0.5);
+      const holiday = outcome(d.holiday);
+      expect(holiday.status).toBe('worked_on_holiday');
+      expect(holiday.workedOnHolidayCredit).toBe(1);
+      expect(holiday.workedMinutes).toBe(540);
+      expect(holiday.lateMinutes).toBeNull(); // no Late/Early on off-day statuses
+      const sunWork = outcome(d.sunWork);
+      expect(sunWork.status).toBe('worked_on_holiday');
+      expect(sunWork.workedOnHolidayCredit).toBe(0); // manual check-in stayed open
+      expect(sunWork.markers).toContain('corrected');
+      expect(sunWork.markers).toContain('checkout_missing');
+      expect(outcome(d.sunOff).status).toBe('weekly_off'); // rule 4
+      const todayIsSunday = isSunday(today);
+      expect(outcome(today).status).toBe(
+        todayIsSunday ? 'weekly_off' : 'not_checked_in_yet',
+      );
+      expect(outcome(d.future)).toMatchObject({
+        status: todayIsSunday ? 'weekly_off' : 'not_checked_in_yet',
+      });
+      expect(outcome(d.future).markers).toContain('leave_pending'); // rides the row
+    },
+  );
 
-  maybeIt('the grid ctx and buildDayContext never disagree (parity, AD-22)', async () => {
-    for (const date of [d.present, d.sunOff]) {
-      const ctx = await inTx((tx) => buildDayContext(tx, TENANT, TECH, date, false));
-      const row = grid.find((r) => r.workDate === date)!;
-      expect(JSON.stringify({ ...ctx })).toBe(JSON.stringify({ ...row.ctx }));
-    }
-  });
-
-  maybeIt('FR-10 completeness — every date once, and no day double-credits (review G2-P2)', () => {
-    // The whole grid range: one row per calendar date, no gaps.
-    const spanDays =
-      (Date.parse(d.future) - Date.parse(d.notTracked)) / 86_400_000 + 1;
-    expect(grid).toHaveLength(spanDays);
-    expect(new Set(grid.map((r) => r.workDate)).size).toBe(grid.length);
-    // Within the tracked window no date may fall out of the engine with a
-    // not_tracked verdict, and no day may bank both a worked AND a leave
-    // credit beyond the single credit a day can carry.
-    let sawNotTracked = 0;
-    for (const row of grid) {
-      const outcome = computeDayStatus(row);
-      const credited = outcome.daysWorked + outcome.leaveCredit;
-      // Half-day leave can earn 0.5 + 0.5; nothing can cross 1.0 per day.
-      expect(credited).toBeLessThanOrEqual(1 + 1e-9);
-      expect(outcome.daysWorked).toBeGreaterThanOrEqual(0);
-      expect(outcome.leaveCredit).toBeGreaterThanOrEqual(0);
-      if (outcome.status === 'not_tracked') {
-        sawNotTracked += 1;
-        // Not-tracked days all sit BEFORE the seeded working window: the
-        // pre-enrolment gap, plus the FR-2 enable-day (enabled_at = now()
-        // - 60 days has no check-in → the grace blocks that day too).
-        expect(Date.parse(row.workDate)).toBeLessThan(Date.parse(d.present));
+  maybeIt(
+    'the grid ctx and buildDayContext never disagree (parity, AD-22)',
+    async () => {
+      for (const date of [d.present, d.sunOff]) {
+        const ctx = await inTx((tx) =>
+          buildDayContext(tx, TENANT, TECH, date, false),
+        );
+        const row = grid.find((r) => r.workDate === date)!;
+        expect(JSON.stringify({ ...ctx })).toBe(JSON.stringify({ ...row.ctx }));
       }
-    }
-    expect(sawNotTracked).toBeGreaterThanOrEqual(1);
-  });
+    },
+  );
 
-  maybeIt('W1 — a status correction grades live, removes cleanly and restores the record (FR-21)', async () => {
-    const putRes = await corrections.put(
-      ownerUser() as never, TECH, d.present, { status: 'absent' }, 'probe correction',
-    );
-    expect(putRes.override).toEqual({
-      status: 'absent',
-      checkinAt: null,
-      checkoutAt: null,
-    });
-    const freshOutcome = async (date: string): Promise<DayStatusOutcome> => {
-      const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [TECH], date, date));
-      return computeDayStatus(rows[0]!);
-    };
-    const after = await freshOutcome(d.present);
-    expect(after.status).toBe('absent');
-    expect(after.daysWorked).toBe(0);
-    expect(after.markers).toContain('corrected');
-    const removed = await corrections.remove(ownerUser() as never, TECH, d.present);
-    expect(removed).toEqual({ deleted: true });
-    const restored = await freshOutcome(d.present);
-    expect(restored.status).toBe('present');
-    expect(restored.daysWorked).toBe(1);
-    const retry = await corrections.remove(ownerUser() as never, TECH, d.present);
-    expect(retry).toEqual({ deleted: false });
-    // The audit chain holds BOTH rows, newest first.
-    const page = await corrections.listOwner(ownerUser() as never, TECH, {
-      workDate: d.present,
-    });
-    expect(page.data).toHaveLength(2);
-    expect(page.data[0].note).toBe('Removed correction');
-    expect(page.data[1].newValue.status).toBe('absent');
-  });
+  maybeIt(
+    'FR-10 completeness — every date once, and no day double-credits (review G2-P2)',
+    () => {
+      // The whole grid range: one row per calendar date, no gaps.
+      const spanDays =
+        (Date.parse(d.future) - Date.parse(d.notTracked)) / 86_400_000 + 1;
+      expect(grid).toHaveLength(spanDays);
+      expect(new Set(grid.map((r) => r.workDate)).size).toBe(grid.length);
+      // Within the tracked window no date may fall out of the engine with a
+      // not_tracked verdict, and no day may bank both a worked AND a leave
+      // credit beyond the single credit a day can carry.
+      let sawNotTracked = 0;
+      for (const row of grid) {
+        const outcome = computeDayStatus(row);
+        const credited = outcome.daysWorked + outcome.leaveCredit;
+        // Half-day leave can earn 0.5 + 0.5; nothing can cross 1.0 per day.
+        expect(credited).toBeLessThanOrEqual(1 + 1e-9);
+        expect(outcome.daysWorked).toBeGreaterThanOrEqual(0);
+        expect(outcome.leaveCredit).toBeGreaterThanOrEqual(0);
+        if (outcome.status === 'not_tracked') {
+          sawNotTracked += 1;
+          // Not-tracked days all sit BEFORE the seeded working window: the
+          // pre-enrolment gap, plus the FR-2 enable-day (enabled_at = now()
+          // - 60 days has no check-in → the grace blocks that day too).
+          expect(Date.parse(row.workDate)).toBeLessThan(Date.parse(d.present));
+        }
+      }
+      expect(sawNotTracked).toBeGreaterThanOrEqual(1);
+    },
+  );
+
+  maybeIt(
+    'W1 — a status correction grades live, removes cleanly and restores the record (FR-21)',
+    async () => {
+      const putRes = await corrections.put(
+        ownerUser(),
+        TECH,
+        d.present,
+        { status: 'absent' },
+        'probe correction',
+      );
+      expect(putRes.override).toEqual({
+        status: 'absent',
+        checkinAt: null,
+        checkoutAt: null,
+      });
+      const freshOutcome = async (date: string): Promise<DayStatusOutcome> => {
+        const rows = await inTx((tx) =>
+          readDayStatusGrid(tx, TENANT, [TECH], date, date),
+        );
+        return computeDayStatus(rows[0]);
+      };
+      const after = await freshOutcome(d.present);
+      expect(after.status).toBe('absent');
+      expect(after.daysWorked).toBe(0);
+      expect(after.markers).toContain('corrected');
+      const removed = await corrections.remove(ownerUser(), TECH, d.present);
+      expect(removed).toEqual({ deleted: true });
+      const restored = await freshOutcome(d.present);
+      expect(restored.status).toBe('present');
+      expect(restored.daysWorked).toBe(1);
+      const retry = await corrections.remove(ownerUser(), TECH, d.present);
+      expect(retry).toEqual({ deleted: false });
+      // The audit chain holds BOTH rows, newest first.
+      const page = await corrections.listOwner(ownerUser(), TECH, {
+        workDate: d.present,
+      });
+      expect(page.data).toHaveLength(2);
+      expect(page.data[0].note).toBe('Removed correction');
+      expect(page.data[1].newValue.status).toBe('absent');
+    },
+  );
 
   maybeIt('W2 — a future date is 422 ATTENDANCE_FUTURE_DATE', async () => {
     try {
       await corrections.put(
-        ownerUser() as never, TECH, d.future, { status: 'absent' }, 'future',
+        ownerUser(),
+        TECH,
+        d.future,
+        { status: 'absent' },
+        'future',
       );
       throw new Error('expected 422, got 200');
     } catch (e) {
@@ -608,8 +668,11 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
   maybeIt('W3 — mixing status and times is 422 VALIDATION_ERROR', async () => {
     try {
       await corrections.put(
-        ownerUser() as never, TECH, d.half,
-        { status: 'absent', checkoutAt: ist(d.half, '12:00:00') } as never, 'mixed',
+        ownerUser(),
+        TECH,
+        d.half,
+        { status: 'absent', checkoutAt: ist(d.half, '12:00:00') },
+        'mixed',
       );
       throw new Error('expected 422, got 200');
     } catch (e) {
@@ -617,308 +680,423 @@ describe('Attendance day-statuses + corrections journey (18-1/18-2, real DB)', (
     }
   });
 
-  maybeIt('W4 — note hygiene: 501 chars and a control char are 422, and none wrote audit', async () => {
-    for (const note of ['n'.repeat(501), 'bad\u0007note']) {
+  maybeIt(
+    'W4 — note hygiene: 501 chars and a control char are 422, and none wrote audit',
+    async () => {
+      for (const note of ['n'.repeat(501), 'bad\u0007note']) {
+        try {
+          await corrections.put(
+            ownerUser(),
+            TECH,
+            d.present,
+            { status: 'absent' },
+            note,
+          );
+          throw new Error('expected 422, got 200');
+        } catch (e) {
+          // Only an HttpException reaches the status assertion — a stray
+          // fixture error rethrows here loud and red.
+          expect(e instanceof Error && e.message.endsWith('got 200')).toBe(
+            false,
+          );
+          expect(
+            (e as import('@nestjs/common').HttpException).getStatus(),
+          ).toBe(422);
+        }
+      }
+      const page = await corrections.listOwner(ownerUser(), TECH, {
+        workDate: d.ckm,
+      });
+      expect(page.data).toHaveLength(0);
+    },
+  );
+
+  maybeIt(
+    'W5 — a checkout ALONE is 422 (D4: the times arm grades from the check-in)',
+    async () => {
+      // NOTE: the probe asserted 200 here; the review's D4 amendment makes
+      // the checkout-only body a 422 — this is the corrected expectation.
       try {
         await corrections.put(
-          ownerUser() as never, TECH, d.present, { status: 'absent' }, note,
+          ownerUser(),
+          TECH,
+          today,
+          { checkoutAt: ist(today, '12:00:00') },
+          'checkout only',
         );
         throw new Error('expected 422, got 200');
       } catch (e) {
-        // Only an HttpException reaches the status assertion — a stray
-        // fixture error rethrows here loud and red.
-        expect(e instanceof Error && e.message.endsWith('got 200')).toBe(false);
-        expect((e as import('@nestjs/common').HttpException).getStatus()).toBe(422);
+        expect(bodyOf(e).error_code).toBe('VALIDATION_ERROR');
       }
-    }
-    const page = await corrections.listOwner(ownerUser() as never, TECH, { workDate: d.ckm });
-    expect(page.data).toHaveLength(0);
-  });
+    },
+  );
 
-  maybeIt('W5 — a checkout ALONE is 422 (D4: the times arm grades from the check-in)', async () => {
-    // NOTE: the probe asserted 200 here; the review's D4 amendment makes
-    // the checkout-only body a 422 — this is the corrected expectation.
-    try {
+  maybeIt(
+    'W6 — an unknown employee is 404 on the write path (no existence leak)',
+    async () => {
+      try {
+        await corrections.put(
+          ownerUser(),
+          randomUUID(),
+          '1970-01-01',
+          { status: 'absent' },
+          'ghost',
+        );
+        throw new Error('expected 404, got 200');
+      } catch (e) {
+        expect(bodyOf(e).error_code).toBe('ATTENDANCE_EMPLOYEE_NOT_FOUND');
+      }
+    },
+  );
+
+  maybeIt(
+    'W7 — the mirror gate reads present/half-day/times-only overrides, never a plain absent',
+    async () => {
       await corrections.put(
-        ownerUser() as never, TECH, today,
-        { checkoutAt: ist(today, '12:00:00') } as never, 'checkout only',
+        ownerUser(),
+        TECH,
+        d.ckm,
+        { status: 'absent' },
+        'absent correction',
       );
-      throw new Error('expected 422, got 200');
-    } catch (e) {
-      expect(bodyOf(e).error_code).toBe('VALIDATION_ERROR');
-    }
-  });
-
-  maybeIt('W6 — an unknown employee is 404 on the write path (no existence leak)', async () => {
-    try {
-      await corrections.put(
-        ownerUser() as never, randomUUID(), '1970-01-01', { status: 'absent' }, 'ghost',
+      const dates = await inTx((tx) =>
+        findActiveOverrideDates(tx, {
+          tenantId: TENANT,
+          employeeId: TECH,
+          start: d.notTracked,
+          end: d.future,
+        }),
       );
-      throw new Error('expected 404, got 200');
-    } catch (e) {
-      expect(bodyOf(e).error_code).toBe('ATTENDANCE_EMPLOYEE_NOT_FOUND');
-    }
-  });
+      // Exactly the three fixture overrides with presence-bearing values —
+      // nothing else (no today row: W5's checkout-only body made no override).
+      // The fact read now carries an ORDER BY work_date contract (G2-P7) —
+      // pin the order, not a sorted set.
+      const want = [
+        ...new Set([d.correctedStatus, d.timesSub, d.sunWork]),
+      ].sort();
+      expect(dates).toEqual(want);
+      expect(dates).not.toContain(d.ckm); // a plain-absent row sits under the gate silently
+      await corrections.remove(ownerUser(), TECH, d.ckm);
+    },
+  );
 
-  maybeIt('W7 — the mirror gate reads present/half-day/times-only overrides, never a plain absent', async () => {
-    await corrections.put(ownerUser() as never, TECH, d.ckm, { status: 'absent' }, 'absent correction');
-    const dates = await inTx((tx) =>
-      findActiveOverrideDates(tx, {
-        tenantId: TENANT,
-        employeeId: TECH,
-        start: d.notTracked,
-        end: d.future,
-      }),
-    );
-    // Exactly the three fixture overrides with presence-bearing values —
-    // nothing else (no today row: W5's checkout-only body made no override).
-    // The fact read now carries an ORDER BY work_date contract (G2-P7) —
-    // pin the order, not a sorted set.
-    const want = [...new Set([d.correctedStatus, d.timesSub, d.sunWork])].sort();
-    expect(dates).toEqual(want);
-    expect(dates).not.toContain(d.ckm); // a plain-absent row sits under the gate silently
-    await corrections.remove(ownerUser() as never, TECH, d.ckm);
-  });
-
-  maybeIt('W8 — ack counts the unacknowledged mocked attempts per date, idempotently', async () => {
-    await pool.query(
-      `insert into public.attendance_attempts
+  maybeIt(
+    'W8 — ack counts the unacknowledged mocked attempts per date, idempotently',
+    async () => {
+      await pool.query(
+        `insert into public.attendance_attempts
          (tenant_id, employee_id, request_id, kind, outcome, attempted_at, mocked, acknowledged_at)
        values ($1, $2, gen_random_uuid(), 'check_in', 'mocked', $3::timestamptz, true, null),
               ($1, $2, gen_random_uuid(), 'check_out', 'mocked', $3::timestamptz, true, null),
               ($1, $2, gen_random_uuid(), 'check_in', 'mocked', $4::timestamptz, true, null)`,
-      [TENANT, TECH,
-        ist(d.timesSub, '10:00:00'),
-        ist(d.present, '10:00:00')],
-    );
-    expect(
-      (await corrections.acknowledge(ownerUser() as never, TECH, d.timesSub)).acknowledgedCount,
-    ).toBe(2);
-    expect(
-      (await corrections.acknowledge(ownerUser() as never, TECH, d.timesSub)).acknowledgedCount,
-    ).toBe(0);
-    expect(
-      (await corrections.acknowledge(ownerUser() as never, TECH, d.present)).acknowledgedCount,
-    ).toBe(1);
-  });
+        [TENANT, TECH, ist(d.timesSub, '10:00:00'), ist(d.present, '10:00:00')],
+      );
+      expect(
+        (await corrections.acknowledge(ownerUser() as never, TECH, d.timesSub))
+          .acknowledgedCount,
+      ).toBe(2);
+      expect(
+        (await corrections.acknowledge(ownerUser() as never, TECH, d.timesSub))
+          .acknowledgedCount,
+      ).toBe(0);
+      expect(
+        (await corrections.acknowledge(ownerUser() as never, TECH, d.present))
+          .acknowledgedCount,
+      ).toBe(1);
+    },
+  );
 
-  maybeIt('holiday inside approved leave — the label outranks the credit, and removing the holiday returns it (G2-P11b)', async () => {
-    const date = d.leaveHoliday;
-    await leaveRequest(date, 'full_day', 'approved');
-    await pool.query(
-      `insert into public.holidays (tenant_id, holiday_date, name)
+  maybeIt(
+    'holiday inside approved leave — the label outranks the credit, and removing the holiday returns it (G2-P11b)',
+    async () => {
+      const date = d.leaveHoliday;
+      await leaveRequest(date, 'full_day', 'approved');
+      await pool.query(
+        `insert into public.holidays (tenant_id, holiday_date, name)
        values ($1, $2, 'in-leave holiday probe')`,
-      [TENANT, date],
-    );
-    const read = async (): Promise<DayStatusOutcome> => {
-      const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [TECH], date, date));
-      return computeDayStatus(rows[0]!);
-    };
-    const during = await read();
-    expect(during.status).toBe('holiday'); // rule 4 beats the leave credit
-    expect(during.leaveCredit).toBe(0);
-    await pool.query(
-      'delete from public.holidays where tenant_id = $1 and holiday_date = $2',
-      [TENANT, date],
-    );
-    const after = await read();
-    expect(after.status).toBe('leave'); // the leave credit returns
-    expect(after.leaveCredit).toBe(1);
-  });
+        [TENANT, date],
+      );
+      const read = async (): Promise<DayStatusOutcome> => {
+        const rows = await inTx((tx) =>
+          readDayStatusGrid(tx, TENANT, [TECH], date, date),
+        );
+        return computeDayStatus(rows[0]);
+      };
+      const during = await read();
+      expect(during.status).toBe('holiday'); // rule 4 beats the leave credit
+      expect(during.leaveCredit).toBe(0);
+      await pool.query(
+        'delete from public.holidays where tenant_id = $1 and holiday_date = $2',
+        [TENANT, date],
+      );
+      const after = await read();
+      expect(after.status).toBe('leave'); // the leave credit returns
+      expect(after.leaveCredit).toBe(1);
+    },
+  );
 
-  maybeIt('FR-2 enable-day grace — an enable-day employee before office start still reads tracked (G2-P11c)', async () => {
-    if (isSunday(today)) return; // today is a weekly off; nothing to compare
-    const GRACE = randomUUID();
-    const phone = '9' + String(900000000 + (Date.now() % 9_000_000)); // 900-908M — never hits the perf range
-    await pool.query(
-      `insert into public.users (id, name, country_code, phone_number)
+  maybeIt(
+    'FR-2 enable-day grace — an enable-day employee before office start still reads tracked (G2-P11c)',
+    async () => {
+      if (isSunday(today)) return; // today is a weekly off; nothing to compare
+      const GRACE = randomUUID();
+      const phone = '9' + String(900000000 + (Date.now() % 9_000_000)); // 900-908M — never hits the perf range
+      await pool.query(
+        `insert into public.users (id, name, country_code, phone_number)
        values ($1, '18-1 probe grace tech', '+91', $2)`,
-      [GRACE, phone],
-    );
-    await pool.query(
-      `insert into public.memberships (user_id, tenant_id, role, status)
+        [GRACE, phone],
+      );
+      await pool.query(
+        `insert into public.memberships (user_id, tenant_id, role, status)
        values ($1, $2, 'employee', 'active')`,
-      [GRACE, TENANT],
-    );
-    // The coverage guard checks the (assignment, enrolment) pair at once —
-    // seed both inside one transaction (same posture as the perf block).
-    await pool.query('begin');
-    await pool.query(
-      `insert into public.attendance_office_assignments (tenant_id, employee_id, office_id, valid)
+        [GRACE, TENANT],
+      );
+      // The coverage guard checks the (assignment, enrolment) pair at once —
+      // seed both inside one transaction (same posture as the perf block).
+      await pool.query('begin');
+      await pool.query(
+        `insert into public.attendance_office_assignments (tenant_id, employee_id, office_id, valid)
        values ($1, $2, $3, daterange(current_date - 60, current_date + 120))`,
-      [TENANT, GRACE, officeId],
-    );
-    await pool.query(
-      `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
+        [TENANT, GRACE, officeId],
+      );
+      await pool.query(
+        `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
        values ($1, $2, daterange(current_date - 60, current_date + 120), $3::timestamptz)`,
-      [TENANT, GRACE, ist(today, '10:00:00')], // enabled 10:00, after the 09:30 start
-    );
-    await pool.query('commit');
-    const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [GRACE], today, today));
-    const outcome = computeDayStatus(rows[0]!);
-    // The enable-day grace (FR-2): today is the enabled day, the enable
-    // instant is past the office start and there is no check-in — the day
-    // is NOT tracked yet, with the diagnostic naming the grace.
-    expect(outcome.status).toBe('not_tracked');
-    expect(rows[0]!.ctx.enableDayGraceBlocks).toBe(true);
-    expect(outcome.daysWorked).toBe(0);
-  });
+        [TENANT, GRACE, ist(today, '10:00:00')], // enabled 10:00, after the 09:30 start
+      );
+      await pool.query('commit');
+      const rows = await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [GRACE], today, today),
+      );
+      const outcome = computeDayStatus(rows[0]);
+      // The enable-day grace (FR-2): today is the enabled day, the enable
+      // instant is past the office start and there is no check-in — the day
+      // is NOT tracked yet, with the diagnostic naming the grace.
+      expect(outcome.status).toBe('not_tracked');
+      expect(rows[0].ctx.enableDayGraceBlocks).toBe(true);
+      expect(outcome.daysWorked).toBe(0);
+    },
+  );
 
-  maybeIt('W1b — an override on a Sunday put grades absent, and its removal restores weekly_off (G2-P11d)', async () => {
-    await corrections.put(ownerUser() as never, TECH, d.sunOff, { status: 'absent' }, 'sunday corrected');
-    const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [TECH], d.sunOff, d.sunOff));
-    expect(computeDayStatus(rows[0]!).status).toBe('absent');
-    await corrections.remove(ownerUser() as never, TECH, d.sunOff);
-    const restored = await inTx((tx) =>
-      readDayStatusGrid(tx, TENANT, [TECH], d.sunOff, d.sunOff),
-    );
-    expect(computeDayStatus(restored[0]!).status).toBe('weekly_off');
-  });
+  maybeIt(
+    'W1b — an override on a Sunday put grades absent, and its removal restores weekly_off (G2-P11d)',
+    async () => {
+      await corrections.put(
+        ownerUser(),
+        TECH,
+        d.sunOff,
+        { status: 'absent' },
+        'sunday corrected',
+      );
+      const rows = await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [TECH], d.sunOff, d.sunOff),
+      );
+      expect(computeDayStatus(rows[0]).status).toBe('absent');
+      await corrections.remove(ownerUser(), TECH, d.sunOff);
+      const restored = await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [TECH], d.sunOff, d.sunOff),
+      );
+      expect(computeDayStatus(restored[0]).status).toBe('weekly_off');
+    },
+  );
 
-  maybeIt('a recordless day corrected with times-only instants grades present (G2-P11e, real DB)', async () => {
-    await corrections.put(
-      ownerUser() as never, TECH, d.absent,
-      { checkinAt: ist(d.absent, '09:25:00'), checkoutAt: ist(d.absent, '18:40:00') }, 'times corrected',
-    );
-    const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [TECH], d.absent, d.absent));
-    const outcome = computeDayStatus(rows[0]!);
-    expect(outcome.status).toBe('present');
-    expect(outcome.daysWorked).toBe(1);
-    expect(outcome.checkinSource).toBe('manual');
-    expect(outcome.checkoutSource).toBe('manual');
-  });
+  maybeIt(
+    'a recordless day corrected with times-only instants grades present (G2-P11e, real DB)',
+    async () => {
+      await corrections.put(
+        ownerUser(),
+        TECH,
+        d.absent,
+        {
+          checkinAt: ist(d.absent, '09:25:00'),
+          checkoutAt: ist(d.absent, '18:40:00'),
+        },
+        'times corrected',
+      );
+      const rows = await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [TECH], d.absent, d.absent),
+      );
+      const outcome = computeDayStatus(rows[0]);
+      expect(outcome.status).toBe('present');
+      expect(outcome.daysWorked).toBe(1);
+      expect(outcome.checkinSource).toBe('manual');
+      expect(outcome.checkoutSource).toBe('manual');
+    },
+  );
 
-  maybeIt('old_value captures the prior override on a second correction (G2-P13)', async () => {
-    // d.correctedStatus already carries a seeded 'present' status override.
-    await corrections.put(
-      ownerUser() as never, TECH, d.correctedStatus, { status: 'half_day' }, 'second pass',
-    );
-    const page = await corrections.listOwner(ownerUser() as never, TECH, {
-      workDate: d.correctedStatus,
-    });
-    const newest = page.data[0];
-    expect(newest?.newValue.status).toBe('half_day');
-    expect(newest?.oldValue).toEqual({
-      status: 'present',
-      checkinAt: null,
-      checkoutAt: null,
-    });
-  });
+  maybeIt(
+    'old_value captures the prior override on a second correction (G2-P13)',
+    async () => {
+      // d.correctedStatus already carries a seeded 'present' status override.
+      await corrections.put(
+        ownerUser(),
+        TECH,
+        d.correctedStatus,
+        { status: 'half_day' },
+        'second pass',
+      );
+      const page = await corrections.listOwner(ownerUser(), TECH, {
+        workDate: d.correctedStatus,
+      });
+      const newest = page.data[0];
+      expect(newest?.newValue.status).toBe('half_day');
+      expect(newest?.oldValue).toEqual({
+        status: 'present',
+        checkinAt: null,
+        checkoutAt: null,
+      });
+    },
+  );
 
-  maybeIt('D8 parity — the engine row and MeAttendanceService.getSummary agree on today (G2-P3)', async () => {
-    if (isSunday(today)) return; // today is a weekly off; nothing to compare
-    await seedRecord(today, ist(today, '09:20:00'), ist(today, '18:35:00'));
-    const me = new MeAttendanceService({
-      createAdmin: () => admin,
-    } as unknown as SupabaseClientFactory);
-    const summary = await me.getSummary(techUser() as never);
-    const rows = await inTx((tx) => readDayStatusGrid(tx, TENANT, [TECH], today, today));
-    const outcome = computeDayStatus(rows[0]!);
-    const record = rows[0]!.record;
-    const todayRecord = summary.todayRecord;
-    expect(todayRecord).toBeTruthy();
-    // The seven Today-extension fields, engine ↔ summary, field for field.
-    expect(todayRecord?.checkinAt).toBe(
-      toTenantOffsetIso(new Date(rows[0]!.record!.checkin_at), TZ),
-    );
-    expect(todayRecord?.checkoutAt).toBe(
-      toTenantOffsetIso(new Date(record!.checkout_at!), TZ),
-    );
-    expect(todayRecord?.lateMinutes).toBe(outcome.lateMinutes);
-    expect(todayRecord?.isLate).toBe(outcome.isLate);
-    expect(todayRecord?.workedMinutes).toBe(outcome.workedMinutes);
-    expect(todayRecord?.earlyCheckout).toBe(outcome.earlyCheckout);
-    expect(todayRecord?.earlyCheckoutMinutes).toBe(outcome.earlyCheckoutMinutes);
-    // 09:20 is WITHIN the 15-minute late grace (09:45) — zero late
-    // minutes, no Late flag (D12's formula: max(0, in - start - grace)).
-    expect(todayRecord?.lateMinutes).toBe(0);
-    expect(todayRecord?.isLate).toBe(false);
-    expect(todayRecord?.workedMinutes).toBe(555);
-  });
+  maybeIt(
+    'D8 parity — the engine row and MeAttendanceService.getSummary agree on today (G2-P3)',
+    async () => {
+      if (isSunday(today)) return; // today is a weekly off; nothing to compare
+      await seedRecord(today, ist(today, '09:20:00'), ist(today, '18:35:00'));
+      const me = new MeAttendanceService({
+        createAdmin: () => admin,
+      } as unknown as SupabaseClientFactory);
+      const summary = await me.getSummary(techUser());
+      const rows = await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [TECH], today, today),
+      );
+      const outcome = computeDayStatus(rows[0]);
+      const record = rows[0].record;
+      const todayRecord = summary.todayRecord;
+      expect(todayRecord).toBeTruthy();
+      // The seven Today-extension fields, engine ↔ summary, field for field.
+      expect(todayRecord?.checkinAt).toBe(
+        toTenantOffsetIso(new Date(rows[0].record!.checkin_at), TZ),
+      );
+      expect(todayRecord?.checkoutAt).toBe(
+        toTenantOffsetIso(new Date(record!.checkout_at!), TZ),
+      );
+      expect(todayRecord?.lateMinutes).toBe(outcome.lateMinutes);
+      expect(todayRecord?.isLate).toBe(outcome.isLate);
+      expect(todayRecord?.workedMinutes).toBe(outcome.workedMinutes);
+      expect(todayRecord?.earlyCheckout).toBe(outcome.earlyCheckout);
+      expect(todayRecord?.earlyCheckoutMinutes).toBe(
+        outcome.earlyCheckoutMinutes,
+      );
+      // 09:20 is WITHIN the 15-minute late grace (09:45) — zero late
+      // minutes, no Late flag (D12's formula: max(0, in - start - grace)).
+      expect(todayRecord?.lateMinutes).toBe(0);
+      expect(todayRecord?.isLate).toBe(false);
+      expect(todayRecord?.workedMinutes).toBe(555);
+    },
+  );
 
-  maybeIt('D2 mirror gate — leave over a present-corrected date is rejected; over a plain-absent one it applies (G2-P1)', async () => {
-    const dto = {
-      startDate: d.mirror,
-      endDate: d.mirror,
-      part: 'full_day' as const,
-      reason: 'mirror probe',
-    };
-    await corrections.put(
-      ownerUser() as never, TECH, d.mirror, { status: 'present' }, 'present correction',
-    );
-    try {
-      await leaveService.applyForSelf(techUser() as never, dto as never, randomUUID() /* the service's idempotency key is a ::uuid column */);
-      throw new Error('expected rejection, got success');
-    } catch (e) {
-      // Only an HttpException reaches the assertions — a stray fixture
-      // error rethrows loud and red.
-      expect(e instanceof Error && e.message.endsWith('got success')).toBe(false);
-      expect(bodyOf(e).error_code).toBe('LEAVE_CHECKED_IN_CONFLICT');
-      expect(bodyOf(e).message).toContain(`You have a correction on ${d.mirror}`);
-    }
-    const preview = await leaveRead.previewApply(techUser() as never, dto as never);
-    expect(preview.ok).toBe(false);
-    expect(preview.errorCode).toBe('LEAVE_CHECKED_IN_CONFLICT');
-    // Leave may only sit under a PLAIN absent correction.
-    await corrections.put(
-      ownerUser() as never, TECH, d.mirror, { status: 'absent' }, 'absent correction',
-    );
-    const admitted = await leaveRead.previewApply(techUser() as never, dto as never);
-    expect(admitted.ok).toBe(true);
-    const view = await leaveService.applyForSelf(
-      techUser() as never,
-      dto as never,
-      randomUUID(),
-    );
-    expect(view.startDate).toBe(d.mirror);
-    expect(view.status).toBe('pending');
-  });
+  maybeIt(
+    'D2 mirror gate — leave over a present-corrected date is rejected; over a plain-absent one it applies (G2-P1)',
+    async () => {
+      const dto = {
+        startDate: d.mirror,
+        endDate: d.mirror,
+        part: 'full_day' as const,
+        reason: 'mirror probe',
+      };
+      await corrections.put(
+        ownerUser(),
+        TECH,
+        d.mirror,
+        { status: 'present' },
+        'present correction',
+      );
+      try {
+        await leaveService.applyForSelf(
+          techUser(),
+          dto,
+          randomUUID() /* the service's idempotency key is a ::uuid column */,
+        );
+        throw new Error('expected rejection, got success');
+      } catch (e) {
+        // Only an HttpException reaches the assertions — a stray fixture
+        // error rethrows loud and red.
+        expect(e instanceof Error && e.message.endsWith('got success')).toBe(
+          false,
+        );
+        expect(bodyOf(e).error_code).toBe('LEAVE_CHECKED_IN_CONFLICT');
+        expect(bodyOf(e).message).toContain(
+          `You have a correction on ${d.mirror}`,
+        );
+      }
+      const preview = await leaveRead.previewApply(techUser(), dto);
+      expect(preview.ok).toBe(false);
+      expect(preview.errorCode).toBe('LEAVE_CHECKED_IN_CONFLICT');
+      // Leave may only sit under a PLAIN absent correction.
+      await corrections.put(
+        ownerUser(),
+        TECH,
+        d.mirror,
+        { status: 'absent' },
+        'absent correction',
+      );
+      const admitted = await leaveRead.previewApply(techUser(), dto);
+      expect(admitted.ok).toBe(true);
+      const view = await leaveService.applyForSelf(
+        techUser(),
+        dto,
+        randomUUID(),
+      );
+      expect(view.startDate).toBe(d.mirror);
+      expect(view.status).toBe('pending');
+    },
+  );
 
-  maybeIt('perf — 51 employees × 31 days reads inside 3s (the 15-9 drift-class budget)', async () => {
-    const perfUsers: string[] = [];
-    for (let i = 0; i < 50; i++) perfUsers.push(randomUUID());
-    await pool.query('begin');
-    // Deterministic per-run phones, unique per row (a random() collision
-    // would 409 the whole scaffold — review G2-P14).
-    const phoneBase = 910000000 + (Date.now() % 80_000_000);
-    await pool.query(
-      `insert into public.users (id, name, country_code, phone_number)
+  maybeIt(
+    'perf — 51 employees × 31 days reads inside 3s (the 15-9 drift-class budget)',
+    async () => {
+      const perfUsers: string[] = [];
+      for (let i = 0; i < 50; i++) perfUsers.push(randomUUID());
+      await pool.query('begin');
+      // Deterministic per-run phones, unique per row (a random() collision
+      // would 409 the whole scaffold — review G2-P14).
+      const phoneBase = 910000000 + (Date.now() % 80_000_000);
+      await pool.query(
+        `insert into public.users (id, name, country_code, phone_number)
        select u.id, 'perf worker ' || row_number() over (), '+91',
               '9' || (($1 + row_number() over ())::bigint)::text
        from unnest($2::uuid[]) as u(id)`,
-      [phoneBase, perfUsers],
-    );
-    await pool.query(
-      `insert into public.memberships (user_id, tenant_id, role, status)
+        [phoneBase, perfUsers],
+      );
+      await pool.query(
+        `insert into public.memberships (user_id, tenant_id, role, status)
        select u.id, $1, 'employee', 'active' from unnest($2::uuid[]) as u(id)`,
-      [TENANT, perfUsers],
-    );
-    // Assignments BEFORE enrolments — the coverage guard checks the pair at
-    // COMMIT, so all seeding goes in one transaction.
-    await pool.query(
-      `insert into public.attendance_office_assignments (tenant_id, employee_id, office_id, valid)
+        [TENANT, perfUsers],
+      );
+      // Assignments BEFORE enrolments — the coverage guard checks the pair at
+      // COMMIT, so all seeding goes in one transaction.
+      await pool.query(
+        `insert into public.attendance_office_assignments (tenant_id, employee_id, office_id, valid)
        select $1, u.id, $3, daterange(current_date - 60, current_date + 120)
        from unnest($2::uuid[]) as u(id)`,
-      [TENANT, perfUsers, (await pool.query<{ office_id: string }>(
-        'select office_id from public.attendance_office_assignments where tenant_id = $1 limit 1',
-        [TENANT],
-      )).rows[0].office_id],
-    );
-    await pool.query(
-      `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
+        [
+          TENANT,
+          perfUsers,
+          (
+            await pool.query<{ office_id: string }>(
+              'select office_id from public.attendance_office_assignments where tenant_id = $1 limit 1',
+              [TENANT],
+            )
+          ).rows[0].office_id,
+        ],
+      );
+      await pool.query(
+        `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
        select $1, u.id, daterange(current_date - 60, current_date + 120), now() - interval '60 days'
        from unnest($2::uuid[]) as u(id)`,
-      [TENANT, perfUsers],
-    );
-    await pool.query('commit');
+        [TENANT, perfUsers],
+      );
+      await pool.query('commit');
 
-    const t0 = Date.now();
-    // The NFR-7 budget window: a full 31-day span (G2-P10), not just the
-    // seeded anchor dates.
-    const perfFrom = dayOffset(today, -31);
-    await inTx((tx) =>
-      readDayStatusGrid(tx, TENANT, [TECH, ...perfUsers], perfFrom, today),
-    );
-    expect(Date.now() - t0).toBeLessThan(3000);
-  });
+      const t0 = Date.now();
+      // The NFR-7 budget window: a full 31-day span (G2-P10), not just the
+      // seeded anchor dates.
+      const perfFrom = dayOffset(today, -31);
+      await inTx((tx) =>
+        readDayStatusGrid(tx, TENANT, [TECH, ...perfUsers], perfFrom, today),
+      );
+      expect(Date.now() - t0).toBeLessThan(3000);
+    },
+  );
 });

@@ -86,7 +86,10 @@ export interface ArchiveBlockersResponse {
 }
 
 /** "[2026-09-26,)" → "2026-09-26" / "[2026-09-26,2026-09-27)" → upper. */
-export function parseRuleRange(valid: string): { from: string; to: string | null } {
+export function parseRuleRange(valid: string): {
+  from: string;
+  to: string | null;
+} {
   const parts = valid.replace(/[\[\]()]/g, '').split(',');
   return { from: parts[0], to: parts[1] ? parts[1] : null };
 }
@@ -96,7 +99,9 @@ function toHhmm(value: string): string {
   return value.slice(0, 5);
 }
 
-export function toOfficeRuleResponse(row: AttendanceOfficeRuleRow): OfficeRuleResponse {
+export function toOfficeRuleResponse(
+  row: AttendanceOfficeRuleRow,
+): OfficeRuleResponse {
   const { from, to } = parseRuleRange(row.valid);
   return {
     id: row.id,
@@ -124,7 +129,11 @@ export function toOfficeDetailResponse(
     formattedAddress: office.formatted_address ?? null,
     archivedAt: office.archived_at,
     rules: [...rules]
-      .sort((a, b) => parseRuleRange(a.valid).from.localeCompare(parseRuleRange(b.valid).from))
+      .sort((a, b) =>
+        parseRuleRange(a.valid).from.localeCompare(
+          parseRuleRange(b.valid).from,
+        ),
+      )
       .map(toOfficeRuleResponse),
   };
 }
@@ -154,6 +163,8 @@ export function pickNextRule(
 ): AttendanceOfficeRuleRow | null {
   const future = rules
     .filter((r) => parseRuleRange(r.valid).from > today)
-    .sort((a, b) => parseRuleRange(a.valid).from.localeCompare(parseRuleRange(b.valid).from));
+    .sort((a, b) =>
+      parseRuleRange(a.valid).from.localeCompare(parseRuleRange(b.valid).from),
+    );
   return future[0] ?? null;
 }

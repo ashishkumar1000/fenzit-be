@@ -46,7 +46,8 @@ export class LoggingInterceptor implements NestInterceptor {
     const correlation = getCorrelationContext();
     this.logger.log(
       JSON.stringify({
-        correlation_id: correlation?.correlationId ?? request.correlationId ?? null,
+        correlation_id:
+          correlation?.correlationId ?? request.correlationId ?? null,
         session_id: correlation?.sessionId ?? request.sessionId ?? null,
         user_id: request.user?.userId ?? null,
         tenant_id: request.user?.tenantId ?? null,

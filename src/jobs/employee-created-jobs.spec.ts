@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, InternalServerErrorException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { JobsService } from './jobs.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { CustomersService } from '../customers/customers.service';
@@ -77,13 +80,27 @@ function chain(terminal: {
   list?: Result;
 }) {
   const node: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'in', 'neq', 'not', 'or', 'order', 'gte', 'lt', 'is', 'gt']) {
+  for (const m of [
+    'select',
+    'eq',
+    'in',
+    'neq',
+    'not',
+    'or',
+    'order',
+    'gte',
+    'lt',
+    'is',
+    'gt',
+  ]) {
     node[m] = jest.fn(() => node);
   }
   const none: Result = { data: null, error: null };
   node.single = jest.fn().mockResolvedValue(terminal.single ?? none);
   node.maybeSingle = jest.fn().mockResolvedValue(terminal.maybeSingle ?? none);
-  node.limit = jest.fn().mockResolvedValue(terminal.limit ?? { data: [], error: null });
+  node.limit = jest
+    .fn()
+    .mockResolvedValue(terminal.limit ?? { data: [], error: null });
   node.then = (ok: (v: unknown) => unknown, fail: (e: unknown) => unknown) =>
     Promise.resolve(terminal.list ?? { data: [], error: null }).then(ok, fail);
   return node as Record<string, jest.Mock> & { then: unknown };
@@ -124,7 +141,9 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
     const customers = chain({
       single: { data: { id: 'cust-1', tenant_id: 'tenant-uuid' }, error: null },
     });
-    const skills = chain({ maybeSingle: { data: { id: 'skill-uuid-1' }, error: null } });
+    const skills = chain({
+      maybeSingle: { data: { id: 'skill-uuid-1' }, error: null },
+    });
     // The post-insert re-read returns the row the decision function just wrote.
     const written = opts.rpc?.data as Array<{ status: string }> | undefined;
     const jobs = chain({
@@ -143,10 +162,12 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
       if (!(table in tables)) throw new Error(`unexpected table ${table}`);
       return tables[table];
     });
-    const rpc = jest.fn().mockResolvedValue(
-      opts.rpc ?? { data: [jobRow('pending_approval')], error: null },
-    );
-    factory.createAdmin.mockReturnValue({ from, rpc } as never);
+    const rpc = jest
+      .fn()
+      .mockResolvedValue(
+        opts.rpc ?? { data: [jobRow('pending_approval')], error: null },
+      );
+    factory.createAdmin.mockReturnValue({ from, rpc });
     return { from, rpc, memberships, customers };
   }
 
@@ -199,7 +220,9 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
       },
     });
 
-    const err = await service.createJob(employee, ownDto).catch((e: unknown) => e);
+    const err = await service
+      .createJob(employee, ownDto)
+      .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(ForbiddenException);
     expect(JSON.stringify((err as ForbiddenException).getResponse())).toContain(
@@ -219,12 +242,16 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
     const newCustomerDto: CreateJobDto = {
       ...ownDto,
       customerId: undefined,
-      newCustomer: { name: 'Priya', countryCode: '+91', phoneNumber: '9876543210' },
+      newCustomer: {
+        name: 'Priya',
+        countryCode: '+91',
+        phoneNumber: '9876543210',
+      },
     };
 
-    await expect(service.createJob(employee, newCustomerDto)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.createJob(employee, newCustomerDto),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(customersService.findOrCreateByPhone).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalled();
   });
@@ -282,20 +309,28 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
     function listAdmin() {
       const builder = chain({ limit: { data: [], error: null } });
       const from = jest.fn(() => builder);
-      factory.createAdmin.mockReturnValue({ from } as never);
+      factory.createAdmin.mockReturnValue({ from });
       return builder;
     }
 
     it('TODAY hides pending and rejected jobs for an owner', async () => {
       const builder = listAdmin();
       await service.listJobs(owner, {});
-      expect(builder.not).toHaveBeenCalledWith('status', 'in', PENDING_OR_REJECTED);
+      expect(builder.not).toHaveBeenCalledWith(
+        'status',
+        'in',
+        PENDING_OR_REJECTED,
+      );
     });
 
     it('TODAY hides pending and rejected jobs for an employee too', async () => {
       const builder = listAdmin();
       await service.listJobs(employee, {});
-      expect(builder.not).toHaveBeenCalledWith('status', 'in', PENDING_OR_REJECTED);
+      expect(builder.not).toHaveBeenCalledWith(
+        'status',
+        'in',
+        PENDING_OR_REJECTED,
+      );
     });
 
     it('TODAY keeps hiding them when the caller asks for a pending status', async () => {
@@ -303,7 +338,11 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
       await service.listJobs(owner, {
         status: ['pending_approval'] as never,
       });
-      expect(builder.not).toHaveBeenCalledWith('status', 'in', PENDING_OR_REJECTED);
+      expect(builder.not).toHaveBeenCalledWith(
+        'status',
+        'in',
+        PENDING_OR_REJECTED,
+      );
     });
 
     it.each([
@@ -312,10 +351,14 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
       [JobListScope.HISTORY],
     ])('scope %s never offers a pending job', async (scope) => {
       const builder = listAdmin();
-      await service.listJobs(owner, { scope } as never);
+      await service.listJobs(owner, { scope });
       const statusArgs = [
-        ...builder.in.mock.calls.filter((c) => c[0] === 'status').map((c) => c[1]),
-        ...builder.eq.mock.calls.filter((c) => c[0] === 'status').map((c) => [c[1]]),
+        ...builder.in.mock.calls
+          .filter((c) => c[0] === 'status')
+          .map((c) => c[1]),
+        ...builder.eq.mock.calls
+          .filter((c) => c[0] === 'status')
+          .map((c) => [c[1]]),
       ];
       const flat = statusArgs.flat(1) as unknown[];
       expect(flat).not.toContain('pending_approval');

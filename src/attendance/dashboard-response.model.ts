@@ -83,11 +83,7 @@ export interface DashboardOfficeRow {
  *  (ISO) for presence rows — the punch, or a times-only override's
  *  manual check-in — and null otherwise. */
 export type DashboardEmployeeStatus =
-  | 'checked_in'
-  | 'late'
-  | 'on_leave'
-  | 'short_day'
-  | 'not_checked_in';
+  'checked_in' | 'late' | 'on_leave' | 'short_day' | 'not_checked_in';
 
 export interface DashboardEmployeeRow {
   employeeId: string;

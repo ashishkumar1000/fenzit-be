@@ -46,7 +46,8 @@ export class AdminController {
   })
   @ApiQuery({
     name: 'phone',
-    description: '10-digit Indian mobile number, with optional 91 prefix or +91',
+    description:
+      '10-digit Indian mobile number, with optional 91 prefix or +91',
     example: '98765 43210',
   })
   @ApiResponse({ status: 404, description: 'No person with this number' })
@@ -59,7 +60,8 @@ export class AdminController {
   @Can('user.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Promote or demote the platform_admin staff flag (platform admin only)',
+    summary:
+      'Promote or demote the platform_admin staff flag (platform admin only)',
   })
   @ApiParam({ name: 'userId', format: 'uuid' })
   @ApiResponse({

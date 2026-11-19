@@ -91,7 +91,8 @@ export class ReportsController {
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({
     status: 403,
-    description: 'Forbidden — pause/resume needs the report.queue permission (company admin)',
+    description:
+      'Forbidden — pause/resume needs the report.queue permission (company admin)',
   })
   @ApiResponse({ status: 422, description: 'minutes outside 1–1440' })
   pauseQueue(
@@ -109,7 +110,8 @@ export class ReportsController {
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({
     status: 403,
-    description: 'Forbidden — pause/resume needs the report.queue permission (company admin)',
+    description:
+      'Forbidden — pause/resume needs the report.queue permission (company admin)',
   })
   resumeQueue(@CurrentUser() user: RequestUser) {
     return this.queue.resume(user);
@@ -143,7 +145,10 @@ export class ReportsController {
   @ApiResponse({ status: 201, description: 'Report request re-queued' })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
-  @ApiResponse({ status: 404, description: 'Report not found (or other company)' })
+  @ApiResponse({
+    status: 404,
+    description: 'Report not found (or other company)',
+  })
   @ApiResponse({
     status: 409,
     description: 'The request is not in the failed state (nothing to retry)',

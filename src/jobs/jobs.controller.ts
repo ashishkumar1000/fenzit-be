@@ -119,7 +119,10 @@ export class JobsController {
   })
   @ApiResponse({ status: 200, description: 'The job after the decision' })
   @ApiResponse({ status: 400, description: 'Decision or reason not valid' })
-  @ApiResponse({ status: 403, description: 'Not a company admin of this company' })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a company admin of this company',
+  })
   @ApiResponse({ status: 404, description: 'Job not found in this company' })
   @ApiResponse({
     status: 409,
@@ -267,9 +270,15 @@ export class JobsController {
   })
   @ApiResponse({ status: 201, description: 'Report stored' })
   @ApiResponse({ status: 200, description: 'Already reported by this user' })
-  @ApiResponse({ status: 400, description: 'Company not set up or malformed id' })
+  @ApiResponse({
+    status: 400,
+    description: 'Company not set up or malformed id',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
-  @ApiResponse({ status: 403, description: 'Technician, job not assigned to them' })
+  @ApiResponse({
+    status: 403,
+    description: 'Technician, job not assigned to them',
+  })
   @ApiResponse({ status: 404, description: 'Job or photo not found' })
   @ApiResponse({ status: 422, description: 'Validation error' })
   async reportAttachment(

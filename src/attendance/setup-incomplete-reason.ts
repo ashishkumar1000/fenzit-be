@@ -1,6 +1,9 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { Role } from '../common/enums/role.enum';
-import { CompanyMember, listCompanyMembers } from '../common/members/company-members';
+import {
+  CompanyMember,
+  listCompanyMembers,
+} from '../common/members/company-members';
 import { istTodayIso } from '../reports/registry/report-params.util';
 
 /** Longest name shown to the owner; anything longer is cut, never wrapped. */
@@ -14,12 +17,14 @@ function displayName(member: CompanyMember): string {
 
 /** "A", "A and B", "A, B and C". */
 function joinNames(names: string[]): string {
-  if (names.length === 1) return names[0] as string;
+  if (names.length === 1) return names[0];
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function idsOf(rows: unknown): Set<string> {
-  return new Set(((rows ?? []) as Array<{ employee_id: string }>).map((r) => r.employee_id));
+  return new Set(
+    ((rows ?? []) as Array<{ employee_id: string }>).map((r) => r.employee_id),
+  );
 }
 
 /**
@@ -53,9 +58,14 @@ export async function invitedTrackedEmployeeReason(
 
     const enrolled = idsOf(enrolments.data);
     const assigned = idsOf(assignments.data);
-    const members = await listCompanyMembers(admin, tenantId, { role: Role.EMPLOYEE });
+    const members = await listCompanyMembers(admin, tenantId, {
+      role: Role.EMPLOYEE,
+    });
     const waiting = members.filter(
-      (m) => m.status === 'invited' && enrolled.has(m.userId) && assigned.has(m.userId),
+      (m) =>
+        m.status === 'invited' &&
+        enrolled.has(m.userId) &&
+        assigned.has(m.userId),
     );
     if (waiting.length === 0) return null;
 

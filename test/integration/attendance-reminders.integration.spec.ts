@@ -200,8 +200,15 @@ const seedRecord = async (
      values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false,
              $8, $9, 12.97, 77.59, 10, 40, false)`,
     [
-      TENANT, employeeId, D, officeId, ruleId,
-      ist(D, checkin), attemptIn, ist(D, checkout), attemptOut,
+      TENANT,
+      employeeId,
+      D,
+      officeId,
+      ruleId,
+      ist(D, checkin),
+      attemptIn,
+      ist(D, checkout),
+      attemptOut,
     ],
   );
 };
@@ -236,14 +243,26 @@ const seedScaffold = async (): Promise<void> => {
     `insert into public.users (id, name, country_code, phone_number)
      select u, '19-1 probe person', '+91', ph
        from unnest($1::uuid[], $2::text[]) as t(u, ph)`,
-    [probeUsers, probeUsers.map((_, i) => String(930000000 + (Date.now() % 50_000_000) + i))],
+    [
+      probeUsers,
+      probeUsers.map((_, i) =>
+        String(930000000 + (Date.now() % 50_000_000) + i),
+      ),
+    ],
   );
   await pool.query(
     `insert into public.tenants (id, created_by, company_name, state_code, timezone)
      values ($1, $2, $3, 'KA', $4),
             ($5, $6, $7, 'KA', $4)`,
-    [TENANT, OWNER, `epic-19 probe reminder ${TENANT.slice(0, 8)}`, TZ,
-      INCOMPLETE, C_OWNER, `epic-19 probe incomplete ${INCOMPLETE.slice(0, 8)}`],
+    [
+      TENANT,
+      OWNER,
+      `epic-19 probe reminder ${TENANT.slice(0, 8)}`,
+      TZ,
+      INCOMPLETE,
+      C_OWNER,
+      `epic-19 probe incomplete ${INCOMPLETE.slice(0, 8)}`,
+    ],
   );
   const member = (tenant: string, users: string[], role: string) =>
     pool.query(
@@ -377,15 +396,18 @@ const seedScaffold = async (): Promise<void> => {
       `insert into public.attendance_office_assignments
          (tenant_id, employee_id, office_id, valid)
        values ($1, $2, $3, daterange(current_date - 60, current_date + 120))`,
-      [TENANT, employeeId,
-        employeeId === E.noRule ? rulelessOffice : officeId],
+      [TENANT, employeeId, employeeId === E.noRule ? rulelessOffice : officeId],
     );
     await pool.query(
       `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
        values ($1, $2, daterange(current_date - 60, current_date + 120), $3)`,
-      [TENANT, employeeId,
-        employeeId === E.grace ? ist(D, '11:00:00')
-          : ist(dayOffset(today, -60), '00:00:00')],
+      [
+        TENANT,
+        employeeId,
+        employeeId === E.grace
+          ? ist(D, '11:00:00')
+          : ist(dayOffset(today, -60), '00:00:00'),
+      ],
     );
   }
 
@@ -447,12 +469,13 @@ const teardownTenants = async (): Promise<void> => {
   const stale = await pool.query<{ id: string }>(
     "select id from public.tenants where company_name like 'epic-19 probe%'",
   );
-  const purgeIds = [...new Set([...allTenants, ...stale.rows.map((r) => r.id)])];
+  const purgeIds = [
+    ...new Set([...allTenants, ...stale.rows.map((r) => r.id)]),
+  ];
   await purgeCompanyChildren(pool, purgeIds);
-  await pool.query(
-    'delete from public.tenants where id = any($1::uuid[])',
-    [purgeIds],
-  );
+  await pool.query('delete from public.tenants where id = any($1::uuid[])', [
+    purgeIds,
+  ]);
   await pool.query('delete from public.users where id = any($1::uuid[])', [
     [OWNER, B_OWNER, C_OWNER, ...ALL, B_TECH, C_TECH],
   ]);
@@ -497,16 +520,15 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
     // ticks would race the crafted p_now instants (the probe's seeded date
     // D must be the real today for the parity block). The stored schedule
     // + command are restored EXACTLY in afterAll.
-    storedJob = (
-      await pool.query<{ schedule: string; command: string }>(
-        `select schedule, command from cron.job
+    storedJob =
+      (
+        await pool.query<{ schedule: string; command: string }>(
+          `select schedule, command from cron.job
           where jobname = 'attendance-run-reminders' limit 1`,
-      )
-    ).rows[0] ?? null;
+        )
+      ).rows[0] ?? null;
     if (storedJob) {
-      await pool.query(
-        "select cron.unschedule('attendance-run-reminders')",
-      );
+      await pool.query("select cron.unschedule('attendance-run-reminders')");
     }
     try {
       await seedScaffold();
@@ -535,58 +557,66 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
     }
   });
 
-  maybeIt('an 08:00 tick fires NOTHING — before every due instant', async () => {
-    await tick('08:00:00');
-    expect(await reminderRows()).toEqual([]);
-  });
+  maybeIt(
+    'an 08:00 tick fires NOTHING — before every due instant',
+    async () => {
+      await tick('08:00:00');
+      expect(await reminderRows()).toEqual([]);
+    },
+  );
 
-  maybeIt('the 12:00 tick fires the check-in, summary, and pending arms', async () => {
-    await tick('12:00:00');
-    const rows = await reminderRows();
-    expect(rows).toHaveLength(4);
-    const keys = new Set(dedupeKeys(rows));
-    expect(keys).toEqual(new Set([
-      `${TENANT}:attendance.reminder_checkin:${E.noCheckin}:${D}`,
-      `${TENANT}:attendance.reminder_checkin:${E.pendLeave}:${D}`,
-      `${TENANT}:attendance.reminder_not_checked_in:${OWNER}:${D}:${officeId}`,
-      `${TENANT}:leave.pending_reminder:${OWNER}:${D}`,
-    ]));
-    // Payloads + recipients + deep-link pairs exactly as the AD-13
-    // registry and notifications_entity_pair_chk pin them: employee
-    // reminders carry an all-set attendance pair, the tenant-wide
-    // pending digest carries an all-NULL pair.
-    for (const row of rows) {
-      switch (row['event_type']) {
-        case 'attendance.reminder_checkin':
-          expect(row['payload']).toEqual({ workDate: D });
-          expect(row['user_id']).toBe(
-            String(row['dedupe_key']).split(':')[2],
-          );
-          expect(row['entity_type']).toBe('attendance');
-          expect(row['entity_id']).toBe(
-            String(row['dedupe_key']).split(':')[2],
-          );
-          break;
-        case 'attendance.reminder_not_checked_in':
-          expect(row['payload']).toEqual({
-            officeName: 'HQ',
-            notCheckedInCount: 3, // noCheckin + pendLeave + halfLeave
-            workDate: D,
-          });
-          expect(row['user_id']).toBe(OWNER);
-          expect(row['dedupe_key']).toContain(`:${officeId}`);
-          expect(row['entity_type']).toBe('attendance');
-          expect(row['entity_id']).toBe(officeId);
-          break;
-        case 'leave.pending_reminder':
-          expect(row['payload']).toEqual({ pendingCount: 1 });
-          expect(row['user_id']).toBe(OWNER);
-          expect(row['entity_type']).toBeNull();
-          expect(row['entity_id']).toBeNull();
-          break;
+  maybeIt(
+    'the 12:00 tick fires the check-in, summary, and pending arms',
+    async () => {
+      await tick('12:00:00');
+      const rows = await reminderRows();
+      expect(rows).toHaveLength(4);
+      const keys = new Set(dedupeKeys(rows));
+      expect(keys).toEqual(
+        new Set([
+          `${TENANT}:attendance.reminder_checkin:${E.noCheckin}:${D}`,
+          `${TENANT}:attendance.reminder_checkin:${E.pendLeave}:${D}`,
+          `${TENANT}:attendance.reminder_not_checked_in:${OWNER}:${D}:${officeId}`,
+          `${TENANT}:leave.pending_reminder:${OWNER}:${D}`,
+        ]),
+      );
+      // Payloads + recipients + deep-link pairs exactly as the AD-13
+      // registry and notifications_entity_pair_chk pin them: employee
+      // reminders carry an all-set attendance pair, the tenant-wide
+      // pending digest carries an all-NULL pair.
+      for (const row of rows) {
+        switch (row['event_type']) {
+          case 'attendance.reminder_checkin':
+            expect(row['payload']).toEqual({ workDate: D });
+            expect(row['user_id']).toBe(
+              String(row['dedupe_key']).split(':')[2],
+            );
+            expect(row['entity_type']).toBe('attendance');
+            expect(row['entity_id']).toBe(
+              String(row['dedupe_key']).split(':')[2],
+            );
+            break;
+          case 'attendance.reminder_not_checked_in':
+            expect(row['payload']).toEqual({
+              officeName: 'HQ',
+              notCheckedInCount: 3, // noCheckin + pendLeave + halfLeave
+              workDate: D,
+            });
+            expect(row['user_id']).toBe(OWNER);
+            expect(row['dedupe_key']).toContain(`:${officeId}`);
+            expect(row['entity_type']).toBe('attendance');
+            expect(row['entity_id']).toBe(officeId);
+            break;
+          case 'leave.pending_reminder':
+            expect(row['payload']).toEqual({ pendingCount: 1 });
+            expect(row['user_id']).toBe(OWNER);
+            expect(row['entity_type']).toBeNull();
+            expect(row['entity_id']).toBeNull();
+            break;
+        }
       }
-    }
-  });
+    },
+  );
 
   maybeIt('an idempotent re-run absorbs every already-due arm', async () => {
     await tick('13:00:00');
@@ -594,96 +624,113 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
     expect(dedupeKeys(await reminderRows())).toHaveLength(4);
   });
 
-  maybeIt('the two shifted half-day arms fire at their OWN instants', async () => {
-    const before = await keyOf();
-    // The approved second-half check-out is due at Midpoint + late = 14:00
-    // (its late minutes being 0) — the ONLY arm at this tick.
-    await tick('14:00:00');
-    expect(await keysSince(before)).toEqual([
-      `${TENANT}:attendance.reminder_checkout:${E.secondHalf}:${D}`,
-    ]);
-    // B-BUG-1 boundary: a tick ONE SECOND before a due instant must fire
-    // NOTHING. PG's rounding `::int` cast read 14:14:59 as the 14:15
-    // threshold minute and fired the displaced first-half check-in early
-    // (bug-bash 2026-10-02, live-proven at 09:14:59 vs a 09:15:00
-    // threshold); the floor()ed clock must hold the second back. The
-    // displaced first-half check-in is due at Midpoint (14:00) + cut-off
-    // (15) = 14:15 exactly.
-    const beforePre = await keyOf();
-    await tick('14:14:59');
-    expect(await keysSince(beforePre)).toEqual([]);
-    const before1415 = await keyOf();
-    await tick('14:15:00');
-    expect(await keysSince(before1415)).toEqual([
-      `${TENANT}:attendance.reminder_checkin:${E.halfLeave}:${D}`,
-    ]);
-  });
+  maybeIt(
+    'the two shifted half-day arms fire at their OWN instants',
+    async () => {
+      const before = await keyOf();
+      // The approved second-half check-out is due at Midpoint + late = 14:00
+      // (its late minutes being 0) — the ONLY arm at this tick.
+      await tick('14:00:00');
+      expect(await keysSince(before)).toEqual([
+        `${TENANT}:attendance.reminder_checkout:${E.secondHalf}:${D}`,
+      ]);
+      // B-BUG-1 boundary: a tick ONE SECOND before a due instant must fire
+      // NOTHING. PG's rounding `::int` cast read 14:14:59 as the 14:15
+      // threshold minute and fired the displaced first-half check-in early
+      // (bug-bash 2026-10-02, live-proven at 09:14:59 vs a 09:15:00
+      // threshold); the floor()ed clock must hold the second back. The
+      // displaced first-half check-in is due at Midpoint (14:00) + cut-off
+      // (15) = 14:15 exactly.
+      const beforePre = await keyOf();
+      await tick('14:14:59');
+      expect(await keysSince(beforePre)).toEqual([]);
+      const before1415 = await keyOf();
+      await tick('14:15:00');
+      expect(await keysSince(before1415)).toEqual([
+        `${TENANT}:attendance.reminder_checkin:${E.halfLeave}:${D}`,
+      ]);
+    },
+  );
 
-  maybeIt('a late check-in shifts its check-out reminder by its own lateness', async () => {
-    const before = await keyOf();
-    await tick('18:00:00'); // due 18:30 for the punctual pair, 18:41 for 09:56
-    expect(await keysSince(before)).toEqual([]);
-    await tick('18:30:00');
-    const at1830 = await keysSince(before);
-    expect([...at1830].sort()).toEqual([
-      `${TENANT}:attendance.reminder_checkout:${E.punctual}:${D}`,
-      `${TENANT}:attendance.reminder_checkout:${E.timesOnly}:${D}`,
-    ].sort());
-    // late = 0 → due exactly at Expected end (the 2026-09-29 ruling); the
-    // 09:56 employee's due (18:41) fires at the next 5-minute tick after.
-    const before1845 = await keyOf();
-    await tick('18:45:00');
-    expect(await keysSince(before1845)).toEqual([
-      `${TENANT}:attendance.reminder_checkout:${E.openLate}:${D}`,
-    ]);
-    await tick('18:50:00');
-    // The whole day's keyspace is final and absorbed: 3 check-ins + 4
-    // check-outs + 1 office summary + 1 pending alert = 9, and this
-    // re-run (the cron's real cadence) adds nothing — the dedupe key IS
-    // the idempotency guarantee.
-    expect((await reminderRows()).length).toBe(9);
-  });
+  maybeIt(
+    'a late check-in shifts its check-out reminder by its own lateness',
+    async () => {
+      const before = await keyOf();
+      await tick('18:00:00'); // due 18:30 for the punctual pair, 18:41 for 09:56
+      expect(await keysSince(before)).toEqual([]);
+      await tick('18:30:00');
+      const at1830 = await keysSince(before);
+      expect([...at1830].sort()).toEqual(
+        [
+          `${TENANT}:attendance.reminder_checkout:${E.punctual}:${D}`,
+          `${TENANT}:attendance.reminder_checkout:${E.timesOnly}:${D}`,
+        ].sort(),
+      );
+      // late = 0 → due exactly at Expected end (the 2026-09-29 ruling); the
+      // 09:56 employee's due (18:41) fires at the next 5-minute tick after.
+      const before1845 = await keyOf();
+      await tick('18:45:00');
+      expect(await keysSince(before1845)).toEqual([
+        `${TENANT}:attendance.reminder_checkout:${E.openLate}:${D}`,
+      ]);
+      await tick('18:50:00');
+      // The whole day's keyspace is final and absorbed: 3 check-ins + 4
+      // check-outs + 1 office summary + 1 pending alert = 9, and this
+      // re-run (the cron's real cadence) adds nothing — the dedupe key IS
+      // the idempotency guarantee.
+      expect((await reminderRows()).length).toBe(9);
+    },
+  );
 
-  maybeIt('a tenant holiday suppresses every employee arm, not the pending alert', async () => {
-    const before = await keyOf();
-    await tick('12:00:00', D2);
-    const gained = await keysSince(before);
-    expect(gained).toEqual([
-      `${TENANT}:leave.pending_reminder:${OWNER}:${D2}`,
-    ]);
-  });
+  maybeIt(
+    'a tenant holiday suppresses every employee arm, not the pending alert',
+    async () => {
+      const before = await keyOf();
+      await tick('12:00:00', D2);
+      const gained = await keysSince(before);
+      expect(gained).toEqual([
+        `${TENANT}:leave.pending_reminder:${OWNER}:${D2}`,
+      ]);
+    },
+  );
 
-  maybeIt('a second tenant fires its OWN arms in the same ticks; the gated one stays silent (AD-14/AD-25)', async () => {
-    // Tenant B is a fully-completed tenant with its own tiny facts (one
-    // tracked employee, no records): its check-in + summary arms fire for
-    // B_TECH in the SAME ticks as the first tenant's, keyed per tenant —
-    // zero cross-leakage. (NOTE: this test previously asserted B stays at
-    // zero rows — that was written for the old broken-timezone fixture;
-    // with B redesigned as a valid tenant the requirement it now pins is
-    // the OPPOSITE: B MUST have fired, or the per-tenant loop died.)
-    // Tenant C has complete facts but never completes setup → the AD-25
-    // gate keeps it notification-less.
-    const brokenRows = await pool.query<{ dk: string }>(
-      `select dedupe_key as dk
+  maybeIt(
+    'a second tenant fires its OWN arms in the same ticks; the gated one stays silent (AD-14/AD-25)',
+    async () => {
+      // Tenant B is a fully-completed tenant with its own tiny facts (one
+      // tracked employee, no records): its check-in + summary arms fire for
+      // B_TECH in the SAME ticks as the first tenant's, keyed per tenant —
+      // zero cross-leakage. (NOTE: this test previously asserted B stays at
+      // zero rows — that was written for the old broken-timezone fixture;
+      // with B redesigned as a valid tenant the requirement it now pins is
+      // the OPPOSITE: B MUST have fired, or the per-tenant loop died.)
+      // Tenant C has complete facts but never completes setup → the AD-25
+      // gate keeps it notification-less.
+      const brokenRows = await pool.query<{ dk: string }>(
+        `select dedupe_key as dk
          from public.notifications
         where tenant_id = $1
           and event_type in (
             'attendance.reminder_checkin',
             'attendance.reminder_not_checked_in')
         order by dedupe_key`,
-      [BROKEN],
-    );
-    expect(brokenRows.rows.map((r) => r.dk)).toEqual([
-      `${BROKEN}:attendance.reminder_checkin:${B_TECH}:${D}`,
-      `${BROKEN}:attendance.reminder_checkin:${B_TECH}:${D2}`,
-      `${BROKEN}:attendance.reminder_not_checked_in:${B_OWNER}:${D}:${bOfficeId}`,
-      `${BROKEN}:attendance.reminder_not_checked_in:${B_OWNER}:${D2}:${bOfficeId}`,
-    ]);
-    // The deep-link pairs are all-set for employee/summary reminders
-    // (AD-13) — the pending digest (if it existed here) is the only
-    // pair-less notification.
-    const pairs = await pool.query<{ et: string; ety: string | null; eid: string | null }>(
-      `select event_type as et,
+        [BROKEN],
+      );
+      expect(brokenRows.rows.map((r) => r.dk)).toEqual([
+        `${BROKEN}:attendance.reminder_checkin:${B_TECH}:${D}`,
+        `${BROKEN}:attendance.reminder_checkin:${B_TECH}:${D2}`,
+        `${BROKEN}:attendance.reminder_not_checked_in:${B_OWNER}:${D}:${bOfficeId}`,
+        `${BROKEN}:attendance.reminder_not_checked_in:${B_OWNER}:${D2}:${bOfficeId}`,
+      ]);
+      // The deep-link pairs are all-set for employee/summary reminders
+      // (AD-13) — the pending digest (if it existed here) is the only
+      // pair-less notification.
+      const pairs = await pool.query<{
+        et: string;
+        ety: string | null;
+        eid: string | null;
+      }>(
+        `select event_type as et,
               entity_type as ety,
               entity_id   as eid,
               dedupe_key  as dk
@@ -691,75 +738,86 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
         where tenant_id = $1
           and event_type like 'attendance.reminder%'
         order by dedupe_key`,
-      [BROKEN],
-    );
-    for (const row of pairs.rows) {
-      expect(row.ety).toBe('attendance');
-      if (
-        String(row.dk).startsWith(
-          `${BROKEN}:attendance.reminder_checkin:${B_TECH}`,
-        )
-      ) {
-        expect(row.eid).toBe(B_TECH);
-      } else {
-        expect(row.eid).toBe(bOfficeId); // the office summary's target
+        [BROKEN],
+      );
+      for (const row of pairs.rows) {
+        expect(row.ety).toBe('attendance');
+        if (
+          String(row.dk).startsWith(
+            `${BROKEN}:attendance.reminder_checkin:${B_TECH}`,
+          )
+        ) {
+          expect(row.eid).toBe(B_TECH);
+        } else {
+          expect(row.eid).toBe(bOfficeId); // the office summary's target
+        }
       }
-    }
-    const stray = await pool.query<{ n: string }>(
-      'select count(*)::text as n from public.notifications where tenant_id = $1',
-      [INCOMPLETE],
-    );
-    expect(stray.rows[0].n).toBe('0');
-  });
+      const stray = await pool.query<{ n: string }>(
+        'select count(*)::text as n from public.notifications where tenant_id = $1',
+        [INCOMPLETE],
+      );
+      expect(stray.rows[0].n).toBe('0');
+    },
+  );
 
-  maybeIt('AD-22 parity — the TS engine over the same facts agrees with the SQL arms', async () => {
-    if (D !== today) return; // the engine's isPast binds to the real today
-    const grid = await pg.withTransaction((tx) =>
-      readDayStatusGrid(tx, TENANT, ALL, D, D),
-    );
-    const status = new Map(
-      grid.map((r) => [r.employeeId, computeDayStatus(r).status] as const),
-    );
-    // The complete record grades present (rule 7).
-    expect(status.get(E.graded)).toBe('present');
-    // Today's open days are in progress (rule 10) — the SQL's checkout arms
-    // fire for exactly the open-check-in population.
-    for (const employeeId of [E.punctual, E.openLate, E.timesOnly, E.secondHalf]) {
-      expect(status.get(employeeId)).toBe('in_progress');
-    }
-    // The SQL's check-in reminders minus the sanctioned displaced
-    // first-half shift (its TS status stays 'leave' — the 14:15 arm
-    // test pins the shift itself) are exactly the TS
-    // not_checked_in_yet rows minus the rule-less employee: AD-22
-    // drops no-rule employees from the SQL facts entirely (no rule →
-    // no thresholds to be late against), while the TS read model
-    // grades such a day permissively as not_checked_in_yet (the 18-2
-    // setup-gap fallback the grid warns about). Pending leave
-    // suppresses nothing on either side (its day reads as still open).
-    const checkinRecipients = dedupeKeys(await reminderRows())
-      .filter((k) => k.includes(':attendance.reminder_checkin:'))
-      .map((k) => k.split(':')[2])
-      .filter((id) => id !== E.halfLeave);
-    const notCheckedInYet = grid
-      .filter((r) => computeDayStatus(r).status === 'not_checked_in_yet')
-      .map((r) => r.employeeId)
-      .filter((id) => id !== E.noRule);
-    expect([...checkinRecipients].sort()).toEqual([...notCheckedInYet].sort());
-    // The engine's status vocabulary for an approved half-day leave with
-    // no work record is half_day_leave (plain 'leave' is full-day) — the
-    // shift's reminder fires SQL-side at Midpoint + cut-off regardless.
-    expect(status.get(E.halfLeave)).toBe('half_day_leave');
-    // The SQL's suppression set — every arm's else-branch is a TS status:
-    // the approved full-day leave (leave), the adjudication (absent), the
-    // grace window (not_tracked), and the weekly-off override (weekly_off).
-    // The rule-less office is NOT in the SQL facts at all (AD-22: no rule
-    // → no thresholds), and its TS grade is not_checked_in_yet — the 18-2
-    // read model's designed permissive setup-gap fallback (the grid warns
-    // "no covering office rule" above) — hence the parity subtraction.
-    expect(status.get(E.fullLeave)).toBe('leave');
-    expect(status.get(E.adjudicated)).toBe('absent');
-    expect(status.get(E.grace)).toBe('not_tracked');
-    expect(status.get(E.noRule)).toBe('not_checked_in_yet');
-    expect(status.get(E.weeklyOff)).toBe('weekly_off');
-  });
+  maybeIt(
+    'AD-22 parity — the TS engine over the same facts agrees with the SQL arms',
+    async () => {
+      if (D !== today) return; // the engine's isPast binds to the real today
+      const grid = await pg.withTransaction((tx) =>
+        readDayStatusGrid(tx, TENANT, ALL, D, D),
+      );
+      const status = new Map(
+        grid.map((r) => [r.employeeId, computeDayStatus(r).status] as const),
+      );
+      // The complete record grades present (rule 7).
+      expect(status.get(E.graded)).toBe('present');
+      // Today's open days are in progress (rule 10) — the SQL's checkout arms
+      // fire for exactly the open-check-in population.
+      for (const employeeId of [
+        E.punctual,
+        E.openLate,
+        E.timesOnly,
+        E.secondHalf,
+      ]) {
+        expect(status.get(employeeId)).toBe('in_progress');
+      }
+      // The SQL's check-in reminders minus the sanctioned displaced
+      // first-half shift (its TS status stays 'leave' — the 14:15 arm
+      // test pins the shift itself) are exactly the TS
+      // not_checked_in_yet rows minus the rule-less employee: AD-22
+      // drops no-rule employees from the SQL facts entirely (no rule →
+      // no thresholds to be late against), while the TS read model
+      // grades such a day permissively as not_checked_in_yet (the 18-2
+      // setup-gap fallback the grid warns about). Pending leave
+      // suppresses nothing on either side (its day reads as still open).
+      const checkinRecipients = dedupeKeys(await reminderRows())
+        .filter((k) => k.includes(':attendance.reminder_checkin:'))
+        .map((k) => k.split(':')[2])
+        .filter((id) => id !== E.halfLeave);
+      const notCheckedInYet = grid
+        .filter((r) => computeDayStatus(r).status === 'not_checked_in_yet')
+        .map((r) => r.employeeId)
+        .filter((id) => id !== E.noRule);
+      expect([...checkinRecipients].sort()).toEqual(
+        [...notCheckedInYet].sort(),
+      );
+      // The engine's status vocabulary for an approved half-day leave with
+      // no work record is half_day_leave (plain 'leave' is full-day) — the
+      // shift's reminder fires SQL-side at Midpoint + cut-off regardless.
+      expect(status.get(E.halfLeave)).toBe('half_day_leave');
+      // The SQL's suppression set — every arm's else-branch is a TS status:
+      // the approved full-day leave (leave), the adjudication (absent), the
+      // grace window (not_tracked), and the weekly-off override (weekly_off).
+      // The rule-less office is NOT in the SQL facts at all (AD-22: no rule
+      // → no thresholds), and its TS grade is not_checked_in_yet — the 18-2
+      // read model's designed permissive setup-gap fallback (the grid warns
+      // "no covering office rule" above) — hence the parity subtraction.
+      expect(status.get(E.fullLeave)).toBe('leave');
+      expect(status.get(E.adjudicated)).toBe('absent');
+      expect(status.get(E.grace)).toBe('not_tracked');
+      expect(status.get(E.noRule)).toBe('not_checked_in_yet');
+      expect(status.get(E.weeklyOff)).toBe('weekly_off');
+    },
+  );
 });

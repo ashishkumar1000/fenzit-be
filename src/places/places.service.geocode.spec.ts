@@ -325,7 +325,7 @@ describe('PlacesService.geocodeAddress (QA)', () => {
         formattedAddress: 'Somewhere',
         latitude: 12.9,
         longitude: null,
-      } as unknown as ForwardGeocodedPlace);
+      });
 
       await expect(
         service.geocodeAddress(staffUser, { address: 'Somewhere' }),

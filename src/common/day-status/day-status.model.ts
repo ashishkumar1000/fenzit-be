@@ -27,19 +27,11 @@ import {
   minuteOfDayInTz,
   workedMinutesBetween,
 } from './day-context';
-import type {
-  AttendanceSource,
-  DayMarkerKey,
-  DayStatusKey,
-} from './keys';
+import type { AttendanceSource, DayMarkerKey, DayStatusKey } from './keys';
 
 export { STATUS_KEYS_READONLY as STATUS_KEYS } from './keys';
 export { MARKER_KEYS_READONLY as MARKER_KEYS } from './keys';
-export type {
-  AttendanceSource,
-  DayMarkerKey,
-  DayStatusKey,
-} from './keys';
+export type { AttendanceSource, DayMarkerKey, DayStatusKey } from './keys';
 
 /** The day's `attendance_records` row (the subset the engine reads). */
 export interface EngineRecordRow {
@@ -113,14 +105,14 @@ export function effectiveInstants(
   const overrideCheckin = override?.manual_checkin_at != null;
   const overrideCheckout = override?.manual_checkout_at != null;
   const checkin = overrideCheckin
-    ? new Date(override!.manual_checkin_at as Date | string)
+    ? new Date(override.manual_checkin_at as Date | string)
     : record
       ? new Date(record.checkin_at)
       : null;
   const checkout = overrideCheckout
-    ? new Date(override!.manual_checkout_at as Date | string)
+    ? new Date(override.manual_checkout_at as Date | string)
     : record?.checkout_at
-      ? new Date(record.checkout_at as Date | string)
+      ? new Date(record.checkout_at)
       : null;
   return {
     checkin,
@@ -135,9 +127,7 @@ export function effectiveInstants(
 }
 
 /** GR-1: a status-only correction fixes the grade directly (FR-11). */
-function daysWorkedForFixed(
-  status: 'present' | 'half_day' | 'absent',
-): number {
+function daysWorkedForFixed(status: 'present' | 'half_day' | 'absent'): number {
   return status === 'present' ? 1 : status === 'half_day' ? 0.5 : 0;
 }
 
@@ -280,8 +270,7 @@ export function computeDayStatus(input: DayStatusInput): DayStatusOutcome {
       ),
       checkinSource,
       checkoutSource,
-      markers:
-        isPast && !checkout ? [...markers, 'checkout_missing'] : markers,
+      markers: isPast && !checkout ? [...markers, 'checkout_missing'] : markers,
     };
   }
 
@@ -360,7 +349,11 @@ export function computeDayStatus(input: DayStatusInput): DayStatusOutcome {
 
   // ---- Rule 7: check-in with check-out, graded by the worked minutes --------
   if (checkin && checkout) {
-    const status = gradeWorked(workingMinutes as number, fullDayMinutes, halfDayMinutes);
+    const status = gradeWorked(
+      workingMinutes as number,
+      fullDayMinutes,
+      halfDayMinutes,
+    );
     return {
       status,
       ...metrics(),

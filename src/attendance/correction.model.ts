@@ -92,7 +92,8 @@ export function validateCorrectionValue(raw: unknown): CorrectionValue {
   const status = value.status;
   return {
     status:
-      typeof status === 'string' && STATUS_KEYS_READONLY.includes(status as never)
+      typeof status === 'string' &&
+      STATUS_KEYS_READONLY.includes(status as never)
         ? (status as DayStatusKey)
         : null,
     checkinAt: typeof value.checkinAt === 'string' ? value.checkinAt : null,

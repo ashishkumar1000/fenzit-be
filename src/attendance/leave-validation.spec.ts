@@ -309,10 +309,20 @@ describe('validateApplyFacts — the gate and the five rejections, in order', ()
 
   it('caps the span at 62 days in the SHAPE check — arithmetically, before any enumeration (D15 DoS bound)', () => {
     expect(
-      validateApplyShape({ startDate: '2026-10-01', endDate: '2026-12-30', part: 'full_day' }),
-    ).toEqual(expect.objectContaining({ errorCode: ErrorCode.LEAVE_INVALID_RANGE }));
+      validateApplyShape({
+        startDate: '2026-10-01',
+        endDate: '2026-12-30',
+        part: 'full_day',
+      }),
+    ).toEqual(
+      expect.objectContaining({ errorCode: ErrorCode.LEAVE_INVALID_RANGE }),
+    );
     expect(
-      validateApplyShape({ startDate: '2026-10-01', endDate: '2026-12-01', part: 'full_day' }),
+      validateApplyShape({
+        startDate: '2026-10-01',
+        endDate: '2026-12-01',
+        part: 'full_day',
+      }),
     ).toBeNull(); // exactly 62 days
     // The facts-level ladder no longer caps — the shape check owns it.
     const long = enumerateDates('2026-10-01', '2026-12-30');

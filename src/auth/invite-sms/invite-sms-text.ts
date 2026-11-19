@@ -81,10 +81,17 @@ export function maskPhone(countryCode: string, phoneNumber: string): string {
  * would leave fewer than 6 digits, the typed digits are kept, so validation's
  * minimum still holds and the mask never sees a short number.
  */
-export function canonicalSubscriberNumber(countryCode: string, phoneNumber: string): string {
+export function canonicalSubscriberNumber(
+  countryCode: string,
+  phoneNumber: string,
+): string {
   const typed = phoneNumber.replace(/\D/g, '');
   let digits = typed.replace(/^0+/, '');
-  if (countryCode === '+91' && digits.length === 12 && digits.startsWith('91')) {
+  if (
+    countryCode === '+91' &&
+    digits.length === 12 &&
+    digits.startsWith('91')
+  ) {
     digits = digits.slice(2);
   }
   return digits.length >= 6 ? digits : typed;

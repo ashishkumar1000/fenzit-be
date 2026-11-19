@@ -44,9 +44,7 @@ export function fakeMembershipResolver(
         platformAdmin: p.platformAdmin ?? false,
         disabled: p.disabled ?? false,
         membership:
-          p.tenantId && p.role
-            ? { tenantId: p.tenantId, role: p.role }
-            : null,
+          p.tenantId && p.role ? { tenantId: p.tenantId, role: p.role } : null,
       });
     },
     companyExists: (tenantId: string) =>

@@ -408,7 +408,13 @@ describe('editLockedForOwner: when an employee job takes owner edits (CAP-5)', (
     expect(editLockedForOwner('pending_approval', true)).toBe(false);
   });
   it('an employee job that has been decided (scheduled, rejected, cancelled, completed) is locked', () => {
-    for (const status of ['scheduled', 'in_progress', 'completed', 'cancelled', 'rejected']) {
+    for (const status of [
+      'scheduled',
+      'in_progress',
+      'completed',
+      'cancelled',
+      'rejected',
+    ]) {
       expect(editLockedForOwner(status, true)).toBe(true);
     }
   });
@@ -425,22 +431,40 @@ describe('isEmployeeCreator: reads the membership, removed and disabled included
       error,
     });
     const eq: jest.Mock = jest.fn(() => ({ eq, maybeSingle }));
-    return { from: jest.fn(() => ({ select: jest.fn(() => ({ eq })) })) } as never;
+    return {
+      from: jest.fn(() => ({ select: jest.fn(() => ({ eq })) })),
+    } as never;
   }
 
   it('an employee membership, of any status, is an employee creator', async () => {
-    expect(await isEmployeeCreator(adminWithRole('employee'), 'tenant-1', 'emp-1')).toBe(true);
+    expect(
+      await isEmployeeCreator(adminWithRole('employee'), 'tenant-1', 'emp-1'),
+    ).toBe(true);
   });
   it('an owner membership is not', async () => {
-    expect(await isEmployeeCreator(adminWithRole('company_admin'), 'tenant-1', 'owner-1')).toBe(false);
+    expect(
+      await isEmployeeCreator(
+        adminWithRole('company_admin'),
+        'tenant-1',
+        'owner-1',
+      ),
+    ).toBe(false);
   });
   it('no creator (old row) or no membership (platform admin) is not an employee', async () => {
-    expect(await isEmployeeCreator(adminWithRole('employee'), 'tenant-1', null)).toBe(false);
-    expect(await isEmployeeCreator(adminWithRole(null), 'tenant-1', 'platform')).toBe(false);
+    expect(
+      await isEmployeeCreator(adminWithRole('employee'), 'tenant-1', null),
+    ).toBe(false);
+    expect(
+      await isEmployeeCreator(adminWithRole(null), 'tenant-1', 'platform'),
+    ).toBe(false);
   });
   it('a failed read throws, so the caller can refuse the edit', async () => {
     await expect(
-      isEmployeeCreator(adminWithRole(null, { message: 'down' }), 'tenant-1', 'emp-1'),
+      isEmployeeCreator(
+        adminWithRole(null, { message: 'down' }),
+        'tenant-1',
+        'emp-1',
+      ),
     ).rejects.toBeDefined();
   });
 });

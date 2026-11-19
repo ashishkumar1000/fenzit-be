@@ -196,7 +196,10 @@ describe('PlatformAuditInterceptor', () => {
   });
 
   it('a thrown audit call is caught and logged, not an unhandled rejection', async () => {
-    const { interceptor, context, rpc } = setup({ method: 'POST', user: staff });
+    const { interceptor, context, rpc } = setup({
+      method: 'POST',
+      user: staff,
+    });
     rpc.mockRejectedValueOnce(new Error('network reset'));
     await expect(
       lastValueFrom(interceptor.intercept(context, handled({ done: true }))),

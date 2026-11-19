@@ -50,10 +50,7 @@ export function createSmsDeliveryProvider(
   // msg91 — but production's DEFAULT is also msg91 (above), so an env where
   // the var is merely forgotten must refuse to boot too, not 502 every
   // login at runtime (PRD FR-BE3's principle: bad config = boot error).
-  if (
-    key === 'msg91' &&
-    !configService.get<string>('MSG91_AUTH_KEY')
-  ) {
+  if (key === 'msg91' && !configService.get<string>('MSG91_AUTH_KEY')) {
     throw new Error(
       'SMS delivery resolves to msg91 but MSG91_AUTH_KEY is not set — set SMS_DELIVERY_PROVIDER=mock for the pre-SMS window, or provide the MSG91 credentials',
     );

@@ -238,9 +238,13 @@ export class DashboardService {
             row.record?.checkout_at ?? row.override?.manual_checkout_at ?? null;
           employees.push({
             employeeId: row.employeeId,
-            employeeName: employeeContacts.get(row.employeeId)?.name ?? 'Unknown employee',
+            employeeName:
+              employeeContacts.get(row.employeeId)?.name ?? 'Unknown employee',
             phone: employeeContacts.get(row.employeeId)?.phone ?? null,
-            avatarUrl: avatarUrlFor(avatarUrls, employeeContacts.get(row.employeeId)?.avatarKey),
+            avatarUrl: avatarUrlFor(
+              avatarUrls,
+              employeeContacts.get(row.employeeId)?.avatarKey,
+            ),
             officeName: row.ctx.officeName,
             status: pulseStatus,
             checkInAt:
@@ -265,13 +269,7 @@ export class DashboardService {
       const tz = await this.flags.readTimezone(tx, tenantId);
       const [checkoutMissingRead, fakeLocationRead] = await Promise.all([
         this.flags.readCheckoutMissing(tx, tenantId, today, officeId ?? null),
-        this.flags.readFakeLocation(
-          tx,
-          tenantId,
-          today,
-          tz,
-          officeId ?? null,
-        ),
+        this.flags.readFakeLocation(tx, tenantId, today, tz, officeId ?? null),
       ]);
       const flagAvatarUrls = await presignAvatarUrls(this.storageService, [
         ...checkoutMissingRead.map((r) => r.avatarKey),
@@ -340,7 +338,12 @@ export class DashboardService {
   private async readEmployeeContacts(
     tx: PoolClient,
     employeeIds: string[],
-  ): Promise<Map<string, { name: string; phone: string | null; avatarKey: string | null }>> {
+  ): Promise<
+    Map<
+      string,
+      { name: string; phone: string | null; avatarKey: string | null }
+    >
+  > {
     if (employeeIds.length === 0) return new Map();
     const { rows } = await tx.query<{
       id: string;

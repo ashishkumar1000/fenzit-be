@@ -22,6 +22,6 @@ export class UpdateSetupStepDto {
     enum: SETUP_STEPS,
     description: 'The wizard step the owner is now on.',
   })
-  @IsIn(SETUP_STEPS as unknown as string[])
+  @IsIn(SETUP_STEPS)
   currentStep: SetupStep;
 }

@@ -16,12 +16,7 @@ import { PdfmakeRenderer } from './pdfmake-renderer';
 import { fontDescriptor, fontsDir } from '../templates/brand-kit/brand-assets';
 import { ReportsModule } from '../reports.module';
 
-const pdfmake = jest.requireMock('pdfmake') as {
-  setUrlAccessPolicy: jest.Mock;
-  setLocalAccessPolicy: jest.Mock;
-  addFonts: jest.Mock;
-  createPdf: jest.Mock;
-};
+const pdfmake = jest.requireMock('pdfmake');
 
 describe('PdfmakeRenderer — bind-time wiring', () => {
   it('locks the process-wide policies and registers the brand fonts exactly once', () => {
@@ -42,9 +37,7 @@ describe('PdfmakeRenderer — bind-time wiring', () => {
     ) => boolean;
     expect(deny('https://evil.example.com/exfil.png')).toBe(false);
     expect(deny('http://169.254.169.254/latest/meta-data')).toBe(false);
-    expect(
-      deny('data:image/svg+xml;base64,PHN2Zy8+'),
-    ).toBe(false);
+    expect(deny('data:image/svg+xml;base64,PHN2Zy8+')).toBe(false);
   });
 
   it('allowlists local file reads to the bundled fonts dir only', () => {
@@ -69,7 +62,9 @@ describe('PdfmakeRenderer — port seam', () => {
   it('delegates render to createPdf().getBuffer() — no temp files, no policy changes', () => {
     pdfmake.createPdf.mockReset();
     const bytes = Buffer.from('%PDF-fake');
-    const createPdf = jest.fn(() => ({ getBuffer: () => Promise.resolve(bytes) }));
+    const createPdf = jest.fn(() => ({
+      getBuffer: () => Promise.resolve(bytes),
+    }));
     pdfmake.createPdf.mockImplementation(createPdf);
     // Fonts/policies register once per process at first construction (tested
     // above) — a render must not touch the process-wide policy seam again.
@@ -78,21 +73,23 @@ describe('PdfmakeRenderer — port seam', () => {
     const doc = { content: [{ text: 'hello' }] };
     const renderer = new PdfmakeRenderer();
 
-    return expect(renderer.render(doc)).resolves.toBe(bytes).then(() => {
-      expect(createPdf).toHaveBeenCalledWith(doc);
-      expect(pdfmake.setUrlAccessPolicy.mock.calls).toHaveLength(
-        policyCallsBefore,
-      );
-    });
+    return expect(renderer.render(doc))
+      .resolves.toBe(bytes)
+      .then(() => {
+        expect(createPdf).toHaveBeenCalledWith(doc);
+        expect(pdfmake.setUrlAccessPolicy.mock.calls).toHaveLength(
+          policyCallsBefore,
+        );
+      });
   });
 });
 
 describe('PdfmakeRenderer — module binding', () => {
   it('is bound to the PDF_RENDERER token in ReportsModule (the only swap point)', () => {
-    const providers = Reflect.getMetadata(
-      'providers',
-      ReportsModule,
-    ) as { provide: unknown; useClass?: unknown }[];
+    const providers = Reflect.getMetadata('providers', ReportsModule) as {
+      provide: unknown;
+      useClass?: unknown;
+    }[];
 
     const binding = providers.find((p) => p.provide === PDF_RENDERER);
     expect(binding).toBeDefined();

@@ -60,8 +60,8 @@ const ALL_TECHS = [TECH_MAIN, TECH_WEEKLY, TECH_HOLIDAY, TECH_RATE, TECH_OUT];
 
 /** Seven unique probe phones — [0] for the owner, [1..6] for the techs
  * (phones are unique per tenant, and the owner joins the tenant). */
-const PROBE_PHONES = [0, 1, 2, 3, 4, 5, 6].map(
-  (i) => `7${Date.now()}1${i}`.slice(-10),
+const PROBE_PHONES = [0, 1, 2, 3, 4, 5, 6].map((i) =>
+  `7${Date.now()}1${i}`.slice(-10),
 );
 
 const OFFICE_PIN = { lat: 12.97, lng: 77.59 };
@@ -143,7 +143,10 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     });
   }
 
-  async function attemptCount(employeeId: string, outcome?: string): Promise<number> {
+  async function attemptCount(
+    employeeId: string,
+    outcome?: string,
+  ): Promise<number> {
     const r = outcome
       ? await pool.query(
           'select count(*)::int as n from public.attendance_attempts where employee_id = $1 and outcome = $2',
@@ -183,7 +186,10 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       const { data: staleMemberships } = await admin
         .from('memberships')
         .select('tenant_id')
-        .in('user_id', stale.map((s) => s.id));
+        .in(
+          'user_id',
+          stale.map((s) => s.id),
+        );
       const staleTenants = [
         ...new Set((staleMemberships ?? []).map((m) => m.tenant_id)),
       ] as string[];
@@ -222,12 +228,16 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
       await admin
         .from('users')
         .delete()
-        .in('id', stale.map((s) => s.id));
+        .in(
+          'id',
+          stale.map((s) => s.id),
+        );
     }
 
-    const must = <T>(
-      res: { data: T | null; error: { message: string } | null },
-    ): T => {
+    const must = <T>(res: {
+      data: T | null;
+      error: { message: string } | null;
+    }): T => {
       if (res.error) {
         throw new Error(`fixture insert failed: ${res.error.message}`);
       }
@@ -267,7 +277,12 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     );
     must(
       await admin.from('memberships').insert([
-        { user_id: OWNER, tenant_id: TENANT, role: 'company_admin', status: 'active' },
+        {
+          user_id: OWNER,
+          tenant_id: TENANT,
+          role: 'company_admin',
+          status: 'active',
+        },
         ...[...ALL_TECHS, TECH_NEW].map((id) => ({
           user_id: id,
           tenant_id: TENANT,
@@ -352,265 +367,344 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     await admin.from('attendance_offices').delete().eq('tenant_id', TENANT);
     await admin.from('memberships').delete().eq('tenant_id', TENANT);
     await admin.from('tenants').delete().eq('id', TENANT);
-    await admin.from('users').delete().in('id', [OWNER, ...ALL_TECHS, TECH_NEW]);
+    await admin
+      .from('users')
+      .delete()
+      .in('id', [OWNER, ...ALL_TECHS, TECH_NEW]);
     await servicePool.onModuleDestroy();
     await pool.end();
   });
 
-  maybeIt('check-in before setup completion records not_tracked (403 + committed attempt)', async () => {
-    const key = randomUUID();
-    const err = await service
-      .checkIn(
-        { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
+  maybeIt(
+    'check-in before setup completion records not_tracked (403 + committed attempt)',
+    async () => {
+      const key = randomUUID();
+      const err = await service
+        .checkIn(
+          {
+            userId: TECH_MAIN,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          key,
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 403 });
+      expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
+        'ATTENDANCE_NOT_TRACKED',
+      );
+      const r = await pool.query(
+        'select outcome from public.attendance_attempts where request_id = $1',
+        [key],
+      );
+      expect(r.rows[0].outcome).toBe('not_tracked');
+    },
+  );
+
+  maybeIt(
+    'a NEVER-ENROLLED technician reads a clean not_tracked 403 (review HIGH: the day-context rule query must not crash on a missing office)',
+    async () => {
+      const key = randomUUID();
+      const err = await service
+        .checkIn(
+          {
+            userId: TECH_NEW,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          key,
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 403 });
+      expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
+        'ATTENDANCE_NOT_TRACKED',
+      );
+      const r = await pool.query(
+        'select outcome from public.attendance_attempts where request_id = $1',
+        [key],
+      );
+      expect(r.rows[0].outcome).toBe('not_tracked');
+    },
+  );
+
+  maybeIt(
+    'the accepted check-in snapshots every AD-9 column and computes late from the stored instant',
+    async () => {
+      // Settings row = setup completed + enabled (the wizard wrote these in 15-2).
+      await admin.from('attendance_settings').insert({
+        tenant_id: TENANT,
+        enabled: true,
+        setup_completed_at: new Date().toISOString(),
+      });
+
+      const key = randomUUID();
+      const response = await service.checkIn(
+        {
+          userId: TECH_MAIN,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
         fix(),
         key,
-      )
-      .then(
-        () => null,
-        (e) => e,
       );
-    expect(err).toMatchObject({ status: 403 });
-    expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
-      'ATTENDANCE_NOT_TRACKED',
-    );
-    const r = await pool.query(
-      'select outcome from public.attendance_attempts where request_id = $1',
-      [key],
-    );
-    expect(r.rows[0].outcome).toBe('not_tracked');
-  });
 
-  maybeIt('a NEVER-ENROLLED technician reads a clean not_tracked 403 (review HIGH: the day-context rule query must not crash on a missing office)', async () => {
-    const key = randomUUID();
-    const err = await service
-      .checkIn(
-        { userId: TECH_NEW, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix(),
-        key,
-      )
-      .then(
-        () => null,
-        (e) => e,
+      expect(response.workDate).toBe(today);
+      expect(response.checkinAt).toMatch(/\+05:30$/);
+      expect(response.dayContext).toEqual({
+        isWeeklyOff: false,
+        isHoliday: false,
+        holidayName: null,
+        isWorkingDay: true,
+      });
+      // Rule 00:00 + cut-off 0 → late minutes = the check-in's local minute.
+      expect(response.lateMinutes).toBe(
+        minuteOfOffsetInstant(response.checkinAt),
       );
-    expect(err).toMatchObject({ status: 403 });
-    expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
-      'ATTENDANCE_NOT_TRACKED',
-    );
-    const r = await pool.query(
-      'select outcome from public.attendance_attempts where request_id = $1',
-      [key],
-    );
-    expect(r.rows[0].outcome).toBe('not_tracked');
-  });
+      expect(response.isLate).toBe(true);
 
-  maybeIt('the accepted check-in snapshots every AD-9 column and computes late from the stored instant', async () => {
-    // Settings row = setup completed + enabled (the wizard wrote these in 15-2).
-    await admin.from('attendance_settings').insert({
-      tenant_id: TENANT,
-      enabled: true,
-      setup_completed_at: new Date().toISOString(),
-    });
-
-    const key = randomUUID();
-    const response = await service.checkIn(
-      { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-      fix(),
-      key,
-    );
-
-    expect(response.workDate).toBe(today);
-    expect(response.checkinAt).toMatch(/\+05:30$/);
-    expect(response.dayContext).toEqual({
-      isWeeklyOff: false,
-      isHoliday: false,
-      holidayName: null,
-      isWorkingDay: true,
-    });
-    // Rule 00:00 + cut-off 0 → late minutes = the check-in's local minute.
-    expect(response.lateMinutes).toBe(minuteOfOffsetInstant(response.checkinAt));
-    expect(response.isLate).toBe(true);
-
-    const r = await pool.query(
-      `select office_id, office_rules_id::text as rule_id, radius_m,
+      const r = await pool.query(
+        `select office_id, office_rules_id::text as rule_id, radius_m,
               checkin_lat, checkin_lng, checkin_accuracy_m, checkin_distance_m,
               checkin_mocked, checkin_provider, checkin_attempt_id is not null as has_attempt,
               checkout_at
        from public.attendance_records
        where employee_id = $1 and work_date = $2::date`,
-      [TECH_MAIN, today],
-    );
-    expect(r.rows).toHaveLength(1);
-    const row = r.rows[0];
-    expect(row.office_id).toBe(OFFICE);
-    expect(row.rule_id).toBe(RULE);
-    expect(row.radius_m).toBe(100);
-    expect(row.checkin_lat).toBeCloseTo(IN_RADIUS.latitude, 5);
-    expect(row.checkin_lng).toBeCloseTo(IN_RADIUS.longitude, 5);
-    expect(row.checkin_accuracy_m).toBe(8);
-    expect(row.checkin_distance_m).toBeGreaterThan(20);
-    expect(row.checkin_distance_m).toBeLessThan(80);
-    expect(row.checkin_mocked).toBe(false);
-    expect(row.checkin_provider).toBe('fused');
-    expect(row.has_attempt).toBe(true);
-    expect(row.checkout_at).toBeNull();
-  });
+        [TECH_MAIN, today],
+      );
+      expect(r.rows).toHaveLength(1);
+      const row = r.rows[0];
+      expect(row.office_id).toBe(OFFICE);
+      expect(row.rule_id).toBe(RULE);
+      expect(row.radius_m).toBe(100);
+      expect(row.checkin_lat).toBeCloseTo(IN_RADIUS.latitude, 5);
+      expect(row.checkin_lng).toBeCloseTo(IN_RADIUS.longitude, 5);
+      expect(row.checkin_accuracy_m).toBe(8);
+      expect(row.checkin_distance_m).toBeGreaterThan(20);
+      expect(row.checkin_distance_m).toBeLessThan(80);
+      expect(row.checkin_mocked).toBe(false);
+      expect(row.checkin_provider).toBe('fused');
+      expect(row.has_attempt).toBe(true);
+      expect(row.checkout_at).toBeNull();
+    },
+  );
 
-  maybeIt('a replayed key answers identically and writes nothing (AD-6)', async () => {
-    // Reuse the key from the accepted check-in: re-derive it from the row.
-    const { rows } = await pool.query(
-      `select a.request_id, r.checkin_at
+  maybeIt(
+    'a replayed key answers identically and writes nothing (AD-6)',
+    async () => {
+      // Reuse the key from the accepted check-in: re-derive it from the row.
+      const { rows } = await pool.query(
+        `select a.request_id, r.checkin_at
        from public.attendance_records r
        join public.attendance_attempts a on a.id = r.checkin_attempt_id
        where r.employee_id = $1`,
-      [TECH_MAIN],
-    );
-    const key = rows[0].request_id as string;
+        [TECH_MAIN],
+      );
+      const key = rows[0].request_id as string;
 
-    const replay = await service.checkIn(
-      { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-      fix(),
-      key,
-    );
-    expect(replay.workDate).toBe(today);
-    // The offset string truncates to seconds; the pg instant carries ms.
-    expect(Math.floor(new Date(replay.checkinAt).getTime() / 1000)).toBe(
-      Math.floor(new Date(rows[0].checkin_at).getTime() / 1000),
-    );
-
-    const c = await pool.query(
-      'select count(*)::int as n from public.attendance_attempts where request_id = $1',
-      [key],
-    );
-    expect(c.rows[0].n).toBe(1);
-  });
-
-  maybeIt('a second check-in on the same day records already_checked_in (409, not counted)', async () => {
-    const key = randomUUID();
-    const err = await service
-      .checkIn(
-        { userId: TECH_MAIN, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
+      const replay = await service.checkIn(
+        {
+          userId: TECH_MAIN,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
         fix(),
         key,
-      )
-      .then(
-        () => null,
-        (e) => e,
       );
-    expect(err).toMatchObject({ status: 409 });
-    expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
-      'ATTENDANCE_ALREADY_CHECKED_IN',
-    );
-    expect(await attemptCount(TECH_MAIN, 'already_checked_in')).toBe(1);
-    // Not a counted outcome — the AD-15 budget stays at zero.
-    const c = await pool.query(
-      `select count(*)::int as n from public.attendance_attempts
+      expect(replay.workDate).toBe(today);
+      // The offset string truncates to seconds; the pg instant carries ms.
+      expect(Math.floor(new Date(replay.checkinAt).getTime() / 1000)).toBe(
+        Math.floor(new Date(rows[0].checkin_at).getTime() / 1000),
+      );
+
+      const c = await pool.query(
+        'select count(*)::int as n from public.attendance_attempts where request_id = $1',
+        [key],
+      );
+      expect(c.rows[0].n).toBe(1);
+    },
+  );
+
+  maybeIt(
+    'a second check-in on the same day records already_checked_in (409, not counted)',
+    async () => {
+      const key = randomUUID();
+      const err = await service
+        .checkIn(
+          {
+            userId: TECH_MAIN,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          key,
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 409 });
+      expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
+        'ATTENDANCE_ALREADY_CHECKED_IN',
+      );
+      expect(await attemptCount(TECH_MAIN, 'already_checked_in')).toBe(1);
+      // Not a counted outcome — the AD-15 budget stays at zero.
+      const c = await pool.query(
+        `select count(*)::int as n from public.attendance_attempts
        where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
-      [TECH_MAIN],
-    );
-    expect(c.rows[0].n).toBe(0);
-  });
-
-  maybeIt('a weekly-off day still allows check-in (FR-7), flagged in the response', async () => {
-    const weekday = isoWeekdayOf(today);
-    await admin.from('attendance_weekly_off_overrides').insert({
-      tenant_id: TENANT,
-      employee_id: TECH_WEEKLY,
-      valid: `[${today},${addDays(today, 1)})`,
-      days: [weekday],
-    });
-    try {
-      const response = await service.checkIn(
-        {
-          userId: TECH_WEEKLY,
-          tenantId: TENANT,
-          role: Role.EMPLOYEE,
-          platformAdmin: false,
-          rawJwt: 'x',
-        },
-        fix(),
-        randomUUID(),
+        [TECH_MAIN],
       );
-      expect(response.dayContext.isWeeklyOff).toBe(true);
-      expect(response.dayContext.isWorkingDay).toBe(false);
-    } finally {
-      await admin
-        .from('attendance_weekly_off_overrides')
-        .delete()
-        .eq('tenant_id', TENANT);
-    }
-  });
+      expect(c.rows[0].n).toBe(0);
+    },
+  );
 
-  maybeIt('a holiday still allows check-in (FR-7), carrying the holiday name', async () => {
-    await admin
-      .from('holidays')
-      .insert({ tenant_id: TENANT, holiday_date: today, name: 'Probe Diwali' });
-    try {
-      const response = await service.checkIn(
-        {
-          userId: TECH_HOLIDAY,
-          tenantId: TENANT,
-          role: Role.EMPLOYEE,
-          platformAdmin: false,
-          rawJwt: 'x',
-        },
-        fix(),
-        randomUUID(),
+  maybeIt(
+    'a weekly-off day still allows check-in (FR-7), flagged in the response',
+    async () => {
+      const weekday = isoWeekdayOf(today);
+      await admin.from('attendance_weekly_off_overrides').insert({
+        tenant_id: TENANT,
+        employee_id: TECH_WEEKLY,
+        valid: `[${today},${addDays(today, 1)})`,
+        days: [weekday],
+      });
+      try {
+        const response = await service.checkIn(
+          {
+            userId: TECH_WEEKLY,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          randomUUID(),
+        );
+        expect(response.dayContext.isWeeklyOff).toBe(true);
+        expect(response.dayContext.isWorkingDay).toBe(false);
+      } finally {
+        await admin
+          .from('attendance_weekly_off_overrides')
+          .delete()
+          .eq('tenant_id', TENANT);
+      }
+    },
+  );
+
+  maybeIt(
+    'a holiday still allows check-in (FR-7), carrying the holiday name',
+    async () => {
+      await admin.from('holidays').insert({
+        tenant_id: TENANT,
+        holiday_date: today,
+        name: 'Probe Diwali',
+      });
+      try {
+        const response = await service.checkIn(
+          {
+            userId: TECH_HOLIDAY,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          randomUUID(),
+        );
+        expect(response.dayContext.isHoliday).toBe(true);
+        expect(response.dayContext.holidayName).toBe('Probe Diwali');
+        expect(response.dayContext.isWorkingDay).toBe(false);
+      } finally {
+        await admin.from('holidays').delete().eq('tenant_id', TENANT);
+      }
+    },
+  );
+
+  maybeIt(
+    'too_far carries distanceM/radiusM and keeps the coordinates on the attempt row',
+    async () => {
+      const key = randomUUID();
+      const err = await service
+        .checkIn(
+          {
+            userId: TECH_RATE,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix({ ...DELHI }),
+          key,
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 422 });
+      const body = err.getResponse() as Record<string, unknown>;
+      expect(body['error_code']).toBe('ATTENDANCE_TOO_FAR');
+      expect(body['radiusM']).toBe(100);
+      expect(body['distanceM'] as number).toBeGreaterThan(1_000_000);
+
+      const r = await pool.query(
+        'select latitude, longitude, distance_m, radius_m from public.attendance_attempts where request_id = $1',
+        [key],
       );
-      expect(response.dayContext.isHoliday).toBe(true);
-      expect(response.dayContext.holidayName).toBe('Probe Diwali');
-      expect(response.dayContext.isWorkingDay).toBe(false);
-    } finally {
-      await admin.from('holidays').delete().eq('tenant_id', TENANT);
-    }
-  });
+      expect(r.rows[0].latitude).toBeCloseTo(DELHI.latitude, 5);
+      expect(r.rows[0].distance_m).not.toBeNull();
 
-  maybeIt('too_far carries distanceM/radiusM and keeps the coordinates on the attempt row', async () => {
-    const key = randomUUID();
-    const err = await service
-      .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix({ ...DELHI }),
-        key,
-      )
-      .then(
-        () => null,
-        (e) => e,
-      );
-    expect(err).toMatchObject({ status: 422 });
-    const body = err.getResponse() as Record<string, unknown>;
-    expect(body['error_code']).toBe('ATTENDANCE_TOO_FAR');
-    expect(body['radiusM']).toBe(100);
-    expect(body['distanceM'] as number).toBeGreaterThan(1_000_000);
-
-    const r = await pool.query(
-      'select latitude, longitude, distance_m, radius_m from public.attendance_attempts where request_id = $1',
-      [key],
-    );
-    expect(r.rows[0].latitude).toBeCloseTo(DELHI.latitude, 5);
-    expect(r.rows[0].distance_m).not.toBeNull();
-
-    // A replay of the rejected key answers the same rejection, no new row.
-    const before = await attemptCount(TECH_RATE);
-    const replayErr = await service
-      .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix({ ...DELHI }),
-        key,
-      )
-      .then(
-        () => null,
-        (e) => e,
-      );
-    expect((replayErr.getResponse() as Record<string, unknown>)['error_code']).toBe(
-      'ATTENDANCE_TOO_FAR',
-    );
-    expect(await attemptCount(TECH_RATE)).toBe(before);
-  });
+      // A replay of the rejected key answers the same rejection, no new row.
+      const before = await attemptCount(TECH_RATE);
+      const replayErr = await service
+        .checkIn(
+          {
+            userId: TECH_RATE,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix({ ...DELHI }),
+          key,
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(
+        (replayErr.getResponse() as Record<string, unknown>)['error_code'],
+      ).toBe('ATTENDANCE_TOO_FAR');
+      expect(await attemptCount(TECH_RATE)).toBe(before);
+    },
+  );
 
   maybeIt('low_accuracy lands as its own counted outcome', async () => {
     await expect(
       service.checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
+        {
+          userId: TECH_RATE,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
         fix({ accuracyM: 150 }),
         randomUUID(),
       ),
@@ -618,56 +712,96 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     expect(await attemptCount(TECH_RATE, 'low_accuracy')).toBe(1);
   });
 
-  maybeIt('stale_fix is its own counted outcome (probed on TECH_OUT, whose budget stays under the limit)', async () => {
-    await expect(
-      service.checkIn(
-        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix({ fixAgeMs: 40_000 }),
-        randomUUID(),
-      ),
-    ).rejects.toMatchObject({ status: 422 });
-    expect(await attemptCount(TECH_OUT, 'stale_fix')).toBe(1);
-  });
+  maybeIt(
+    'stale_fix is its own counted outcome (probed on TECH_OUT, whose budget stays under the limit)',
+    async () => {
+      await expect(
+        service.checkIn(
+          {
+            userId: TECH_OUT,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix({ fixAgeMs: 40_000 }),
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ status: 422 });
+      expect(await attemptCount(TECH_OUT, 'stale_fix')).toBe(1);
+    },
+  );
 
-  maybeIt('the 3rd mocked attempt of the month alerts the owner exactly once (AD-13)', async () => {
-    // Budget plan on TECH_RATE: the earlier too_far rejection is recorded
-    // but NOT counted; low_accuracy presses are counted. Prime the counted
-    // budget to 67 with clearly-marked synthetic rows so the 3rd mocked
-    // lands EXACTLY on the 70th counted rejection (RATE_MAX_COUNTED,
-    // owner decision 2026-11-10) — alert + block arm together, the
-    // strictest ordering the two budgets can produce — without 65 more
-    // real round-trips.
-    const counted = await pool.query(
-      `select count(*)::int as n from public.attendance_attempts
+  maybeIt(
+    'the 3rd mocked attempt of the month alerts the owner exactly once (AD-13)',
+    async () => {
+      // Budget plan on TECH_RATE: the earlier too_far rejection is recorded
+      // but NOT counted; low_accuracy presses are counted. Prime the counted
+      // budget to 67 with clearly-marked synthetic rows so the 3rd mocked
+      // lands EXACTLY on the 70th counted rejection (RATE_MAX_COUNTED,
+      // owner decision 2026-11-10) — alert + block arm together, the
+      // strictest ordering the two budgets can produce — without 65 more
+      // real round-trips.
+      const counted = await pool.query(
+        `select count(*)::int as n from public.attendance_attempts
        where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
-      [TECH_RATE],
-    );
-    const toPrime = 67 - counted.rows[0].n;
-    if (toPrime > 0) {
-      await pool.query(
-        `insert into public.attendance_attempts
+        [TECH_RATE],
+      );
+      const toPrime = 67 - counted.rows[0].n;
+      if (toPrime > 0) {
+        await pool.query(
+          `insert into public.attendance_attempts
            (tenant_id, employee_id, request_id, kind, outcome, latitude, longitude,
             accuracy_m, distance_m, radius_m, mocked, provider, fix_age_ms, attempted_at)
          select $1, $2, ('11111111-1111-4111-8111-' || lpad(i::text, 12, '0'))::uuid,
                 'check_in', 'stale_fix', $3, $4, 8, 3, 100, false, 'fused', 31000,
                 now() - make_interval(secs => ($6 - i)::int)
          from generate_series(1, $5) as i`,
-        // Offsets derived from toPrime so every primed row is in the PAST
-        // regardless of how many rows the priming needs.
-        [TENANT, TECH_RATE, DELHI.latitude, DELHI.longitude, toPrime, toPrime],
-      );
-    }
-    let alerts = await admin
-      .from('notifications')
-      .select('*')
-      .eq('tenant_id', TENANT)
-      .eq('event_type', 'attendance.fake_location');
-    expect(alerts.data).toHaveLength(0);
+          // Offsets derived from toPrime so every primed row is in the PAST
+          // regardless of how many rows the priming needs.
+          [
+            TENANT,
+            TECH_RATE,
+            DELHI.latitude,
+            DELHI.longitude,
+            toPrime,
+            toPrime,
+          ],
+        );
+      }
+      let alerts = await admin
+        .from('notifications')
+        .select('*')
+        .eq('tenant_id', TENANT)
+        .eq('event_type', 'attendance.fake_location');
+      expect(alerts.data).toHaveLength(0);
 
-    // Mocked #1 and #2 (counted 68 and 69): no alert, no block.
-    for (let i = 0; i < 2; i++) {
-      await expect(
-        service.checkIn(
+      // Mocked #1 and #2 (counted 68 and 69): no alert, no block.
+      for (let i = 0; i < 2; i++) {
+        await expect(
+          service.checkIn(
+            {
+              userId: TECH_RATE,
+              tenantId: TENANT,
+              role: Role.EMPLOYEE,
+              platformAdmin: false,
+              rawJwt: 'x',
+            },
+            fix({ mocked: true }),
+            randomUUID(),
+          ),
+        ).rejects.toMatchObject({ status: 422 });
+      }
+      alerts = await admin
+        .from('notifications')
+        .select('*')
+        .eq('tenant_id', TENANT)
+        .eq('event_type', 'attendance.fake_location');
+      expect(alerts.data).toHaveLength(0);
+
+      // Mocked #3 (the 70th counted rejection → also arms the block).
+      const err = await service
+        .checkIn(
           {
             userId: TECH_RATE,
             tenantId: TENANT,
@@ -677,163 +811,196 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
           },
           fix({ mocked: true }),
           randomUUID(),
-        ),
-      ).rejects.toMatchObject({ status: 422 });
-    }
-    alerts = await admin
-      .from('notifications')
-      .select('*')
-      .eq('tenant_id', TENANT)
-      .eq('event_type', 'attendance.fake_location');
-    expect(alerts.data).toHaveLength(0);
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 422 });
 
-    // Mocked #3 (the 70th counted rejection → also arms the block).
-    const err = await service
-      .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix({ mocked: true }),
-        randomUUID(),
-      )
-      .then(
-        () => null,
-        (e) => e,
+      alerts = await admin
+        .from('notifications')
+        .select('*')
+        .eq('tenant_id', TENANT)
+        .eq('event_type', 'attendance.fake_location');
+      expect(alerts.data).toHaveLength(1);
+      const alert = alerts.data![0];
+      expect(alert.payload['employeeName']).toBe('16-x probe tech 3');
+      expect(alert.payload['attemptCount']).toBe(3);
+      expect(alert.payload['month']).toMatch(/^\d{4}-\d{2}$/);
+      expect(alert.dedupe_key).toBe(
+        `${TENANT}:attendance.fake_location:${OWNER}:${TECH_RATE}:${alert.payload['month']}`,
       );
-    expect(err).toMatchObject({ status: 422 });
+      expect(alert.entity_type).toBe('attendance');
+      expect(alert.entity_id).toBe(TECH_RATE);
 
-    alerts = await admin
-      .from('notifications')
-      .select('*')
-      .eq('tenant_id', TENANT)
-      .eq('event_type', 'attendance.fake_location');
-    expect(alerts.data).toHaveLength(1);
-    const alert = alerts.data![0];
-    expect(alert.payload['employeeName']).toBe('16-x probe tech 3');
-    expect(alert.payload['attemptCount']).toBe(3);
-    expect(alert.payload['month']).toMatch(/^\d{4}-\d{2}$/);
-    expect(alert.dedupe_key).toBe(
-      `${TENANT}:attendance.fake_location:${OWNER}:${TECH_RATE}:${alert.payload['month']}`,
-    );
-    expect(alert.entity_type).toBe('attendance');
-    expect(alert.entity_id).toBe(TECH_RATE);
-
-    // The same attempt row also carries the armed block (70th counted).
-    const blocked = await pool.query(
-      `select blocked_until from public.attendance_attempts
+      // The same attempt row also carries the armed block (70th counted).
+      const blocked = await pool.query(
+        `select blocked_until from public.attendance_attempts
        where employee_id = $1 and blocked_until is not null`,
-      [TECH_RATE],
-    );
-    expect(blocked.rows).toHaveLength(1);
-    expect(new Date(blocked.rows[0].blocked_until).getTime()).toBeGreaterThan(
-      Date.now() - 1000,
-    );
-  });
-
-  maybeIt('while blocked: 429 + Retry-After, recorded but never counted (AD-15)', async () => {
-    const err = await service
-      .checkIn(
-        { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-        fix(),
-        randomUUID(),
-      )
-      .then(
-        () => null,
-        (e) => e,
+        [TECH_RATE],
       );
-    expect(err).toMatchObject({ status: 429 });
-    expect(
-      (err.getResponse() as Record<string, unknown>)['retryAfterSeconds'],
-    ).toBeGreaterThan(0);
-    expect(await attemptCount(TECH_RATE, 'rate_limited')).toBe(1);
-    // Counted budget pinned at 70 (the primed rows + the three mocks;
-    // the block armed on the 70th) — rate_limited rows do not count.
-    const c = await pool.query(
-      `select count(*)::int as n from public.attendance_attempts
-       where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
-      [TECH_RATE],
-    );
-    expect(c.rows[0].n).toBe(70);
-  });
+      expect(blocked.rows).toHaveLength(1);
+      expect(new Date(blocked.rows[0].blocked_until).getTime()).toBeGreaterThan(
+        Date.now() - 1000,
+      );
+    },
+  );
 
-  maybeIt('after the window passes the employee can check in again', async () => {
-    await pool.query(
-      `update public.attendance_attempts
+  maybeIt(
+    'while blocked: 429 + Retry-After, recorded but never counted (AD-15)',
+    async () => {
+      const err = await service
+        .checkIn(
+          {
+            userId: TECH_RATE,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          randomUUID(),
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 429 });
+      expect(
+        (err.getResponse() as Record<string, unknown>)['retryAfterSeconds'],
+      ).toBeGreaterThan(0);
+      expect(await attemptCount(TECH_RATE, 'rate_limited')).toBe(1);
+      // Counted budget pinned at 70 (the primed rows + the three mocks;
+      // the block armed on the 70th) — rate_limited rows do not count.
+      const c = await pool.query(
+        `select count(*)::int as n from public.attendance_attempts
+       where employee_id = $1 and outcome = any(array['low_accuracy','mocked','stale_fix'])`,
+        [TECH_RATE],
+      );
+      expect(c.rows[0].n).toBe(70);
+    },
+  );
+
+  maybeIt(
+    'after the window passes the employee can check in again',
+    async () => {
+      await pool.query(
+        `update public.attendance_attempts
        set attempted_at = attempted_at - interval '11 minutes',
            blocked_until = blocked_until - interval '11 minutes'
        where employee_id = $1`,
-      [TECH_RATE],
-    );
-    const response = await service.checkIn(
-      { userId: TECH_RATE, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-      fix(),
-      randomUUID(),
-    );
-    expect(response.workDate).toBe(today);
-  });
-
-  maybeIt('check-out without a check-in records not_checked_in (409)', async () => {
-    const err = await service
-      .checkOut(
-        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
+        [TECH_RATE],
+      );
+      const response = await service.checkIn(
+        {
+          userId: TECH_RATE,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
         fix(),
         randomUUID(),
-      )
-      .then(
-        () => null,
-        (e) => e,
       );
-    expect(err).toMatchObject({ status: 409 });
-    expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
-      'ATTENDANCE_NOT_CHECKED_IN',
-    );
-  });
+      expect(response.workDate).toBe(today);
+    },
+  );
 
-  maybeIt('check-out updates the SAME row and reports worked minutes + early checkout', async () => {
-    await service.checkIn(
-      { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-      fix(),
-      randomUUID(),
-    );
-    const response = await service.checkOut(
-      { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
-      fix(),
-      randomUUID(),
-    );
+  maybeIt(
+    'check-out without a check-in records not_checked_in (409)',
+    async () => {
+      const err = await service
+        .checkOut(
+          {
+            userId: TECH_OUT,
+            tenantId: TENANT,
+            role: Role.EMPLOYEE,
+            platformAdmin: false,
+            rawJwt: 'x',
+          },
+          fix(),
+          randomUUID(),
+        )
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(err).toMatchObject({ status: 409 });
+      expect((err.getResponse() as Record<string, unknown>)['error_code']).toBe(
+        'ATTENDANCE_NOT_CHECKED_IN',
+      );
+    },
+  );
 
-    expect(response.workDate).toBe(today);
-    expect(response.checkoutAt).toMatch(/\+05:30$/);
-    expect(response.earlyCheckout).toBe(true);
-    expect(response.earlyCheckoutMinutes).toBe(
-      RULE_END_MINUTE - minuteOfOffsetInstant(response.checkoutAt),
-    );
-    // Worked minutes = real elapsed, nearest minute, never zero for a
-    // non-zero span (user ruling 2026-10-02). Read off the two instants,
-    // NOT off their wall-minute labels: a punch pair a few seconds apart
-    // inside one wall minute still counts as 1.
-    const elapsedMs =
-      Date.parse(response.checkoutAt) - Date.parse(response.checkinAt);
-    expect(response.workedMinutes).toBe(
-      elapsedMs === 0 ? 0 : Math.max(1, Math.round(elapsedMs / 60_000)),
-    );
+  maybeIt(
+    'check-out updates the SAME row and reports worked minutes + early checkout',
+    async () => {
+      await service.checkIn(
+        {
+          userId: TECH_OUT,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
+        fix(),
+        randomUUID(),
+      );
+      const response = await service.checkOut(
+        {
+          userId: TECH_OUT,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
+        fix(),
+        randomUUID(),
+      );
 
-    const r = await pool.query(
-      'select count(*)::int as n from public.attendance_records where employee_id = $1',
-      [TECH_OUT],
-    );
-    expect(r.rows[0].n).toBe(1); // SAME row, not a second one
-    const row = await pool.query(
-      `select checkout_at, checkout_attempt_id, checkout_lat, checkout_distance_m
+      expect(response.workDate).toBe(today);
+      expect(response.checkoutAt).toMatch(/\+05:30$/);
+      expect(response.earlyCheckout).toBe(true);
+      expect(response.earlyCheckoutMinutes).toBe(
+        RULE_END_MINUTE - minuteOfOffsetInstant(response.checkoutAt),
+      );
+      // Worked minutes = real elapsed, nearest minute, never zero for a
+      // non-zero span (user ruling 2026-10-02). Read off the two instants,
+      // NOT off their wall-minute labels: a punch pair a few seconds apart
+      // inside one wall minute still counts as 1.
+      const elapsedMs =
+        Date.parse(response.checkoutAt) - Date.parse(response.checkinAt);
+      expect(response.workedMinutes).toBe(
+        elapsedMs === 0 ? 0 : Math.max(1, Math.round(elapsedMs / 60_000)),
+      );
+
+      const r = await pool.query(
+        'select count(*)::int as n from public.attendance_records where employee_id = $1',
+        [TECH_OUT],
+      );
+      expect(r.rows[0].n).toBe(1); // SAME row, not a second one
+      const row = await pool.query(
+        `select checkout_at, checkout_attempt_id, checkout_lat, checkout_distance_m
        from public.attendance_records where employee_id = $1`,
-      [TECH_OUT],
-    );
-    expect(row.rows[0].checkout_at).not.toBeNull();
-    expect(row.rows[0].checkout_attempt_id).not.toBeNull();
-    expect(row.rows[0].checkout_lat).toBeCloseTo(IN_RADIUS.latitude, 5);
-  });
+        [TECH_OUT],
+      );
+      expect(row.rows[0].checkout_at).not.toBeNull();
+      expect(row.rows[0].checkout_attempt_id).not.toBeNull();
+      expect(row.rows[0].checkout_lat).toBeCloseTo(IN_RADIUS.latitude, 5);
+    },
+  );
 
   maybeIt('a second check-out records already_checked_out (409)', async () => {
     const err = await service
       .checkOut(
-        { userId: TECH_OUT, tenantId: TENANT, role: Role.EMPLOYEE, platformAdmin: false, rawJwt: 'x' },
+        {
+          userId: TECH_OUT,
+          tenantId: TENANT,
+          role: Role.EMPLOYEE,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
         fix(),
         randomUUID(),
       )
@@ -847,73 +1014,91 @@ describe('Attendance check-in/out journey (16-1/16-2, real DB)', () => {
     );
   });
 
-  maybeIt('FR-6 primitives self-activate: a checked-in employee now blocks same-day reassignment', async () => {
-    const active = await inTx(async (tx) => ({
-      recordsExist: await attendanceRecordsExist(tx),
-      checkedIn: await hasCheckInOn(tx, TECH_MAIN, today),
-      notCheckedIn: await hasCheckInOn(tx, TECH_WEEKLY, today),
-    }));
-    expect(active.recordsExist).toBe(true);
-    expect(active.checkedIn).toBe(true);
-    // TECH_WEEKLY checked in on their weekly-off probe — also counts.
-    expect(active.notCheckedIn).toBe(true);
-  });
+  maybeIt(
+    'FR-6 primitives self-activate: a checked-in employee now blocks same-day reassignment',
+    async () => {
+      const active = await inTx(async (tx) => ({
+        recordsExist: await attendanceRecordsExist(tx),
+        checkedIn: await hasCheckInOn(tx, TECH_MAIN, today),
+        notCheckedIn: await hasCheckInOn(tx, TECH_WEEKLY, today),
+      }));
+      expect(active.recordsExist).toBe(true);
+      expect(active.checkedIn).toBe(true);
+      // TECH_WEEKLY checked in on their weekly-off probe — also counts.
+      expect(active.notCheckedIn).toBe(true);
+    },
+  );
 
-  maybeIt('FR-6 at the endpoint level: reassigning a CHECKED-IN employee applies from tomorrow', async () => {
-    const config = {
-      getOrThrow: (key: string) => {
-        if (key === 'DATABASE_URL') return DATABASE_URL;
-        if (key === 'SUPABASE_URL') return SUPABASE_URL;
-        if (key === 'SUPABASE_ANON_KEY') return SUPABASE_ANON_KEY;
-        if (key === 'SUPABASE_SERVICE_ROLE_KEY') return SUPABASE_SERVICE_ROLE_KEY;
-        throw new Error(`Unexpected config key ${key}`);
-      },
-    } as unknown as ConfigService;
-    const enrolments = new EnrolmentsService(
-      new SupabaseClientFactory(config),
-      servicePool,
-      { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never,
-    );
-    const dto = Object.assign(new ReassignOfficeDto(), {
-      officeId: OFFICE_B,
-      effectiveFrom: today,
-    });
-    const state = await enrolments.reassignOffice(
-      { userId: OWNER, tenantId: TENANT, role: Role.COMPANY_ADMIN, platformAdmin: false, rawJwt: 'x' },
-      TECH_MAIN,
-      dto,
-    );
-    // The view still anchors TODAY's office — FR-6 means the change only
-    // applies from tomorrow.
-    expect(state.officeId).toBe(OFFICE);
-    const r = await pool.query(
-      `select lower(valid)::text as start from public.attendance_office_assignments
+  maybeIt(
+    'FR-6 at the endpoint level: reassigning a CHECKED-IN employee applies from tomorrow',
+    async () => {
+      const config = {
+        getOrThrow: (key: string) => {
+          if (key === 'DATABASE_URL') return DATABASE_URL;
+          if (key === 'SUPABASE_URL') return SUPABASE_URL;
+          if (key === 'SUPABASE_ANON_KEY') return SUPABASE_ANON_KEY;
+          if (key === 'SUPABASE_SERVICE_ROLE_KEY')
+            return SUPABASE_SERVICE_ROLE_KEY;
+          throw new Error(`Unexpected config key ${key}`);
+        },
+      } as unknown as ConfigService;
+      const enrolments = new EnrolmentsService(
+        new SupabaseClientFactory(config),
+        servicePool,
+        {
+          presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+        } as never,
+      );
+      const dto = Object.assign(new ReassignOfficeDto(), {
+        officeId: OFFICE_B,
+        effectiveFrom: today,
+      });
+      const state = await enrolments.reassignOffice(
+        {
+          userId: OWNER,
+          tenantId: TENANT,
+          role: Role.COMPANY_ADMIN,
+          platformAdmin: false,
+          rawJwt: 'x',
+        },
+        TECH_MAIN,
+        dto,
+      );
+      // The view still anchors TODAY's office — FR-6 means the change only
+      // applies from tomorrow.
+      expect(state.officeId).toBe(OFFICE);
+      const r = await pool.query(
+        `select lower(valid)::text as start from public.attendance_office_assignments
        where employee_id = $1 and office_id = $2`,
-      [TECH_MAIN, OFFICE_B],
-    );
-    expect(r.rows).toHaveLength(1);
-    expect(r.rows[0].start).toBe(addDays(today, 1));
-  });
+        [TECH_MAIN, OFFICE_B],
+      );
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0].start).toBe(addDays(today, 1));
+    },
+  );
 
-  maybeIt('RLS denies anon/authenticated on both new tables (no policies, 15-7 hygiene)', async () => {
-    if (!SUPABASE_ANON_KEY) {
-      console.warn('anon key absent — RLS probe skipped');
-      return;
-    }
-    const anon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    // REVOKE ALL → even SELECT errors for anon (15-7 grants hygiene).
-    const read = await anon.from('attendance_records').select('*');
-    expect(read.error).not.toBeNull();
-    // …and INSERT is rejected too.
-    const write = await anon.from('attendance_attempts').insert({
-      tenant_id: TENANT,
-      employee_id: TECH_MAIN,
-      request_id: randomUUID(),
-      kind: 'check_in',
-      outcome: 'ok',
-    });
-    expect(write.error).not.toBeNull();
-  });
+  maybeIt(
+    'RLS denies anon/authenticated on both new tables (no policies, 15-7 hygiene)',
+    async () => {
+      if (!SUPABASE_ANON_KEY) {
+        console.warn('anon key absent — RLS probe skipped');
+        return;
+      }
+      const anon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      // REVOKE ALL → even SELECT errors for anon (15-7 grants hygiene).
+      const read = await anon.from('attendance_records').select('*');
+      expect(read.error).not.toBeNull();
+      // …and INSERT is rejected too.
+      const write = await anon.from('attendance_attempts').insert({
+        tenant_id: TENANT,
+        employee_id: TECH_MAIN,
+        request_id: randomUUID(),
+        kind: 'check_in',
+        outcome: 'ok',
+      });
+      expect(write.error).not.toBeNull();
+    },
+  );
 });

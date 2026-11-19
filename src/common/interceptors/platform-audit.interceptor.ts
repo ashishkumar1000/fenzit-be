@@ -57,7 +57,8 @@ export class PlatformAuditInterceptor implements NestInterceptor {
     // as the target. Anything that is not a UUID is not a target.
     const params = request.params as Record<string, unknown> | undefined;
     const rawTarget = typeof params?.userId === 'string' ? params.userId : null;
-    const targetUserId = rawTarget && UUID_PATTERN.test(rawTarget) ? rawTarget : null;
+    const targetUserId =
+      rawTarget && UUID_PATTERN.test(rawTarget) ? rawTarget : null;
 
     const { error } = await this.supabaseFactory
       .createAdmin()

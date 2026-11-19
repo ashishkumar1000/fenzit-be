@@ -18,7 +18,10 @@ import {
   call,
   membershipIn,
 } from '../helpers/member-functions-fixture';
-import { makeCompany, teardownSuite } from '../helpers/member-functions-company';
+import {
+  makeCompany,
+  teardownSuite,
+} from '../helpers/member-functions-company';
 import { serviceRoleClient } from '../helpers/rls-seed';
 
 const PA = mid('e004', 1);
@@ -93,23 +96,31 @@ describe('create_job_with_log: employee-created jobs (real DB)', () => {
     await teardownSuite(service, [], [PA]);
   }, 120000);
 
-  maybeIt('an old 12-input call still makes an owner job: scheduled, creator = actor', async () => {
-    const c = await makeCompany(service, 'ec legacy', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const r = await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.admin,
-    });
-    expect(r.error).toBeNull();
-    const job = r.data![0];
-    expect(job).toMatchObject({ status: 'scheduled', created_by: c.id.admin });
-    expect((await activityFor(job.id)).map((a) => a.event_type)).toEqual(['job_created']);
-  });
+  maybeIt(
+    'an old 12-input call still makes an owner job: scheduled, creator = actor',
+    async () => {
+      const c = await makeCompany(service, 'ec legacy', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const r = await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.admin,
+      });
+      expect(r.error).toBeNull();
+      const job = r.data![0];
+      expect(job).toMatchObject({
+        status: 'scheduled',
+        created_by: c.id.admin,
+      });
+      expect((await activityFor(job.id)).map((a) => a.event_type)).toEqual([
+        'job_created',
+      ]);
+    },
+  );
 
   maybeIt('an owner-created job records the owner as creator', async () => {
     const c = await makeCompany(service, 'ec owner', {
@@ -126,7 +137,10 @@ describe('create_job_with_log: employee-created jobs (real DB)', () => {
       p_pending_approval: false,
     });
     expect(r.error).toBeNull();
-    expect(r.data![0]).toMatchObject({ status: 'scheduled', created_by: c.id.admin });
+    expect(r.data![0]).toMatchObject({
+      status: 'scheduled',
+      created_by: c.id.admin,
+    });
   });
 
   maybeIt(
@@ -153,107 +167,132 @@ describe('create_job_with_log: employee-created jobs (real DB)', () => {
         created_by: c.id.emp,
         tenant_id: c.tenantId,
       });
-      expect((await activityFor(job.id)).map((a) => a.event_type)).toEqual(['job_submitted']);
+      expect((await activityFor(job.id)).map((a) => a.event_type)).toEqual([
+        'job_submitted',
+      ]);
     },
   );
 
-  maybeIt('approval off: scheduled at once, creator recorded, activity job_created', async () => {
-    const c = await makeCompany(service, 'ec auto', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const r = await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.emp,
-      p_created_by: c.id.emp,
-      p_pending_approval: false,
-    });
-    expect(r.error).toBeNull();
-    expect(r.data![0]).toMatchObject({ status: 'scheduled', created_by: c.id.emp });
-    expect((await activityFor(r.data![0].id)).map((a) => a.event_type)).toEqual(['job_created']);
-  });
+  maybeIt(
+    'approval off: scheduled at once, creator recorded, activity job_created',
+    async () => {
+      const c = await makeCompany(service, 'ec auto', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const r = await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.emp,
+        p_created_by: c.id.emp,
+        p_pending_approval: false,
+      });
+      expect(r.error).toBeNull();
+      expect(r.data![0]).toMatchObject({
+        status: 'scheduled',
+        created_by: c.id.emp,
+      });
+      expect(
+        (await activityFor(r.data![0].id)).map((a) => a.event_type),
+      ).toEqual(['job_created']);
+    },
+  );
 
-  maybeIt('a pending job is not returned by a scheduled-only read (CAP-4)', async () => {
-    const c = await makeCompany(service, 'ec not scheduled', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const pending = await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.emp,
-      p_created_by: c.id.emp,
-      p_pending_approval: true,
-    });
-    const { data } = await service
-      .from('jobs')
-      .select('id')
-      .eq('technician_id', c.id.emp)
-      .eq('status', 'scheduled');
-    expect((data as Array<{ id: string }>).map((j) => j.id)).not.toContain(
-      pending.data![0].id,
-    );
-  });
+  maybeIt(
+    'a pending job is not returned by a scheduled-only read (CAP-4)',
+    async () => {
+      const c = await makeCompany(service, 'ec not scheduled', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const pending = await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.emp,
+        p_created_by: c.id.emp,
+        p_pending_approval: true,
+      });
+      const { data } = await service
+        .from('jobs')
+        .select('id')
+        .eq('technician_id', c.id.emp)
+        .eq('status', 'scheduled');
+      expect((data as Array<{ id: string }>).map((j) => j.id)).not.toContain(
+        pending.data![0].id,
+      );
+    },
+  );
 
-  maybeIt('the creator must be a real user: an unknown creator is refused', async () => {
-    const c = await makeCompany(service, 'ec fk', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const r = await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.admin,
-      p_created_by: mid('e004', 99),
-      p_pending_approval: true,
-    });
-    expect(r.error?.code).toBe('23503');
-  });
+  maybeIt(
+    'the creator must be a real user: an unknown creator is refused',
+    async () => {
+      const c = await makeCompany(service, 'ec fk', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const r = await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.admin,
+        p_created_by: mid('e004', 99),
+        p_pending_approval: true,
+      });
+      expect(r.error?.code).toBe('23503');
+    },
+  );
 
-  maybeIt('the status check refuses an unknown status, and accepts pending_approval', async () => {
-    const c = await makeCompany(service, 'ec status check', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const r = await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.admin,
-    });
-    const jobId = r.data![0].id;
-    const bad = await service.from('jobs').update({ status: 'bogus' }).eq('id', jobId);
-    expect(bad.error?.code).toBe('23514');
-    const ok = await service
-      .from('jobs')
-      .update({ status: 'pending_approval' })
-      .eq('id', jobId);
-    expect(ok.error).toBeNull();
-  });
+  maybeIt(
+    'the status check refuses an unknown status, and accepts pending_approval',
+    async () => {
+      const c = await makeCompany(service, 'ec status check', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const r = await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.admin,
+      });
+      const jobId = r.data![0].id;
+      const bad = await service
+        .from('jobs')
+        .update({ status: 'bogus' })
+        .eq('id', jobId);
+      expect(bad.error?.code).toBe('23514');
+      const ok = await service
+        .from('jobs')
+        .update({ status: 'pending_approval' })
+        .eq('id', jobId);
+      expect(ok.error).toBeNull();
+    },
+  );
 
-  maybeIt('the employee membership used for the job is not changed by job creation', async () => {
-    const c = await makeCompany(service, 'ec membership untouched', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const customerId = await createCustomer(c.tenantId);
-    const before = await membershipIn(service, c.id.emp, c.tenantId);
-    await rpc({
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.emp,
-      p_created_by: c.id.emp,
-      p_pending_approval: true,
-    });
-    expect(await membershipIn(service, c.id.emp, c.tenantId)).toEqual(before);
-  });
+  maybeIt(
+    'the employee membership used for the job is not changed by job creation',
+    async () => {
+      const c = await makeCompany(service, 'ec membership untouched', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const customerId = await createCustomer(c.tenantId);
+      const before = await membershipIn(service, c.id.emp, c.tenantId);
+      await rpc({
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.emp,
+        p_created_by: c.id.emp,
+        p_pending_approval: true,
+      });
+      expect(await membershipIn(service, c.id.emp, c.tenantId)).toEqual(before);
+    },
+  );
 });

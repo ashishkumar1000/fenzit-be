@@ -19,10 +19,7 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 import { isUuidShape } from './registry/report-params.util';
-import {
-  isPayslipParams,
-  isRangeParams,
-} from './registry/report-definition';
+import { isPayslipParams, isRangeParams } from './registry/report-definition';
 import { StorageService } from '../storage/storage.service';
 import { ReportRegistry } from './registry/report-registry';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
@@ -93,7 +90,8 @@ export class ReportsService {
       // true if the DTO ever grows fields.
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Payslip PDFs are requested from the payroll payslip endpoints',
+        message:
+          'Payslip PDFs are requested from the payroll payslip endpoints',
       });
     }
     params.technician_ids = await this.resolveTechnicianIds(

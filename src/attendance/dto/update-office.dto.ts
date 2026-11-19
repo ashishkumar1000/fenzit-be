@@ -12,7 +12,16 @@ import {
   Min,
   Validate,
 } from 'class-validator';
-import { OFFICE_ADDRESS_MAX, OFFICE_HOURS_MAX, blankToUndefined, OFFICE_LATE_CUTOFF_MAX, OFFICE_LATE_CUTOFF_MIN, OFFICE_RADIUS_MAX, OFFICE_RADIUS_MIN, TIME_PATTERN } from './create-office.dto';
+import {
+  OFFICE_ADDRESS_MAX,
+  OFFICE_HOURS_MAX,
+  blankToUndefined,
+  OFFICE_LATE_CUTOFF_MAX,
+  OFFICE_LATE_CUTOFF_MIN,
+  OFFICE_RADIUS_MAX,
+  OFFICE_RADIUS_MIN,
+  TIME_PATTERN,
+} from './create-office.dto';
 import {
   OfficeEndTimeAfterStartConstraint,
   OfficeHalfLessThanFullConstraint,
@@ -28,7 +37,10 @@ import {
  *    attendance_update_office_rules — sent as a complete set of five.
  */
 export class UpdateOfficeDto {
-  @ApiPropertyOptional({ description: 'New office name (unique per tenant, case-insensitive); trimmed.' })
+  @ApiPropertyOptional({
+    description:
+      'New office name (unique per tenant, case-insensitive); trimmed.',
+  })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsOptional()
   @IsString()
@@ -60,7 +72,9 @@ export class UpdateOfficeDto {
   @MaxLength(OFFICE_ADDRESS_MAX)
   formattedAddress?: string;
 
-  @ApiPropertyOptional({ description: 'New geofence radius in metres (50–1000).' })
+  @ApiPropertyOptional({
+    description: 'New geofence radius in metres (50–1000).',
+  })
   @IsOptional()
   @IsInt()
   @Min(OFFICE_RADIUS_MIN)
@@ -72,7 +86,9 @@ export class UpdateOfficeDto {
   @Matches(TIME_PATTERN)
   startTime?: string;
 
-  @ApiPropertyOptional({ description: 'New office end time (HH:mm); must be after start, same day.' })
+  @ApiPropertyOptional({
+    description: 'New office end time (HH:mm); must be after start, same day.',
+  })
   @IsOptional()
   @Matches(TIME_PATTERN)
   @Validate(OfficeEndTimeAfterStartConstraint)
@@ -85,14 +101,18 @@ export class UpdateOfficeDto {
   @Max(OFFICE_LATE_CUTOFF_MAX)
   lateCutoffMinutes?: number;
 
-  @ApiPropertyOptional({ description: 'New full-day hours (> 0, up to 99.99).' })
+  @ApiPropertyOptional({
+    description: 'New full-day hours (> 0, up to 99.99).',
+  })
   @IsOptional()
   @IsNumber()
   @Min(0.01)
   @Max(OFFICE_HOURS_MAX)
   fullDayHours?: number;
 
-  @ApiPropertyOptional({ description: 'New half-day hours (> 0, less than full-day hours).' })
+  @ApiPropertyOptional({
+    description: 'New half-day hours (> 0, less than full-day hours).',
+  })
   @IsOptional()
   @IsNumber()
   @Min(0.01)

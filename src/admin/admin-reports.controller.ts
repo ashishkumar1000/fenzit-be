@@ -46,7 +46,8 @@ export class AdminReportsController {
   @Can('user.manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Hide the reported photo or dismiss the report (platform admin only)',
+    summary:
+      'Hide the reported photo or dismiss the report (platform admin only)',
   })
   @ApiResponse({ status: 404, description: 'Report not found' })
   @ApiResponse({ status: 409, description: 'Report already resolved' })

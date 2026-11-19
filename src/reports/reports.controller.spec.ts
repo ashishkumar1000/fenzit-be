@@ -35,7 +35,9 @@ describe('ReportsController — retry route (POST :id/retry)', () => {
       retryReport,
     } as unknown as ReportsService);
 
-    await expect(controller.retryReport(user, REQUEST_ID)).resolves.toBe(queued);
+    await expect(controller.retryReport(user, REQUEST_ID)).resolves.toBe(
+      queued,
+    );
     expect(retryReport).toHaveBeenCalledWith(user, REQUEST_ID);
   });
 
@@ -58,7 +60,10 @@ describe('ReportsController — retry route (POST :id/retry)', () => {
 
   it('returns 201 on success (not the default 202 for POST)', () => {
     expect(
-      Reflect.getMetadata(HTTP_CODE_METADATA, ReportsController.prototype.retryReport),
+      Reflect.getMetadata(
+        HTTP_CODE_METADATA,
+        ReportsController.prototype.retryReport,
+      ),
     ).toBe(201);
   });
 
@@ -106,9 +111,9 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
       const listReports = jest.fn().mockResolvedValue(page);
       const controller = controllerWith({ listReports });
 
-      await expect(
-        controller.listReports(user, query as never),
-      ).resolves.toBe(page);
+      await expect(controller.listReports(user, query as never)).resolves.toBe(
+        page,
+      );
       expect(listReports).toHaveBeenCalledWith(user, query);
     });
 
@@ -117,9 +122,9 @@ describe('ReportsController — create/list/status routes (story 12-2)', () => {
       const getReportStatus = jest.fn().mockResolvedValue(status);
       const controller = controllerWith({ getReportStatus });
 
-      await expect(
-        controller.getReportStatus(user, REQUEST_ID),
-      ).resolves.toBe(status);
+      await expect(controller.getReportStatus(user, REQUEST_ID)).resolves.toBe(
+        status,
+      );
       expect(getReportStatus).toHaveBeenCalledWith(user, REQUEST_ID);
     });
   });

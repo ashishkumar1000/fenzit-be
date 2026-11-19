@@ -1,6 +1,4 @@
-import type {
-  DashboardResponse,
-} from './dashboard-response.model';
+import type { DashboardResponse } from './dashboard-response.model';
 
 /**
  * Pure spec for 19-2's wire shapes. Written as a tester: the response IS a

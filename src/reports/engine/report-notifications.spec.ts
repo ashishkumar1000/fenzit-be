@@ -12,7 +12,12 @@ const readyRow: ReportRequestRow = {
   tenant_id: 'tenant-uuid',
   requested_by: 'owner-uuid',
   report_type: 'technician_job_activity',
-  params: { start_date: '2026-09-01', end_date: '2026-09-07', technician_ids: [], office_ids: [] },
+  params: {
+    start_date: '2026-09-01',
+    end_date: '2026-09-07',
+    technician_ids: [],
+    office_ids: [],
+  },
   status: ReportRequestStatus.READY,
   attempt_count: 1,
   locked_until: null,
@@ -84,8 +89,9 @@ describe('insertReportNotification (story 12-3, FR-8)', () => {
         job_id: null,
       }),
     );
-    const payload = (insert.mock.calls[0][0] as { payload: Record<string, unknown> })
-      .payload;
+    const payload = (
+      insert.mock.calls[0][0] as { payload: Record<string, unknown> }
+    ).payload;
     expect(payload.status).toBe(ReportRequestStatus.FAILED);
     expect(payload.errorCode).toBe('REPORT_GENERATION_FAILED');
   });
@@ -95,8 +101,9 @@ describe('insertReportNotification (story 12-3, FR-8)', () => {
 
     await insertReportNotification(admin, readyRow, 'Any Label');
 
-    const payload = (insert.mock.calls[0][0] as { payload: Record<string, unknown> })
-      .payload;
+    const payload = (
+      insert.mock.calls[0][0] as { payload: Record<string, unknown> }
+    ).payload;
     expect(payload.errorCode).toBeNull();
   });
 

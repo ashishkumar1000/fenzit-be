@@ -543,7 +543,13 @@ describe('Notifications (e2e)', () => {
       // scoping below (tenant_id + user_id = TECH_ID) is the server-side
       // exclusion, so the builder only ever surfaces the technician's rows.
       const { captured } = mockNotificationsBuilder({
-        data: [{ ...techRow, entity_type: 'attendance', entity_id: '00000000-0000-4000-8000-0000000000c2' }],
+        data: [
+          {
+            ...techRow,
+            entity_type: 'attendance',
+            entity_id: '00000000-0000-4000-8000-0000000000c2',
+          },
+        ],
         error: null,
       });
 
@@ -602,11 +608,7 @@ describe('Notifications (e2e)', () => {
       expect(typeof body.token).toBe('string');
       expect(typeof body.expiresAt).toBe('string');
       // Same claim shape owners get: sub + role: 'authenticated' + exp (1 h).
-      const claims = jwtService.verify(body.token) as {
-        sub: string;
-        role: string;
-        exp: number;
-      };
+      const claims = jwtService.verify(body.token);
       expect(claims.sub).toBe(TECH_ID);
       expect(claims.role).toBe('authenticated');
       // The docs promise expiresAt and the token's exp are the same instant.

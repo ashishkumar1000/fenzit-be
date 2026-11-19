@@ -67,16 +67,12 @@ export interface ReminderJobSample {
   failed: string;
   age_seconds: string | null;
 }
-export type ReminderJobQueryFn = (
-  sql: string,
-) => Promise<ReminderJobSample[]>;
+export type ReminderJobQueryFn = (sql: string) => Promise<ReminderJobSample[]>;
 
 let reminderJobQuery: ReminderJobQueryFn | null = null;
 
 /** Registers the read that the reminder-job gauges poll at export time. */
-export function setReminderJobMetricQuery(
-  query: ReminderJobQueryFn,
-): void {
+export function setReminderJobMetricQuery(query: ReminderJobQueryFn): void {
   reminderJobQuery = query;
 }
 

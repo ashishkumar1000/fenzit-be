@@ -12,7 +12,9 @@ describe('AppConfigController', () => {
       getAppConfig: jest.fn(async () => ({ payload, etag: '"abc123"' })),
     };
     return {
-      controller: new AppConfigController(service as unknown as AppConfigService),
+      controller: new AppConfigController(
+        service as unknown as AppConfigService,
+      ),
       service,
     };
   };

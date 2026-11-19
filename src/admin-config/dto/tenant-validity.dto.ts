@@ -16,6 +16,8 @@ export class TenantValidityDto {
   @IsNotEmpty()
   @IsString()
   @IsISO8601({ strict: true, strictSeparator: true })
-  @Matches(HAS_OFFSET, { message: 'validUntil must end in Z or an offset such as +05:30' })
+  @Matches(HAS_OFFSET, {
+    message: 'validUntil must end in Z or an offset such as +05:30',
+  })
   validUntil: string;
 }

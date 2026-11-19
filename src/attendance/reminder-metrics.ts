@@ -1,4 +1,8 @@
-import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import {
   resetReminderJobMetricQuery,

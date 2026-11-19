@@ -15,11 +15,7 @@
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type ApprovalOutcome =
-  | 'pending'
-  | 'rejected'
-  | 'approved'
-  | 'auto_approved'
-  | 'cancelled';
+  'pending' | 'rejected' | 'approved' | 'auto_approved' | 'cancelled';
 
 export interface ReportJob {
   id: string;

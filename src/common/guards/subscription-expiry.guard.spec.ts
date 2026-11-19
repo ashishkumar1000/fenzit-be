@@ -12,9 +12,10 @@ const TENANT_ID = '22222222-2222-4222-8222-222222222222';
 
 /** Builds a guard whose tenants read returns the given validity_until. */
 function makeGuard(validityUntil: string | null) {
-  const maybeSingle = jest
-    .fn()
-    .mockResolvedValue({ data: { validity_until: validityUntil }, error: null });
+  const maybeSingle = jest.fn().mockResolvedValue({
+    data: { validity_until: validityUntil },
+    error: null,
+  });
   const eq = jest.fn().mockReturnValue({ maybeSingle });
   const select = jest.fn().mockReturnValue({ eq });
   const from = jest.fn().mockReturnValue({ select });
@@ -22,10 +23,7 @@ function makeGuard(validityUntil: string | null) {
   const reflector = {
     getAllAndOverride: jest.fn().mockReturnValue(false),
   } as unknown as Reflector;
-  const guard = new SubscriptionExpiryGuard(
-    reflector,
-    factory as never,
-  );
+  const guard = new SubscriptionExpiryGuard(reflector, factory as never);
   return { guard, from };
 }
 

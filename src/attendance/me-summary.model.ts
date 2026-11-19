@@ -108,9 +108,11 @@ export function toMeSummaryResponse(input: {
   row: Pick<AccessStateRow, 'office_id' | 'office_name'>;
   rule: OfficeRuleRow | null;
   weeklyOffDays: number[];
-  officePin:
-    | { latitude: number; longitude: number; radius_m: number | null }
-    | null;
+  officePin: {
+    latitude: number;
+    longitude: number;
+    radius_m: number | null;
+  } | null;
   today: TodayFacts | null;
   todayRecord: TodayRecordView | null;
 }): MeSummaryResponse {

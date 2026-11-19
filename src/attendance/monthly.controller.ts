@@ -7,10 +7,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
-import {
-  MeMonthlyQueryDto,
-  MonthlyQueryDto,
-} from './dto/monthly-query.dto';
+import { MeMonthlyQueryDto, MonthlyQueryDto } from './dto/monthly-query.dto';
 import { MonthlyService } from './monthly';
 import { Can } from '../common/decorators/can.decorator';
 
@@ -44,16 +41,8 @@ export class MonthlyController {
     description:
       'ATTENDANCE_INVALID_RANGE (from > to, span > 31 days, or to after today) / VALIDATION_ERROR (malformed dates or officeId)',
   })
-  list(
-    @CurrentUser() owner: RequestUser,
-    @Query() query: MonthlyQueryDto,
-  ) {
-    return this.monthly.forOwner(
-      owner,
-      query.from,
-      query.to,
-      query.officeId,
-    );
+  list(@CurrentUser() owner: RequestUser, @Query() query: MonthlyQueryDto) {
+    return this.monthly.forOwner(owner, query.from, query.to, query.officeId);
   }
 
   @Get('me/monthly')

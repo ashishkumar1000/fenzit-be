@@ -84,7 +84,7 @@ describe('JobsService.updateJob: owner edits to pending and other jobs (story 4)
       serviceLocation: '14 MG Road',
       skillId: '22222222-2222-4222-8222-222222222222',
       customerId: '33333333-3333-4333-8333-333333333333',
-    } as UpdateJobDto);
+    });
     expect(rpc).toHaveBeenCalledWith(
       'update_job_with_log',
       expect.objectContaining({
@@ -200,7 +200,10 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
       const maybeSingle = jest.fn().mockResolvedValue(
         table === 'jobs'
           ? { data: { id: JOB_ID, status, created_by: 'emp-1' }, error: null }
-          : { data: creatorRole === null ? null : { role: creatorRole }, error: null },
+          : {
+              data: creatorRole === null ? null : { role: creatorRole },
+              error: null,
+            },
       );
       const eq: jest.Mock = jest.fn(() => ({ eq, maybeSingle }));
       return { select: jest.fn(() => ({ eq })) };
@@ -221,7 +224,9 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
     async (status) => {
       const { service, rpc } = serviceForDecided(status, 'employee');
       await expect(
-        service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto),
+        service.updateJob(owner, JOB_ID, {
+          priority: 'urgent',
+        } as UpdateJobDto),
       ).rejects.toBeInstanceOf(HttpException);
       expect(rpc).not.toHaveBeenCalled();
     },
@@ -232,7 +237,7 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
     const err = await service
       .updateJob(owner, JOB_ID, {
         scheduledStart: '2026-11-10T09:00:00Z', // a past day, on top of the lock
-      } as UpdateJobDto)
+      })
       .catch((e: unknown) => e);
     expect((err as HttpException).getStatus()).toBe(409);
     expect(bodyOf(err)).toMatchObject({
@@ -253,7 +258,9 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
 
   it('an owner-created job is still editable after it is scheduled', async () => {
     const { service, rpc } = serviceForDecided('scheduled', 'company_admin');
-    await service.updateJob(owner, JOB_ID, { priority: 'urgent' } as UpdateJobDto);
+    await service.updateJob(owner, JOB_ID, {
+      priority: 'urgent',
+    } as UpdateJobDto);
     expect(rpc).toHaveBeenCalled();
   });
 });

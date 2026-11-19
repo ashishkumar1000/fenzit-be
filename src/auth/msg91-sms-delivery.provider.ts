@@ -1,9 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { Injectable } from '@nestjs/common';
-import {
-  SmsDeliveryProvider,
-  SmsDeliveryError,
-} from './sms-delivery.provider';
+import { SmsDeliveryProvider, SmsDeliveryError } from './sms-delivery.provider';
 import { getDomainMetrics, smsChannelLabel } from '../telemetry/domain-metrics';
 
 /**

@@ -420,7 +420,9 @@ describe('GooglePlacesProvider', () => {
     });
 
     it('should treat an OK status with an empty results array as the null-address shape, never crash', async () => {
-      fetchSpy.mockResolvedValue(jsonResponse(200, { status: 'OK', results: [] }));
+      fetchSpy.mockResolvedValue(
+        jsonResponse(200, { status: 'OK', results: [] }),
+      );
 
       const address = await provider.reverseGeocode(0.0001, 0.0001);
 

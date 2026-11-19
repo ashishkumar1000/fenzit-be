@@ -285,7 +285,7 @@ describe('ImportCommitService replay and idempotency (QA)', () => {
       const refused = results.filter((r) => r.status === 'rejected');
       expect(fulfilled).toHaveLength(1);
       expect(refused).toHaveLength(1);
-      expect((refused[0] as PromiseRejectedResult).reason).toMatchObject({
+      expect(refused[0].reason).toMatchObject({
         status: 409,
         response: { error_code: 'IMPORT_IN_PROGRESS' },
       });

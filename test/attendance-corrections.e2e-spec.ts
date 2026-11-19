@@ -36,7 +36,10 @@ const NO_COMPANY_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000a3';
 const EMPLOYEE_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000f1';
 const TODAY = '2026-09-29'; // Tuesday; 09-28 is a tracked, record-backed past day
 
-const settingsGateRow = { enabled: true, setup_completed_at: '2026-09-01T00:00:00+00:00' };
+const settingsGateRow = {
+  enabled: true,
+  setup_completed_at: '2026-09-01T00:00:00+00:00',
+};
 const enrolmentRow = {
   employee_id: EMPLOYEE_ID,
   valid: '[2026-09-01,)',
@@ -92,7 +95,15 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
     if (!queue) throw new Error(`unexpected table ${table}`);
     const qb: Record<string, unknown> = {};
     for (const m of [
-      'select', 'eq', 'is', 'order', 'in', 'update', 'upsert', 'maybeSingle', 'single',
+      'select',
+      'eq',
+      'is',
+      'order',
+      'in',
+      'update',
+      'upsert',
+      'maybeSingle',
+      'single',
     ]) {
       qb[m] = jest.fn().mockReturnValue(qb);
     }
@@ -112,19 +123,27 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
   /** The happy-path day facts: present record on 09-28, nothing on 09-29. */
   function baseFacts(sql: string): SqlResult {
     if (sql.includes('attendance_today')) return { rows: [{ today: TODAY }] };
-    if (sql.includes('from public.tenants where')) return { rows: [{ timezone: 'Asia/Kolkata' }] };
-    if (sql.includes('from public.attendance_settings')) return { rows: [settingsGateRow] };
-    if (sql.includes('from public.attendance_enrolments')) return { rows: [enrolmentRow] };
-    if (sql.includes('from public.attendance_office_assignments')) return { rows: [assignmentRow] };
-    if (sql.includes('from public.attendance_weekly_off_overrides')) return { rows: [] };
+    if (sql.includes('from public.tenants where'))
+      return { rows: [{ timezone: 'Asia/Kolkata' }] };
+    if (sql.includes('from public.attendance_settings'))
+      return { rows: [settingsGateRow] };
+    if (sql.includes('from public.attendance_enrolments'))
+      return { rows: [enrolmentRow] };
+    if (sql.includes('from public.attendance_office_assignments'))
+      return { rows: [assignmentRow] };
+    if (sql.includes('from public.attendance_weekly_off_overrides'))
+      return { rows: [] };
     if (sql.includes('from public.attendance_weekly_off_defaults'))
       return { rows: [{ valid: '[2026-01-01,)', days: [] }] };
     if (sql.includes('from public.holidays')) return { rows: [] };
-    if (sql.includes('from public.attendance_office_rules')) return { rows: [ruleRow] };
-    if (sql.includes('from public.attendance_records')) return { rows: [presentRecordRow] };
+    if (sql.includes('from public.attendance_office_rules'))
+      return { rows: [ruleRow] };
+    if (sql.includes('from public.attendance_records'))
+      return { rows: [presentRecordRow] };
     if (sql.includes('from public.attendance_attempts')) return { rows: [] };
     if (sql.includes('from public.leave_request_days')) return { rows: [] };
-    if (sql.includes('from public.attendance_day_overrides')) return { rows: [] };
+    if (sql.includes('from public.attendance_day_overrides'))
+      return { rows: [] };
     if (sql.includes('distinct on')) return { rows: [] };
     if (sql.startsWith('select count(*)::text as n from public.memberships'))
       return { rows: [{ n: '1' }] };
@@ -141,7 +160,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
     if (sql.startsWith('select now()')) return { rows: [{ now: DB_NOW }] };
     if (sql.startsWith('insert into public.attendance_corrections'))
       return {
-        rows: [{ id: 'audit-uuid-e2e', created_at: '2026-09-29T05:30:00+00:00' }],
+        rows: [
+          { id: 'audit-uuid-e2e', created_at: '2026-09-29T05:30:00+00:00' },
+        ],
       }; // the PUT response's correctedAt rides this row
     if (sql.startsWith('update public.attendance_day_overrides'))
       return { rows: [], rowCount: 1 }; // the soft delete removed the row
@@ -248,7 +269,10 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         method: 'PUT',
         url: putUrl(),
         headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: { checkoutAt: '2026-09-28T19:00:00+05:30', note: 'forgot to check out' },
+        payload: {
+          checkoutAt: '2026-09-28T19:00:00+05:30',
+          note: 'forgot to check out',
+        },
       });
       expect(res.statusCode).toBe(422);
       expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
@@ -260,7 +284,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         method: 'PUT',
         url: putUrl(),
         headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: { checkinAt: '2026-09-28T09:25:00+05:30', checkoutAt: '2026-09-28T19:00:00+05:30', note: 'forgot to check out' },
+        payload: {
+          checkinAt: '2026-09-28T09:25:00+05:30',
+          checkoutAt: '2026-09-28T19:00:00+05:30',
+          note: 'forgot to check out',
+        },
       });
 
       expect(res.statusCode).toBe(200);
@@ -299,7 +327,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         payload: { status: 'present', note: 'x' },
       });
       expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_DATE_NOT_TRACKED');
+      expect(JSON.parse(res.body).error_code).toBe(
+        'ATTENDANCE_DATE_NOT_TRACKED',
+      );
       expect(writeCalls).toHaveLength(0);
     });
 
@@ -308,7 +338,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         method: 'PUT',
         url: putUrl(),
         headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: { status: 'present', checkinAt: '2026-09-28T09:40:00+05:30', note: 'x' },
+        payload: {
+          status: 'present',
+          checkinAt: '2026-09-28T09:40:00+05:30',
+          note: 'x',
+        },
       });
       expect(res.statusCode).toBe(422);
       expect(JSON.parse(res.body).error_code).toBe('VALIDATION_ERROR');
@@ -471,7 +505,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       expect(JSON.parse(first.body)).toEqual({ deleted: true });
       expect(writeCalls).toHaveLength(2); // soft delete + audit insert, in that order
       expect(writeCalls[0]).toContain('update public.attendance_day_overrides');
-      expect(writeCalls[1]).toContain('insert into public.attendance_corrections');
+      expect(writeCalls[1]).toContain(
+        'insert into public.attendance_corrections',
+      );
 
       txFacts = (sql) =>
         sql.includes('from public.attendance_day_overrides')
@@ -490,7 +526,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('422 ATTENDANCE_DATE_NOT_TRACKED on a pre-enrolment date (nothing to remove)', async () => {
       txFacts = (sql) =>
-        sql.includes('from public.attendance_enrolments') ? { rows: [] } : baseFacts(sql);
+        sql.includes('from public.attendance_enrolments')
+          ? { rows: [] }
+          : baseFacts(sql);
 
       const res = await app.inject({
         method: 'DELETE',
@@ -498,7 +536,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
       expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_DATE_NOT_TRACKED');
+      expect(JSON.parse(res.body).error_code).toBe(
+        'ATTENDANCE_DATE_NOT_TRACKED',
+      );
     });
 
     it('422 for a bad workDate shape, pre-DB', async () => {
@@ -544,14 +584,24 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       work_date: '2026-09-28',
       created_at: '2026-09-29T05:00:00+00:00',
       note: 'sick leave missed as absent',
-      old_value: { status: 'present', checkinAt: '2026-09-28T09:25:00+05:30', checkoutAt: '2026-09-28T18:10:00+05:30' },
+      old_value: {
+        status: 'present',
+        checkinAt: '2026-09-28T09:25:00+05:30',
+        checkoutAt: '2026-09-28T18:10:00+05:30',
+      },
       new_value: { status: 'absent', checkinAt: null, checkoutAt: null },
       actor_name: 'Priya Owner',
     };
 
     it('200 — one camelCase page, hasMore + nextCursor beyond the page size', async () => {
-      const page = [historyRow, { ...historyRow, id: '22222222-2222-4222-8222-222222222222' }];
-      const extra = { ...historyRow, id: '33333333-3333-4333-8333-333333333333' };
+      const page = [
+        historyRow,
+        { ...historyRow, id: '22222222-2222-4222-8222-222222222222' },
+      ];
+      const extra = {
+        ...historyRow,
+        id: '33333333-3333-4333-8333-333333333333',
+      };
       txFacts = (sql) =>
         sql.includes('from public.attendance_corrections c') &&
         sql.includes('order by c.created_at desc')
@@ -577,7 +627,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         correctedAt: '2026-09-29T10:30:00+05:30',
         actorName: 'Priya Owner',
         note: 'sick leave missed as absent',
-        oldValue: { status: 'present', checkinAt: '2026-09-28T09:25:00+05:30', checkoutAt: '2026-09-28T18:10:00+05:30' },
+        oldValue: {
+          status: 'present',
+          checkinAt: '2026-09-28T09:25:00+05:30',
+          checkoutAt: '2026-09-28T18:10:00+05:30',
+        },
         newValue: { status: 'absent', checkinAt: null, checkoutAt: null },
       });
       // The cursor is opaque but must decode back to the last row + scope.
@@ -605,7 +659,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
     });
 
     it('400 "Invalid cursor" for a foreign-scope cursor (replay across endpoints)', async () => {
-      const foreign = encodeCursor('some-id', '2026-09-29T00:00:00.000Z', 'jobs-list');
+      const foreign = encodeCursor(
+        'some-id',
+        '2026-09-29T00:00:00.000Z',
+        'jobs-list',
+      );
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/attendance/corrections?employeeId=${EMPLOYEE_ID}&cursor=${foreign}`,
@@ -655,7 +713,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
       expect(res.statusCode).toBe(404);
-      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_EMPLOYEE_NOT_FOUND');
+      expect(JSON.parse(res.body).error_code).toBe(
+        'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+      );
     });
 
     it('403 on a technician JWT', async () => {
@@ -694,7 +754,9 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       };
       gateAccess();
       txFacts = (sql) =>
-        sql.includes('order by c.created_at desc') ? { rows: [row] } : baseFacts(sql);
+        sql.includes('order by c.created_at desc')
+          ? { rows: [row] }
+          : baseFacts(sql);
 
       const first = await app.inject({
         method: 'GET',
@@ -747,7 +809,7 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
       expect(body.data[0].workDate).toBe('2026-09-26');
     });
 
-    it("200 — a minted cursor fetches page 2 with no overlap and hasMore false at the end (G2-P12, real cursor round-trip)", async () => {
+    it('200 — a minted cursor fetches page 2 with no overlap and hasMore false at the end (G2-P12, real cursor round-trip)', async () => {
       gateAccess();
       const row = (id: string, createdAt: string) => ({
         id,
@@ -759,8 +821,14 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
         new_value: { status: 'absent', checkinAt: null, checkoutAt: null },
         actor_name: 'Priya Owner',
       });
-      const first = row('66666666-6666-4666-8666-666666666666', '2026-09-29T05:00:00+00:00');
-      const second = row('77777777-7777-4777-8777-777777777777', '2026-09-28T04:00:00+00:00');
+      const first = row(
+        '66666666-6666-4666-8666-666666666666',
+        '2026-09-29T05:00:00+00:00',
+      );
+      const second = row(
+        '77777777-7777-4777-8777-777777777777',
+        '2026-09-28T04:00:00+00:00',
+      );
       txFacts = (sql) => {
         if (sql.includes('from public.attendance_corrections c')) {
           // Page 2 is the cursor-armed statement (strictly-older row tuple).
@@ -800,7 +868,11 @@ describe('Corrections HTTP boundary (e2e, 18-2)', () => {
 
     it('400 for a cursor minted on the owner scope (cross-scope replay)', async () => {
       gateAccess(); // the AD-17 gate precedes the cursor decode
-      const ownerCursor = encodeCursor('id', '2026-09-29T00:00:00.000Z', 'day-corrections-owner');
+      const ownerCursor = encodeCursor(
+        'id',
+        '2026-09-29T00:00:00.000Z',
+        'day-corrections-owner',
+      );
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/attendance/me/corrections?cursor=${ownerCursor}`,

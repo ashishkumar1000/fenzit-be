@@ -1,11 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsInt,
-  IsOptional,
-  Max,
-  Min,
-} from 'class-validator';
+import { IsInt, IsOptional, Max, Min } from 'class-validator';
 import { MAX_PAUSE_MINUTES } from '../report-queue.service';
 
 /**

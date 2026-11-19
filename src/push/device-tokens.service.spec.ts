@@ -35,7 +35,11 @@ describe('DeviceTokensService', () => {
 
   describe('register', () => {
     const dto = (over: Partial<RegisterDeviceTokenDto> = {}) =>
-      ({ token: TOKEN, platform: 'android', ...over }) as RegisterDeviceTokenDto;
+      ({
+        token: TOKEN,
+        platform: 'android',
+        ...over,
+      }) as RegisterDeviceTokenDto;
 
     it('binds the row to the JWT user, never to anything in the body', async () => {
       // A hostile body trying to name another user must have no effect.
@@ -64,7 +68,12 @@ describe('DeviceTokensService', () => {
 
     it('stores a null app version when the client omits it', async () => {
       await service.register(USER, dto());
-      expect(query.mock.calls[0][1]).toEqual([TOKEN, USER.userId, 'android', null]);
+      expect(query.mock.calls[0][1]).toEqual([
+        TOKEN,
+        USER.userId,
+        'android',
+        null,
+      ]);
     });
 
     it('passes the app version through when given', async () => {
@@ -94,7 +103,7 @@ describe('DeviceTokensService', () => {
   });
 
   describe('unregister', () => {
-    it('deletes only the caller\'s own row for the token', async () => {
+    it("deletes only the caller's own row for the token", async () => {
       await service.unregister(USER, TOKEN);
 
       const [sql, params] = query.mock.calls[0] as [string, unknown[]];

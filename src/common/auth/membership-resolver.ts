@@ -15,7 +15,11 @@ interface UserAccessRow {
   id: string;
   platform_admin: boolean;
   disabled: boolean;
-  memberships: Array<{ tenant_id: string; role: string; status: string }> | null;
+  memberships: Array<{
+    tenant_id: string;
+    role: string;
+    status: string;
+  }> | null;
 }
 
 /**

@@ -102,11 +102,14 @@ describe('weekly-off routes: DELETE body handling (real DB)', () => {
     },
   );
 
-  maybeIt('"{}" body: parsed, ignored by the route, company admin 200', async () => {
-    const r = await del({ ...owner(), ...JSON_CT }, '{}');
-    expect(r.statusCode).toBe(200);
-    expect(await overrideSpans(pool, emp(), T)).toEqual([]);
-  });
+  maybeIt(
+    '"{}" body: parsed, ignored by the route, company admin 200',
+    async () => {
+      const r = await del({ ...owner(), ...JSON_CT }, '{}');
+      expect(r.statusCode).toBe(200);
+      expect(await overrideSpans(pool, emp(), T)).toEqual([]);
+    },
+  );
 
   maybeIt('"{}" body: employee still 403', async () => {
     const r = await del({ ...tech(), ...JSON_CT }, '{}');

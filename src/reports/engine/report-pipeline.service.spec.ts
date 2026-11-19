@@ -40,7 +40,7 @@ const queuedRow: ReportRequestRow = {
     start_date: '2026-09-01',
     end_date: '2026-09-07',
     technician_ids: [],
-      office_ids: [],
+    office_ids: [],
   },
   status: ReportRequestStatus.GENERATING,
   attempt_count: 1,
@@ -69,7 +69,7 @@ function makeDefinition(): ReportDefinition & {
     // 23-8: definitions MAY carry a supersession gate (the payslip does) —
     // default mocks resolve, so the happy path stays the happy path.
     verifyBeforeReady: jest.fn().mockResolvedValue(undefined),
-  } as never;
+  };
 }
 
 /** Sentinel pg transaction client handed to definitions as ctx.pg. */
@@ -125,7 +125,8 @@ describe('ReportPipelineService (story 12-3)', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn(
-              (key: string) => ({ REPORT_MAX_JOBS: 4321 } as Record<string, unknown>)[key],
+              (key: string) =>
+                (({ REPORT_MAX_JOBS: 4321 }) as Record<string, unknown>)[key],
             ),
           },
         },
@@ -221,7 +222,9 @@ describe('ReportPipelineService (story 12-3)', () => {
     it('flows a configured REPORT_MAX_ATTENDANCE_ROWS into ctx.maxRows (21-1 review gap)', async () => {
       config.get.mockImplementation(
         (key: string) =>
-          (({ REPORT_MAX_ATTENDANCE_ROWS: 7777 }) as Record<string, unknown>)[key],
+          (({ REPORT_MAX_ATTENDANCE_ROWS: 7777 }) as Record<string, unknown>)[
+            key
+          ],
       );
       mockAdmin();
 
@@ -359,7 +362,8 @@ describe('ReportPipelineService (story 12-3)', () => {
       });
       // Order is the guarantee: no pdfmake CPU, no upload for a dead slip.
       const [fetchOrder] = definition.fetchData.mock.invocationCallOrder;
-      const [verifyOrder] = definition.verifyBeforeReady.mock.invocationCallOrder;
+      const [verifyOrder] =
+        definition.verifyBeforeReady.mock.invocationCallOrder;
       const [buildOrder] = definition.buildDocument.mock.invocationCallOrder;
       expect(fetchOrder).toBeLessThan(verifyOrder);
       expect(verifyOrder).toBeLessThan(buildOrder);
@@ -392,7 +396,7 @@ describe('ReportPipelineService (story 12-3)', () => {
 
     it('a definition without a gate still runs the happy path (verify is optional)', async () => {
       const { verifyBeforeReady, ...withoutVerify } = definition;
-      registry.get.mockReturnValue(withoutVerify as never);
+      registry.get.mockReturnValue(withoutVerify);
 
       await service.run(queuedRow);
 
@@ -403,7 +407,9 @@ describe('ReportPipelineService (story 12-3)', () => {
     });
 
     it('a gate throwing a PLAIN error (no error_code) stamps the generic REPORT_GENERATION_FAILED', async () => {
-      definition.verifyBeforeReady.mockRejectedValue(new Error('gate exploded'));
+      definition.verifyBeforeReady.mockRejectedValue(
+        new Error('gate exploded'),
+      );
 
       await service.run(queuedRow);
 

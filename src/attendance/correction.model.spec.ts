@@ -1,4 +1,9 @@
-import { CORRECTION_MARKER_KEYS, EMPTY_CORRECTION_VALUE, toCorrectionEntry, validateCorrectionValue } from './correction.model';
+import {
+  CORRECTION_MARKER_KEYS,
+  EMPTY_CORRECTION_VALUE,
+  toCorrectionEntry,
+  validateCorrectionValue,
+} from './correction.model';
 
 /**
  * Pure spec for the corrections audit model (18-2). Written as a tester:
@@ -44,19 +49,33 @@ describe('toCorrectionEntry — the wire shape of one history entry', () => {
 
   it('a string created_at in another offset is re-anchored to the tenant offset', () => {
     expect(
-      toCorrectionEntry(row({ created_at: '2026-09-28T10:00:00+05:30' }), null, TZ).correctedAt,
+      toCorrectionEntry(
+        row({ created_at: '2026-09-28T10:00:00+05:30' }),
+        null,
+        TZ,
+      ).correctedAt,
     ).toBe('2026-09-28T10:00:00+05:30');
   });
 });
 
 describe('validateCorrectionValue — the untrusted jsonb gate', () => {
   it('a well-formed stored value passes through field-for-field', () => {
-    const stored = { status: 'half_day', checkinAt: '2026-09-28T09:30:00+05:30', checkoutAt: null };
+    const stored = {
+      status: 'half_day',
+      checkinAt: '2026-09-28T09:30:00+05:30',
+      checkoutAt: null,
+    };
     expect(validateCorrectionValue(stored)).toEqual(stored);
   });
 
   it('a foreign/unknown status string degrades to null, not a crash', () => {
-    expect(validateCorrectionValue({ status: 'on_a_break', checkinAt: null, checkoutAt: null }).status).toBeNull();
+    expect(
+      validateCorrectionValue({
+        status: 'on_a_break',
+        checkinAt: null,
+        checkoutAt: null,
+      }).status,
+    ).toBeNull();
   });
 
   it('non-string timestamps degrade to null', () => {
@@ -66,30 +85,54 @@ describe('validateCorrectionValue — the untrusted jsonb gate', () => {
   });
 
   it('a stored wrong SHAPE from the other epic (array) becomes the empty value', () => {
-    expect(validateCorrectionValue(['old', 'shape'])).toEqual({ ...EMPTY_CORRECTION_VALUE });
+    expect(validateCorrectionValue(['old', 'shape'])).toEqual({
+      ...EMPTY_CORRECTION_VALUE,
+    });
   });
 
   it('null, numbers and missing payloads become the empty value — a removed correction reads honest', () => {
-    expect(validateCorrectionValue(null)).toEqual({ ...EMPTY_CORRECTION_VALUE });
-    expect(validateCorrectionValue(undefined)).toEqual({ ...EMPTY_CORRECTION_VALUE });
+    expect(validateCorrectionValue(null)).toEqual({
+      ...EMPTY_CORRECTION_VALUE,
+    });
+    expect(validateCorrectionValue(undefined)).toEqual({
+      ...EMPTY_CORRECTION_VALUE,
+    });
     expect(validateCorrectionValue(42)).toEqual({ ...EMPTY_CORRECTION_VALUE });
   });
 
   it('extra keys are dropped (the wire never echoes unknown fields)', () => {
     const out = validateCorrectionValue({
-      status: 'present', checkinAt: null, checkoutAt: null, actor_id: 'x', tampered: true,
+      status: 'present',
+      checkinAt: null,
+      checkoutAt: null,
+      actor_id: 'x',
+      tampered: true,
     });
-    expect(Object.keys(out).sort()).toEqual(['checkinAt', 'checkoutAt', 'status']);
+    expect(Object.keys(out).sort()).toEqual([
+      'checkinAt',
+      'checkoutAt',
+      'status',
+    ]);
   });
 
   it('every 12 status keys survive a write→read round trip by name', () => {
     for (const status of [
-      'not_tracked', 'not_checked_in_yet', 'in_progress', 'weekly_off', 'holiday',
-      'worked_on_holiday', 'leave', 'half_day_leave', 'present', 'half_day',
-      'absent', 'checkout_missing',
+      'not_tracked',
+      'not_checked_in_yet',
+      'in_progress',
+      'weekly_off',
+      'holiday',
+      'worked_on_holiday',
+      'leave',
+      'half_day_leave',
+      'present',
+      'half_day',
+      'absent',
+      'checkout_missing',
     ]) {
       expect(
-        validateCorrectionValue({ status, checkinAt: null, checkoutAt: null }).status,
+        validateCorrectionValue({ status, checkinAt: null, checkoutAt: null })
+          .status,
       ).toBe(status);
     }
   });
@@ -98,14 +141,21 @@ describe('validateCorrectionValue — the untrusted jsonb gate', () => {
 describe('CORRECTION_MARKER_KEYS — the actionable-marker contract', () => {
   it('carries exactly the four marker keys (a fifth is an engine-only concept)', () => {
     expect([...CORRECTION_MARKER_KEYS]).toEqual([
-      'corrected', 'leave_pending', 'checkout_missing', 'fake_location_attempt',
+      'corrected',
+      'leave_pending',
+      'checkout_missing',
+      'fake_location_attempt',
     ]);
   });
 });
 
 describe('EMPTY_CORRECTION_VALUE — the zero value', () => {
   it('is frozen and fully null (the removal-audit new_value)', () => {
-    expect(EMPTY_CORRECTION_VALUE).toEqual({ status: null, checkinAt: null, checkoutAt: null });
+    expect(EMPTY_CORRECTION_VALUE).toEqual({
+      status: null,
+      checkinAt: null,
+      checkoutAt: null,
+    });
     expect(Object.isFrozen(EMPTY_CORRECTION_VALUE));
   });
 });

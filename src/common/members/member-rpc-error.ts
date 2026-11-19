@@ -26,7 +26,8 @@ export function memberRpcException(error: RpcError): HttpException | null {
       if (error.hint === ErrorCode.PLATFORM_STAFF_NOT_MEMBER) {
         return new BadRequestException({
           error_code: ErrorCode.PLATFORM_STAFF_NOT_MEMBER,
-          message: 'This number belongs to Fenzit staff and cannot join a company',
+          message:
+            'This number belongs to Fenzit staff and cannot join a company',
         });
       }
       if (error.hint === ErrorCode.NOT_AN_EMPLOYEE) {

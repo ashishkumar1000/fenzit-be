@@ -158,7 +158,10 @@ describe('EmailLoginService', () => {
   });
 
   it('database errors do not count toward the lockout', async () => {
-    const { svc, cache, query } = build(null, { code: '57P01', message: 'boom' });
+    const { svc, cache, query } = build(null, {
+      code: '57P01',
+      message: 'boom',
+    });
     for (let i = 0; i < EMAIL_LOGIN_MAX_FAILURES + 2; i++) {
       await svc.login(ok()).catch(() => undefined);
     }

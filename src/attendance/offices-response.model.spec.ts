@@ -10,7 +10,9 @@ import {
 
 const TODAY = '2026-09-26';
 
-function ruleRow(overrides: Partial<AttendanceOfficeRuleRow> = {}): AttendanceOfficeRuleRow {
+function ruleRow(
+  overrides: Partial<AttendanceOfficeRuleRow> = {},
+): AttendanceOfficeRuleRow {
   return {
     id: 'rule-uuid',
     office_id: 'office-uuid',
@@ -66,7 +68,9 @@ describe('offices-response.model (story 15-3)', () => {
 
   describe('toOfficeRuleResponse', () => {
     it('maps the snake_case row to the API shape (HH:mm times, numeric hours, range bounds)', () => {
-      expect(toOfficeRuleResponse(ruleRow({ valid: '[2026-09-26,2026-09-27)' }))).toEqual({
+      expect(
+        toOfficeRuleResponse(ruleRow({ valid: '[2026-09-26,2026-09-27)' })),
+      ).toEqual({
         id: 'rule-uuid',
         startTime: '10:00',
         endTime: '18:00',
@@ -79,8 +83,11 @@ describe('offices-response.model (story 15-3)', () => {
     });
 
     it('maps a Postgres numeric (string) and a JS number alike to a number', () => {
-      expect(toOfficeRuleResponse(ruleRow({ full_day_hours: 8, half_day_hours: '4.00' })))
-        .toEqual(expect.objectContaining({ fullDayHours: 8, halfDayHours: 4 }));
+      expect(
+        toOfficeRuleResponse(
+          ruleRow({ full_day_hours: 8, half_day_hours: '4.00' }),
+        ),
+      ).toEqual(expect.objectContaining({ fullDayHours: 8, halfDayHours: 4 }));
     });
   });
 
@@ -101,7 +108,8 @@ describe('offices-response.model (story 15-3)', () => {
       const legacy = { ...officeRow } as Partial<AttendanceOfficeRow>;
       delete legacy.formatted_address;
       expect(
-        toOfficeDetailResponse(legacy as AttendanceOfficeRow, []).formattedAddress,
+        toOfficeDetailResponse(legacy as AttendanceOfficeRow, [])
+          .formattedAddress,
       ).toBeNull();
     });
   });
@@ -124,9 +132,16 @@ describe('offices-response.model (story 15-3)', () => {
 
   describe('pickCurrentRule', () => {
     it('picks the rule whose range contains today (from inclusive, to exclusive)', () => {
-      const clipped = ruleRow({ id: 'current', valid: '[2026-09-20,2026-09-27)' });
-      expect(pickCurrentRule([ruleRow({ id: 'old', valid: '[2026-09-10,2026-09-20)' }), clipped], TODAY)?.id)
-        .toBe('current');
+      const clipped = ruleRow({
+        id: 'current',
+        valid: '[2026-09-20,2026-09-27)',
+      });
+      expect(
+        pickCurrentRule(
+          [ruleRow({ id: 'old', valid: '[2026-09-10,2026-09-20)' }), clipped],
+          TODAY,
+        )?.id,
+      ).toBe('current');
     });
 
     it('picks the open-ended rule — an empty upper bound means today is inside', () => {
@@ -135,11 +150,15 @@ describe('offices-response.model (story 15-3)', () => {
     });
 
     it('treats the upper bound as exclusive — a rule ending today is NOT current', () => {
-      expect(pickCurrentRule([ruleRow({ valid: '[2026-09-20,2026-09-26)' })], TODAY)).toBeNull();
+      expect(
+        pickCurrentRule([ruleRow({ valid: '[2026-09-20,2026-09-26)' })], TODAY),
+      ).toBeNull();
     });
 
     it('a rule starting today IS current (lower bound inclusive)', () => {
-      expect(pickCurrentRule([ruleRow({ valid: '[2026-09-26,)' })], TODAY)?.id).toBe('rule-uuid');
+      expect(
+        pickCurrentRule([ruleRow({ valid: '[2026-09-26,)' })], TODAY)?.id,
+      ).toBe('rule-uuid');
     });
 
     it('returns null with no history', () => {
@@ -151,20 +170,27 @@ describe('offices-response.model (story 15-3)', () => {
     it('picks the earliest future rule', () => {
       const tomorrow = ruleRow({ id: 'next', valid: '[2026-09-27,)' });
       const later = ruleRow({ id: 'later', valid: '[2026-10-01,)' });
-      expect(pickNextRule([later, ruleRow({ id: 'past', valid: '[2026-09-01,2026-09-26)' }), tomorrow], TODAY)?.id)
-        .toBe('next');
+      expect(
+        pickNextRule(
+          [
+            later,
+            ruleRow({ id: 'past', valid: '[2026-09-01,2026-09-26)' }),
+            tomorrow,
+          ],
+          TODAY,
+        )?.id,
+      ).toBe('next');
     });
 
     it('a rule starting today is current, not next', () => {
-      expect(pickNextRule([ruleRow({ valid: '[2026-09-26,)' })], TODAY)).toBeNull();
+      expect(
+        pickNextRule([ruleRow({ valid: '[2026-09-26,)' })], TODAY),
+      ).toBeNull();
     });
 
     it('returns null with no future rule — no pending edit', () => {
       expect(
-        pickNextRule(
-          [ruleRow({ valid: '[2026-09-01,2026-09-27)' })],
-          TODAY,
-        ),
+        pickNextRule([ruleRow({ valid: '[2026-09-01,2026-09-27)' })], TODAY),
       ).toBeNull();
     });
   });

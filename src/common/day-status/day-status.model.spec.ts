@@ -1,4 +1,9 @@
-import { computeDayStatus, effectiveInstants, type EngineOverrideRow, type EngineRecordRow } from './day-status.model';
+import {
+  computeDayStatus,
+  effectiveInstants,
+  type EngineOverrideRow,
+  type EngineRecordRow,
+} from './day-status.model';
 import type { DayContext } from './day-context';
 import type { DayStatusOutcome } from './day-status.model';
 
@@ -58,10 +63,18 @@ const rec = (checkin: string, checkout: string | null): EngineRecordRow => ({
   checkout_at: checkout ? new Date(`2026-09-28T${checkout}:00+05:30`) : null,
 });
 
-const ov = (status: string | null, checkin: string | null, checkout: string | null = null): EngineOverrideRow => ({
+const ov = (
+  status: string | null,
+  checkin: string | null,
+  checkout: string | null = null,
+): EngineOverrideRow => ({
   status,
-  manual_checkin_at: checkin ? new Date(`2026-09-28T${checkin}:00+05:30`) : null,
-  manual_checkout_at: checkout ? new Date(`2026-09-28T${checkout}:00+05:30`) : null,
+  manual_checkin_at: checkin
+    ? new Date(`2026-09-28T${checkin}:00+05:30`)
+    : null,
+  manual_checkout_at: checkout
+    ? new Date(`2026-09-28T${checkout}:00+05:30`)
+    : null,
 });
 
 const input = (over: {
@@ -94,17 +107,27 @@ describe('rule 1 — status-only override short-circuits', () => {
       input({ record: rec('09:50', '18:40'), override: ov('present', null) }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'present', daysWorked: 1, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: ['corrected'],
+      status: 'present',
+      daysWorked: 1,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: ['corrected'],
     });
   });
 
   it('half_day and absent grade 0.5 / 0 — the status fixes the credit', () => {
     expect(
-      computeDayStatus(input({ record: rec('09:25', '18:40'), override: ov('half_day', null) })).daysWorked,
+      computeDayStatus(
+        input({
+          record: rec('09:25', '18:40'),
+          override: ov('half_day', null),
+        }),
+      ).daysWorked,
     ).toBe(0.5);
     expect(
-      computeDayStatus(input({ record: rec('09:25', '18:40'), override: ov('absent', null) })).daysWorked,
+      computeDayStatus(
+        input({ record: rec('09:25', '18:40'), override: ov('absent', null) }),
+      ).daysWorked,
     ).toBe(0);
   });
 
@@ -141,8 +164,11 @@ describe('rule 1 — status-only override short-circuits', () => {
       }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'present', daysWorked: 1, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: ['corrected'],
+      status: 'present',
+      daysWorked: 1,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: ['corrected'],
     });
   });
 
@@ -176,11 +202,17 @@ describe('rule 1 — status-only override short-circuits', () => {
 describe('rule 2 — not tracked (loses only to rule 1)', () => {
   it('an untracked date with a stored record still shows not_tracked — the record rides as data', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:25', '18:40'), ctx: { tracked: false, trackedBase: false } }),
+      input({
+        record: rec('09:25', '18:40'),
+        ctx: { tracked: false, trackedBase: false },
+      }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'not_tracked', daysWorked: 0, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: [],
+      status: 'not_tracked',
+      daysWorked: 0,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: [],
     });
     expect(out.workedMinutes).toBe(555); // history the owner may still review
     expect(out.lateMinutes).toBeNull();
@@ -205,24 +237,37 @@ describe('rule 2 — not tracked (loses only to rule 1)', () => {
 describe('rule 3 — worked_on_holiday (credit separate, Late/Early suppressed)', () => {
   it('a full-shift check-in on a weekly off earns the holiday credit, never mixed into daysWorked', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:25', '18:40'), ctx: { isWeeklyOff: true, isWorkingDay: false } }),
+      input({
+        record: rec('09:25', '18:40'),
+        ctx: { isWeeklyOff: true, isWorkingDay: false },
+      }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'worked_on_holiday', daysWorked: 0, leaveCredit: 0,
-      workedOnHolidayCredit: 1, markers: [],
+      status: 'worked_on_holiday',
+      daysWorked: 0,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 1,
+      markers: [],
     });
   });
 
   it('a half shift earns 0.5 and a short shift earns 0 — the same thresholds as GR-3', () => {
-    const half = computeDayStatus(input({ record: rec('09:30', '15:00'), ctx: { isWeeklyOff: true } }));
-    const short = computeDayStatus(input({ record: rec('09:30', '12:00'), ctx: { isWeeklyOff: true } }));
+    const half = computeDayStatus(
+      input({ record: rec('09:30', '15:00'), ctx: { isWeeklyOff: true } }),
+    );
+    const short = computeDayStatus(
+      input({ record: rec('09:30', '12:00'), ctx: { isWeeklyOff: true } }),
+    );
     expect(half.workedOnHolidayCredit).toBe(0.5);
     expect(short.workedOnHolidayCredit).toBe(0);
   });
 
   it('a HOLIDAY check-in grades the same way (weekly off is not special to the credit)', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:25', '18:40'), ctx: { holidayId: 'h-1', holidayName: 'Diwali', isWorkingDay: false } }),
+      input({
+        record: rec('09:25', '18:40'),
+        ctx: { holidayId: 'h-1', holidayName: 'Diwali', isWorkingDay: false },
+      }),
     );
     expect(out.status).toBe('worked_on_holiday');
     expect(out.workedOnHolidayCredit).toBe(1);
@@ -230,7 +275,10 @@ describe('rule 3 — worked_on_holiday (credit separate, Late/Early suppressed)'
 
   it('an open past check-in carries the checkout_missing marker and zero credit', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:25', null), ctx: { isWeeklyOff: true, isWorkingDay: false } }),
+      input({
+        record: rec('09:25', null),
+        ctx: { isWeeklyOff: true, isWorkingDay: false },
+      }),
     );
     expect(out.status).toBe('worked_on_holiday');
     expect(out.workedOnHolidayCredit).toBe(0); // open → 0
@@ -240,13 +288,16 @@ describe('rule 3 — worked_on_holiday (credit separate, Late/Early suppressed)'
   it('no Late/Early flag on an off-day check-in even when it is inside the cutoff window', () => {
     // 09:50 is 5 minutes past the late floor — the flag is suppressed by rule.
     const out = computeDayStatus(
-      input({ record: rec('09:50', '18:40'), ctx: { isWeeklyOff: true, isWorkingDay: false } }),
+      input({
+        record: rec('09:50', '18:40'),
+        ctx: { isWeeklyOff: true, isWorkingDay: false },
+      }),
     );
     expect(out.lateMinutes).toBeNull();
     expect(out.isLate).toBe(false);
   });
 
-  it('today\'s open check-in on a holiday stays worked_on_holiday (rule 3 outranks rule 10)', () => {
+  it("today's open check-in on a holiday stays worked_on_holiday (rule 3 outranks rule 10)", () => {
     const out = computeDayStatus(
       input({
         record: rec('09:25', null),
@@ -262,7 +313,12 @@ describe('rule 3 — worked_on_holiday (credit separate, Late/Early suppressed)'
     const out = computeDayStatus(
       input({
         record: rec('09:25', '18:40'),
-        ctx: { isWeeklyOff: true, leaveState: 'pending', leavePart: 'full_day', isWorkingDay: false },
+        ctx: {
+          isWeeklyOff: true,
+          leaveState: 'pending',
+          leavePart: 'full_day',
+          isWorkingDay: false,
+        },
       }),
     );
     expect(out.status).toBe('worked_on_holiday');
@@ -274,19 +330,32 @@ describe('rule 3 — worked_on_holiday (credit separate, Late/Early suppressed)'
 // ---- Rule 4: weekly off, else holiday (no check-in) --------------------------
 describe('rule 4 — weekly_off vs holiday label', () => {
   it('a weekly off with no check-in reads weekly_off', () => {
-    expect(computeDayStatus(input({ ctx: { isWeeklyOff: true, isWorkingDay: false } })).status).toBe('weekly_off');
+    expect(
+      computeDayStatus(
+        input({ ctx: { isWeeklyOff: true, isWorkingDay: false } }),
+      ).status,
+    ).toBe('weekly_off');
   });
 
   it('a holiday with no check-in reads holiday', () => {
     expect(
-      computeDayStatus(input({ ctx: { holidayId: 'h-1', holidayName: 'Diwali', isWorkingDay: false } })).status,
+      computeDayStatus(
+        input({
+          ctx: { holidayId: 'h-1', holidayName: 'Diwali', isWorkingDay: false },
+        }),
+      ).status,
     ).toBe('holiday');
   });
 
-  it('a date that is BOTH weekly off and holiday reads weekly_off — the ladder\'s literal order (D1 ruling)', () => {
+  it("a date that is BOTH weekly off and holiday reads weekly_off — the ladder's literal order (D1 ruling)", () => {
     const out = computeDayStatus(
       input({
-        ctx: { isWeeklyOff: true, holidayId: 'h-1', holidayName: 'Diwali', isWorkingDay: false },
+        ctx: {
+          isWeeklyOff: true,
+          holidayId: 'h-1',
+          holidayName: 'Diwali',
+          isWorkingDay: false,
+        },
       }),
     );
     expect(out.status).toBe('weekly_off');
@@ -314,8 +383,11 @@ describe('rule 5 — full-day leave (no check-in)', () => {
       input({ ctx: { leaveState: 'approved', leavePart: 'full_day' } }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'leave', daysWorked: 0, leaveCredit: 1,
-      workedOnHolidayCredit: 0, markers: [],
+      status: 'leave',
+      daysWorked: 0,
+      leaveCredit: 1,
+      workedOnHolidayCredit: 0,
+      markers: [],
     });
   });
 
@@ -332,7 +404,9 @@ describe('rule 5 — full-day leave (no check-in)', () => {
   });
 
   it('a pending full-day leave with no activity on a past date reads absent, marker only', () => {
-    const out = computeDayStatus(input({ ctx: { leaveState: 'pending', leavePart: 'full_day' } }));
+    const out = computeDayStatus(
+      input({ ctx: { leaveState: 'pending', leavePart: 'full_day' } }),
+    );
     expect(out.status).toBe('absent');
     expect(out.leaveCredit).toBe(0);
     expect(out.markers).toEqual(['leave_pending']);
@@ -349,8 +423,11 @@ describe('rule 6 — half_day_leave credit', () => {
       }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'half_day_leave', daysWorked: 0.5, leaveCredit: 0.5,
-      workedOnHolidayCredit: 0, markers: [],
+      status: 'half_day_leave',
+      daysWorked: 0.5,
+      leaveCredit: 0.5,
+      workedOnHolidayCredit: 0,
+      markers: [],
     });
     expect(out.workedMinutes).toBe(330);
   });
@@ -380,7 +457,10 @@ describe('rule 6 — half_day_leave credit', () => {
 
   it('an open record on a PAST leave day earns nothing extra and flags checkout_missing', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:30', null), ctx: { leaveState: 'approved', leavePart: 'first_half' } }),
+      input({
+        record: rec('09:30', null),
+        ctx: { leaveState: 'approved', leavePart: 'first_half' },
+      }),
     );
     expect(out.status).toBe('half_day_leave');
     expect(out.daysWorked).toBe(0);
@@ -388,7 +468,7 @@ describe('rule 6 — half_day_leave credit', () => {
     expect(out.markers).toEqual(['checkout_missing']);
   });
 
-  it('today\'s OPEN-AND-CLOSED record still grades through rule 6 (the deferral is open-only, not all today)', () => {
+  it("today's OPEN-AND-CLOSED record still grades through rule 6 (the deferral is open-only, not all today)", () => {
     const out = computeDayStatus(
       input({
         record: rec('09:30', '15:00'),
@@ -406,8 +486,11 @@ describe('rule 7 — the worked-day grade (GR-3 thresholds)', () => {
   it('a full shift reads present / 1.0 and carries the late/early facts', () => {
     const out = computeDayStatus(input({ record: rec('09:25', '18:40') }));
     expect(gradeOf(out)).toEqual({
-      status: 'present', daysWorked: 1, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: [],
+      status: 'present',
+      daysWorked: 1,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: [],
     });
     expect(out.workedMinutes).toBe(555);
     expect(out.lateMinutes).toBe(0);
@@ -419,7 +502,9 @@ describe('rule 7 — the worked-day grade (GR-3 thresholds)', () => {
 
   it('exactly-full boundary is present; exactly-half boundary is half_day — the >= semantics', () => {
     // 480 worked = the 8-hour full-day setting: 09:30...17:30 exactly.
-    expect(computeDayStatus(input({ record: rec('09:30', '17:30') })).status).toBe('present');
+    expect(
+      computeDayStatus(input({ record: rec('09:30', '17:30') })).status,
+    ).toBe('present');
     // 240 worked = the 4-hour half-day setting: 09:30...13:30.
     const half = computeDayStatus(input({ record: rec('09:30', '13:30') }));
     expect(half.status).toBe('half_day');
@@ -460,7 +545,15 @@ describe('rule 7 — the worked-day grade (GR-3 thresholds)', () => {
     const out = computeDayStatus(
       input({
         record: rec('10:00', '11:00'),
-        ctx: { officeRulesId: null, startMinute: null, endMinute: null, midpointMinute: null, lateCutoffMinutes: null, fullDayMinutes: null, halfDayMinutes: null },
+        ctx: {
+          officeRulesId: null,
+          startMinute: null,
+          endMinute: null,
+          midpointMinute: null,
+          lateCutoffMinutes: null,
+          fullDayMinutes: null,
+          halfDayMinutes: null,
+        },
       }),
     );
     expect(out.status).toBe('present');
@@ -477,8 +570,11 @@ describe('rule 7 — the worked-day grade (GR-3 thresholds)', () => {
       input({ record: null, override: ov(null, '09:25', '18:40') }),
     );
     expect(gradeOf(out)).toEqual({
-      status: 'present', daysWorked: 1, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: ['corrected'],
+      status: 'present',
+      daysWorked: 1,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: ['corrected'],
     });
     expect(out.workedMinutes).toBe(555);
     expect(out.checkinSource).toBe('manual');
@@ -511,8 +607,11 @@ describe('rule 8 — past date with an open record', () => {
   it('reads checkout_missing, credits nothing, keeps the late facts', () => {
     const out = computeDayStatus(input({ record: rec('09:50', null) }));
     expect(gradeOf(out)).toEqual({
-      status: 'checkout_missing', daysWorked: 0, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: ['checkout_missing'],
+      status: 'checkout_missing',
+      daysWorked: 0,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: ['checkout_missing'],
     });
     expect(out.workedMinutes).toBeNull();
     expect(out.lateMinutes).toBe(5);
@@ -535,8 +634,11 @@ describe('rule 9 — absent (past, no activity)', () => {
   it('a past date with nothing stored reads absent / 0', () => {
     const out = computeDayStatus(input({}));
     expect(gradeOf(out)).toEqual({
-      status: 'absent', daysWorked: 0, leaveCredit: 0,
-      workedOnHolidayCredit: 0, markers: [],
+      status: 'absent',
+      daysWorked: 0,
+      leaveCredit: 0,
+      workedOnHolidayCredit: 0,
+      markers: [],
     });
   });
 
@@ -562,7 +664,11 @@ describe('rule 10 — today and future (before the day is closed)', () => {
 
   it('a today date with an open record reads in_progress (not checkout_missing)', () => {
     const out = computeDayStatus(
-      input({ ctx: { workDate: TODAY }, today: TODAY, record: rec('09:50', null) }),
+      input({
+        ctx: { workDate: TODAY },
+        today: TODAY,
+        record: rec('09:50', null),
+      }),
     );
     expect(out.status).toBe('in_progress');
     expect(out.lateMinutes).toBe(5); // the flag is live from the same math
@@ -587,7 +693,11 @@ describe('markers — corrected, fake_location_attempt, combinations', () => {
 
   it('an override plus a mocked attempt carries BOTH markers in order', () => {
     const out = computeDayStatus(
-      input({ record: rec('09:25', '18:40'), override: ov('present', null), hasUnackMockedAttempt: true }),
+      input({
+        record: rec('09:25', '18:40'),
+        override: ov('present', null),
+        hasUnackMockedAttempt: true,
+      }),
     );
     expect(out.status).toBe('present');
     expect(out.markers).toEqual(['fake_location_attempt', 'corrected']);
@@ -603,7 +713,9 @@ describe('markers — corrected, fake_location_attempt, combinations', () => {
 
   it('an empty override object is still a correction (corrected shown, nothing else shifts)', () => {
     // The read layer pre-filters deleted rows; a live empty-shaped row still says corrected.
-    const out = computeDayStatus(input({ record: rec('09:25', '18:40'), override: ov(null, null) }));
+    const out = computeDayStatus(
+      input({ record: rec('09:25', '18:40'), override: ov(null, null) }),
+    );
     expect(out.status).toBe('present');
     expect(out.markers).toEqual(['corrected']);
   });
@@ -611,7 +723,7 @@ describe('markers — corrected, fake_location_attempt, combinations', () => {
 
 // ---- effectiveInstants — the per-field substitution -----------------------------
 describe('effectiveInstants — per-field override substitution', () => {
-  it('status-only: the record\'s instants and gps sources show through untouched', () => {
+  it("status-only: the record's instants and gps sources show through untouched", () => {
     const eff = effectiveInstants(rec('09:25', '18:40'), ov('half_day', null));
     expect(eff.checkin?.toISOString()).toBe('2026-09-28T03:55:00.000Z');
     expect(eff.checkout?.toISOString()).toBe('2026-09-28T13:10:00.000Z');
@@ -619,13 +731,16 @@ describe('effectiveInstants — per-field override substitution', () => {
     expect(eff.checkoutSource).toBe('gps');
   });
 
-  it('a times-only check-in replaces the check-in alone (' +
-     'checkout keeps its gps provenance)', () => {
-    const eff = effectiveInstants(rec('09:25', '18:40'), ov(null, '10:00'));
-    expect(eff.checkinSource).toBe('manual');
-    expect(eff.checkoutSource).toBe('gps');
-    expect(eff.checkout?.toISOString()).toBe('2026-09-28T13:10:00.000Z');
-  });
+  it(
+    'a times-only check-in replaces the check-in alone (' +
+      'checkout keeps its gps provenance)',
+    () => {
+      const eff = effectiveInstants(rec('09:25', '18:40'), ov(null, '10:00'));
+      expect(eff.checkinSource).toBe('manual');
+      expect(eff.checkoutSource).toBe('gps');
+      expect(eff.checkout?.toISOString()).toBe('2026-09-28T13:10:00.000Z');
+    },
+  );
 
   it('a checkout-ALONE override (defensive at the engine layer — the API gates it) keeps the record check-in gps', () => {
     const eff = effectiveInstants(rec('09:25', null), ov(null, null, '18:45'));
@@ -635,7 +750,10 @@ describe('effectiveInstants — per-field override substitution', () => {
   });
 
   it('both edges of BOTH fields come from the override (full replace)', () => {
-    const eff = effectiveInstants(rec('09:25', '18:40'), ov(null, '10:00', '19:00'));
+    const eff = effectiveInstants(
+      rec('09:25', '18:40'),
+      ov(null, '10:00', '19:00'),
+    );
     expect(eff.checkinSource).toBe('manual');
     expect(eff.checkoutSource).toBe('manual');
     expect(eff.checkout?.toISOString()).toBe('2026-09-28T13:30:00.000Z');
@@ -643,8 +761,10 @@ describe('effectiveInstants — per-field override substitution', () => {
 
   it('no record AND no override → all nulls (a future empty day)', () => {
     expect(effectiveInstants(null, null)).toEqual({
-      checkin: null, checkout: null,
-      checkinSource: null, checkoutSource: null,
+      checkin: null,
+      checkout: null,
+      checkinSource: null,
+      checkoutSource: null,
     });
   });
 

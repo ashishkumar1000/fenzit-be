@@ -6,7 +6,11 @@ import {
 } from '../templates/brand-kit/brand-theme';
 import { pageHeader, pageFooter } from '../templates/brand-kit/page-header';
 import { summaryCardRow } from '../templates/brand-kit/summary-cards';
-import { sectionTitle, emptyStateBlock, flagList } from '../templates/brand-kit/sections';
+import {
+  sectionTitle,
+  emptyStateBlock,
+  flagList,
+} from '../templates/brand-kit/sections';
 import { jobsTable, JobTableRow } from '../templates/brand-kit/job-table';
 import { PdfmakeRenderer } from './pdfmake-renderer';
 
@@ -50,13 +54,32 @@ function sampleDocument(): ReportDocument {
         'All technicians',
       ),
       summaryCardRow([
-        { label: 'Total jobs', value: '42', accent: brand.done, icon: 'clipboard-list', caption: '95% finish rate' },
-        { label: 'In progress', value: '3', accent: brand.scheduled, icon: 'timer' },
-        { label: 'Cancelled', value: '2', accent: brand.cancelled, icon: 'circle-x' },
+        {
+          label: 'Total jobs',
+          value: '42',
+          accent: brand.done,
+          icon: 'clipboard-list',
+          caption: '95% finish rate',
+        },
+        {
+          label: 'In progress',
+          value: '3',
+          accent: brand.scheduled,
+          icon: 'timer',
+        },
+        {
+          label: 'Cancelled',
+          value: '2',
+          accent: brand.cancelled,
+          icon: 'circle-x',
+        },
       ]),
       sectionTitle('Needs attention', 'triangle-alert'),
       flagList([
-        { title: 'Overdue · J-1044', detail: 'Planned 3 days ago, still pending.' },
+        {
+          title: 'Overdue · J-1044',
+          detail: 'Planned 3 days ago, still pending.',
+        },
       ]),
       sectionTitle('Per technician', 'users'),
       jobsTable(ROWS),

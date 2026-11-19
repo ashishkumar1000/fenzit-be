@@ -80,10 +80,8 @@ export function membersTable(
       error: resolved.error,
     }),
   );
-  node['then'] = (
-    ok: (v: unknown) => unknown,
-    fail: (e: unknown) => unknown,
-  ) => Promise.resolve(resolved).then(ok, fail);
+  node['then'] = (ok: (v: unknown) => unknown, fail: (e: unknown) => unknown) =>
+    Promise.resolve(resolved).then(ok, fail);
   select.mockReturnValue(node);
   return { select, filters };
 }

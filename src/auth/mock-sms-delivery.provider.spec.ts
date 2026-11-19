@@ -16,7 +16,9 @@ describe('MockSmsDeliveryProvider', () => {
   let logSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
     provider = new MockSmsDeliveryProvider();
   });
 

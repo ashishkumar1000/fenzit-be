@@ -37,7 +37,9 @@ describe('WeeklyOffsController (story 15-5)', () => {
 
   describe('delegation', () => {
     it('getWeeklyOffs passes the user', async () => {
-      const getWeeklyOffs = jest.fn().mockResolvedValue({ default: null, next: null, history: [] });
+      const getWeeklyOffs = jest
+        .fn()
+        .mockResolvedValue({ default: null, next: null, history: [] });
       const controller = controllerWith({ getWeeklyOffs });
 
       await expect(controller.getWeeklyOffs(user)).resolves.toEqual({
@@ -49,7 +51,9 @@ describe('WeeklyOffsController (story 15-5)', () => {
     });
 
     it('setWeeklyOffDefault passes the user and the parsed dto', async () => {
-      const setWeeklyOffDefault = jest.fn().mockResolvedValue({ default: null, next: null, history: [] });
+      const setWeeklyOffDefault = jest
+        .fn()
+        .mockResolvedValue({ default: null, next: null, history: [] });
       const controller = controllerWith({ setWeeklyOffDefault });
       const dto = { days: [6, 7] };
 
@@ -61,7 +65,9 @@ describe('WeeklyOffsController (story 15-5)', () => {
       const listOverrides = jest.fn().mockResolvedValue([overrideResponse]);
       const controller = controllerWith({ listOverrides });
 
-      await expect(controller.listOverrides(user)).resolves.toEqual([overrideResponse]);
+      await expect(controller.listOverrides(user)).resolves.toEqual([
+        overrideResponse,
+      ]);
       expect(listOverrides).toHaveBeenCalledWith(user);
     });
 
@@ -92,7 +98,7 @@ describe('WeeklyOffsController (story 15-5)', () => {
       // The id guard throws synchronously (before any promise exists).
       let err: unknown;
       try {
-        controller.setOverride(user, 'not-a-uuid', { days: [5] } as never);
+        controller.setOverride(user, 'not-a-uuid', { days: [5] });
       } catch (e) {
         err = e;
       }
@@ -150,7 +156,7 @@ describe('WeeklyOffsController (story 15-5)', () => {
       (handler: keyof WeeklyOffsController, permission: Permission) => {
         const needed = Reflect.getMetadata(
           CAN_KEY,
-          WeeklyOffsController.prototype[handler] as object,
+          WeeklyOffsController.prototype[handler],
         ) as Permission[] | undefined;
 
         expect(needed).toEqual([permission]);
@@ -163,13 +169,16 @@ describe('WeeklyOffsController (story 15-5)', () => {
       ['listOverrides', 200],
       ['setOverride', 200],
       ['removeOverride', 200],
-    ])('%s carries a fixed @HttpCode(%i)', (handler: keyof WeeklyOffsController, code: number) => {
-      expect(
-        Reflect.getMetadata(
-          HTTP_CODE_METADATA,
-          WeeklyOffsController.prototype[handler] as object,
-        ),
-      ).toBe(code);
-    });
+    ])(
+      '%s carries a fixed @HttpCode(%i)',
+      (handler: keyof WeeklyOffsController, code: number) => {
+        expect(
+          Reflect.getMetadata(
+            HTTP_CODE_METADATA,
+            WeeklyOffsController.prototype[handler] as object,
+          ),
+        ).toBe(code);
+      },
+    );
   });
 });

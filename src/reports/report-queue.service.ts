@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
@@ -50,7 +55,12 @@ export class ReportQueueService {
   async getState(user: RequestUser): Promise<ReportQueueState> {
     const row = await this.readRow(requireTenant(user));
     if (!row) {
-      return { paused: false, pausedUntil: null, pausedBy: null, pausedAt: null };
+      return {
+        paused: false,
+        pausedUntil: null,
+        pausedBy: null,
+        pausedAt: null,
+      };
     }
     return normalise(row);
   }
@@ -70,10 +80,12 @@ export class ReportQueueService {
         throw error;
       }
       return new Set(
-        ((data ?? []) as Array<{
-          tenant_id: string;
-          paused_until: string | null;
-        }>)
+        (
+          (data ?? []) as Array<{
+            tenant_id: string;
+            paused_until: string | null;
+          }>
+        )
           .filter(
             (row) =>
               row.paused_until == null ||
@@ -103,16 +115,14 @@ export class ReportQueueService {
       minutes !== null && minutes > 0
         ? new Date(Date.now() + minutes * 60_000).toISOString()
         : null;
-    const { error } = await admin
-      .from('report_queue_pauses')
-      .upsert({
-        tenant_id: tenantId,
-        paused: true,
-        paused_until: pausedUntil,
-        paused_by: user.userId,
-        paused_at: now,
-        updated_at: now,
-      });
+    const { error } = await admin.from('report_queue_pauses').upsert({
+      tenant_id: tenantId,
+      paused: true,
+      paused_until: pausedUntil,
+      paused_by: user.userId,
+      paused_at: now,
+      updated_at: now,
+    });
     if (error) {
       this.logger.error('Failed to pause the report queue:', { error });
       throw new InternalServerErrorException({
@@ -132,14 +142,12 @@ export class ReportQueueService {
   async resume(user: RequestUser): Promise<ReportQueueState> {
     const tenantId = requireTenant(user);
     const admin = this.supabaseClientFactory.createAdmin();
-    const { error } = await admin
-      .from('report_queue_pauses')
-      .upsert({
-        tenant_id: tenantId,
-        paused: false,
-        paused_until: null,
-        updated_at: new Date().toISOString(),
-      });
+    const { error } = await admin.from('report_queue_pauses').upsert({
+      tenant_id: tenantId,
+      paused: false,
+      paused_until: null,
+      updated_at: new Date().toISOString(),
+    });
     if (error) {
       this.logger.error('Failed to resume the report queue:', { error });
       throw new InternalServerErrorException({
@@ -155,7 +163,9 @@ export class ReportQueueService {
     };
   }
 
-  private async readRow(tenantId: string | undefined): Promise<PauseRow | null> {
+  private async readRow(
+    tenantId: string | undefined,
+  ): Promise<PauseRow | null> {
     const admin = this.supabaseClientFactory.createAdmin();
     const { data, error } = await admin
       .from('report_queue_pauses')
@@ -200,7 +210,8 @@ function normalise(row: PauseRow): ReportQueueState {
       paused && row.paused_until
         ? new Date(row.paused_until).toISOString()
         : null,
-    pausedAt: paused && row.paused_at ? new Date(row.paused_at).toISOString() : null,
+    pausedAt:
+      paused && row.paused_at ? new Date(row.paused_at).toISOString() : null,
     pausedBy: paused ? row.paused_by : null,
   };
 }

@@ -11,10 +11,7 @@
  */
 
 import type { DayGridRow } from './grid-reader';
-import {
-  computeDayStatus,
-  type DayStatusOutcome,
-} from './day-status.model';
+import { computeDayStatus, type DayStatusOutcome } from './day-status.model';
 
 /** The spec-19 D6 tile set, summed over one employee's tracked rows. */
 export interface MonthlyEmployeeSummary {

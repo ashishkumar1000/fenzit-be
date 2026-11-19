@@ -48,7 +48,9 @@ function readRowQb(result: { data: ReportRequestRow | null; error: unknown }) {
 
 const TENANT_ID = 'tenant-uuid';
 
-function reportRow(overrides: Partial<ReportRequestRow> = {}): ReportRequestRow {
+function reportRow(
+  overrides: Partial<ReportRequestRow> = {},
+): ReportRequestRow {
   return {
     id: '00000000-0000-4000-8000-0000000000e1',
     tenant_id: TENANT_ID,
@@ -107,7 +109,9 @@ describe('ReportWorker (story 12-3)', () => {
     let candidateRead = 0;
     const updatePayloads: Record<string, unknown>[] = [];
     const candidateQbs: ReturnType<typeof candidateQb>[] = [];
-    const insert = jest.fn().mockResolvedValue({ error: opts.notifError ?? null });
+    const insert = jest
+      .fn()
+      .mockResolvedValue({ error: opts.notifError ?? null });
 
     const from = jest.fn((table: string) => {
       if (table === 'notifications') {
@@ -263,7 +267,9 @@ describe('ReportWorker (story 12-3)', () => {
         seen = getCorrelationContext();
         throw new Error('pipeline exploded');
       });
-      const errorSpy = jest.spyOn(worker['logger'], 'error').mockImplementation();
+      const errorSpy = jest
+        .spyOn(worker['logger'], 'error')
+        .mockImplementation();
 
       worker.onApplicationBootstrap();
       await tickOnce();
@@ -392,7 +398,10 @@ describe('ReportWorker (story 12-3)', () => {
       });
       const { updatePayloads, insert } = mockAdmin({
         queued: { data: [], error: null },
-        stranded: { data: [{ id: stranded.id, attempt_count: 3 }], error: null },
+        stranded: {
+          data: [{ id: stranded.id, attempt_count: 3 }],
+          error: null,
+        },
         // claim misses, recovery wins, then the permanent-failure stamp
         updateResults: [
           { data: [], error: null },
@@ -448,7 +457,10 @@ describe('ReportWorker (story 12-3)', () => {
     it('a claim race lost on both paths is a silent no-op', async () => {
       mockAdmin({
         queued: { data: [{ id: 'req-x', attempt_count: 0 }], error: null },
-        updateResults: [{ data: [], error: null }, { data: [], error: null }],
+        updateResults: [
+          { data: [], error: null },
+          { data: [], error: null },
+        ],
         row: { data: null, error: null },
       });
 
@@ -550,11 +562,7 @@ describe('ReportWorker (story 12-3)', () => {
       // same one sync.service runs in production.
       expect(candidateQbs).toHaveLength(2); // queued + stranded
       for (const qb of candidateQbs) {
-        expect(qb.not).toHaveBeenCalledWith(
-          'tenant_id',
-          'in',
-          '(tenant-uuid)',
-        );
+        expect(qb.not).toHaveBeenCalledWith('tenant_id', 'in', '(tenant-uuid)');
       }
       expect(pipeline.run).not.toHaveBeenCalled(); // no candidates came back
     });
@@ -569,9 +577,15 @@ describe('ReportWorker (story 12-3)', () => {
           error: null,
         },
         updateResults: [
-          { data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null },
+          {
+            data: [reportRow({ status: ReportRequestStatus.GENERATING })],
+            error: null,
+          },
         ],
-        row: { data: reportRow({ status: ReportRequestStatus.GENERATING }), error: null },
+        row: {
+          data: reportRow({ status: ReportRequestStatus.GENERATING }),
+          error: null,
+        },
       });
 
       worker.onApplicationBootstrap();
@@ -590,9 +604,15 @@ describe('ReportWorker (story 12-3)', () => {
           error: null,
         },
         updateResults: [
-          { data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null },
+          {
+            data: [reportRow({ status: ReportRequestStatus.GENERATING })],
+            error: null,
+          },
         ],
-        row: { data: reportRow({ status: ReportRequestStatus.GENERATING }), error: null },
+        row: {
+          data: reportRow({ status: ReportRequestStatus.GENERATING }),
+          error: null,
+        },
       });
       queue.pausedTenantIds.mockResolvedValue(new Set(['paused-tenant']));
 
@@ -601,7 +621,11 @@ describe('ReportWorker (story 12-3)', () => {
 
       // Only the PAUSED tenant's ids are excluded, both queries.
       for (const qb of candidateQbs) {
-        expect(qb.not).toHaveBeenCalledWith('tenant_id', 'in', '(paused-tenant)');
+        expect(qb.not).toHaveBeenCalledWith(
+          'tenant_id',
+          'in',
+          '(paused-tenant)',
+        );
       }
       expect(pipeline.run).toHaveBeenCalledTimes(1);
     });
@@ -613,7 +637,10 @@ describe('ReportWorker (story 12-3)', () => {
       const module2: TestingModule = await Test.createTestingModule({
         providers: [
           ReportWorker,
-          { provide: SupabaseClientFactory, useValue: { createAdmin: jest.fn() } },
+          {
+            provide: SupabaseClientFactory,
+            useValue: { createAdmin: jest.fn() },
+          },
           { provide: ReportPipelineService, useValue: { run: jest.fn() } },
           { provide: ReportRegistry, useValue: { get: jest.fn() } },
           {
@@ -621,10 +648,12 @@ describe('ReportWorker (story 12-3)', () => {
             useValue: {
               get: jest.fn(
                 (key: string) =>
-                  (({
-                    REPORT_WORKER_EXCLUSIVE: 'true',
-                    REPORT_WORKER_CONCURRENCY: 1,
-                  }) as Record<string, unknown>)[key],
+                  (
+                    ({
+                      REPORT_WORKER_EXCLUSIVE: 'true',
+                      REPORT_WORKER_CONCURRENCY: 1,
+                    }) as Record<string, unknown>
+                  )[key],
               ),
             },
           },
@@ -635,11 +664,11 @@ describe('ReportWorker (story 12-3)', () => {
         ],
       }).compile();
       const worker2 = module2.get<ReportWorker>(ReportWorker);
-      const factory2 = module2.get(SupabaseClientFactory) as jest.Mocked<SupabaseClientFactory>;
+      const factory2 = module2.get(SupabaseClientFactory);
       const queue2 = module2.get(ReportQueueService) as {
         pausedTenantIds: jest.Mock;
       };
-      const pipeline2 = module2.get(ReportPipelineService) as { run: jest.Mock };
+      const pipeline2 = module2.get(ReportPipelineService);
 
       let candidateRead = 0;
       const from = jest.fn((table: string) => {
@@ -657,16 +686,24 @@ describe('ReportWorker (story 12-3)', () => {
             candidateRead += 1;
             return candidateQb(
               candidateRead % 2 === 1
-                ? { data: [{ id: 'req-1', tenant_id: TENANT_ID, attempt_count: 0 }], error: null }
+                ? {
+                    data: [
+                      { id: 'req-1', tenant_id: TENANT_ID, attempt_count: 0 },
+                    ],
+                    error: null,
+                  }
                 : { data: [], error: null },
             );
           }),
           update: jest.fn().mockReturnValue(
-            updateQb({ data: [reportRow({ status: ReportRequestStatus.GENERATING })], error: null }),
+            updateQb({
+              data: [reportRow({ status: ReportRequestStatus.GENERATING })],
+              error: null,
+            }),
           ),
         };
       });
-      factory2.createAdmin.mockReturnValue({ from } as never);
+      factory2.createAdmin.mockReturnValue({ from });
       queue2.pausedTenantIds.mockResolvedValue(new Set(['tenant-uuid']));
 
       worker2.onApplicationBootstrap();
@@ -686,7 +723,10 @@ describe('ReportWorker (story 12-3)', () => {
           Test.createTestingModule({
             providers: [
               ReportWorker,
-              { provide: SupabaseClientFactory, useValue: { createAdmin: jest.fn() } },
+              {
+                provide: SupabaseClientFactory,
+                useValue: { createAdmin: jest.fn() },
+              },
               { provide: ReportPipelineService, useValue: { run: jest.fn() } },
               { provide: ReportRegistry, useValue: { get: jest.fn() } },
               {
@@ -694,13 +734,19 @@ describe('ReportWorker (story 12-3)', () => {
                 useValue: {
                   get: jest.fn(
                     (key: string) =>
-                      ((
-                        { REPORT_WORKER_EXCLUSIVE: 'true' }
-                      ) as Record<string, unknown>)[key],
+                      (
+                        ({ REPORT_WORKER_EXCLUSIVE: 'true' }) as Record<
+                          string,
+                          unknown
+                        >
+                      )[key],
                   ),
                 },
               },
-              { provide: ReportQueueService, useValue: { pausedTenantIds: jest.fn() } },
+              {
+                provide: ReportQueueService,
+                useValue: { pausedTenantIds: jest.fn() },
+              },
             ],
           }).compile(),
         ).rejects.toThrow(

@@ -12,10 +12,7 @@ import { ReportRegistry } from './registry/report-registry';
 import { ConfigService } from '@nestjs/config';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import {
-  memberRow,
-  membersTable,
-} from '../../test/helpers/member-rows-stub';
+import { memberRow, membersTable } from '../../test/helpers/member-rows-stub';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ReportRequestStatus } from './enums/report-status.enum';
 import { TECHNICIAN_JOB_ACTIVITY_TYPE } from './registry/technician-job-activity.definition';
@@ -72,9 +69,9 @@ async function expectErrorCode(
   await expect(promise).rejects.toBeInstanceOf(HttpException);
   await promise.catch((e: HttpException) => {
     expect(e.getStatus()).toBe(status);
-    expect(
-      (e.getResponse() as Record<string, unknown>).error_code,
-    ).toBe(errorCode);
+    expect((e.getResponse() as Record<string, unknown>).error_code).toBe(
+      errorCode,
+    );
   });
 }
 
@@ -133,9 +130,7 @@ describe('ReportsService — retryReport (story 12-7)', () => {
     row?: { data: unknown; error: unknown };
     update?: { data: unknown; error: unknown };
   }) {
-    const selectQb = singleChain(
-      opts.row ?? { data: failedRow, error: null },
-    );
+    const selectQb = singleChain(opts.row ?? { data: failedRow, error: null });
     const updateQb = updateChain(
       opts.update ?? { data: [requeuedRow], error: null },
     );
@@ -159,7 +154,10 @@ describe('ReportsService — retryReport (story 12-7)', () => {
       providers: [
         ReportsService,
         { provide: SupabaseClientFactory, useValue: mockFactory },
-        { provide: StorageService, useValue: { getPresignedReadUrl: jest.fn() } },
+        {
+          provide: StorageService,
+          useValue: { getPresignedReadUrl: jest.fn() },
+        },
         { provide: ReportRegistry, useValue: {} },
         { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
@@ -227,9 +225,9 @@ describe('ReportsService — retryReport (story 12-7)', () => {
         404,
         ErrorCode.RESOURCE_NOT_FOUND,
       );
-      await expect(service.retryReport(ownerUser, REQUEST_ID)).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.retryReport(ownerUser, REQUEST_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it("another tenant's row is indistinguishable from an unknown id (same 404 path)", async () => {
@@ -264,21 +262,24 @@ describe('ReportsService — retryReport (story 12-7)', () => {
       [ReportRequestStatus.READY],
       [ReportRequestStatus.QUEUED],
       [ReportRequestStatus.GENERATING],
-    ])('a %s row is 409 REPORT_NOT_RETRYABLE and the UPDATE never runs', async (status) => {
-      const { from, updateQb } = mockAdmin({
-        row: { data: { ...failedRow, status }, error: null },
-      });
+    ])(
+      'a %s row is 409 REPORT_NOT_RETRYABLE and the UPDATE never runs',
+      async (status) => {
+        const { from, updateQb } = mockAdmin({
+          row: { data: { ...failedRow, status }, error: null },
+        });
 
-      await expectErrorCode(
-        service.retryReport(ownerUser, REQUEST_ID),
-        409,
-        ErrorCode.REPORT_NOT_RETRYABLE,
-      );
+        await expectErrorCode(
+          service.retryReport(ownerUser, REQUEST_ID),
+          409,
+          ErrorCode.REPORT_NOT_RETRYABLE,
+        );
 
-      // Only the fetch chain ran — the guarded UPDATE was never issued.
-      expect(from).toHaveBeenCalledTimes(1);
-      expect(updateQb.update).not.toHaveBeenCalled();
-    });
+        // Only the fetch chain ran — the guarded UPDATE was never issued.
+        expect(from).toHaveBeenCalledTimes(1);
+        expect(updateQb.update).not.toHaveBeenCalled();
+      },
+    );
 
     it('an empty update result (guard predicate lost the race) is the same 409 contract', async () => {
       mockAdmin({ update: { data: [], error: null } });
@@ -493,14 +494,16 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
      * forgets the users result fails loudly instead of silently hitting
      * an empty membership set.
      */
-    function mockCreateAdmin(opts: {
-      insert?: { data: unknown; error: unknown };
-      users?: { data: unknown; error: unknown } | null;
-      /** 21-1: validateAccess probes for the attendance definition. */
-      settings?: { data: unknown; error: unknown };
-      enrolments?: { data: unknown; error: unknown };
-      offices?: { data: unknown; error: unknown };
-    } = {}) {
+    function mockCreateAdmin(
+      opts: {
+        insert?: { data: unknown; error: unknown };
+        users?: { data: unknown; error: unknown } | null;
+        /** 21-1: validateAccess probes for the attendance definition. */
+        settings?: { data: unknown; error: unknown };
+        enrolments?: { data: unknown; error: unknown };
+        offices?: { data: unknown; error: unknown };
+      } = {},
+    ) {
       const insertQb = insertChain(
         opts.insert ?? { data: createdRow, error: null },
       );
@@ -713,7 +716,10 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('rejects an id that is not a technician of the tenant with 400 VALIDATION_ERROR', async () => {
       const { insertQb } = mockCreateAdmin({
-        users: { data: [{ id: '00000000-0000-4000-8000-0000000000a1' }], error: null },
+        users: {
+          data: [{ id: '00000000-0000-4000-8000-0000000000a1' }],
+          error: null,
+        },
       });
 
       await expectErrorCode(
@@ -755,7 +761,10 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('runs the attendance definition validateAccess before insert and maps ATTENDANCE_NOT_ENABLED to 400 (21-1)', async () => {
       const { from, insertQb } = mockCreateAdmin({
-        settings: { data: { enabled: false, setup_completed_at: null }, error: null },
+        settings: {
+          data: { enabled: false, setup_completed_at: null },
+          error: null,
+        },
       });
 
       await expectErrorCode(
@@ -845,7 +854,10 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
           data: { enabled: true, setup_completed_at: '2026-10-01T05:00:52Z' },
           error: null,
         },
-        enrolments: { data: ids.map((employee_id) => ({ employee_id })), error: null },
+        enrolments: {
+          data: ids.map((employee_id) => ({ employee_id })),
+          error: null,
+        },
       });
 
       await service.createReport(ownerUser, {
@@ -992,7 +1004,15 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('maps an empty technician list to a null technicianCount (all technicians)', async () => {
       const { qb } = mockListAdmin({
-        data: [listRow(0, { params: { start_date: '2026-08-01', end_date: '2026-08-07', technician_ids: [] } })],
+        data: [
+          listRow(0, {
+            params: {
+              start_date: '2026-08-01',
+              end_date: '2026-08-07',
+              technician_ids: [],
+            },
+          }),
+        ],
         error: null,
       });
 
@@ -1102,7 +1122,11 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('a failed row carries the engine error code and never a file', async () => {
       mockStatusAdmin({
-        data: { ...readyRow, status: ReportRequestStatus.FAILED, error_code: 'REPORT_TOO_LARGE' },
+        data: {
+          ...readyRow,
+          status: ReportRequestStatus.FAILED,
+          error_code: 'REPORT_TOO_LARGE',
+        },
         error: null,
       });
 
@@ -1115,7 +1139,11 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
 
     it('a failed row with a null error_code falls back to REPORT_GENERATION_FAILED', async () => {
       mockStatusAdmin({
-        data: { ...readyRow, status: ReportRequestStatus.FAILED, error_code: null },
+        data: {
+          ...readyRow,
+          status: ReportRequestStatus.FAILED,
+          error_code: null,
+        },
         error: null,
       });
 
@@ -1186,7 +1214,11 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
           ...readyRow,
           report_type: 'payslip',
           status: ReportRequestStatus.QUEUED,
-          params: { month: '2026-10', membershipId: 'm-uuid', payslipId: 'p-uuid' },
+          params: {
+            month: '2026-10',
+            membershipId: 'm-uuid',
+            payslipId: 'p-uuid',
+          },
         },
         error: null,
       });
@@ -1210,7 +1242,11 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
           report_type: 'payslip',
           status: ReportRequestStatus.FAILED,
           error_code: ErrorCode.REPORT_GENERATION_FAILED,
-          params: { month: '2026-10', membershipId: 'm-uuid', payslipId: 'p-uuid' },
+          params: {
+            month: '2026-10',
+            membershipId: 'm-uuid',
+            payslipId: 'p-uuid',
+          },
         },
         error: null,
       });
@@ -1225,7 +1261,9 @@ describe('ReportsService — story 12-2 (createReport / listReports / getReportS
         technicianIds: [],
         officeIds: [],
       });
-      expect(result.error).toEqual({ code: ErrorCode.REPORT_GENERATION_FAILED });
+      expect(result.error).toEqual({
+        code: ErrorCode.REPORT_GENERATION_FAILED,
+      });
       expect(result.file).toBeUndefined();
       expect(storage.getPresignedReadUrl).not.toHaveBeenCalled();
     });

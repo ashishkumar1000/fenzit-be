@@ -22,7 +22,10 @@ import {
   VALIDATION,
   refusal,
 } from '../helpers/member-functions-fixture';
-import { makeCompany, teardownSuite } from '../helpers/member-functions-company';
+import {
+  makeCompany,
+  teardownSuite,
+} from '../helpers/member-functions-company';
 import { serviceRoleClient } from '../helpers/rls-seed';
 
 const PA = mid('e005', 1);
@@ -61,7 +64,10 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
   };
 
   /** An employee's job waiting for approval (approval switch on). */
-  const makePending = async (c: { tenantId: string; id: Record<string, string> }) => {
+  const makePending = async (c: {
+    tenantId: string;
+    id: Record<string, string>;
+  }) => {
     const customerId = await createCustomer(c.tenantId);
     const r = await call<JobOut[]>(service, 'create_job_with_log', {
       p_tenant_id: c.tenantId,
@@ -102,7 +108,9 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
   const jobRow = async (jobId: string) => {
     const { data, error } = await service
       .from('jobs')
-      .select('id, status, technician_id, decided_by, decided_at, rejection_reason')
+      .select(
+        'id, status, technician_id, decided_by, decided_at, rejection_reason',
+      )
       .eq('id', jobId)
       .single<JobOut>();
     expect(error).toBeNull();
@@ -146,42 +154,63 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
 
   // ---- Approve and reject: the happy paths ---------------------------------
 
-  maybeIt('approve: job becomes scheduled, owner recorded, activity job_approved', async () => {
-    const c = await makeCompany(service, 'dp approve', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, 'approve');
-    expect(r.error).toBeNull();
-    expect(r.data![0]).toMatchObject({ status: 'scheduled', decided_by: c.id.admin });
-    const row = await jobRow(jobId);
-    expect(row.technician_id).toBe(c.id.emp);
-    expect(row.decided_at).not.toBeNull();
-    expect(await decisionEvents(jobId)).toEqual([
-      { event_type: 'job_approved', actor_id: c.id.admin },
-    ]);
-  });
+  maybeIt(
+    'approve: job becomes scheduled, owner recorded, activity job_approved',
+    async () => {
+      const c = await makeCompany(service, 'dp approve', roster());
+      const jobId = await makePending(c);
+      const r = await decide(c, c.id.admin, jobId, 'approve');
+      expect(r.error).toBeNull();
+      expect(r.data![0]).toMatchObject({
+        status: 'scheduled',
+        decided_by: c.id.admin,
+      });
+      const row = await jobRow(jobId);
+      expect(row.technician_id).toBe(c.id.emp);
+      expect(row.decided_at).not.toBeNull();
+      expect(await decisionEvents(jobId)).toEqual([
+        { event_type: 'job_approved', actor_id: c.id.admin },
+      ]);
+    },
+  );
 
-  maybeIt('reject with a reason: job rejected, reason kept, activity job_rejected', async () => {
-    const c = await makeCompany(service, 'dp reject reason', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, 'reject', 'Customer already served');
-    expect(r.error).toBeNull();
-    expect(r.data![0]).toMatchObject({
-      status: 'rejected',
-      rejection_reason: 'Customer already served',
-      decided_by: c.id.admin,
-    });
-    expect(await decisionEvents(jobId)).toEqual([
-      { event_type: 'job_rejected', actor_id: c.id.admin },
-    ]);
-  });
+  maybeIt(
+    'reject with a reason: job rejected, reason kept, activity job_rejected',
+    async () => {
+      const c = await makeCompany(service, 'dp reject reason', roster());
+      const jobId = await makePending(c);
+      const r = await decide(
+        c,
+        c.id.admin,
+        jobId,
+        'reject',
+        'Customer already served',
+      );
+      expect(r.error).toBeNull();
+      expect(r.data![0]).toMatchObject({
+        status: 'rejected',
+        rejection_reason: 'Customer already served',
+        decided_by: c.id.admin,
+      });
+      expect(await decisionEvents(jobId)).toEqual([
+        { event_type: 'job_rejected', actor_id: c.id.admin },
+      ]);
+    },
+  );
 
-  maybeIt('reject with no reason is allowed: reason stored as null', async () => {
-    const c = await makeCompany(service, 'dp reject none', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, 'reject');
-    expect(r.error).toBeNull();
-    expect(r.data![0]).toMatchObject({ status: 'rejected', rejection_reason: null });
-  });
+  maybeIt(
+    'reject with no reason is allowed: reason stored as null',
+    async () => {
+      const c = await makeCompany(service, 'dp reject none', roster());
+      const jobId = await makePending(c);
+      const r = await decide(c, c.id.admin, jobId, 'reject');
+      expect(r.error).toBeNull();
+      expect(r.data![0]).toMatchObject({
+        status: 'rejected',
+        rejection_reason: null,
+      });
+    },
+  );
 
   maybeIt('a whitespace-only reason counts as no reason', async () => {
     const c = await makeCompany(service, 'dp reason blank', roster());
@@ -207,22 +236,34 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     expect(r.data![0].rejection_reason).toBe(reason);
   });
 
-  maybeIt('501 characters is refused, and the job stays pending with no activity', async () => {
-    const c = await makeCompany(service, 'dp reason 501', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, 'reject', 'x'.repeat(501));
-    expect(refusal(r)).toEqual(VALIDATION);
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-    expect(await decisionEvents(jobId)).toEqual([]);
-  });
+  maybeIt(
+    '501 characters is refused, and the job stays pending with no activity',
+    async () => {
+      const c = await makeCompany(service, 'dp reason 501', roster());
+      const jobId = await makePending(c);
+      const r = await decide(c, c.id.admin, jobId, 'reject', 'x'.repeat(501));
+      expect(refusal(r)).toEqual(VALIDATION);
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+      expect(await decisionEvents(jobId)).toEqual([]);
+    },
+  );
 
-  maybeIt('500 characters plus surrounding spaces is accepted once trimmed', async () => {
-    const c = await makeCompany(service, 'dp reason padded', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, 'reject', `  ${'x'.repeat(500)}  `);
-    expect(r.error).toBeNull();
-    expect(r.data![0].rejection_reason).toHaveLength(500);
-  });
+  maybeIt(
+    '500 characters plus surrounding spaces is accepted once trimmed',
+    async () => {
+      const c = await makeCompany(service, 'dp reason padded', roster());
+      const jobId = await makePending(c);
+      const r = await decide(
+        c,
+        c.id.admin,
+        jobId,
+        'reject',
+        `  ${'x'.repeat(500)}  `,
+      );
+      expect(r.error).toBeNull();
+      expect(r.data![0].rejection_reason).toHaveLength(500);
+    },
+  );
 
   // ---- Decision value validation -------------------------------------------
 
@@ -231,14 +272,21 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     ['an empty string', ''],
     ['the wrong case', 'APPROVE'],
     ['null', null],
-  ])('a decision of %s is refused and changes nothing', async (_label, decision) => {
-    const c = await makeCompany(service, `dp bad decision ${String(decision)}`, roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, c.id.admin, jobId, decision);
-    expect(refusal(r)).toEqual(VALIDATION);
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-    expect(await decisionEvents(jobId)).toEqual([]);
-  });
+  ])(
+    'a decision of %s is refused and changes nothing',
+    async (_label, decision) => {
+      const c = await makeCompany(
+        service,
+        `dp bad decision ${String(decision)}`,
+        roster(),
+      );
+      const jobId = await makePending(c);
+      const r = await decide(c, c.id.admin, jobId, decision);
+      expect(refusal(r)).toEqual(VALIDATION);
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+      expect(await decisionEvents(jobId)).toEqual([]);
+    },
+  );
 
   // ---- Who may decide -------------------------------------------------------
 
@@ -259,13 +307,16 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     expect((await jobRow(jobId)).status).toBe('pending_approval');
   });
 
-  maybeIt('a platform admin cannot decide a company job (no membership)', async () => {
-    const c = await makeCompany(service, 'dp platform refused', roster());
-    const jobId = await makePending(c);
-    const r = await decide(c, PA, jobId, 'approve');
-    expect(refusal(r)).toEqual(FORBIDDEN);
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-  });
+  maybeIt(
+    'a platform admin cannot decide a company job (no membership)',
+    async () => {
+      const c = await makeCompany(service, 'dp platform refused', roster());
+      const jobId = await makePending(c);
+      const r = await decide(c, PA, jobId, 'approve');
+      expect(refusal(r)).toEqual(FORBIDDEN);
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+    },
+  );
 
   maybeIt('an invited (not yet active) owner cannot decide', async () => {
     const c = await makeCompany(service, 'dp invited owner', {
@@ -291,28 +342,34 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     expect((await jobRow(jobId)).status).toBe('pending_approval');
   });
 
-  maybeIt('an owner of another company cannot decide this company job', async () => {
-    const target = await makeCompany(service, 'dp target co', roster());
-    const other = await makeCompany(service, 'dp other co', roster());
-    const jobId = await makePending(target);
-    const r = await decide(
-      { tenantId: target.tenantId },
-      other.id.admin,
-      jobId,
-      'approve',
-    );
-    expect(refusal(r)).toEqual(FORBIDDEN);
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-  });
+  maybeIt(
+    'an owner of another company cannot decide this company job',
+    async () => {
+      const target = await makeCompany(service, 'dp target co', roster());
+      const other = await makeCompany(service, 'dp other co', roster());
+      const jobId = await makePending(target);
+      const r = await decide(
+        { tenantId: target.tenantId },
+        other.id.admin,
+        jobId,
+        'approve',
+      );
+      expect(refusal(r)).toEqual(FORBIDDEN);
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+    },
+  );
 
-  maybeIt('an owner cannot reach another company job by naming their own company', async () => {
-    const target = await makeCompany(service, 'dp cross target', roster());
-    const own = await makeCompany(service, 'dp cross own', roster());
-    const jobId = await makePending(target);
-    const r = await decide(own, own.id.admin, jobId, 'approve');
-    expect(refusal(r)).toEqual(NOT_FOUND);
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-  });
+  maybeIt(
+    'an owner cannot reach another company job by naming their own company',
+    async () => {
+      const target = await makeCompany(service, 'dp cross target', roster());
+      const own = await makeCompany(service, 'dp cross own', roster());
+      const jobId = await makePending(target);
+      const r = await decide(own, own.id.admin, jobId, 'approve');
+      expect(refusal(r)).toEqual(NOT_FOUND);
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+    },
+  );
 
   maybeIt('an unknown job id is not found', async () => {
     const c = await makeCompany(service, 'dp unknown job', roster());
@@ -327,38 +384,50 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     ['approve then reject', 'approve', 'reject'],
     ['reject then approve', 'reject', 'approve'],
     ['reject then reject', 'reject', 'reject'],
-  ])('a second decision after %s is a conflict and keeps the first', async (_l, first, second) => {
-    const c = await makeCompany(service, `dp second ${first} ${second}`, roster());
-    const jobId = await makePending(c);
-    expect((await decide(c, c.id.admin, jobId, first, 'first reason')).error).toBeNull();
-    const before = await jobRow(jobId);
-    const again = await decide(c, c.id.admin, jobId, second, 'second reason');
-    expect(refusal(again)).toEqual(JOB_NOT_PENDING);
-    expect(await jobRow(jobId)).toEqual(before);
-    expect(await decisionEvents(jobId)).toHaveLength(1);
-  });
+  ])(
+    'a second decision after %s is a conflict and keeps the first',
+    async (_l, first, second) => {
+      const c = await makeCompany(
+        service,
+        `dp second ${first} ${second}`,
+        roster(),
+      );
+      const jobId = await makePending(c);
+      expect(
+        (await decide(c, c.id.admin, jobId, first, 'first reason')).error,
+      ).toBeNull();
+      const before = await jobRow(jobId);
+      const again = await decide(c, c.id.admin, jobId, second, 'second reason');
+      expect(refusal(again)).toEqual(JOB_NOT_PENDING);
+      expect(await jobRow(jobId)).toEqual(before);
+      expect(await decisionEvents(jobId)).toHaveLength(1);
+    },
+  );
 
-  maybeIt('a scheduled job (approval was off) cannot be approved again', async () => {
-    const c = await makeCompany(service, 'dp not pending', roster());
-    const customerId = await createCustomer(c.tenantId);
-    const made = await call<JobOut[]>(service, 'create_job_with_log', {
-      p_tenant_id: c.tenantId,
-      p_customer_id: customerId,
-      p_technician_id: c.id.emp,
-      p_actor_id: c.id.admin,
-      p_service_location: 'DP location',
-      p_skill_id: skillId,
-      p_scheduled_start: new Date().toISOString(),
-      p_scheduled_end: null,
-      p_description: 'DP scheduled',
-      p_priority: 'normal',
-      p_notes_for_technician: null,
-      p_year: new Date().getUTCFullYear(),
-    });
-    const r = await decide(c, c.id.admin, made.data![0].id, 'reject');
-    expect(refusal(r)).toEqual(JOB_NOT_PENDING);
-    expect((await jobRow(made.data![0].id)).status).toBe('scheduled');
-  });
+  maybeIt(
+    'a scheduled job (approval was off) cannot be approved again',
+    async () => {
+      const c = await makeCompany(service, 'dp not pending', roster());
+      const customerId = await createCustomer(c.tenantId);
+      const made = await call<JobOut[]>(service, 'create_job_with_log', {
+        p_tenant_id: c.tenantId,
+        p_customer_id: customerId,
+        p_technician_id: c.id.emp,
+        p_actor_id: c.id.admin,
+        p_service_location: 'DP location',
+        p_skill_id: skillId,
+        p_scheduled_start: new Date().toISOString(),
+        p_scheduled_end: null,
+        p_description: 'DP scheduled',
+        p_priority: 'normal',
+        p_notes_for_technician: null,
+        p_year: new Date().getUTCFullYear(),
+      });
+      const r = await decide(c, c.id.admin, made.data![0].id, 'reject');
+      expect(refusal(r)).toEqual(JOB_NOT_PENDING);
+      expect((await jobRow(made.data![0].id)).status).toBe('scheduled');
+    },
+  );
 
   maybeIt('a race: approve and reject at once, exactly one wins', async () => {
     const c = await makeCompany(service, 'dp race mixed', roster());
@@ -378,43 +447,66 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     expect(await decisionEvents(jobId)).toHaveLength(1);
   });
 
-  maybeIt('a race: five owner approvals at once, one decision recorded', async () => {
-    const c = await makeCompany(service, 'dp race five', roster());
-    const jobId = await makePending(c);
-    const results = await Promise.all(
-      Array.from({ length: 5 }, () => decide(c, c.id.admin, jobId, 'approve')),
-    );
-    expect(results.filter((r) => r.error === null)).toHaveLength(1);
-    expect(
-      results.filter((r) => r.error !== null).every((r) => refusal(r).hint === 'JOB_NOT_PENDING'),
-    ).toBe(true);
-    expect(await decisionEvents(jobId)).toHaveLength(1);
-  });
+  maybeIt(
+    'a race: five owner approvals at once, one decision recorded',
+    async () => {
+      const c = await makeCompany(service, 'dp race five', roster());
+      const jobId = await makePending(c);
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          decide(c, c.id.admin, jobId, 'approve'),
+        ),
+      );
+      expect(results.filter((r) => r.error === null)).toHaveLength(1);
+      expect(
+        results
+          .filter((r) => r.error !== null)
+          .every((r) => refusal(r).hint === 'JOB_NOT_PENDING'),
+      ).toBe(true);
+      expect(await decisionEvents(jobId)).toHaveLength(1);
+    },
+  );
 
   // ---- Table rules that back the function ----------------------------------
 
-  maybeIt('a rejected job with no decider is refused by the table', async () => {
-    const c = await makeCompany(service, 'dp constraint decider', roster());
-    const jobId = await makePending(c);
-    const bad = await service.from('jobs').update({ status: 'rejected' }).eq('id', jobId);
-    expect(bad.error?.code).toBe('23514');
-    expect((await jobRow(jobId)).status).toBe('pending_approval');
-  });
+  maybeIt(
+    'a rejected job with no decider is refused by the table',
+    async () => {
+      const c = await makeCompany(service, 'dp constraint decider', roster());
+      const jobId = await makePending(c);
+      const bad = await service
+        .from('jobs')
+        .update({ status: 'rejected' })
+        .eq('id', jobId);
+      expect(bad.error?.code).toBe('23514');
+      expect((await jobRow(jobId)).status).toBe('pending_approval');
+    },
+  );
 
-  maybeIt('a rejected job with a decider and time is accepted by the table', async () => {
-    const c = await makeCompany(service, 'dp constraint ok', roster());
-    const jobId = await makePending(c);
-    const ok = await service
-      .from('jobs')
-      .update({ status: 'rejected', decided_by: c.id.admin, decided_at: new Date().toISOString() })
-      .eq('id', jobId);
-    expect(ok.error).toBeNull();
-  });
+  maybeIt(
+    'a rejected job with a decider and time is accepted by the table',
+    async () => {
+      const c = await makeCompany(service, 'dp constraint ok', roster());
+      const jobId = await makePending(c);
+      const ok = await service
+        .from('jobs')
+        .update({
+          status: 'rejected',
+          decided_by: c.id.admin,
+          decided_at: new Date().toISOString(),
+        })
+        .eq('id', jobId);
+      expect(ok.error).toBeNull();
+    },
+  );
 
   maybeIt('the table refuses an empty or over-long stored reason', async () => {
     const c = await makeCompany(service, 'dp constraint reason', roster());
     const jobId = await makePending(c);
-    const empty = await service.from('jobs').update({ rejection_reason: '' }).eq('id', jobId);
+    const empty = await service
+      .from('jobs')
+      .update({ rejection_reason: '' })
+      .eq('id', jobId);
     expect(empty.error?.code).toBe('23514');
     const long = await service
       .from('jobs')
@@ -423,11 +515,17 @@ describe('decide_pending_job: owner approves or rejects (real DB)', () => {
     expect(long.error?.code).toBe('23514');
   });
 
-  maybeIt('a rejected job keeps its creator as technician (history, CAP-7)', async () => {
-    const c = await makeCompany(service, 'dp history keeps', roster());
-    const jobId = await makePending(c);
-    await decide(c, c.id.admin, jobId, 'reject', 'no');
-    const row = await jobRow(jobId);
-    expect(row).toMatchObject({ status: 'rejected', technician_id: c.id.emp });
-  });
+  maybeIt(
+    'a rejected job keeps its creator as technician (history, CAP-7)',
+    async () => {
+      const c = await makeCompany(service, 'dp history keeps', roster());
+      const jobId = await makePending(c);
+      await decide(c, c.id.admin, jobId, 'reject', 'no');
+      const row = await jobRow(jobId);
+      expect(row).toMatchObject({
+        status: 'rejected',
+        technician_id: c.id.emp,
+      });
+    },
+  );
 });

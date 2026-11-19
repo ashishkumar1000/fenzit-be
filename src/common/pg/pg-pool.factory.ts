@@ -53,9 +53,7 @@ export class PgPoolFactory implements OnModuleDestroy {
    * work → COMMIT, with ROLLBACK + rethrow on any failure. The client is
    * always released. Parameterised queries only — callers never interpolate.
    */
-  async withTransaction<T>(
-    work: (tx: PoolClient) => Promise<T>,
-  ): Promise<T> {
+  async withTransaction<T>(work: (tx: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');

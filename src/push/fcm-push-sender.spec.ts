@@ -87,7 +87,10 @@ describe('FcmPushSender', () => {
     it('invalid-argument that names the token is a dead token', async () => {
       expect(
         await classify(
-          fcmError('messaging/invalid-argument', 'Invalid registration token provided'),
+          fcmError(
+            'messaging/invalid-argument',
+            'Invalid registration token provided',
+          ),
         ),
       ).toMatchObject({ kind: 'invalid' });
     });
@@ -97,7 +100,10 @@ describe('FcmPushSender', () => {
       // user's device registration. This is the guard against that.
       expect(
         await classify(
-          fcmError('messaging/invalid-argument', 'Invalid data payload key: from'),
+          fcmError(
+            'messaging/invalid-argument',
+            'Invalid data payload key: from',
+          ),
         ),
       ).toMatchObject({ kind: 'permanent' });
     });
@@ -108,7 +114,9 @@ describe('FcmPushSender', () => {
       'messaging/quota-exceeded',
       'messaging/server-unavailable',
     ])('%s is retryable', async (code) => {
-      expect(await classify(fcmError(code))).toMatchObject({ kind: 'retryable' });
+      expect(await classify(fcmError(code))).toMatchObject({
+        kind: 'retryable',
+      });
     });
 
     it('an internal error is permanent (not retried)', async () => {
@@ -136,7 +144,11 @@ describe('FcmPushSender', () => {
   describe('outcome mapping', () => {
     it('keeps outcomes in the order of the input messages', async () => {
       mockSendEach.mockResolvedValueOnce(
-        fcmResponses([null, fcmError('messaging/invalid-registration-token'), null]),
+        fcmResponses([
+          null,
+          fcmError('messaging/invalid-registration-token'),
+          null,
+        ]),
       );
       const input = [
         message({ token: 'a' }),

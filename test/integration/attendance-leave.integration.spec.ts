@@ -77,8 +77,8 @@ function addDays(date: string, n: number): string {
 }
 
 let today = '';
-let fr9RequestId = '';
-let fr9ConfirmKey = '';
+const fr9RequestId = '';
+const fr9ConfirmKey = '';
 
 function applyDto(overrides: Partial<ApplyLeaveDto> = {}): ApplyLeaveDto {
   return Object.assign(new ApplyLeaveDto(), {

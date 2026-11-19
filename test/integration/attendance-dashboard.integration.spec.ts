@@ -91,21 +91,18 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
   let d3: string; // three days ago
   let ARCHIVE_ID: string; // the archived office tech 5 sits at
 
-  const user = (
-    userId: string,
-    role: 'owner' | 'technician',
-  ): RequestUser =>
-    ({
-      userId,
-      tenantId: TENANT,
-      role: role === 'owner' ? Role.COMPANY_ADMIN : Role.EMPLOYEE,
-      platformAdmin: false,
-      rawJwt: 'probe-jwt',
-    }) as unknown as RequestUser;
+  const user = (userId: string, role: 'owner' | 'technician'): RequestUser => ({
+    userId,
+    tenantId: TENANT,
+    role: role === 'owner' ? Role.COMPANY_ADMIN : Role.EMPLOYEE,
+    platformAdmin: false,
+    rawJwt: 'probe-jwt',
+  });
 
-  const must = <T>(
-    res: { data: T | null; error: { message: string } | null },
-  ): T => {
+  const must = <T>(res: {
+    data: T | null;
+    error: { message: string } | null;
+  }): T => {
     if (res.error) throw new Error(`fixture failed: ${res.error.message}`);
     return res.data as T;
   };
@@ -191,7 +188,15 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
             checkin_at, checkin_attempt_id, checkin_lat, checkin_lng,
             checkin_accuracy_m, checkin_distance_m, checkin_mocked)
          values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false)`,
-        [TENANT, employeeId, date, officeId, ruleId, ist(date, checkinTime), attemptIn],
+        [
+          TENANT,
+          employeeId,
+          date,
+          officeId,
+          ruleId,
+          ist(date, checkinTime),
+          attemptIn,
+        ],
       );
       return;
     }
@@ -213,8 +218,15 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
        values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false,
                $8, $9, 12.97, 77.59, 10, 40, false)`,
       [
-        TENANT, employeeId, date, officeId, ruleId,
-        ist(date, checkinTime), attemptIn, ist(date, checkoutTime), attemptOut,
+        TENANT,
+        employeeId,
+        date,
+        officeId,
+        ruleId,
+        ist(date, checkinTime),
+        attemptIn,
+        ist(date, checkoutTime),
+        attemptOut,
       ],
     );
   };
@@ -271,7 +283,9 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     monthly = new MonthlyService(
       pg,
       { createAdmin: () => admin } as unknown as SupabaseClientFactory,
-      { presignReadUrl: () => Promise.resolve('https://signed.example/test') } as never,
+      {
+        presignReadUrl: () => Promise.resolve('https://signed.example/test'),
+      } as never,
     );
 
     // ---- owner → tenant → technicians → settings → office + rule ----
@@ -304,7 +318,12 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     );
     must(
       await admin.from('memberships').insert([
-        { user_id: OWNER, tenant_id: TENANT, role: 'company_admin', status: 'active' },
+        {
+          user_id: OWNER,
+          tenant_id: TENANT,
+          role: 'company_admin',
+          status: 'active',
+        },
         ...Object.values(TECHS).map((id) => ({
           user_id: id,
           tenant_id: TENANT,
@@ -519,10 +538,9 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
       `delete from public.leave_request_days where tenant_id = $1`,
       [TENANT],
     );
-    await pool.query(
-      `delete from public.leave_requests where tenant_id = $1`,
-      [TENANT],
-    );
+    await pool.query(`delete from public.leave_requests where tenant_id = $1`, [
+      TENANT,
+    ]);
     await pool.query(
       `delete from public.attendance_records where tenant_id = $1`,
       [TENANT],
@@ -572,455 +590,497 @@ describe('Attendance dashboard + monthly reads (19-2/19-3, real DB)', () => {
     await pool.end();
   });
 
-  maybeIt('the SIX tiles answer the engine grid exactly (the four buckets PARTITION tracked)', async () => {
-    const res = await dashboard.today(user(OWNER, 'owner'));
-    expect(res.date).toBe(today);
-    // Tracked = enrolment ∩ assignment ∩ ACTIVE office covering today:
-    // techs 1, 2, 3, 6, 7 (E's office is archived; future is not live yet;
-    // history's period ended yesterday; gate has no enrolment at all).
-    expect(res.counts.tracked).toBe(5);
-    // checkedIn: A's in_progress leg + F's present leg (late rides INSIDE
-    // checkedIn — a qualifier, never a fifth bucket).
-    expect(res.counts.checkedIn).toBe(2);
-    expect(res.counts.notCheckedIn).toBe(2); // B, G
-    // 20-2's fourth bucket, ENGINE-graded only: this base fixture has no
-    // rule-7 leg (no sub-half-day punch pair today), so Short day is 0
-    // even though B holds not-short-day `absent` grades — the flip keeps
-    // them not checked in.
-    expect(res.counts.shortDay).toBe(0);
-    expect(res.counts.late).toBe(1); // F's 12:00 check-in
-    expect(res.counts.onLeave).toBe(1); // C's approved full-day leave
-    // The rows MOVE, never copy — the partition holds on this scope too.
-    expect(
-      res.counts.checkedIn +
-        res.counts.notCheckedIn +
-        res.counts.shortDay +
-        res.counts.onLeave,
-    ).toBe(res.counts.tracked);
-    // The strips are PAST-window reads by design (they surface unresolved
-    // history on today's dashboard) — B's past days flag here and the
-    // attempts on D-1 bucket by the ATTEMPT date; their exact contents
-    // are pinned by the flag-strip probe below.
-    for (const flag of res.flags.checkoutMissing) {
-      expect(flag.employeeId).toBe(TECHS.B);
-      expect(flag.workDate < today).toBe(true);
-    }
-    for (const flag of res.flags.fakeLocationAttempt) {
-      expect([TECHS.A, TECHS.B]).toContain(flag.employeeId);
-      expect(flag.workDate).toBe(d1);
-    }
-    // The office registry (the 19-4 picker): every NON-ARCHIVED office —
-    // the archived office drops out — its stats over the FULL tenant
-    // scope, so the live office carries all five tracked rows + both
-    // checked-in legs.
-    expect(Object.keys(res.offices[0]).sort()).toEqual([
-      'checkedIn',
-      'id',
-      'name',
-      'tracked',
-    ]);
-    expect(res.offices).toEqual([
-      {
-        id: officeId,
-        name: 'dashboard probe office',
-        tracked: 5,
-        checkedIn: 2,
-      },
-    ]);
-  });
-
-  maybeIt('the flag strips mirror the engine exactly, including override-only days', async () => {
-    const res = await dashboard.today(user(OWNER, 'owner'));
-
-    // Checkout-missing: the D-2 record leg + the D-1 override-ONLY leg;
-    // B's adjudicated D-3 record is NEVER flagged (rule 1). Order: the
-    // strip sorts by work_date asc, then resolved name asc.
-    expect(res.flags.checkoutMissing).toEqual([
-      {
-        employeeId: TECHS.B,
-        employeeName: 'probe tech 2',
-        workDate: d2,
-        officeName: 'dashboard probe office',
-        avatarUrl: null,
-      },
-      {
-        employeeId: TECHS.B,
-        employeeName: 'probe tech 2',
-        workDate: d1,
-        officeName: 'dashboard probe office',
-        avatarUrl: null,
-      },
-    ]);
-    // Fake-location: unacknowledged attempts grouped per employee-date,
-    // the office of the assignment covering the ATTEMPT date.
-    expect(res.flags.fakeLocationAttempt).toEqual([
-      {
-        employeeId: TECHS.A,
-        employeeName: 'probe tech 1',
-        workDate: d1,
-        officeName: 'dashboard probe office',
-        attemptCount: 2,
-        avatarUrl: null,
-      },
-      {
-        employeeId: TECHS.B,
-        employeeName: 'probe tech 2',
-        workDate: d1,
-        officeName: 'dashboard probe office',
-        attemptCount: 1,
-        avatarUrl: null,
-      },
-    ]);
-
-    // PARITY — the wire set equals the engine's rule-8 marker set over the
-    // same facts (the §6 boundary check, not an assumption).
-    const engine = await engineCheckoutMissing(
-      [TECHS.A, TECHS.B, TECHS.C, TECHS.F, TECHS.G],
-      d2,
-      d1,
-    );
-    const wireSet = new Set(
-      res.flags.checkoutMissing.map((f) => `${f.employeeId}|${f.workDate}`),
-    );
-    expect([...wireSet].sort()).toEqual([...engine].sort());
-  });
-
-  maybeIt('20-2: a rule-7 SUB-half-day punch pair TODAY moves to shortDay, and the owner `absent` override moves the SAME facts back out', async () => {
-    // G: check-in AND check-out today, 7 worked minutes — under the
-    // office rule's 4 h half-day floor the engine grades rule 7
-    // `absent`. With the flip live the row MOVES out of notCheckedIn
-    // (never copies) and the four buckets still partition tracked.
-    await seedRecord(TECHS.G, today, '09:40:00', '09:47:00');
-    try {
+  maybeIt(
+    'the SIX tiles answer the engine grid exactly (the four buckets PARTITION tracked)',
+    async () => {
       const res = await dashboard.today(user(OWNER, 'owner'));
-      expect(res.counts).toEqual({
-        tracked: 5,
-        checkedIn: 2, // A (in_progress), F (late rides inside)
-        notCheckedIn: 1, // B only — G moved OUT
-        shortDay: 1, // G's rule-7 leg
-        late: 1,
-        onLeave: 1,
-      });
+      expect(res.date).toBe(today);
+      // Tracked = enrolment ∩ assignment ∩ ACTIVE office covering today:
+      // techs 1, 2, 3, 6, 7 (E's office is archived; future is not live yet;
+      // history's period ended yesterday; gate has no enrolment at all).
+      expect(res.counts.tracked).toBe(5);
+      // checkedIn: A's in_progress leg + F's present leg (late rides INSIDE
+      // checkedIn — a qualifier, never a fifth bucket).
+      expect(res.counts.checkedIn).toBe(2);
+      expect(res.counts.notCheckedIn).toBe(2); // B, G
+      // 20-2's fourth bucket, ENGINE-graded only: this base fixture has no
+      // rule-7 leg (no sub-half-day punch pair today), so Short day is 0
+      // even though B holds not-short-day `absent` grades — the flip keeps
+      // them not checked in.
+      expect(res.counts.shortDay).toBe(0);
+      expect(res.counts.late).toBe(1); // F's 12:00 check-in
+      expect(res.counts.onLeave).toBe(1); // C's approved full-day leave
+      // The rows MOVE, never copy — the partition holds on this scope too.
       expect(
         res.counts.checkedIn +
           res.counts.notCheckedIn +
           res.counts.shortDay +
           res.counts.onLeave,
       ).toBe(res.counts.tracked);
-
-      // Second leg — the OWNER'S WORD overrides the tiles (the 20-2
-      // ruling): the SAME punch facts + an adjudicated `absent` status
-      // override grades rule-1 absent → G STAYS out of short day and
-      // reads notCheckedIn. Status only — the DB pair-check forbids
-      // manual instants beside a status, so this is the real shape.
-      const ov = (
-        await pool.query<{ id: string }>(
-          `insert into public.attendance_day_overrides
-             (tenant_id, employee_id, work_date, status, created_by)
-           values ($1, $2, $3, 'absent', $4)
-           returning id`,
-          [TENANT, TECHS.G, today, OWNER],
-        )
-      ).rows[0].id;
-      try {
-        const res2 = await dashboard.today(user(OWNER, 'owner'));
-        expect(res2.counts).toEqual({
+      // The strips are PAST-window reads by design (they surface unresolved
+      // history on today's dashboard) — B's past days flag here and the
+      // attempts on D-1 bucket by the ATTEMPT date; their exact contents
+      // are pinned by the flag-strip probe below.
+      for (const flag of res.flags.checkoutMissing) {
+        expect(flag.employeeId).toBe(TECHS.B);
+        expect(flag.workDate < today).toBe(true);
+      }
+      for (const flag of res.flags.fakeLocationAttempt) {
+        expect([TECHS.A, TECHS.B]).toContain(flag.employeeId);
+        expect(flag.workDate).toBe(d1);
+      }
+      // The office registry (the 19-4 picker): every NON-ARCHIVED office —
+      // the archived office drops out — its stats over the FULL tenant
+      // scope, so the live office carries all five tracked rows + both
+      // checked-in legs.
+      expect(Object.keys(res.offices[0]).sort()).toEqual([
+        'checkedIn',
+        'id',
+        'name',
+        'tracked',
+      ]);
+      expect(res.offices).toEqual([
+        {
+          id: officeId,
+          name: 'dashboard probe office',
           tracked: 5,
           checkedIn: 2,
-          notCheckedIn: 2, // B, G-back (the override grade) — rule 1 wins
-          shortDay: 0, // unchanged-OUT — the override leg is NOT short-day
+        },
+      ]);
+    },
+  );
+
+  maybeIt(
+    'the flag strips mirror the engine exactly, including override-only days',
+    async () => {
+      const res = await dashboard.today(user(OWNER, 'owner'));
+
+      // Checkout-missing: the D-2 record leg + the D-1 override-ONLY leg;
+      // B's adjudicated D-3 record is NEVER flagged (rule 1). Order: the
+      // strip sorts by work_date asc, then resolved name asc.
+      expect(res.flags.checkoutMissing).toEqual([
+        {
+          employeeId: TECHS.B,
+          employeeName: 'probe tech 2',
+          workDate: d2,
+          officeName: 'dashboard probe office',
+          avatarUrl: null,
+        },
+        {
+          employeeId: TECHS.B,
+          employeeName: 'probe tech 2',
+          workDate: d1,
+          officeName: 'dashboard probe office',
+          avatarUrl: null,
+        },
+      ]);
+      // Fake-location: unacknowledged attempts grouped per employee-date,
+      // the office of the assignment covering the ATTEMPT date.
+      expect(res.flags.fakeLocationAttempt).toEqual([
+        {
+          employeeId: TECHS.A,
+          employeeName: 'probe tech 1',
+          workDate: d1,
+          officeName: 'dashboard probe office',
+          attemptCount: 2,
+          avatarUrl: null,
+        },
+        {
+          employeeId: TECHS.B,
+          employeeName: 'probe tech 2',
+          workDate: d1,
+          officeName: 'dashboard probe office',
+          attemptCount: 1,
+          avatarUrl: null,
+        },
+      ]);
+
+      // PARITY — the wire set equals the engine's rule-8 marker set over the
+      // same facts (the §6 boundary check, not an assumption).
+      const engine = await engineCheckoutMissing(
+        [TECHS.A, TECHS.B, TECHS.C, TECHS.F, TECHS.G],
+        d2,
+        d1,
+      );
+      const wireSet = new Set(
+        res.flags.checkoutMissing.map((f) => `${f.employeeId}|${f.workDate}`),
+      );
+      expect([...wireSet].sort()).toEqual([...engine].sort());
+    },
+  );
+
+  maybeIt(
+    '20-2: a rule-7 SUB-half-day punch pair TODAY moves to shortDay, and the owner `absent` override moves the SAME facts back out',
+    async () => {
+      // G: check-in AND check-out today, 7 worked minutes — under the
+      // office rule's 4 h half-day floor the engine grades rule 7
+      // `absent`. With the flip live the row MOVES out of notCheckedIn
+      // (never copies) and the four buckets still partition tracked.
+      await seedRecord(TECHS.G, today, '09:40:00', '09:47:00');
+      try {
+        const res = await dashboard.today(user(OWNER, 'owner'));
+        expect(res.counts).toEqual({
+          tracked: 5,
+          checkedIn: 2, // A (in_progress), F (late rides inside)
+          notCheckedIn: 1, // B only — G moved OUT
+          shortDay: 1, // G's rule-7 leg
           late: 1,
           onLeave: 1,
         });
         expect(
-          res2.counts.checkedIn +
-            res2.counts.notCheckedIn +
-            res2.counts.shortDay +
-            res2.counts.onLeave,
-        ).toBe(res2.counts.tracked);
+          res.counts.checkedIn +
+            res.counts.notCheckedIn +
+            res.counts.shortDay +
+            res.counts.onLeave,
+        ).toBe(res.counts.tracked);
+
+        // Second leg — the OWNER'S WORD overrides the tiles (the 20-2
+        // ruling): the SAME punch facts + an adjudicated `absent` status
+        // override grades rule-1 absent → G STAYS out of short day and
+        // reads notCheckedIn. Status only — the DB pair-check forbids
+        // manual instants beside a status, so this is the real shape.
+        const ov = (
+          await pool.query<{ id: string }>(
+            `insert into public.attendance_day_overrides
+             (tenant_id, employee_id, work_date, status, created_by)
+           values ($1, $2, $3, 'absent', $4)
+           returning id`,
+            [TENANT, TECHS.G, today, OWNER],
+          )
+        ).rows[0].id;
+        try {
+          const res2 = await dashboard.today(user(OWNER, 'owner'));
+          expect(res2.counts).toEqual({
+            tracked: 5,
+            checkedIn: 2,
+            notCheckedIn: 2, // B, G-back (the override grade) — rule 1 wins
+            shortDay: 0, // unchanged-OUT — the override leg is NOT short-day
+            late: 1,
+            onLeave: 1,
+          });
+          expect(
+            res2.counts.checkedIn +
+              res2.counts.notCheckedIn +
+              res2.counts.shortDay +
+              res2.counts.onLeave,
+          ).toBe(res2.counts.tracked);
+        } finally {
+          await pool.query(
+            `delete from public.attendance_day_overrides where id = $1`,
+            [ov],
+          );
+        }
       } finally {
+        // Self-clean so later tests read the pre-leg shape (afterAll runs
+        // LAST, while this test's neighbours come before it).
         await pool.query(
-          `delete from public.attendance_day_overrides where id = $1`,
-          [ov],
-        );
-      }
-    } finally {
-      // Self-clean so later tests read the pre-leg shape (afterAll runs
-      // LAST, while this test's neighbours come before it).
-      await pool.query(
-        `delete from public.attendance_records
+          `delete from public.attendance_records
          where tenant_id = $1 and employee_id = $2 and work_date = $3`,
-        [TENANT, TECHS.G, today],
-      );
-      await pool.query(
-        `delete from public.attendance_attempts
+          [TENANT, TECHS.G, today],
+        );
+        await pool.query(
+          `delete from public.attendance_attempts
          where tenant_id = $1 and employee_id = $2
            and attempted_at >= $3 and attempted_at <= $4`,
-        [TENANT, TECHS.G, ist(today, '09:40:00'), ist(today, '09:47:00')],
+          [TENANT, TECHS.G, ist(today, '09:40:00'), ist(today, '09:47:00')],
+        );
+      }
+    },
+  );
+
+  maybeIt(
+    'an unknown-but-well-formed officeId answers 200 with zeros, never 404',
+    async () => {
+      const res = await dashboard.today(user(OWNER, 'owner'), randomUUID());
+      expect(res.counts).toEqual({
+        tracked: 0,
+        checkedIn: 0,
+        notCheckedIn: 0,
+        late: 0,
+        onLeave: 0,
+        // 20-2: the bucket list is on EVERY response — including this
+        // zeroed one, shortDay at 0 (an empty roster has no short days).
+        shortDay: 0,
+      });
+      expect(res.flags).toEqual({
+        checkoutMissing: [],
+        fakeLocationAttempt: [],
+      });
+      // Even a filter that EMPTIES the tiles leaves the registry FULL-SCOPE —
+      // the picker must never inherit the fetch's filter (the 19-4 review's
+      // full-tenant contract; the pre-fix accumulation lived below the filter
+      // and zeroed every office on ANY filtered fetch, including this one).
+      expect(res.offices).toEqual([
+        {
+          id: officeId,
+          name: 'dashboard probe office',
+          tracked: 5,
+          checkedIn: 2,
+        },
+      ]);
+    },
+  );
+
+  maybeIt(
+    'monthly range rules: 31 days reads, 32 and future-end 422',
+    async () => {
+      const d31 = await scalarDate(-30);
+      const d32 = await scalarDate(-31);
+      const dNext = await scalarDate(1);
+
+      // Exactly a month → reads (200), ending at tenant-today.
+      const ok = await monthly.forOwner(user(OWNER, 'owner'), d31, today);
+      expect(ok.from).toBe(d31);
+      expect(ok.to).toBe(today);
+      // 19-5's D2 echo: the response carries the same tenant-today the
+      // range check resolved — the FE's request-shaping clock.
+      expect(ok.today).toBe(today);
+
+      // A 32-day span, BOTH routes, validated before any SQL.
+      for (const read of [
+        () => monthly.forOwner(user(OWNER, 'owner'), d32, today),
+        () => monthly.forMe(user(TECHS.A, 'technician'), d32, today),
+      ]) {
+        await expectHttpException(read, 422, 'ATTENDANCE_INVALID_RANGE');
+      }
+      // A future END inside the span — the clock check inside the
+      // transaction: the aggregate is earned credits only.
+      await expectHttpException(
+        () => monthly.forOwner(user(OWNER, 'owner'), today, dNext),
+        422,
+        'ATTENDANCE_INVALID_RANGE',
       );
-    }
-  });
+      // from > to, and malformed input.
+      await expectHttpException(
+        () => monthly.forMe(user(TECHS.A, 'technician'), today, d31),
+        422,
+        'ATTENDANCE_INVALID_RANGE',
+      );
+      await expectHttpException(
+        () => monthly.forOwner(user(OWNER, 'owner'), '2026-9-1', today),
+        422,
+        'ATTENDANCE_INVALID_RANGE',
+      );
+    },
+  );
 
-  maybeIt('an unknown-but-well-formed officeId answers 200 with zeros, never 404', async () => {
-    const res = await dashboard.today(user(OWNER, 'owner'), randomUUID());
-    expect(res.counts).toEqual({
-      tracked: 0,
-      checkedIn: 0,
-      notCheckedIn: 0,
-      late: 0,
-      onLeave: 0,
-      // 20-2: the bucket list is on EVERY response — including this
-      // zeroed one, shortDay at 0 (an empty roster has no short days).
-      shortDay: 0,
-    });
-    expect(res.flags).toEqual({ checkoutMissing: [], fakeLocationAttempt: [] });
-    // Even a filter that EMPTIES the tiles leaves the registry FULL-SCOPE —
-    // the picker must never inherit the fetch's filter (the 19-4 review's
-    // full-tenant contract; the pre-fix accumulation lived below the filter
-    // and zeroed every office on ANY filtered fetch, including this one).
-    expect(res.offices).toEqual([
-      {
-        id: officeId,
-        name: 'dashboard probe office',
-        tracked: 5,
-        checkedIn: 2,
-      },
-    ]);
-  });
+  maybeIt(
+    'the owner monthly read answers the roster shape with engine-true summaries',
+    async () => {
+      const res = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
 
-  maybeIt('monthly range rules: 31 days reads, 32 and future-end 422', async () => {
-    const d31 = await scalarDate(-30);
-    const d32 = await scalarDate(-31);
-    const dNext = await scalarDate(1);
+      // The crew's enrolled rows: techs 1, 2, 3, 5, 6, 7, 9 — gate has no
+      // enrolment, future's enrolment starts tomorrow (excluded).
+      expect(res.employees.map((e) => e.employeeName)).toEqual([
+        'probe tech 1',
+        'probe tech 2',
+        'probe tech 3',
+        'probe tech 5',
+        'probe tech 6',
+        'probe tech 7',
+        'probe tech 9',
+      ]);
 
-    // Exactly a month → reads (200), ending at tenant-today.
-    const ok = await monthly.forOwner(user(OWNER, 'owner'), d31, today);
-    expect(ok.from).toBe(d31);
-    expect(ok.to).toBe(today);
-    // 19-5's D2 echo: the response carries the same tenant-today the
-    // range check resolved — the FE's request-shaping clock.
-    expect(ok.today).toBe(today);
+      // FR-28: the history-only employee stays listed; their TODAY office
+      // is NULL (their assignment window ended with the clip).
+      const history = res.employees.find(
+        (e) => e.employeeId === TECHS.history,
+      )!;
+      expect(history.officeId).toBeNull();
+      expect(history.officeName).toBeNull();
+      // Their only tracked leg: the D-2 complete record; D-3/D-1 absents.
+      expect(history.summary).toEqual({
+        daysWorked: 1,
+        halfDays: 0,
+        lateCount: 0,
+        leave: 0,
+        weeklyOffs: 0,
+        holidays: 0,
+        workedOnHoliday: 0,
+        absent: 2,
+        checkoutMissing: 0,
+      });
 
-    // A 32-day span, BOTH routes, validated before any SQL.
-    for (const read of [
-      () => monthly.forOwner(user(OWNER, 'owner'), d32, today),
-      () => monthly.forMe(user(TECHS.A, 'technician'), d32, today),
-    ]) {
-      await expectHttpException(read, 422, 'ATTENDANCE_INVALID_RANGE');
-    }
-    // A future END inside the span — the clock check inside the
-    // transaction: the aggregate is earned credits only.
-    await expectHttpException(
-      () => monthly.forOwner(user(OWNER, 'owner'), today, dNext),
-      422,
-      'ATTENDANCE_INVALID_RANGE',
-    );
-    // from > to, and malformed input.
-    await expectHttpException(
-      () => monthly.forMe(user(TECHS.A, 'technician'), today, d31),
-      422,
-      'ATTENDANCE_INVALID_RANGE',
-    );
-    await expectHttpException(
-      () => monthly.forOwner(user(OWNER, 'owner'), '2026-9-1', today),
-      422,
-      'ATTENDANCE_INVALID_RANGE',
-    );
-  });
+      // The idle technician's rule-9 facts: three past absences.
+      const g = res.employees.find((e) => e.employeeId === TECHS.G)!;
+      expect(g.summary).toEqual({
+        daysWorked: 0,
+        halfDays: 0,
+        lateCount: 0,
+        leave: 0,
+        weeklyOffs: 0,
+        holidays: 0,
+        workedOnHoliday: 0,
+        absent: 3,
+        checkoutMissing: 0,
+      });
 
-  maybeIt('the owner monthly read answers the roster shape with engine-true summaries', async () => {
-    const res = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
+      // B's flag facts mirror the strip: two unadjudicated past days with a
+      // check-in and no check-out.
+      const b = res.employees.find((e) => e.employeeId === TECHS.B)!;
+      expect(b.summary.checkoutMissing).toBe(2);
 
-    // The crew's enrolled rows: techs 1, 2, 3, 5, 6, 7, 9 — gate has no
-    // enrolment, future's enrolment starts tomorrow (excluded).
-    expect(res.employees.map((e) => e.employeeName)).toEqual([
-      'probe tech 1',
-      'probe tech 2',
-      'probe tech 3',
-      'probe tech 5',
-      'probe tech 6',
-      'probe tech 7',
-      'probe tech 9',
-    ]);
+      // C's approved full-day leave credits exactly 1 in the range.
+      const c = res.employees.find((e) => e.employeeId === TECHS.C)!;
+      expect(c.summary.leave).toBe(1);
 
-    // FR-28: the history-only employee stays listed; their TODAY office
-    // is NULL (their assignment window ended with the clip).
-    const history = res.employees.find((e) => e.employeeId === TECHS.history)!;
-    expect(history.officeId).toBeNull();
-    expect(history.officeName).toBeNull();
-    // Their only tracked leg: the D-2 complete record; D-3/D-1 absents.
-    expect(history.summary).toEqual({
-      daysWorked: 1,
-      halfDays: 0,
-      lateCount: 0,
-      leave: 0,
-      weeklyOffs: 0,
-      holidays: 0,
-      workedOnHoliday: 0,
-      absent: 2,
-      checkoutMissing: 0,
-    });
+      // F's late check-in counts once.
+      const f = res.employees.find((e) => e.employeeId === TECHS.F)!;
+      expect(f.summary.lateCount).toBe(1);
 
-    // The idle technician's rule-9 facts: three past absences.
-    const g = res.employees.find((e) => e.employeeId === TECHS.G)!;
-    expect(g.summary).toEqual({
-      daysWorked: 0,
-      halfDays: 0,
-      lateCount: 0,
-      leave: 0,
-      weeklyOffs: 0,
-      holidays: 0,
-      workedOnHoliday: 0,
-      absent: 3,
-      checkoutMissing: 0,
-    });
+      // E's roster office is the archived one (the CURRENT assignment).
+      const e2 = res.employees.find((e) => e.employeeId === TECHS.E)!;
+      expect(e2.officeName).toBe('archived probe office');
+    },
+  );
 
-    // B's flag facts mirror the strip: two unadjudicated past days with a
-    // check-in and no check-out.
-    const b = res.employees.find((e) => e.employeeId === TECHS.B)!;
-    expect(b.summary.checkoutMissing).toBe(2);
+  maybeIt(
+    'an officeId filter narrows the set; an unknown one answers empty, never 404',
+    async () => {
+      const live = await monthly.forOwner(
+        user(OWNER, 'owner'),
+        d3,
+        today,
+        officeId,
+      );
+      // Only employees whose TODAY-covering office is the filter: the live
+      // roster five (E sits at the archived office; history has no TODAY
+      // covering assignment at all).
+      expect(live.employees.map((e) => e.employeeId).sort()).toEqual(
+        [TECHS.A, TECHS.B, TECHS.C, TECHS.F, TECHS.G].sort(),
+      );
 
-    // C's approved full-day leave credits exactly 1 in the range.
-    const c = res.employees.find((e) => e.employeeId === TECHS.C)!;
-    expect(c.summary.leave).toBe(1);
+      const unknown = await monthly.forOwner(
+        user(OWNER, 'owner'),
+        d3,
+        today,
+        randomUUID(), // well-formed, no such office — a filter, not a fetch
+      );
+      expect(unknown).toEqual({
+        from: d3,
+        to: today,
+        today, // 19-5's D2 echo rides every response
+        employees: [],
+      });
+    },
+  );
 
-    // F's late check-in counts once.
-    const f = res.employees.find((e) => e.employeeId === TECHS.F)!;
-    expect(f.summary.lateCount).toBe(1);
+  maybeIt(
+    'FR-11 parity — the owner row and the self view agree cell for cell',
+    async () => {
+      const ownerRes = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
+      const meRes = await monthly.forMe(user(TECHS.A, 'technician'), d3, today);
 
-    // E's roster office is the archived one (the CURRENT assignment).
-    const e2 = res.employees.find((e) => e.employeeId === TECHS.E)!;
-    expect(e2.officeName).toBe('archived probe office');
-  });
+      const ownerRow = ownerRes.employees.find(
+        (e) => e.employeeId === TECHS.A,
+      )!;
+      // One aggregation function over the same grid rows → the summaries are
+      // DEEP-equal for the same employee (the structural parity contract).
+      expect(ownerRow.summary).toEqual(meRes.summary);
+      // The self view's cards: no weekly-off default seeded → none effective;
+      // no holidays seeded → the upcoming list is empty.
+      expect(meRes.weeklyOffs).toEqual([]);
+      expect(meRes.upcomingHolidays).toEqual([]);
+      expect(meRes.from).toBe(d3);
+      expect(meRes.to).toBe(today);
+    },
+  );
 
-  maybeIt('an officeId filter narrows the set; an unknown one answers empty, never 404', async () => {
-    const live = await monthly.forOwner(
-      user(OWNER, 'owner'),
-      d3,
-      today,
-      officeId,
-    );
-    // Only employees whose TODAY-covering office is the filter: the live
-    // roster five (E sits at the archived office; history has no TODAY
-    // covering assignment at all).
-    expect(live.employees.map((e) => e.employeeId).sort()).toEqual(
-      [TECHS.A, TECHS.B, TECHS.C, TECHS.F, TECHS.G].sort(),
-    );
+  maybeIt(
+    'the me-route access gate: an unenrolled technician reads 403, never entity data',
+    async () => {
+      // TECHS.gate has a user row but NO enrolment — the AD-17 view reads
+      // access_state none → 403 ATTENDANCE_NOT_TRACKED (deny-by-default).
+      await expectHttpException(
+        () => monthly.forMe(user(TECHS.gate, 'technician'), today, today),
+        403,
+        'ATTENDANCE_NOT_TRACKED',
+      );
+    },
+  );
 
-    const unknown = await monthly.forOwner(
-      user(OWNER, 'owner'),
-      d3,
-      today,
-      randomUUID(), // well-formed, no such office — a filter, not a fetch
-    );
-    expect(unknown).toEqual({
-      from: d3,
-      to: today,
-      today, // 19-5's D2 echo rides every response
-      employees: [],
-    });
-  });
-
-  maybeIt('FR-11 parity — the owner row and the self view agree cell for cell', async () => {
-    const ownerRes = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
-    const meRes = await monthly.forMe(user(TECHS.A, 'technician'), d3, today);
-
-    const ownerRow = ownerRes.employees.find((e) => e.employeeId === TECHS.A)!;
-    // One aggregation function over the same grid rows → the summaries are
-    // DEEP-equal for the same employee (the structural parity contract).
-    expect(ownerRow.summary).toEqual(meRes.summary);
-    // The self view's cards: no weekly-off default seeded → none effective;
-    // no holidays seeded → the upcoming list is empty.
-    expect(meRes.weeklyOffs).toEqual([]);
-    expect(meRes.upcomingHolidays).toEqual([]);
-    expect(meRes.from).toBe(d3);
-    expect(meRes.to).toBe(today);
-  });
-
-  maybeIt('the me-route access gate: an unenrolled technician reads 403, never entity data', async () => {
-    // TECHS.gate has a user row but NO enrolment — the AD-17 view reads
-    // access_state none → 403 ATTENDANCE_NOT_TRACKED (deny-by-default).
-    await expectHttpException(
-      () => monthly.forMe(user(TECHS.gate, 'technician'), today, today),
-      403,
-      'ATTENDANCE_NOT_TRACKED',
-    );
-  });
-
-  maybeIt('FR-28 — the history-only technician’s self view equals their owner row', async () => {
-    // history's enrolment is clipped out of TODAY → the AD-17 view reads
-    // history_only, which stays READABLE per D6 (the 18-x me-route
-    // precedent): the self view over the clipped period answers the same
-    // summary the owner's roster row shows.
-    const ownerRes = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
-    const meRes = await monthly.forMe(
-      user(TECHS.history, 'technician'),
-      d3,
-      today,
-    );
-    const ownerRow = ownerRes.employees.find(
-      (e) => e.employeeId === TECHS.history,
-    )!;
-    expect(meRes.summary).toEqual(ownerRow.summary);
-  });
-
-  maybeIt('the self cards read SEEDED data — an override REPLACES the tenant default; holidays from tomorrow list', async () => {
-    // RUNS LAST-ISH + self-cleaning: a tenant default (Monday+Sunday) and
-    // A's override (Monday) REPLACING it today — the pickWeeklyOffDays
-    // contract on D6's weeklyOffs — plus a holiday from tomorrow for the
-    // card's `holiday_date >= today` read. The finally removes all three
-    // so the empty-card pins above keep holding on every future run.
-    const tomorrow = await scalarDate(1);
-    must(
-      await admin.from('attendance_weekly_off_defaults').insert({
-        tenant_id: TENANT,
-        valid: '[2000-01-01,)',
-        days: [1, 7],
-      }),
-    );
-    must(
-      await admin.from('attendance_weekly_off_overrides').insert({
-        tenant_id: TENANT,
-        employee_id: TECHS.A,
-        valid: '[2000-01-01,)',
-        days: [7],
-      }),
-    );
-    must(
-      await admin
-        .from('holidays')
-        .insert({ tenant_id: TENANT, holiday_date: tomorrow, name: 'probe fest' }),
-    );
-    try {
+  maybeIt(
+    'FR-28 — the history-only technician’s self view equals their owner row',
+    async () => {
+      // history's enrolment is clipped out of TODAY → the AD-17 view reads
+      // history_only, which stays READABLE per D6 (the 18-x me-route
+      // precedent): the self view over the clipped period answers the same
+      // summary the owner's roster row shows.
+      const ownerRes = await monthly.forOwner(user(OWNER, 'owner'), d3, today);
       const meRes = await monthly.forMe(
-        user(TECHS.A, 'technician'),
+        user(TECHS.history, 'technician'),
         d3,
         today,
       );
-      // The override's days win — the earlier `weeklyOffs: []` probe above
-      // stays green only because this seed lands after it and cleans up.
-      expect(meRes.weeklyOffs).toEqual([7]);
-      expect(meRes.upcomingHolidays).toEqual([
-        { holidayDate: tomorrow, holidayName: 'probe fest' },
-      ]);
-    } finally {
-      await admin
-        .from('attendance_weekly_off_overrides')
-        .delete()
-        .eq('tenant_id', TENANT)
-        .eq('employee_id', TECHS.A);
-      await admin
-        .from('attendance_weekly_off_defaults')
-        .delete()
-        .eq('tenant_id', TENANT)
-        .eq('valid', '[2000-01-01,)');
-      await admin
-        .from('holidays')
-        .delete()
-        .eq('tenant_id', TENANT)
-        .eq('holiday_date', tomorrow);
-    }
-  });
+      const ownerRow = ownerRes.employees.find(
+        (e) => e.employeeId === TECHS.history,
+      )!;
+      expect(meRes.summary).toEqual(ownerRow.summary);
+    },
+  );
+
+  maybeIt(
+    'the self cards read SEEDED data — an override REPLACES the tenant default; holidays from tomorrow list',
+    async () => {
+      // RUNS LAST-ISH + self-cleaning: a tenant default (Monday+Sunday) and
+      // A's override (Monday) REPLACING it today — the pickWeeklyOffDays
+      // contract on D6's weeklyOffs — plus a holiday from tomorrow for the
+      // card's `holiday_date >= today` read. The finally removes all three
+      // so the empty-card pins above keep holding on every future run.
+      const tomorrow = await scalarDate(1);
+      must(
+        await admin.from('attendance_weekly_off_defaults').insert({
+          tenant_id: TENANT,
+          valid: '[2000-01-01,)',
+          days: [1, 7],
+        }),
+      );
+      must(
+        await admin.from('attendance_weekly_off_overrides').insert({
+          tenant_id: TENANT,
+          employee_id: TECHS.A,
+          valid: '[2000-01-01,)',
+          days: [7],
+        }),
+      );
+      must(
+        await admin.from('holidays').insert({
+          tenant_id: TENANT,
+          holiday_date: tomorrow,
+          name: 'probe fest',
+        }),
+      );
+      try {
+        const meRes = await monthly.forMe(
+          user(TECHS.A, 'technician'),
+          d3,
+          today,
+        );
+        // The override's days win — the earlier `weeklyOffs: []` probe above
+        // stays green only because this seed lands after it and cleans up.
+        expect(meRes.weeklyOffs).toEqual([7]);
+        expect(meRes.upcomingHolidays).toEqual([
+          { holidayDate: tomorrow, holidayName: 'probe fest' },
+        ]);
+      } finally {
+        await admin
+          .from('attendance_weekly_off_overrides')
+          .delete()
+          .eq('tenant_id', TENANT)
+          .eq('employee_id', TECHS.A);
+        await admin
+          .from('attendance_weekly_off_defaults')
+          .delete()
+          .eq('tenant_id', TENANT)
+          .eq('valid', '[2000-01-01,)');
+        await admin
+          .from('holidays')
+          .delete()
+          .eq('tenant_id', TENANT)
+          .eq('holiday_date', tomorrow);
+      }
+    },
+  );
 
   /** Tenant-local `YYYY-MM-DD` text helper shared by the range probes. */
   async function scalarDate(n: number): Promise<string> {

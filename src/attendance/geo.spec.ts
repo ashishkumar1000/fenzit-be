@@ -18,12 +18,7 @@ describe('haversineDistanceM', () => {
   });
 
   it('measures a long pair within a kilometre (Mumbai ↔ Delhi ≈ 1150 km)', () => {
-    const d = haversineDistanceM(
-      19.076,
-      72.8777,
-      28.6139,
-      77.209,
-    );
+    const d = haversineDistanceM(19.076, 72.8777, 28.6139, 77.209);
     expect(d).toBeGreaterThan(1_140_000);
     expect(d).toBeLessThan(1_160_000);
   });

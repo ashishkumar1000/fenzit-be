@@ -126,18 +126,14 @@ describe('ReportParamsUtil — istTodayIso (story 12-5)', () => {
 
   it('reports the IST calendar date, not the UTC date (UTC+5:30)', () => {
     // 2026-09-19T20:30Z + 5:30h = 2026-09-20T02:00 IST.
-    jest
-      .spyOn(Date, 'now')
-      .mockReturnValue(Date.parse('2026-09-19T20:30:00Z'));
+    jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-19T20:30:00Z'));
 
     expect(istTodayIso()).toBe('2026-09-20');
   });
 
   it('stays on the previous UTC day for early-IST-morning instants', () => {
     // 2026-09-20T18:29Z + 5:30h = 2026-09-20T23:59 IST — still the 20th.
-    jest
-      .spyOn(Date, 'now')
-      .mockReturnValue(Date.parse('2026-09-20T18:29:00Z'));
+    jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-20T18:29:00Z'));
 
     expect(istTodayIso()).toBe('2026-09-20');
   });

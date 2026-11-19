@@ -71,25 +71,25 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
 
   describe('start route — dynamic 201/200', () => {
     it('returns the state and codes 201 on first start', async () => {
-      const startSetup = jest
-        .fn()
-        .mockResolvedValue({ state, created: true });
+      const startSetup = jest.fn().mockResolvedValue({ state, created: true });
       const controller = controllerWith({ startSetup });
       const r = reply();
 
-      await expect(controller.startSetup(user, r as never)).resolves.toBe(state);
+      await expect(controller.startSetup(user, r as never)).resolves.toBe(
+        state,
+      );
       expect(startSetup).toHaveBeenCalledWith(user);
       expect(r.code).toHaveBeenCalledWith(201);
     });
 
     it('codes 200 when the wizard was already under way (resume)', async () => {
-      const startSetup = jest
-        .fn()
-        .mockResolvedValue({ state, created: false });
+      const startSetup = jest.fn().mockResolvedValue({ state, created: false });
       const controller = controllerWith({ startSetup });
       const r = reply();
 
-      await expect(controller.startSetup(user, r as never)).resolves.toBe(state);
+      await expect(controller.startSetup(user, r as never)).resolves.toBe(
+        state,
+      );
       expect(r.code).toHaveBeenCalledWith(200);
     });
   });
@@ -111,12 +111,14 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
       (handler: keyof AttendanceController, path: string, method: number) => {
         const meta = Reflect.getMetadata(
           METHOD_METADATA,
-          AttendanceController.prototype[handler] as object,
+          AttendanceController.prototype[handler],
         );
-        expect(Reflect.getMetadata(
-          PATH_METADATA,
-          AttendanceController.prototype[handler] as object,
-        )).toBe(path);
+        expect(
+          Reflect.getMetadata(
+            PATH_METADATA,
+            AttendanceController.prototype[handler] as object,
+          ),
+        ).toBe(path);
         expect(meta).toBe(method);
       },
     );
@@ -131,7 +133,7 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
       (handler: keyof AttendanceController, permission: Permission) => {
         const needed = Reflect.getMetadata(
           CAN_KEY,
-          AttendanceController.prototype[handler] as object,
+          AttendanceController.prototype[handler],
         ) as Permission[] | undefined;
 
         expect(needed).toEqual([permission]);
@@ -142,14 +144,17 @@ describe('AttendanceController — setup routes (story 15-2)', () => {
       ['getSetupState', 200],
       ['saveStep', 200],
       ['completeSetup', 200],
-    ])('%s carries a fixed @HttpCode(%i)', (handler: keyof AttendanceController, code: number) => {
-      expect(
-        Reflect.getMetadata(
-          HTTP_CODE_METADATA,
-          AttendanceController.prototype[handler] as object,
-        ),
-      ).toBe(code);
-    });
+    ])(
+      '%s carries a fixed @HttpCode(%i)',
+      (handler: keyof AttendanceController, code: number) => {
+        expect(
+          Reflect.getMetadata(
+            HTTP_CODE_METADATA,
+            AttendanceController.prototype[handler] as object,
+          ),
+        ).toBe(code);
+      },
+    );
 
     it('startSetup carries the declared 201 (the live status is set per-response from `created`)', () => {
       // The swagger/documented default is 201; the passthrough reply narrows

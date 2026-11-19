@@ -1,8 +1,8 @@
-import { payslipReportDefinition, PAYSLIP_REPORT_TYPE } from './payslip.definition';
 import {
-  fetchPayslipReportData,
-  verifyPayslipSnapshot,
-} from './payslip.data';
+  payslipReportDefinition,
+  PAYSLIP_REPORT_TYPE,
+} from './payslip.definition';
+import { fetchPayslipReportData, verifyPayslipSnapshot } from './payslip.data';
 import { buildPayslipDocument } from './payslip.template';
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/enums/error-code.enum';
@@ -68,7 +68,9 @@ describe('payslipReportDefinition.validateParams (23-8)', () => {
       });
       throw new Error('expected a throw');
     } catch (e) {
-      expect(invalidMessage(e)).toBe('membershipId must be a valid employee id');
+      expect(invalidMessage(e)).toBe(
+        'membershipId must be a valid employee id',
+      );
     }
 
     try {

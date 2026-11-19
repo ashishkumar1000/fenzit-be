@@ -36,10 +36,7 @@ export interface CorrelatedRequest extends FastifyRequest {
 export class CorrelationInterceptor implements NestInterceptor {
   private readonly logger = new Logger(CorrelationInterceptor.name);
 
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<unknown> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const ctx = context.switchToHttp();
     const request = ctx.getRequest<CorrelatedRequest>();
     const reply = ctx.getResponse<FastifyReply>();

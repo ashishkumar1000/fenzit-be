@@ -21,12 +21,16 @@ describe('memberRpcException', () => {
   it('maps any other 400 to a generic validation error', () => {
     const err = memberRpcException({ code: 'PT400', hint: 'SOMETHING_NEW' });
     expect(err).toBeInstanceOf(BadRequestException);
-    expect(err?.getResponse()).toMatchObject({ error_code: 'VALIDATION_ERROR' });
+    expect(err?.getResponse()).toMatchObject({
+      error_code: 'VALIDATION_ERROR',
+    });
   });
 
   it('maps a 400 with no hint to a validation error, never a staff refusal', () => {
     const err = memberRpcException({ code: 'PT400', hint: null });
-    expect(err?.getResponse()).toMatchObject({ error_code: 'VALIDATION_ERROR' });
+    expect(err?.getResponse()).toMatchObject({
+      error_code: 'VALIDATION_ERROR',
+    });
   });
 
   it('maps 403 to forbidden', () => {
@@ -36,7 +40,10 @@ describe('memberRpcException', () => {
   });
 
   it('maps 404 to resource not found', () => {
-    const err = memberRpcException({ code: 'PT404', hint: 'RESOURCE_NOT_FOUND' });
+    const err = memberRpcException({
+      code: 'PT404',
+      hint: 'RESOURCE_NOT_FOUND',
+    });
     expect(err).toBeInstanceOf(NotFoundException);
     expect(err?.getResponse()).toMatchObject({
       error_code: 'RESOURCE_NOT_FOUND',
@@ -55,7 +62,10 @@ describe('memberRpcException', () => {
   });
 
   it('maps any other 409 (a person already in another company) to a duplicate error', () => {
-    const err = memberRpcException({ code: 'PT409', hint: 'DUPLICATE_RESOURCE' });
+    const err = memberRpcException({
+      code: 'PT409',
+      hint: 'DUPLICATE_RESOURCE',
+    });
     expect(err).toBeInstanceOf(ConflictException);
     expect(err?.getResponse()).toMatchObject({
       error_code: 'DUPLICATE_RESOURCE',

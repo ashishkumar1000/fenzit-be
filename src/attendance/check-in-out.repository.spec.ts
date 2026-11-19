@@ -81,7 +81,9 @@ describe('check-in/out repository SQL contracts (review patches)', () => {
     expect(tx.queries[0].sql).toBe(
       'select public.attendance_lock_tenant($1, false)',
     );
-    expect(tx.queries[1].sql).toBe('select public.attendance_lock_employee($1)');
+    expect(tx.queries[1].sql).toBe(
+      'select public.attendance_lock_employee($1)',
+    );
   });
 
   it('the alert dedupes against the partial unique index; registry strings ride as parameters', async () => {
@@ -108,7 +110,9 @@ describe('check-in/out repository SQL contracts (review patches)', () => {
     expect(tx.queries[0].sql).toContain(
       "to_char(now() at time zone $2::text, 'YYYY-MM')",
     );
-    expect(tx.queries[0].sql).toContain('date_trunc(\'month\', now() at time zone $2::text)');
+    expect(tx.queries[0].sql).toContain(
+      "date_trunc('month', now() at time zone $2::text)",
+    );
   });
 
   it('the rate-limit block arms from the DB clock too', async () => {

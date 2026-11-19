@@ -25,7 +25,9 @@ describe('weekly-offs-response.model (story 15-5)', () => {
   describe('toWeeklyOffView', () => {
     it('maps the snake_case row to the API shape — days sorted ascending, range bounds split', () => {
       expect(
-        toWeeklyOffView(row({ valid: '[2026-09-20,2026-10-05)', days: [7, 6] })),
+        toWeeklyOffView(
+          row({ valid: '[2026-09-20,2026-10-05)', days: [7, 6] }),
+        ),
       ).toEqual({
         days: [6, 7],
         validFrom: '2026-09-20',
@@ -34,7 +36,9 @@ describe('weekly-offs-response.model (story 15-5)', () => {
     });
 
     it('an open-ended range maps to validTo null', () => {
-      expect(toWeeklyOffView(row({ valid: '[2026-09-27,)' })).validTo).toBeNull();
+      expect(
+        toWeeklyOffView(row({ valid: '[2026-09-27,)' })).validTo,
+      ).toBeNull();
     });
 
     it('an empty days array (works-all-7 override) maps through unchanged', () => {
@@ -48,7 +52,11 @@ describe('weekly-offs-response.model (story 15-5)', () => {
       const b = row({ id: 'b', valid: '[2026-09-01,)' });
       const c = row({ id: 'c', valid: '[2026-09-20,)' });
 
-      expect(sortWeeklyOffRows([a, b, c]).map((r) => r.id)).toEqual(['b', 'c', 'a']);
+      expect(sortWeeklyOffRows([a, b, c]).map((r) => r.id)).toEqual([
+        'b',
+        'c',
+        'a',
+      ]);
       // The input array is untouched — a sorted copy is returned.
       expect([a, b, c].map((r) => r.id)).toEqual(['a', 'b', 'c']);
     });
@@ -71,7 +79,10 @@ describe('weekly-offs-response.model (story 15-5)', () => {
 
     it('a range ending today is NOT current (upper bound exclusive)', () => {
       expect(
-        pickCurrentWeeklyOff([row({ valid: '[2026-09-01,2026-09-27)' })], TODAY),
+        pickCurrentWeeklyOff(
+          [row({ valid: '[2026-09-01,2026-09-27)' })],
+          TODAY,
+        ),
       ).toBeNull();
     });
 
@@ -111,8 +122,16 @@ describe('weekly-offs-response.model (story 15-5)', () => {
 
   describe('toWeeklyOffHistory', () => {
     it('returns the full effective-dated history ascending — current and next included', () => {
-      const past = row({ id: 'p', valid: '[2026-09-01,2026-09-20)', days: [1] });
-      const current = row({ id: 'c', valid: '[2026-09-20,2026-10-05)', days: [7, 6] });
+      const past = row({
+        id: 'p',
+        valid: '[2026-09-01,2026-09-20)',
+        days: [1],
+      });
+      const current = row({
+        id: 'c',
+        valid: '[2026-09-20,2026-10-05)',
+        days: [7, 6],
+      });
       const future = row({ id: 'f', valid: '[2026-10-05,)', days: [7] });
 
       const history = toWeeklyOffHistory([future, past, current]);

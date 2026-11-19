@@ -40,7 +40,9 @@ describe('HolidaysController (story 15-5)', () => {
     });
 
     it('getImpact passes the user and the parsed query', async () => {
-      const getImpact = jest.fn().mockResolvedValue({ date: '2026-10-02', affectedEmployees: [] });
+      const getImpact = jest
+        .fn()
+        .mockResolvedValue({ date: '2026-10-02', affectedEmployees: [] });
       const controller = controllerWith({ getImpact });
       const query = { date: '2026-10-02' };
 
@@ -56,12 +58,16 @@ describe('HolidaysController (story 15-5)', () => {
       const controller = controllerWith({ createHoliday });
       const dto = { date: '2026-10-02', name: 'Gandhi Jayanti' };
 
-      await expect(controller.createHoliday(user, dto)).resolves.toEqual(holiday);
+      await expect(controller.createHoliday(user, dto)).resolves.toEqual(
+        holiday,
+      );
       expect(createHoliday).toHaveBeenCalledWith(user, dto);
     });
 
     it('updateHoliday passes the user, the param and the parsed dto', async () => {
-      const updateHoliday = jest.fn().mockResolvedValue({ ...holiday, name: 'Diwali' });
+      const updateHoliday = jest
+        .fn()
+        .mockResolvedValue({ ...holiday, name: 'Diwali' });
       const controller = controllerWith({ updateHoliday });
       const dto = { name: 'Diwali' };
 
@@ -75,7 +81,9 @@ describe('HolidaysController (story 15-5)', () => {
       const removeHoliday = jest.fn().mockResolvedValue(null);
       const controller = controllerWith({ removeHoliday });
 
-      await expect(controller.removeHoliday(user, HOLIDAY_ID)).resolves.toBeUndefined();
+      await expect(
+        controller.removeHoliday(user, HOLIDAY_ID),
+      ).resolves.toBeUndefined();
       expect(removeHoliday).toHaveBeenCalledWith(user, HOLIDAY_ID);
     });
   });
@@ -89,7 +97,9 @@ describe('HolidaysController (story 15-5)', () => {
       // The raw-body guard throws synchronously (before any promise exists).
       let err: unknown;
       try {
-        controller.updateHoliday(user, HOLIDAY_ID, req, { name: 'Diwali' } as never);
+        controller.updateHoliday(user, HOLIDAY_ID, req, {
+          name: 'Diwali',
+        });
       } catch (e) {
         err = e;
       }
@@ -108,7 +118,12 @@ describe('HolidaysController (story 15-5)', () => {
       const controller = controllerWith({ updateHoliday });
 
       expect(() =>
-        controller.updateHoliday(user, 'not-a-uuid', { body: { date: '2030-01-01' } }, { name: 'X' } as never),
+        controller.updateHoliday(
+          user,
+          'not-a-uuid',
+          { body: { date: '2030-01-01' } },
+          { name: 'X' },
+        ),
       ).toThrow(HttpException);
       expect(updateHoliday).not.toHaveBeenCalled();
     });
@@ -117,7 +132,12 @@ describe('HolidaysController (story 15-5)', () => {
       const updateHoliday = jest.fn().mockResolvedValue(holiday);
       const controller = controllerWith({ updateHoliday });
 
-      await controller.updateHoliday(user, HOLIDAY_ID, { body: { name: 'Diwali' } }, { name: 'Diwali' } as never);
+      await controller.updateHoliday(
+        user,
+        HOLIDAY_ID,
+        { body: { name: 'Diwali' } },
+        { name: 'Diwali' },
+      );
       expect(updateHoliday).toHaveBeenCalledTimes(1);
     });
   });
@@ -129,7 +149,14 @@ describe('HolidaysController (story 15-5)', () => {
 
       // The id guard throws synchronously (before any promise exists).
       expect(() =>
-        controller.updateHoliday(user, 'not-a-uuid', { body: {} }, { name: 'X' } as never),
+        controller.updateHoliday(
+          user,
+          'not-a-uuid',
+          { body: {} },
+          {
+            name: 'X',
+          },
+        ),
       ).toThrow(BadRequestException);
       expect(updateHoliday).not.toHaveBeenCalled();
     });
@@ -179,7 +206,7 @@ describe('HolidaysController (story 15-5)', () => {
       (handler: keyof HolidaysController, permission: Permission) => {
         const needed = Reflect.getMetadata(
           CAN_KEY,
-          HolidaysController.prototype[handler] as object,
+          HolidaysController.prototype[handler],
         ) as Permission[] | undefined;
 
         expect(needed).toEqual([permission]);
@@ -192,13 +219,16 @@ describe('HolidaysController (story 15-5)', () => {
       ['createHoliday', 201],
       ['updateHoliday', 200],
       ['removeHoliday', 204],
-    ])('%s carries a fixed @HttpCode(%i)', (handler: keyof HolidaysController, code: number) => {
-      expect(
-        Reflect.getMetadata(
-          HTTP_CODE_METADATA,
-          HolidaysController.prototype[handler] as object,
-        ),
-      ).toBe(code);
-    });
+    ])(
+      '%s carries a fixed @HttpCode(%i)',
+      (handler: keyof HolidaysController, code: number) => {
+        expect(
+          Reflect.getMetadata(
+            HTTP_CODE_METADATA,
+            HolidaysController.prototype[handler] as object,
+          ),
+        ).toBe(code);
+      },
+    );
   });
 });

@@ -1,9 +1,6 @@
 import 'reflect-metadata';
 import { ConfigService } from '@nestjs/config';
-import {
-  createSmsDeliveryProvider,
-  AuthModule,
-} from './auth.module';
+import { createSmsDeliveryProvider, AuthModule } from './auth.module';
 import { SmsDeliveryProvider } from './sms-delivery.provider';
 import { MockSmsDeliveryProvider } from './mock-sms-delivery.provider';
 import { Msg91SmsDeliveryProvider } from './msg91-sms-delivery.provider';
@@ -33,7 +30,7 @@ describe('createSmsDeliveryProvider', () => {
     expect(provider).toBeInstanceOf(MockSmsDeliveryProvider);
   });
 
-  it('an explicit SMS_DELIVERY_PROVIDER=mock wins over production\'s msg91 default (the PRD §9 step-1 landing state)', () => {
+  it("an explicit SMS_DELIVERY_PROVIDER=mock wins over production's msg91 default (the PRD §9 step-1 landing state)", () => {
     process.env['NODE_ENV'] = 'production';
     const provider = createSmsDeliveryProvider(
       baseConfig({ SMS_DELIVERY_PROVIDER: 'mock' }),

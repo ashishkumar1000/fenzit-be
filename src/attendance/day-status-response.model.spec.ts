@@ -12,13 +12,32 @@ import type { LatestCorrectionView } from './correction.model';
 const TZ = 'Asia/Kolkata';
 const OUTCOME = computeDayStatus({
   ctx: {
-    tenantId: 't', employeeId: 'e', workDate: '2026-09-28', timezone: TZ,
-    trackedBase: true, tracked: true, enableDayGraceBlocks: false,
-    officeId: 'o1', officeName: 'HQ', officeLat: 0, officeLng: 0, radiusM: 100,
-    officeRulesId: 'r1', startMinute: 570, endMinute: 1110, midpointMinute: 840,
-    lateCutoffMinutes: 15, fullDayMinutes: 480, halfDayMinutes: 240,
-    isWeeklyOff: false, holidayId: null, holidayName: null,
-    isWorkingDay: true, leaveState: null, leavePart: null, leaveRequestId: null,
+    tenantId: 't',
+    employeeId: 'e',
+    workDate: '2026-09-28',
+    timezone: TZ,
+    trackedBase: true,
+    tracked: true,
+    enableDayGraceBlocks: false,
+    officeId: 'o1',
+    officeName: 'HQ',
+    officeLat: 0,
+    officeLng: 0,
+    radiusM: 100,
+    officeRulesId: 'r1',
+    startMinute: 570,
+    endMinute: 1110,
+    midpointMinute: 840,
+    lateCutoffMinutes: 15,
+    fullDayMinutes: 480,
+    halfDayMinutes: 240,
+    isWeeklyOff: false,
+    holidayId: null,
+    holidayName: null,
+    isWorkingDay: true,
+    leaveState: null,
+    leavePart: null,
+    leaveRequestId: null,
   },
   record: {
     // 09:50 and 18:40 in tenant wall time (late by 5, worked 530).
@@ -70,7 +89,11 @@ describe('toDayStatusRow — the engine outcome is echoed, never re-derived', ()
   });
 
   it('the ctx labels ride the row, not the outcome', () => {
-    const r = row({ isWeeklyOff: true, holidayName: 'Diwali', isWorkingDay: false });
+    const r = row({
+      isWeeklyOff: true,
+      holidayName: 'Diwali',
+      isWorkingDay: false,
+    });
     expect(r.isWeeklyOff).toBe(true);
     expect(r.holidayName).toBe('Diwali');
     expect(r.isWorkingDay).toBe(false);
@@ -86,7 +109,11 @@ describe('toDayStatusRow — the instants as AD-7 tenant-offset ISO', () => {
   });
 
   it('a null instant stays null, and the sources come from the outcome', () => {
-    const outcome = { ...OUTCOME, checkinSource: null as never, checkoutSource: 'gps' as never };
+    const outcome = {
+      ...OUTCOME,
+      checkinSource: null as never,
+      checkoutSource: 'gps' as never,
+    };
     const r = row({ outcome, checkin: null });
     expect(r.checkinAt).toBeNull();
     expect(r.checkoutAt).toBe('2026-09-28T18:40:00+05:30');

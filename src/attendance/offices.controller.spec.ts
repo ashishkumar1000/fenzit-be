@@ -44,9 +44,9 @@ describe('OfficesController (story 15-3)', () => {
       const listOffices = jest.fn().mockResolvedValue([office]);
       const controller = controllerWith({ listOffices });
 
-      await expect(controller.listOffices(user, { includeArchived: 'true' })).resolves.toEqual([
-        office,
-      ]);
+      await expect(
+        controller.listOffices(user, { includeArchived: 'true' }),
+      ).resolves.toEqual([office]);
       expect(listOffices).toHaveBeenCalledWith(user, true);
     });
 
@@ -62,8 +62,13 @@ describe('OfficesController (story 15-3)', () => {
       const getOffice = jest.fn().mockResolvedValue(detail);
       const controller = controllerWith({ getOffice });
 
-      await expect(controller.getOffice(user, '00000000-0000-4000-8000-0000000000e1')).resolves.toBe(detail);
-      expect(getOffice).toHaveBeenCalledWith(user, '00000000-0000-4000-8000-0000000000e1');
+      await expect(
+        controller.getOffice(user, '00000000-0000-4000-8000-0000000000e1'),
+      ).resolves.toBe(detail);
+      expect(getOffice).toHaveBeenCalledWith(
+        user,
+        '00000000-0000-4000-8000-0000000000e1',
+      );
     });
 
     it('createOffice passes the user and the parsed dto', async () => {
@@ -71,7 +76,9 @@ describe('OfficesController (story 15-3)', () => {
       const controller = controllerWith({ createOffice });
       const dto = { name: 'Andheri West', startTime: '10:00' };
 
-      await expect(controller.createOffice(user, dto as never)).resolves.toBe(office);
+      await expect(controller.createOffice(user, dto as never)).resolves.toBe(
+        office,
+      );
       expect(createOffice).toHaveBeenCalledWith(user, dto);
     });
 
@@ -80,35 +87,61 @@ describe('OfficesController (story 15-3)', () => {
       const controller = controllerWith({ updateOffice });
       const dto = { radiusM: 200 };
 
-      await expect(controller.updateOffice(user, '00000000-0000-4000-8000-0000000000e1', dto as never)).resolves.toBe(detail);
-      expect(updateOffice).toHaveBeenCalledWith(user, '00000000-0000-4000-8000-0000000000e1', dto);
+      await expect(
+        controller.updateOffice(
+          user,
+          '00000000-0000-4000-8000-0000000000e1',
+          dto as never,
+        ),
+      ).resolves.toBe(detail);
+      expect(updateOffice).toHaveBeenCalledWith(
+        user,
+        '00000000-0000-4000-8000-0000000000e1',
+        dto,
+      );
     });
 
     it('archiveOffice passes the user and the param, resolving to nothing (204 body)', async () => {
       const archiveOffice = jest.fn().mockResolvedValue(null);
       const controller = controllerWith({ archiveOffice });
 
-      await expect(controller.archiveOffice(user, '00000000-0000-4000-8000-0000000000e1')).resolves.toBeUndefined();
-      expect(archiveOffice).toHaveBeenCalledWith(user, '00000000-0000-4000-8000-0000000000e1');
+      await expect(
+        controller.archiveOffice(user, '00000000-0000-4000-8000-0000000000e1'),
+      ).resolves.toBeUndefined();
+      expect(archiveOffice).toHaveBeenCalledWith(
+        user,
+        '00000000-0000-4000-8000-0000000000e1',
+      );
     });
 
     it('getArchiveBlockers passes the user and the param', async () => {
-      const getArchiveBlockers = jest
-        .fn()
-        .mockResolvedValue({ officeId: '00000000-0000-4000-8000-0000000000e1', blockers: [] });
-      const controller = controllerWith({ getArchiveBlockers });
-
-      await expect(controller.getArchiveBlockers(user, '00000000-0000-4000-8000-0000000000e1')).resolves.toEqual({
+      const getArchiveBlockers = jest.fn().mockResolvedValue({
         officeId: '00000000-0000-4000-8000-0000000000e1',
         blockers: [],
       });
-      expect(getArchiveBlockers).toHaveBeenCalledWith(user, '00000000-0000-4000-8000-0000000000e1');
+      const controller = controllerWith({ getArchiveBlockers });
+
+      await expect(
+        controller.getArchiveBlockers(
+          user,
+          '00000000-0000-4000-8000-0000000000e1',
+        ),
+      ).resolves.toEqual({
+        officeId: '00000000-0000-4000-8000-0000000000e1',
+        blockers: [],
+      });
+      expect(getArchiveBlockers).toHaveBeenCalledWith(
+        user,
+        '00000000-0000-4000-8000-0000000000e1',
+      );
     });
   });
 
   describe('route metadata', () => {
     it('is mounted at attendance/offices', () => {
-      expect(Reflect.getMetadata(PATH_METADATA, OfficesController)).toBe('attendance/offices');
+      expect(Reflect.getMetadata(PATH_METADATA, OfficesController)).toBe(
+        'attendance/offices',
+      );
     });
 
     it.each([
@@ -140,7 +173,7 @@ describe('OfficesController (story 15-3)', () => {
       (handler: keyof OfficesController, permission: Permission) => {
         const needed = Reflect.getMetadata(
           CAN_KEY,
-          OfficesController.prototype[handler] as object,
+          OfficesController.prototype[handler],
         ) as Permission[] | undefined;
 
         expect(needed).toEqual([permission]);
@@ -154,13 +187,16 @@ describe('OfficesController (story 15-3)', () => {
       ['updateOffice', 200],
       ['archiveOffice', 204],
       ['getArchiveBlockers', 200],
-    ])('%s carries a fixed @HttpCode(%i)', (handler: keyof OfficesController, code: number) => {
-      expect(
-        Reflect.getMetadata(
-          HTTP_CODE_METADATA,
-          OfficesController.prototype[handler] as object,
-        ),
-      ).toBe(code);
-    });
+    ])(
+      '%s carries a fixed @HttpCode(%i)',
+      (handler: keyof OfficesController, code: number) => {
+        expect(
+          Reflect.getMetadata(
+            HTTP_CODE_METADATA,
+            OfficesController.prototype[handler] as object,
+          ),
+        ).toBe(code);
+      },
+    );
   });
 });

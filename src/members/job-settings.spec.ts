@@ -31,10 +31,7 @@ function serviceWithRpc(result: { data: unknown; error: unknown }) {
   const factory = {
     createAdmin: jest.fn(() => ({ rpc })),
   } as unknown as jest.Mocked<SupabaseClientFactory>;
-  const service = new MembersService(
-    factory,
-    {} as unknown as StorageService,
-  );
+  const service = new MembersService(factory, {} as unknown as StorageService);
   return { service, rpc };
 }
 
@@ -84,7 +81,10 @@ describe('MembersService.setJobSettings', () => {
       error: { code: 'PT403', hint: 'FORBIDDEN' },
     });
     await expect(
-      service.setJobSettings(owner, 'emp-1', { canCreateJobs: true, jobApprovalRequired: true }),
+      service.setJobSettings(owner, 'emp-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      }),
     ).rejects.toThrow(ForbiddenException);
   });
 
@@ -94,7 +94,10 @@ describe('MembersService.setJobSettings', () => {
       error: { code: 'PT404', hint: 'RESOURCE_NOT_FOUND' },
     });
     await expect(
-      service.setJobSettings(owner, 'emp-1', { canCreateJobs: true, jobApprovalRequired: true }),
+      service.setJobSettings(owner, 'emp-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      }),
     ).rejects.toThrow(NotFoundException);
   });
 
@@ -104,7 +107,10 @@ describe('MembersService.setJobSettings', () => {
       error: { code: 'PT400', hint: 'NOT_AN_EMPLOYEE' },
     });
     const err = await service
-      .setJobSettings(owner, 'viewer-1', { canCreateJobs: true, jobApprovalRequired: true })
+      .setJobSettings(owner, 'viewer-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BadRequestException);
     expect((err as BadRequestException).getResponse()).toEqual({
@@ -119,7 +125,10 @@ describe('MembersService.setJobSettings', () => {
       error: { code: 'PT400', hint: 'VALIDATION_ERROR' },
     });
     const err = await service
-      .setJobSettings(owner, 'emp-1', { canCreateJobs: true, jobApprovalRequired: true })
+      .setJobSettings(owner, 'emp-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      })
       .catch((e: unknown) => e);
     expect((err as BadRequestException).getResponse()).toMatchObject({
       error_code: ErrorCode.VALIDATION_ERROR,
@@ -132,14 +141,20 @@ describe('MembersService.setJobSettings', () => {
       error: { code: '08006', message: 'connection lost' },
     });
     await expect(
-      service.setJobSettings(owner, 'emp-1', { canCreateJobs: true, jobApprovalRequired: true }),
+      service.setJobSettings(owner, 'emp-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      }),
     ).rejects.toThrow(InternalServerErrorException);
   });
 
   it('an empty database answer is a 500, not a success with guessed values', async () => {
     const { service } = serviceWithRpc({ data: [], error: null });
     await expect(
-      service.setJobSettings(owner, 'emp-1', { canCreateJobs: true, jobApprovalRequired: true }),
+      service.setJobSettings(owner, 'emp-1', {
+        canCreateJobs: true,
+        jobApprovalRequired: true,
+      }),
     ).rejects.toThrow(InternalServerErrorException);
   });
 });
@@ -149,7 +164,9 @@ describe('JobSettingsDto validation', () => {
     validate(plainToInstance(JobSettingsDto, body));
 
   it('accepts two real booleans', async () => {
-    expect(await check({ canCreateJobs: true, jobApprovalRequired: false })).toHaveLength(0);
+    expect(
+      await check({ canCreateJobs: true, jobApprovalRequired: false }),
+    ).toHaveLength(0);
   });
 
   it.each([
@@ -165,21 +182,29 @@ describe('JobSettingsDto validation', () => {
 
 describe('job-settings permission', () => {
   it('the company admin of a company holds it', () => {
-    expect(permissionsFor(Role.COMPANY_ADMIN).has('member.job_settings')).toBe(true);
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('member.job_settings')).toBe(
+      true,
+    );
   });
 
   it('a platform admin does not hold it, even though they hold the other admin permissions', () => {
-    expect(permissionsFor(Role.PLATFORM_ADMIN).has('member.job_settings')).toBe(false);
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('member.job_settings')).toBe(
+      false,
+    );
   });
 
   it('employees and viewers do not hold it', () => {
-    expect(permissionsFor(Role.EMPLOYEE).has('member.job_settings')).toBe(false);
+    expect(permissionsFor(Role.EMPLOYEE).has('member.job_settings')).toBe(
+      false,
+    );
     expect(permissionsFor(Role.VIEWER).has('member.job_settings')).toBe(false);
   });
 
   it('the route requires exactly that permission', () => {
     const handler = MembersController.prototype.setJobSettings;
-    expect(Reflect.getMetadata(CAN_KEY, handler)).toEqual(['member.job_settings']);
+    expect(Reflect.getMetadata(CAN_KEY, handler)).toEqual([
+      'member.job_settings',
+    ]);
   });
 });
 
@@ -217,11 +242,17 @@ describe('company member list carries the job switches', () => {
       admin([row({ can_create_jobs: true, job_approval_required: false })]),
       'tenant-A',
     );
-    expect(m).toMatchObject({ canCreateJobs: true, jobApprovalRequired: false });
+    expect(m).toMatchObject({
+      canCreateJobs: true,
+      jobApprovalRequired: false,
+    });
   });
 
   it('shows the defaults for an employee who was never set', async () => {
     const [m] = await listCompanyMembers(admin([row({})]), 'tenant-A');
-    expect(m).toMatchObject({ canCreateJobs: false, jobApprovalRequired: true });
+    expect(m).toMatchObject({
+      canCreateJobs: false,
+      jobApprovalRequired: true,
+    });
   });
 });

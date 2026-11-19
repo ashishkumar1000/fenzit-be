@@ -73,32 +73,90 @@ function pgStub(fixtures: {
               )
             : rows;
         const rows: PgRow[] = (() => {
-          if (text.includes('attendance_today')) return [{ today: '2026-09-29' }];
-          if (text.includes('from public.tenants')) return [{ timezone: 'Asia/Kolkata' }];
+          if (text.includes('attendance_today'))
+            return [{ today: '2026-09-29' }];
+          if (text.includes('from public.tenants'))
+            return [{ timezone: 'Asia/Kolkata' }];
           if (text.includes('attendance_settings'))
             return [{ enabled: true, setup_completed_at: new Date() }];
           if (text.includes('attendance_enrolments'))
-            return fixtures.enrolments ?? [
-              { employee_id: E1, valid: '[2026-09-01,)', enabled_at: new Date('2026-09-01T05:00:00Z') },
-              { employee_id: E2, valid: '[2026-09-01,)', enabled_at: new Date('2026-09-01T05:00:00Z') },
-            ];
+            return (
+              fixtures.enrolments ?? [
+                {
+                  employee_id: E1,
+                  valid: '[2026-09-01,)',
+                  enabled_at: new Date('2026-09-01T05:00:00Z'),
+                },
+                {
+                  employee_id: E2,
+                  valid: '[2026-09-01,)',
+                  enabled_at: new Date('2026-09-01T05:00:00Z'),
+                },
+              ]
+            );
           if (text.includes('attendance_office_assignments'))
-            return fixtures.assignments ?? [
-              { employee_id: E1, office_id: OFFICE_1, valid: '[2026-09-01,)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
-              { employee_id: E2, office_id: OFFICE_1, valid: '[2026-09-01,2026-09-26)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
-              { employee_id: E2, office_id: OFFICE_2, valid: '[2026-09-26,)', office_name: 'Branch', office_lat: 13.0, office_lng: 77.6, radius_m: 100 },
-            ];
+            return (
+              fixtures.assignments ?? [
+                {
+                  employee_id: E1,
+                  office_id: OFFICE_1,
+                  valid: '[2026-09-01,)',
+                  office_name: 'HQ',
+                  office_lat: 12.9,
+                  office_lng: 77.5,
+                  radius_m: 100,
+                },
+                {
+                  employee_id: E2,
+                  office_id: OFFICE_1,
+                  valid: '[2026-09-01,2026-09-26)',
+                  office_name: 'HQ',
+                  office_lat: 12.9,
+                  office_lng: 77.5,
+                  radius_m: 100,
+                },
+                {
+                  employee_id: E2,
+                  office_id: OFFICE_2,
+                  valid: '[2026-09-26,)',
+                  office_name: 'Branch',
+                  office_lat: 13.0,
+                  office_lng: 77.6,
+                  radius_m: 100,
+                },
+              ]
+            );
           if (text.includes('attendance_weekly_off_overrides')) return [];
           if (text.includes('attendance_weekly_off_defaults'))
             return [{ valid: '[2026-09-01,)', days: [] }];
           if (text.includes('holidays')) return [];
           if (text.includes('attendance_office_rules'))
             return [
-              { office_id: OFFICE_1, id: RULE, valid: '[2026-09-01,)', start_time: '09:30:00', end_time: '18:30:00', late_cutoff_minutes: 15, full_day_hours: 8, half_day_hours: 4 },
-              { office_id: OFFICE_2, id: RULE, valid: '[2026-09-01,)', start_time: '09:30:00', end_time: '18:30:00', late_cutoff_minutes: 15, full_day_hours: 8, half_day_hours: 4 },
+              {
+                office_id: OFFICE_1,
+                id: RULE,
+                valid: '[2026-09-01,)',
+                start_time: '09:30:00',
+                end_time: '18:30:00',
+                late_cutoff_minutes: 15,
+                full_day_hours: 8,
+                half_day_hours: 4,
+              },
+              {
+                office_id: OFFICE_2,
+                id: RULE,
+                valid: '[2026-09-01,)',
+                start_time: '09:30:00',
+                end_time: '18:30:00',
+                late_cutoff_minutes: 15,
+                full_day_hours: 8,
+                half_day_hours: 4,
+              },
             ];
-          if (text.includes('attendance_records')) return fixtures.records ?? [];
-          if (text.includes("outcome = 'mocked'")) return fixtures.mockedAttempts ?? [];
+          if (text.includes('attendance_records'))
+            return fixtures.records ?? [];
+          if (text.includes("outcome = 'mocked'"))
+            return fixtures.mockedAttempts ?? [];
           if (text.includes('leave_request_days')) return [];
           if (text.includes('attendance_day_overrides')) return [];
           if (text.includes('attendance_corrections')) return [];
@@ -125,16 +183,23 @@ function supabaseStub(tables: Record<string, PgRow[]>) {
         const qb: Record<string, unknown> = {};
         calls[table] = calls[table] ?? [];
         for (const method of [
-          'select', 'eq', 'filter', 'in', 'neq', 'gte', 'lt', 'order', 'range', 'single',
+          'select',
+          'eq',
+          'filter',
+          'in',
+          'neq',
+          'gte',
+          'lt',
+          'order',
+          'range',
+          'single',
         ]) {
           qb[method] = jest.fn((...args: unknown[]) => {
             calls[table].push([method, ...args]);
             return qb;
           });
         }
-        qb.then = (
-          resolve: (v: { data: unknown; error: null }) => void,
-        ) => {
+        qb.then = (resolve: (v: { data: unknown; error: null }) => void) => {
           seen[table] = (seen[table] ?? 0) + 1;
           // `.single()` unwraps to the first row; list terminals keep the array.
           const rows = tables[table] ?? [];
@@ -189,9 +254,24 @@ function baseFixtures(): Parameters<typeof pgStub>[0] {
     new Date(`${date}T${time}:00+05:30`).toISOString();
   return {
     records: [
-      { employee_id: E1, work_date: '2026-09-25', checkin_at: instant('2026-09-25', '09:30'), checkout_at: instant('2026-09-25', '18:30') },
-      { employee_id: E1, work_date: '2026-09-27', checkin_at: instant('2026-09-27', '09:30'), checkout_at: instant('2026-09-27', '13:30') },
-      { employee_id: E2, work_date: '2026-09-25', checkin_at: instant('2026-09-25', '09:30'), checkout_at: instant('2026-09-25', '18:30') },
+      {
+        employee_id: E1,
+        work_date: '2026-09-25',
+        checkin_at: instant('2026-09-25', '09:30'),
+        checkout_at: instant('2026-09-25', '18:30'),
+      },
+      {
+        employee_id: E1,
+        work_date: '2026-09-27',
+        checkin_at: instant('2026-09-27', '09:30'),
+        checkout_at: instant('2026-09-27', '13:30'),
+      },
+      {
+        employee_id: E2,
+        work_date: '2026-09-25',
+        checkin_at: instant('2026-09-25', '09:30'),
+        checkout_at: instant('2026-09-25', '18:30'),
+      },
     ],
   };
 }
@@ -323,10 +403,7 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const supa = supabaseStub({
       tenants: [{ company_name: 'Acme' }],
       memberships: MEMBERS,
-      attendance_enrolments: [
-        { employee_id: E1 },
-        { employee_id: E2 },
-      ],
+      attendance_enrolments: [{ employee_id: E1 }, { employee_id: E2 }],
       attendance_attempts: [],
     });
 
@@ -356,7 +433,9 @@ describe('fetchAttendanceReportData (21-2)', () => {
       response: { error_code: ErrorCode.REPORT_TOO_LARGE },
     });
     // The guard ran before the grid: the reader never issued its reads.
-    expect(pg.queries.some((q) => q.includes('attendance_records'))).toBe(false);
+    expect(pg.queries.some((q) => q.includes('attendance_records'))).toBe(
+      false,
+    );
   });
 
   it('skips the day register for ranges over 31 days (92-column portrait is unreadable)', async () => {
@@ -385,13 +464,26 @@ describe('fetchAttendanceReportData (21-2)', () => {
     const fixtures = baseFixtures();
     // Asha's only tracked day is the 27th — inside the range.
     fixtures.records = [
-      { employee_id: E1, work_date: '2026-09-27', checkin_at: new Date('2026-09-27T09:30:00+05:30').toISOString(), checkout_at: new Date('2026-09-27T18:30:00+05:30').toISOString() },
+      {
+        employee_id: E1,
+        work_date: '2026-09-27',
+        checkin_at: new Date('2026-09-27T09:30:00+05:30').toISOString(),
+        checkout_at: new Date('2026-09-27T18:30:00+05:30').toISOString(),
+      },
     ];
     // The ENROLMENT starts on the 27th — before that the grid rows are
     // untracked, so the first TRACKED day is the mid-period join date.
     fixtures.enrolments = [
-      { employee_id: E1, valid: '[2026-09-27,)', enabled_at: new Date('2026-09-27T05:00:00Z') },
-      { employee_id: E2, valid: '[2026-09-01,)', enabled_at: new Date('2026-09-01T05:00:00Z') },
+      {
+        employee_id: E1,
+        valid: '[2026-09-27,)',
+        enabled_at: new Date('2026-09-27T05:00:00Z'),
+      },
+      {
+        employee_id: E2,
+        valid: '[2026-09-01,)',
+        enabled_at: new Date('2026-09-01T05:00:00Z'),
+      },
     ];
     const pg = pgStub(fixtures);
     const supa = supabaseStub({
@@ -434,7 +526,10 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
 
     const enrolCalls = supa.calls['attendance_enrolments'];
     expect(enrolCalls).toContainEqual([
-      'filter', 'valid', 'ov', '[2026-09-25,2026-09-27]',
+      'filter',
+      'valid',
+      'ov',
+      '[2026-09-25,2026-09-27]',
     ]);
     expect(enrolCalls).toContainEqual(['order', 'id']);
   });
@@ -460,10 +555,14 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
     expect(attemptCalls).toContainEqual(['neq', 'outcome', 'ok']);
     // 2026-09-25T00:00 IST = 2026-09-24T18:30Z; 2026-09-28T00:00 IST exclusive.
     expect(attemptCalls).toContainEqual([
-      'gte', 'attempted_at', '2026-09-24T18:30:00.000Z',
+      'gte',
+      'attempted_at',
+      '2026-09-24T18:30:00.000Z',
     ]);
     expect(attemptCalls).toContainEqual([
-      'lt', 'attempted_at', '2026-09-27T18:30:00.000Z',
+      'lt',
+      'attempted_at',
+      '2026-09-27T18:30:00.000Z',
     ]);
     expect(attemptCalls).toContainEqual(['order', 'id']);
   });
@@ -492,7 +591,9 @@ describe('query shapes (21-2 review gap) — the Supabase reads are pinned', () 
     // The stub ignores .in filters by design, so pin the probe's shape:
     // the audit queries ONLY the in-scope employee (Bimal).
     expect(supa.calls['attendance_attempts']).toContainEqual([
-      'in', 'employee_id', [E2],
+      'in',
+      'employee_id',
+      [E2],
     ]);
     expect(data.rejections.map((r) => r.employeeName)).toEqual(['Bimal']);
   });
@@ -627,7 +728,10 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
         params: { start_date: '2026-09-27', end_date: '2026-10-03' },
       }),
     );
-    expect(data.weeks.map((w) => w.label)).toEqual(['27 Sep', '28 Sep – 3 Oct']);
+    expect(data.weeks.map((w) => w.label)).toEqual([
+      '27 Sep',
+      '28 Sep – 3 Oct',
+    ]);
 
     // A 1-day range is just that one day.
     const oneDay = await fetchAttendanceReportData(
@@ -645,8 +749,16 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     // the bucket carries no office truth and read like broken data.
     const fixtures = baseFixtures();
     fixtures.enrolments = [
-      { employee_id: E1, valid: '[2026-09-27,)', enabled_at: new Date('2026-09-27T05:00:00Z') },
-      { employee_id: E2, valid: '[2026-09-27,)', enabled_at: new Date('2026-09-27T05:00:00Z') },
+      {
+        employee_id: E1,
+        valid: '[2026-09-27,)',
+        enabled_at: new Date('2026-09-27T05:00:00Z'),
+      },
+      {
+        employee_id: E2,
+        valid: '[2026-09-27,)',
+        enabled_at: new Date('2026-09-27T05:00:00Z'),
+      },
     ];
     fixtures.records = [];
     const pg = pgStub(fixtures);
@@ -676,8 +788,24 @@ describe('QA deep-probe corners (bug bash 2026-10-03)', () => {
     // Both employees only ever sat at HQ; the filter asks for Branch.
     const fixtures = baseFixtures();
     fixtures.assignments = [
-      { employee_id: E1, office_id: OFFICE_1, valid: '[2026-09-01,)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
-      { employee_id: E2, office_id: OFFICE_1, valid: '[2026-09-01,)', office_name: 'HQ', office_lat: 12.9, office_lng: 77.5, radius_m: 100 },
+      {
+        employee_id: E1,
+        office_id: OFFICE_1,
+        valid: '[2026-09-01,)',
+        office_name: 'HQ',
+        office_lat: 12.9,
+        office_lng: 77.5,
+        radius_m: 100,
+      },
+      {
+        employee_id: E2,
+        office_id: OFFICE_1,
+        valid: '[2026-09-01,)',
+        office_name: 'HQ',
+        office_lat: 12.9,
+        office_lng: 77.5,
+        radius_m: 100,
+      },
     ];
     const pg = pgStub(fixtures);
     const supa = supabaseStub({

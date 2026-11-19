@@ -50,14 +50,18 @@ export class CorrelationLogger extends ConsoleLogger {
     const fields = correlationLogFields(store);
     // Plain object → merge fields and emit one JSON line (avoids the
     // `[object Object]` degradation of String(object)).
-    if (message !== null && typeof message === 'object' && !Array.isArray(message)) {
-      return JSON.stringify({ ...(message as object), ...fields });
+    if (
+      message !== null &&
+      typeof message === 'object' &&
+      !Array.isArray(message)
+    ) {
+      return JSON.stringify({ ...message, ...fields });
     }
     if (typeof message === 'string' && message.startsWith('{')) {
       try {
         const parsed: unknown = JSON.parse(message);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return JSON.stringify({ ...(parsed as object), ...fields });
+          return JSON.stringify({ ...parsed, ...fields });
         }
       } catch {
         // Not JSON after all — fall through to the suffix form.

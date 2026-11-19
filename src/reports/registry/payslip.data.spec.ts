@@ -1,10 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/enums/error-code.enum';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import {
-  fetchPayslipReportData,
-  verifyPayslipSnapshot,
-} from './payslip.data';
+import { fetchPayslipReportData, verifyPayslipSnapshot } from './payslip.data';
 import type { PayslipSnapshot } from './payslip.data';
 
 /**
@@ -97,14 +94,14 @@ describe('verifyPayslipSnapshot (23-8)', () => {
   it('throws when the re-read finds the row DESTROYED (data null)', async () => {
     const { ctx, qb } = fetchCtx({ data: null, error: null });
 
-    await expect(verifyPayslipSnapshot({ ...ctx, data: snapshot })).rejects.toMatchObject(
-      {
-        response: {
-          error_code: ErrorCode.REPORT_GENERATION_FAILED,
-          message: expect.stringContaining('replaced by a newer payroll run'),
-        },
+    await expect(
+      verifyPayslipSnapshot({ ...ctx, data: snapshot }),
+    ).rejects.toMatchObject({
+      response: {
+        error_code: ErrorCode.REPORT_GENERATION_FAILED,
+        message: expect.stringContaining('replaced by a newer payroll run'),
       },
-    );
+    });
     // The re-read is tenant-scoped by payslipId — not by month/membership.
     expect(qb.eq).toHaveBeenCalledWith('tenant_id', TENANT);
     expect(qb.eq).toHaveBeenCalledWith('id', PARAMS.payslipId);
@@ -163,7 +160,7 @@ describe('verifyPayslipSnapshot (23-8)', () => {
     const { ctx, qb } = fetchCtx({ data: null, error: null });
 
     await expect(
-      verifyPayslipSnapshot({ ...ctx, data: { slip_number: 42 } as never }),
+      verifyPayslipSnapshot({ ...ctx, data: { slip_number: 42 } }),
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         message: expect.stringContaining('incomplete'),

@@ -10,7 +10,8 @@ import { IsOptional, IsUUID } from 'class-validator';
  */
 export class DashboardQueryDto {
   @ApiPropertyOptional({
-    description: 'Filter to this office id (today’s covering assignment office)',
+    description:
+      'Filter to this office id (today’s covering assignment office)',
   })
   @IsOptional()
   @IsUUID('all', { message: 'officeId must be a UUID' })

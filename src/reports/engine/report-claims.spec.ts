@@ -33,7 +33,12 @@ const claimedRow: ReportRequestRow = {
   tenant_id: TENANT_ID,
   requested_by: 'owner-uuid',
   report_type: 'technician_job_activity',
-  params: { start_date: '2026-09-01', end_date: '2026-09-07', technician_ids: [] , office_ids: [] },
+  params: {
+    start_date: '2026-09-01',
+    end_date: '2026-09-07',
+    technician_ids: [],
+    office_ids: [],
+  },
   status: ReportRequestStatus.GENERATING,
   attempt_count: 1,
   locked_until: '2026-09-20T10:05:00.000Z',
@@ -188,7 +193,11 @@ describe('report-claims (story 12-3)', () => {
       jest.setSystemTime(new Date('2026-09-20T10:06:00.000Z'));
       const qb = updateQb({ data: null, error: null });
 
-      await markReportFailed(adminReturning(qb), REQUEST_ID, 'REPORT_GENERATION_FAILED');
+      await markReportFailed(
+        adminReturning(qb),
+        REQUEST_ID,
+        'REPORT_GENERATION_FAILED',
+      );
 
       expect(qb.update).toHaveBeenCalledWith({
         status: ReportRequestStatus.FAILED,
@@ -209,7 +218,11 @@ describe('report-claims (story 12-3)', () => {
       const qb = updateQb({ data: null, error: { message: 'stamp failed' } });
 
       await expect(
-        markReportFailed(adminReturning(qb), REQUEST_ID, 'REPORT_GENERATION_FAILED'),
+        markReportFailed(
+          adminReturning(qb),
+          REQUEST_ID,
+          'REPORT_GENERATION_FAILED',
+        ),
       ).rejects.toEqual({ message: 'stamp failed' });
     });
   });

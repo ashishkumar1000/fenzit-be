@@ -53,9 +53,9 @@ describe('CreateReportRequestDto — shape-only constraints (story 12-2)', () =>
       startDate: '2026-08-01T00:00',
     });
     expect(errors.map((e) => e.property)).toContain('startDate');
-    expect(errors.find((e) => e.property === 'startDate')?.constraints).toHaveProperty(
-      'maxLength',
-    );
+    expect(
+      errors.find((e) => e.property === 'startDate')?.constraints,
+    ).toHaveProperty('maxLength');
   });
 
   it('rejects a reportType longer than 64 chars', async () => {

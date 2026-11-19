@@ -47,10 +47,7 @@ const makeContext = (user: RequestUser | null | undefined, meta: Meta) => {
   return { ctx, guard: new PermissionsGuard(reflector) };
 };
 
-const allows = (
-  user: RequestUser | null | undefined,
-  meta: Meta,
-): boolean => {
+const allows = (user: RequestUser | null | undefined, meta: Meta): boolean => {
   const { ctx, guard } = makeContext(user, meta);
   return guard.canActivate(ctx);
 };
@@ -78,12 +75,15 @@ describe('PermissionsGuard', () => {
       ).toBe(true);
     });
 
-    it.each([Role.COMPANY_ADMIN, Role.EMPLOYEE, Role.VIEWER, Role.PLATFORM_ADMIN, null])(
-      'allows an @AnyMember route for role %s',
-      (role) => {
-        expect(allows(userWith(role), { anyMember: true })).toBe(true);
-      },
-    );
+    it.each([
+      Role.COMPANY_ADMIN,
+      Role.EMPLOYEE,
+      Role.VIEWER,
+      Role.PLATFORM_ADMIN,
+      null,
+    ])('allows an @AnyMember route for role %s', (role) => {
+      expect(allows(userWith(role), { anyMember: true })).toBe(true);
+    });
 
     it('allows an @AnyMember route for a person with no company', () => {
       expect(allows(userWith(null, null), { anyMember: true })).toBe(true);
@@ -92,7 +92,13 @@ describe('PermissionsGuard', () => {
 
   describe('deny by default', () => {
     it('refuses an endpoint with none of @Public, @AnyMember or @Can', () => {
-      for (const role of [Role.COMPANY_ADMIN, Role.PLATFORM_ADMIN, Role.EMPLOYEE, Role.VIEWER, null]) {
+      for (const role of [
+        Role.COMPANY_ADMIN,
+        Role.PLATFORM_ADMIN,
+        Role.EMPLOYEE,
+        Role.VIEWER,
+        null,
+      ]) {
         expect(refuses(userWith(role), {}).getResponse()).toMatchObject({
           error_code: 'FORBIDDEN',
         });
@@ -109,22 +115,29 @@ describe('PermissionsGuard', () => {
     });
 
     it('refuses explicit false flags', () => {
-      refuses(userWith(Role.COMPANY_ADMIN), { isPublic: false, anyMember: false });
+      refuses(userWith(Role.COMPANY_ADMIN), {
+        isPublic: false,
+        anyMember: false,
+      });
     });
   });
 
   describe('@Can with a role', () => {
     it('allows a company admin on an admin permission', () => {
-      expect(allows(userWith(Role.COMPANY_ADMIN), { can: ['member.invite'] })).toBe(true);
+      expect(
+        allows(userWith(Role.COMPANY_ADMIN), { can: ['member.invite'] }),
+      ).toBe(true);
     });
 
-    it.each(['member.invite', 'job.write', 'customer.write', 'company.manage'] as const)(
-      'refuses an employee and a viewer on %s',
-      (permission) => {
-        refuses(userWith(Role.EMPLOYEE), { can: [permission] });
-        refuses(userWith(Role.VIEWER), { can: [permission] });
-      },
-    );
+    it.each([
+      'member.invite',
+      'job.write',
+      'customer.write',
+      'company.manage',
+    ] as const)('refuses an employee and a viewer on %s', (permission) => {
+      refuses(userWith(Role.EMPLOYEE), { can: [permission] });
+      refuses(userWith(Role.VIEWER), { can: [permission] });
+    });
 
     it('refuses a company admin on an employee-only permission', () => {
       refuses(userWith(Role.COMPANY_ADMIN), { can: ['job.advance'] });
@@ -171,13 +184,17 @@ describe('PermissionsGuard', () => {
     });
 
     it('refuses a person with no membership when none of the list is held', () => {
-      refuses(userWith(Role.EMPLOYEE), { can: ['job.write', 'customer.write'] });
+      refuses(userWith(Role.EMPLOYEE), {
+        can: ['job.write', 'customer.write'],
+      });
       refuses(userWith(null, null), { can: jobRead });
     });
 
     it('is order independent', () => {
       expect(
-        allows(userWith(Role.EMPLOYEE), { can: ['job.read_own', 'job.read_all'] }),
+        allows(userWith(Role.EMPLOYEE), {
+          can: ['job.read_own', 'job.read_all'],
+        }),
       ).toBe(true);
     });
   });
@@ -189,12 +206,17 @@ describe('PermissionsGuard', () => {
       expect(allows(nobody, { can: ['company.create_own'] })).toBe(true);
     });
 
-    it.each(['job.read_all', 'job.read_own', 'member.read', 'customer.read', 'attendance.own', 'user.disable', 'audit.read'] as const)(
-      'is refused %s',
-      (permission) => {
-        refuses(nobody, { can: [permission] });
-      },
-    );
+    it.each([
+      'job.read_all',
+      'job.read_own',
+      'member.read',
+      'customer.read',
+      'attendance.own',
+      'user.disable',
+      'audit.read',
+    ] as const)('is refused %s', (permission) => {
+      refuses(nobody, { can: [permission] });
+    });
 
     it('a company member cannot use company.create_own', () => {
       refuses(userWith(Role.COMPANY_ADMIN), { can: ['company.create_own'] });
@@ -223,12 +245,16 @@ describe('PermissionsGuard', () => {
     it.each(['user.disable', 'audit.read'] as const)(
       'is allowed platform-wide %s with no company',
       (permission) => {
-        expect(allows(userWith(Role.PLATFORM_ADMIN, null), { can: [permission] })).toBe(true);
+        expect(
+          allows(userWith(Role.PLATFORM_ADMIN, null), { can: [permission] }),
+        ).toBe(true);
       },
     );
 
     it('holds user.disable, and a company admin does not', () => {
-      expect(allows(userWith(Role.PLATFORM_ADMIN), { can: ['user.disable'] })).toBe(true);
+      expect(
+        allows(userWith(Role.PLATFORM_ADMIN), { can: ['user.disable'] }),
+      ).toBe(true);
       refuses(userWith(Role.COMPANY_ADMIN), { can: ['user.disable'] });
       refuses(userWith(Role.VIEWER), { can: ['user.disable'] });
     });
@@ -240,7 +266,9 @@ describe('PermissionsGuard', () => {
 
     it('is not refused for a missing company when an any-of list includes a platform-wide permission it holds', () => {
       expect(
-        allows(userWith(Role.PLATFORM_ADMIN, null), { can: ['audit.read', 'member.read'] }),
+        allows(userWith(Role.PLATFORM_ADMIN, null), {
+          can: ['audit.read', 'member.read'],
+        }),
       ).toBe(true);
     });
   });
@@ -251,7 +279,9 @@ describe('PermissionsGuard', () => {
     });
 
     it('still reaches audit.read (platform-wide) through its role', () => {
-      expect(allows(userWith(Role.COMPANY_ADMIN, null), { can: ['audit.read'] })).toBe(true);
+      expect(
+        allows(userWith(Role.COMPANY_ADMIN, null), { can: ['audit.read'] }),
+      ).toBe(true);
     });
   });
 });

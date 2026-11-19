@@ -45,7 +45,9 @@ const me: MeMonthlyResponse = {
   today: '2026-09-29',
   summary: body.employees[0].summary,
   weeklyOffs: [0, 6],
-  upcomingHolidays: [{ holidayDate: '2026-10-02', holidayName: 'Gandhi Jayanti' }],
+  upcomingHolidays: [
+    { holidayDate: '2026-10-02', holidayName: 'Gandhi Jayanti' },
+  ],
 };
 
 describe('MonthlyResponse — the wire key sets (D6)', () => {

@@ -99,10 +99,13 @@ const row = (over: {
 };
 
 /** A full worked day 09:30→18:30 = 540 minutes (late-free, on time). */
-const fullDay = (date: string, over: Parameters<typeof row>[0] = {}): DayGridRow =>
+const fullDay = (
+  date: string,
+  over: Parameters<typeof row>[0] = {},
+): DayGridRow =>
   row({
     workDate: date,
-    record: record(date, '09:30', '18:30') as RecordRow,
+    record: record(date, '09:30', '18:30'),
     ...over,
   });
 
@@ -110,9 +113,15 @@ describe('summariseAttendanceRange — parity with the app aggregation', () => {
   it('the nine summary numbers equal summariseEmployeeMonth on the same rows', () => {
     const rows = [
       fullDay('2026-09-25'),
-      row({ workDate: '2026-09-26', record: record('2026-09-26', '09:30', '13:30') }),
+      row({
+        workDate: '2026-09-26',
+        record: record('2026-09-26', '09:30', '13:30'),
+      }),
       row({ workDate: '2026-09-27', ctx: { isWeeklyOff: true } }),
-      row({ workDate: '2026-09-28', ctx: { leaveState: 'approved', leavePart: 'full_day' } }),
+      row({
+        workDate: '2026-09-28',
+        ctx: { leaveState: 'approved', leavePart: 'full_day' },
+      }),
     ];
     const summary = summariseAttendanceRange(rows);
     expect(summary.daysWorked).toBe(1.5); // full + half
@@ -126,7 +135,11 @@ describe('summariseAttendanceRange — parity with the app aggregation', () => {
   it('untracked rows contribute nothing at all (19-3 rule)', () => {
     const rows = [
       fullDay('2026-09-25'),
-      row({ workDate: '2026-09-26', ctx: { tracked: false }, record: record('2026-09-26', '09:30', '18:30') }),
+      row({
+        workDate: '2026-09-26',
+        ctx: { tracked: false },
+        record: record('2026-09-26', '09:30', '18:30'),
+      }),
     ];
     const summary = summariseAttendanceRange(rows);
     expect(summary.trackedDays).toBe(1);
@@ -139,8 +152,14 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
     const rows = [
       fullDay('2026-09-22'),
       row({ workDate: '2026-09-23', ctx: { isWeeklyOff: true } }),
-      row({ workDate: '2026-09-24', ctx: { holidayId: 'h1', holidayName: 'Diwali', isWorkingDay: false } }),
-      row({ workDate: '2026-09-25', ctx: { leaveState: 'approved', leavePart: 'full_day' } }),
+      row({
+        workDate: '2026-09-24',
+        ctx: { holidayId: 'h1', holidayName: 'Diwali', isWorkingDay: false },
+      }),
+      row({
+        workDate: '2026-09-25',
+        ctx: { leaveState: 'approved', leavePart: 'full_day' },
+      }),
       row({ workDate: '2026-09-26' }), // absent (past, no record, no leave)
     ];
     const summary = summariseAttendanceRange(rows);
@@ -165,7 +184,10 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
   it('hours come from non-null workedMinutes only; avg divides by DAYS WITH HOURS (not credit)', () => {
     const rows = [
       fullDay('2026-09-25'), // 9h → 1.0 credit
-      row({ workDate: '2026-09-26', record: record('2026-09-26', '09:30', '13:30') }), // 4h → 0.5 credit
+      row({
+        workDate: '2026-09-26',
+        record: record('2026-09-26', '09:30', '13:30'),
+      }), // 4h → 0.5 credit
       row({ workDate: '2026-09-28' }), // absent: no minutes
     ];
     const summary = summariseAttendanceRange(rows);
@@ -192,8 +214,14 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
 
   it('late minutes sum over late days with the grace applied by the engine', () => {
     const rows = [
-      row({ workDate: '2026-09-25', record: record('2026-09-25', '09:45', '18:30') }), // exactly at start+cutoff → the grace holds, not late
-      row({ workDate: '2026-09-26', record: record('2026-09-26', '10:30', '18:30') }), // 45min past the cutoff
+      row({
+        workDate: '2026-09-25',
+        record: record('2026-09-25', '09:45', '18:30'),
+      }), // exactly at start+cutoff → the grace holds, not late
+      row({
+        workDate: '2026-09-26',
+        record: record('2026-09-26', '10:30', '18:30'),
+      }), // 45min past the cutoff
     ];
     const summary = summariseAttendanceRange(rows);
     expect(summary.lateCount).toBe(1);
@@ -202,7 +230,10 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
 
   it('early outs, corrections and half-day leaves count from the outcomes', () => {
     const rows = [
-      row({ workDate: '2026-09-25', record: record('2026-09-25', '09:30', '14:00') }), // early 270min? no: end 1110, 840min-of-day → early
+      row({
+        workDate: '2026-09-25',
+        record: record('2026-09-25', '09:30', '14:00'),
+      }), // early 270min? no: end 1110, 840min-of-day → early
       row({
         workDate: '2026-09-26',
         override: override({ status: 'present' }),
@@ -222,8 +253,16 @@ describe('summariseAttendanceRange — the report-only formulas', () => {
 
   it('fake-location days count only the unacknowledged marker (owner ruling)', () => {
     const rows = [
-      row({ workDate: '2026-09-25', hasUnackMockedAttempt: true, record: record('2026-09-25', '09:30', '18:30') }),
-      row({ workDate: '2026-09-26', hasUnackMockedAttempt: false, record: record('2026-09-26', '09:30', '18:30') }),
+      row({
+        workDate: '2026-09-25',
+        hasUnackMockedAttempt: true,
+        record: record('2026-09-25', '09:30', '18:30'),
+      }),
+      row({
+        workDate: '2026-09-26',
+        hasUnackMockedAttempt: false,
+        record: record('2026-09-26', '09:30', '18:30'),
+      }),
     ];
     expect(summariseAttendanceRange(rows).fakeLocationDays).toBe(1);
   });
@@ -299,9 +338,18 @@ describe('computeAttendanceExceptions — needs attention, from real shapes', ()
 
   it('repeat late fires from 3 late days', () => {
     const rows = [
-      row({ workDate: '2026-09-24', record: record('2026-09-24', '10:30', '18:30') }),
-      row({ workDate: '2026-09-25', record: record('2026-09-25', '10:40', '18:30') }),
-      row({ workDate: '2026-09-26', record: record('2026-09-26', '11:00', '18:30') }),
+      row({
+        workDate: '2026-09-24',
+        record: record('2026-09-24', '10:30', '18:30'),
+      }),
+      row({
+        workDate: '2026-09-25',
+        record: record('2026-09-25', '10:40', '18:30'),
+      }),
+      row({
+        workDate: '2026-09-26',
+        record: record('2026-09-26', '11:00', '18:30'),
+      }),
     ];
     const lates = computeAttendanceExceptions(rows, new Map()).filter(
       (e) => e.kind === 'repeat_late',
@@ -312,15 +360,22 @@ describe('computeAttendanceExceptions — needs attention, from real shapes', ()
 
   it('missing check-out and corrections list their dates', () => {
     const rows = [
-      row({ workDate: '2026-09-25', record: record('2026-09-25', '09:30', null) }),
+      row({
+        workDate: '2026-09-25',
+        record: record('2026-09-25', '09:30', null),
+      }),
       row({
         workDate: '2026-09-26',
         override: override({ status: 'present' }),
       }),
     ];
     const exceptions = computeAttendanceExceptions(rows, new Map());
-    expect(exceptions.find((e) => e.kind === 'missing_checkout')?.detail).toContain('2026-09-25');
-    expect(exceptions.find((e) => e.kind === 'corrected')?.detail).toContain('2026-09-26');
+    expect(
+      exceptions.find((e) => e.kind === 'missing_checkout')?.detail,
+    ).toContain('2026-09-25');
+    expect(exceptions.find((e) => e.kind === 'corrected')?.detail).toContain(
+      '2026-09-26',
+    );
   });
 
   it('employees come out named; unknown ids degrade to the raw id', () => {

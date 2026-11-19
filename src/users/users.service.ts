@@ -492,7 +492,7 @@ export class UsersService {
 
     return {
       ...base,
-      role: user.role as CompanyProfileResponse['role'],
+      role: user.role,
       tenant,
       technicians,
       technicianCount: technicians.length,

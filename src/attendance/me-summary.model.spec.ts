@@ -70,7 +70,10 @@ describe('pickRuleForDate — the rule effective on the anchor (FR-5)', () => {
     expect(pickRuleForDate(rules, '2026-09-28')?.id).toBe('covering');
     expect(
       pickRuleForDate(
-        [rule('covering', '[2026-01-01,)'), rule('past', '[2025-01-01,2025-06-01)')],
+        [
+          rule('covering', '[2026-01-01,)'),
+          rule('past', '[2025-01-01,2025-06-01)'),
+        ],
         '2026-09-28',
       )?.id,
     ).toBe('covering');

@@ -467,10 +467,10 @@ export async function buildDossier(
   ]);
 
   const c = counts.rows[0] as Row;
-  const wc = (webCounts.rows[0] ?? {}) as Row;
-  const ac = (attCounts.rows[0] ?? {}) as Row; // soft-degraded counts must not crash the mapping
+  const wc = webCounts.rows[0] ?? {};
+  const ac = attCounts.rows[0] ?? {}; // soft-degraded counts must not crash the mapping
   const tr = company.rows[0] as Row | undefined;
-  const inviter = (mems.rows as Row[]).find((m) => m.invited_by_name != null);
+  const inviter = mems.rows.find((m) => m.invited_by_name != null);
 
   return {
     counts: {
@@ -486,7 +486,7 @@ export async function buildDossier(
       activityRows: num(wc.activity_rows),
       invitesSent: num(wc.invites_sent),
     },
-    memberships: (mems.rows as Row[]).map((m) => ({
+    memberships: mems.rows.map((m) => ({
       companyId: String(m.tenant_id),
       company: String(m.company_name),
       role: String(m.role),
@@ -497,13 +497,13 @@ export async function buildDossier(
       isFounder: m.created_by === id,
       validityUntil: iso(m.validity_until),
     })),
-    offices: (offices.rows as Row[]).map((o) => ({
+    offices: offices.rows.map((o) => ({
       name: String(o.name),
       address: str(o.formatted_address),
       radius: o.radius_m == null ? null : num(o.radius_m),
       valid: str(o.valid),
     })),
-    jobs: (jobs.rows as Row[]).map((j) => ({
+    jobs: jobs.rows.map((j) => ({
       jobNumber: String(j.job_number),
       status: String(j.status),
       priority: str(j.priority),
@@ -516,7 +516,7 @@ export async function buildDossier(
       skill: str(j.skill),
     })),
     attendance: {
-      recent: (attRecent.rows as Row[]).map((r) => ({
+      recent: attRecent.rows.map((r) => ({
         workDate: String(r.work_date),
         checkin: iso(r.checkin_at),
         checkout: iso(r.checkout_at),
@@ -526,7 +526,7 @@ export async function buildDossier(
           r.checkout_distance_m == null ? null : num(r.checkout_distance_m),
         mocked: Boolean(r.mocked),
       })),
-      attempts: (attempts.rows as Row[]).map((a) => ({
+      attempts: attempts.rows.map((a) => ({
         kind: String(a.kind),
         outcome: String(a.outcome),
         provider: str(a.provider),
@@ -542,27 +542,27 @@ export async function buildDossier(
       weeklyOff: num(ac.weekly_off),
       enrolments: num(ac.enrolments),
     },
-    leave: (leave.rows as Row[]).map((l) => ({
+    leave: leave.rows.map((l) => ({
       start: String(l.start_date),
       end: String(l.end_date),
       part: String(l.part),
       reason: str(l.reason),
       lastState: str(l.last_state),
     })),
-    leaveDays: (leaveDays.rows as Row[]).map((d) => ({
+    leaveDays: leaveDays.rows.map((d) => ({
       date: String(d.leave_date),
       state: String(d.state),
     })),
-    leaveEvents: (leaveEvents.rows as Row[]).map((e) => ({
+    leaveEvents: leaveEvents.rows.map((e) => ({
       cause: String(e.cause),
       actor: str(e.actor),
       reason: str(e.reason),
       dates: str(e.dates),
       createdAt: iso(e.created_at),
     })),
-    skills: (skills.rows as Row[]).map((s) => String(s.name)),
+    skills: skills.rows.map((s) => String(s.name)),
     invites: {
-      sent: (invites.rows as Row[]).map((i) => ({
+      sent: invites.rows.map((i) => ({
         name: str(i.name),
         phone: String(i.phone_number),
         company: String(i.company_name),
@@ -572,30 +572,30 @@ export async function buildDossier(
       invitedBy: inviter ? String(inviter.invited_by_name) : null,
     },
     authored: {
-      corrections: (authored.rows as Row[]).map((a) => ({
+      corrections: authored.rows.map((a) => ({
         workDate: String(a.work_date),
         employee: str(a.employee),
         note: str(a.note),
       })),
     },
-    notifications: (notifs.rows as Row[]).map((n) => ({
+    notifications: notifs.rows.map((n) => ({
       event: String(n.event_type),
       summary: payloadSummary(n.payload),
       read: iso(n.read_at),
       pushed: iso(n.pushed_at),
       createdAt: iso(n.created_at),
     })),
-    audit: (audit.rows as Row[]).map((a) => ({
+    audit: audit.rows.map((a) => ({
       action: String(a.action),
       isActor: Boolean(a.is_actor),
       createdAt: iso(a.created_at),
     })),
-    activity: (activity.rows as Row[]).map((a) => ({
+    activity: activity.rows.map((a) => ({
       event: String(a.event_type),
       jobNumber: str(a.job_number),
       createdAt: iso(a.created_at),
     })),
-    reports: (reports.rows as Row[]).map((r) => ({
+    reports: reports.rows.map((r) => ({
       type: String(r.report_type),
       status: String(r.status),
       createdAt: iso(r.created_at),

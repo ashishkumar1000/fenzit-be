@@ -27,7 +27,8 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
 const IS_REAL_DB =
   SUPABASE_URL !== '' &&
   !SUPABASE_URL.includes('test.supabase.co') &&
@@ -213,10 +214,19 @@ afterAll(async () => {
   if (!IS_REAL_DB) return;
   // FK-safe order: logs/notifications → attachments → uploads → jobs →
   // customers → memberships → tenants → users.
-  await admin.from('activity_logs').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
+  await admin
+    .from('activity_logs')
+    .delete()
+    .in('job_id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('notifications').delete().eq('tenant_id', TENANT);
-  await admin.from('attachments').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
-  await admin.from('attachment_uploads').delete().in('job_id', [JOB_DEADEND, JOB_GUARD]);
+  await admin
+    .from('attachments')
+    .delete()
+    .in('job_id', [JOB_DEADEND, JOB_GUARD]);
+  await admin
+    .from('attachment_uploads')
+    .delete()
+    .in('job_id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('jobs').delete().in('id', [JOB_DEADEND, JOB_GUARD]);
   await admin.from('customers').delete().eq('id', CUSTOMER);
   await admin.from('memberships').delete().eq('tenant_id', TENANT);

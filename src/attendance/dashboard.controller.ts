@@ -41,10 +41,7 @@ export class DashboardController {
     description:
       'VALIDATION_ERROR (malformed officeId) — an UNKNOWN-but-well-formed officeId is a 200 with zeros + empty flags, never a 404',
   })
-  today(
-    @CurrentUser() owner: RequestUser,
-    @Query() query: DashboardQueryDto,
-  ) {
+  today(@CurrentUser() owner: RequestUser, @Query() query: DashboardQueryDto) {
     return this.dashboard.today(owner, query.officeId);
   }
 }

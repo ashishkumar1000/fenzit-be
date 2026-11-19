@@ -66,17 +66,21 @@ describe('InviteSmsService once the DLT template is approved', () => {
       }),
     };
     const service = new InviteSmsService(
-      { send } as never,
+      { send },
       { createAdmin: jest.fn().mockReturnValue(admin) } as never,
       { getOrThrow: jest.fn().mockReturnValue('k'.repeat(40)) } as never,
     );
 
     await expect(service.sendInviteSms(REQUEST)).resolves.toBe('sent');
-    expect(send).toHaveBeenCalledWith('+919876543210', SMS_TEMPLATES['T-INVITE'], {
-      employee: 'Ravi',
-      company: 'Jobzo Services',
-      url: INVITE_SMS_DOWNLOAD_URL,
-    });
+    expect(send).toHaveBeenCalledWith(
+      '+919876543210',
+      SMS_TEMPLATES['T-INVITE'],
+      {
+        employee: 'Ravi',
+        company: 'Jobzo Services',
+        url: INVITE_SMS_DOWNLOAD_URL,
+      },
+    );
     expect(auditInsert.mock.calls[0][0].outcome).toBe('sent');
     expect(INVITE_SMS_DOWNLOAD_URL).toBe('https://fenzit.com/app/download');
   });

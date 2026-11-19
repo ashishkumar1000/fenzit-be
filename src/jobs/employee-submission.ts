@@ -1,4 +1,8 @@
-import { ForbiddenException, InternalServerErrorException, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
@@ -39,7 +43,10 @@ export async function resolveEmployeeSubmission(
     .eq('user_id', caller.userId)
     .eq('tenant_id', caller.tenantId as string)
     .eq('status', 'active')
-    .maybeSingle<{ can_create_jobs: boolean; job_approval_required: boolean }>();
+    .maybeSingle<{
+      can_create_jobs: boolean;
+      job_approval_required: boolean;
+    }>();
 
   if (error) {
     logger.error('Failed to read job switches:', { error });
@@ -51,7 +58,8 @@ export async function resolveEmployeeSubmission(
   if (!data || !data.can_create_jobs) {
     throw new ForbiddenException({
       error_code: ErrorCode.FORBIDDEN,
-      message: 'You are not allowed to create jobs. Ask your owner to turn this on.',
+      message:
+        'You are not allowed to create jobs. Ask your owner to turn this on.',
     });
   }
   return { pendingApproval: data.job_approval_required };

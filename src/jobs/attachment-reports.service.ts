@@ -40,9 +40,7 @@ const UNIQUE_VIOLATION = '23505';
 export class AttachmentReportsService {
   private readonly logger = new Logger(AttachmentReportsService.name);
 
-  constructor(
-    private readonly supabaseClientFactory: SupabaseClientFactory,
-  ) {}
+  constructor(private readonly supabaseClientFactory: SupabaseClientFactory) {}
 
   /** Returns `created: false` when this user already reported this photo. */
   async report(

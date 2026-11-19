@@ -163,7 +163,11 @@ export class AdminReportsService {
       // Every other open report on this photo is settled by the same call.
       const { error: othersError } = await admin
         .from('attachment_reports')
-        .update({ status: 'hidden', reviewed_by: reviewer.userId, reviewed_at: now })
+        .update({
+          status: 'hidden',
+          reviewed_by: reviewer.userId,
+          reviewed_at: now,
+        })
         .eq('attachment_id', report.attachment_id)
         .eq('status', 'open')
         .neq('id', reportId);
@@ -172,7 +176,11 @@ export class AdminReportsService {
 
     const { data: claimed, error: claimError } = await admin
       .from('attachment_reports')
-      .update({ status: nextStatus, reviewed_by: reviewer.userId, reviewed_at: now })
+      .update({
+        status: nextStatus,
+        reviewed_by: reviewer.userId,
+        reviewed_at: now,
+      })
       .eq('id', reportId)
       .eq('status', 'open')
       .select('id')

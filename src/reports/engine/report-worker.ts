@@ -137,16 +137,17 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
     // would produce a meaningless `not.in.()`, so the filter is skipped.
     const pausedCsv = `(${[...pausedTenants].join(',')})`;
 
-    const queued = await (pausedTenants.size > 0
-      ? admin
-          .from('report_requests')
-          .select('id, tenant_id, attempt_count')
-          .eq('status', ReportRequestStatus.QUEUED)
-          .not('tenant_id', 'in', pausedCsv)
-      : admin
-          .from('report_requests')
-          .select('id, tenant_id, attempt_count')
-          .eq('status', ReportRequestStatus.QUEUED)
+    const queued = await (
+      pausedTenants.size > 0
+        ? admin
+            .from('report_requests')
+            .select('id, tenant_id, attempt_count')
+            .eq('status', ReportRequestStatus.QUEUED)
+            .not('tenant_id', 'in', pausedCsv)
+        : admin
+            .from('report_requests')
+            .select('id, tenant_id, attempt_count')
+            .eq('status', ReportRequestStatus.QUEUED)
     )
       .order('created_at', { ascending: true })
       .limit(this.concurrency);
@@ -155,18 +156,19 @@ export class ReportWorker implements OnApplicationBootstrap, OnModuleDestroy {
       throw queued.error;
     }
 
-    const stranded = await (pausedTenants.size > 0
-      ? admin
-          .from('report_requests')
-          .select('id, tenant_id, attempt_count')
-          .eq('status', ReportRequestStatus.GENERATING)
-          .lt('locked_until', nowIso)
-          .not('tenant_id', 'in', pausedCsv)
-      : admin
-          .from('report_requests')
-          .select('id, tenant_id, attempt_count')
-          .eq('status', ReportRequestStatus.GENERATING)
-          .lt('locked_until', nowIso)
+    const stranded = await (
+      pausedTenants.size > 0
+        ? admin
+            .from('report_requests')
+            .select('id, tenant_id, attempt_count')
+            .eq('status', ReportRequestStatus.GENERATING)
+            .lt('locked_until', nowIso)
+            .not('tenant_id', 'in', pausedCsv)
+        : admin
+            .from('report_requests')
+            .select('id, tenant_id, attempt_count')
+            .eq('status', ReportRequestStatus.GENERATING)
+            .lt('locked_until', nowIso)
     )
       .order('locked_until', { ascending: true })
       .limit(this.concurrency);

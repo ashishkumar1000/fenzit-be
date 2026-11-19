@@ -149,8 +149,7 @@ function makeTx(options: TxOptions = {}) {
     if (sql.includes('update public.leave_request_days')) return { rows: [] };
     if (sql.includes('insert into public.leave_events')) return { rows: [] };
     if (sql.includes('insert into public.notifications')) return { rows: [] };
-    if (sql.includes('select u.name'))
-      return { rows: [{ name: 'Ravi' }] };
+    if (sql.includes('select u.name')) return { rows: [{ name: 'Ravi' }] };
     throw new Error(`unclassified query: ${sql}`);
   };
   const tx = { query: jest.fn(dispatch) };
@@ -473,7 +472,9 @@ describe('EnrolmentsService (story 15-7)', () => {
       const roster = await service.listEnrolments(owner);
 
       expect(roster).toHaveLength(1);
-      expect(roster[0].avatarUrl).toBe('https://signed.example/avatars/emp/p.jpg');
+      expect(roster[0].avatarUrl).toBe(
+        'https://signed.example/avatars/emp/p.jpg',
+      );
       expect(roster[0]).toMatchObject({
         employeeId: EMPLOYEE,
         employeeName: 'Ravi',

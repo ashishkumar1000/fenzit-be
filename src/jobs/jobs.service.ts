@@ -1362,10 +1362,18 @@ export class JobsService {
       updatedAt: row.updated_at,
       skill: normalizeSkillEmbed<JobSkillResponse>(row.skills),
       technician: normalizeSkillEmbed<{ id: string; name: string | null }>(
-        (row as JobRow & { technician?: { id: string; name: string | null } | null }).technician,
+        (
+          row as JobRow & {
+            technician?: { id: string; name: string | null } | null;
+          }
+        ).technician,
       ),
       customer: normalizeSkillEmbed<{ id: string; name: string | null }>(
-        (row as JobRow & { customer?: { id: string; name: string | null } | null }).customer,
+        (
+          row as JobRow & {
+            customer?: { id: string; name: string | null } | null;
+          }
+        ).customer,
       ),
       workflowTemplate:
         steps && templateRaw

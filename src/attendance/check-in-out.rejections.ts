@@ -7,7 +7,15 @@ import {
   RATE_MAX_COUNTED,
 } from './constants';
 import { readCompanyAdminIds } from './company-admins';
-import { dbNow, countCountedInWindow, countMonthlyMocked, insertAttempt, insertFakeLocationAlert, AttemptKind, AttemptLocation } from './check-in-out.repository';
+import {
+  dbNow,
+  countCountedInWindow,
+  countMonthlyMocked,
+  insertAttempt,
+  insertFakeLocationAlert,
+  AttemptKind,
+  AttemptLocation,
+} from './check-in-out.repository';
 import { DayContext } from '../common/day-status/day-context';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { ATTENDANCE_NOTIFICATION_EVENT } from './notification-events';
@@ -121,7 +129,11 @@ async function maybeAlertFakeLocation(
   tx: PoolClient,
   ctx: DayContext,
 ): Promise<void> {
-  const { count, month } = await countMonthlyMocked(tx, ctx.employeeId, ctx.timezone);
+  const { count, month } = await countMonthlyMocked(
+    tx,
+    ctx.employeeId,
+    ctx.timezone,
+  );
   if (count < FAKE_LOCATION_ALERT_THRESHOLD) return;
   const adminIds = await readCompanyAdminIds(tx, ctx.tenantId);
   if (adminIds.length === 0) {

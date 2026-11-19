@@ -13,10 +13,7 @@ import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
-import {
-  memberRow,
-  membersTable,
-} from '../../test/helpers/member-rows-stub';
+import { memberRow, membersTable } from '../../test/helpers/member-rows-stub';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobStatus } from './enums/job-status.enum';
@@ -164,7 +161,9 @@ describe('JobsService', () => {
       getPresignedReadUrl: jest
         .fn()
         .mockResolvedValue('https://r2.example.com/read'),
-      presignReadUrl: jest.fn((key: string) => Promise.resolve(`https://signed.example/${key}`)),
+      presignReadUrl: jest.fn((key: string) =>
+        Promise.resolve(`https://signed.example/${key}`),
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -227,12 +226,14 @@ describe('JobsService', () => {
   // maybeSingle — the Story 4.5 post-RPC embed re-fetch (refetchWithEmbeds).
   function mockAdmin(opts: {
     customer?: { data: unknown; error: unknown };
-    technician?: { data: ReturnType<typeof memberRow>[] | null; error: unknown };
+    technician?: {
+      data: ReturnType<typeof memberRow>[] | null;
+      error: unknown;
+    };
     skill?: { data: unknown; error: unknown };
     rpc?: { data: unknown; error: unknown };
     refetch?: { data: unknown; error: unknown };
   }) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chains: Record<string, any> = {};
     const from = jest.fn((table: string) => {
       if (table === 'customers') {
@@ -746,7 +747,17 @@ describe('JobsService', () => {
     // resolves to { data, error }. Returned so tests can inspect call args.
     function listChain(result: { data: unknown; error: unknown }) {
       const builder: Record<string, jest.Mock> = {};
-      for (const m of ['select', 'eq', 'neq', 'not', 'gte', 'lt', 'in', 'or', 'order']) {
+      for (const m of [
+        'select',
+        'eq',
+        'neq',
+        'not',
+        'gte',
+        'lt',
+        'in',
+        'or',
+        'order',
+      ]) {
         builder[m] = jest.fn().mockReturnValue(builder);
       }
       builder.limit = jest.fn().mockResolvedValue(result);
@@ -1287,7 +1298,10 @@ describe('JobsService', () => {
     // end in .single(); user_skills ends in .eq(); activity_logs/.order() ends in .order().
     function mockDetailAdmin(opts: {
       job?: { data: unknown; error: unknown };
-      technician?: { data: ReturnType<typeof memberRow>[] | null; error: unknown };
+      technician?: {
+        data: ReturnType<typeof memberRow>[] | null;
+        error: unknown;
+      };
       skills?: { data: unknown; error: unknown };
       customer?: { data: unknown; error: unknown };
       logs?: { data: unknown; error: unknown };
@@ -1309,7 +1323,7 @@ describe('JobsService', () => {
       const attachIs = jest.fn().mockReturnValue({ order: attachOrder });
       const attachEq2 = jest.fn().mockReturnValue({ is: attachIs });
       const attachEq1 = jest.fn().mockReturnValue({ eq: attachEq2 });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const chains: Record<string, any> = {};
       const from = jest.fn((table: string) => {
         if (table === 'jobs') {

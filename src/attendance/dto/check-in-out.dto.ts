@@ -44,7 +44,9 @@ export class CheckInOutDto {
     nullable: true,
   })
   @IsOptional()
-  @IsBoolean({ message: 'Could not read the location check. Please try again.' })
+  @IsBoolean({
+    message: 'Could not read the location check. Please try again.',
+  })
   mocked?: boolean | null = null;
 
   @ApiPropertyOptional({

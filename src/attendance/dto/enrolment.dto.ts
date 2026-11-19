@@ -11,7 +11,8 @@ import { AttendanceCalendarDateConstraint } from './attendance-date.validator';
  */
 export class SetEnrolmentDto {
   @ApiProperty({
-    description: 'Live office to enrol the employee with (FR-6: one office per tracked date).',
+    description:
+      'Live office to enrol the employee with (FR-6: one office per tracked date).',
     example: '9f1c3e2a-1111-4c4c-8c8c-222233334444',
   })
   @IsUUID()

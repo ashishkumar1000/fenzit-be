@@ -95,9 +95,7 @@ const row = (over: RowOver = {}): DayGridRow => {
       ...(over.tracked === false ? { tracked: false } : {}),
     }),
     record: over.record ? { ...over.record, work_date: workDate } : null,
-    override: over.override
-      ? { ...over.override, work_date: workDate }
-      : null,
+    override: over.override ? { ...over.override, work_date: workDate } : null,
     hasUnackMockedAttempt: false,
     latestCorrection: null,
   };
@@ -115,8 +113,9 @@ const EMPTY: MonthlyEmployeeSummary = {
   checkoutMissing: 0,
 };
 
-const like = (over: Partial<MonthlyEmployeeSummary>): MonthlyEmployeeSummary =>
-  ({ ...EMPTY, ...over });
+const like = (
+  over: Partial<MonthlyEmployeeSummary>,
+): MonthlyEmployeeSummary => ({ ...EMPTY, ...over });
 
 describe('summariseEmployeeMonth (19-3, FR-11 parity)', () => {
   it('empty input is an all-zero summary — never NaN, never null', () => {
@@ -210,7 +209,9 @@ describe('summariseEmployeeMonth (19-3, FR-11 parity)', () => {
         record: record('09:30', '18:30'),
       }), // worked_on_holiday: not a holidays tile, credits 1
     ]);
-    expect(summary).toEqual(like({ weeklyOffs: 1, holidays: 1, workedOnHoliday: 1 }));
+    expect(summary).toEqual(
+      like({ weeklyOffs: 1, holidays: 1, workedOnHoliday: 1 }),
+    );
   });
 
   it('absent counts only rule-9 graded rows — not untracked, not off-days', () => {
@@ -253,17 +254,44 @@ describe('summariseEmployeeMonth (19-3, FR-11 parity)', () => {
     // of four 465-minute days reads exactly 2.0 — never 3.875.
     const summary = summariseEmployeeMonth([
       row({ record: record('09:30', '17:15') }),
-      row({ ctx: { workDate: '2026-09-26' }, record: record('09:30', '17:15') }),
-      row({ ctx: { workDate: '2026-09-25' }, record: record('09:30', '17:15') }),
-      row({ ctx: { workDate: '2026-09-24' }, record: record('09:30', '17:15') }),
+      row({
+        ctx: { workDate: '2026-09-26' },
+        record: record('09:30', '17:15'),
+      }),
+      row({
+        ctx: { workDate: '2026-09-25' },
+        record: record('09:30', '17:15'),
+      }),
+      row({
+        ctx: { workDate: '2026-09-24' },
+        record: record('09:30', '17:15'),
+      }),
     ]);
     expect(summary.daysWorked).toBe(2);
     expect(summary.halfDays).toBe(4);
     // Three approved halves sum to exactly 1.5 leaves.
     const leave = summariseEmployeeMonth([
-      row({ ctx: { workDate: '2026-09-24', leaveState: 'approved', leavePart: 'first_half' } }),
-      row({ ctx: { workDate: '2026-09-23', leaveState: 'approved', leavePart: 'second_half' } }),
-      row({ ctx: { workDate: '2026-09-22', leaveState: 'approved', leavePart: 'first_half' } }),
+      row({
+        ctx: {
+          workDate: '2026-09-24',
+          leaveState: 'approved',
+          leavePart: 'first_half',
+        },
+      }),
+      row({
+        ctx: {
+          workDate: '2026-09-23',
+          leaveState: 'approved',
+          leavePart: 'second_half',
+        },
+      }),
+      row({
+        ctx: {
+          workDate: '2026-09-22',
+          leaveState: 'approved',
+          leavePart: 'first_half',
+        },
+      }),
     ]);
     expect(leave.leave).toBe(1.5);
   });

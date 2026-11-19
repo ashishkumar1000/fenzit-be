@@ -9,7 +9,9 @@ const base = { token: 'tok-abc', platform: 'android' };
 
 async function errorsFor(
   input: Record<string, unknown>,
-  cls: typeof RegisterDeviceTokenDto | typeof DeviceTokenParamDto = RegisterDeviceTokenDto,
+  cls:
+    | typeof RegisterDeviceTokenDto
+    | typeof DeviceTokenParamDto = RegisterDeviceTokenDto,
 ): Promise<string[]> {
   const dto = plainToInstance(cls, input);
   const errors = await validate(dto);
@@ -54,7 +56,9 @@ describe('RegisterDeviceTokenDto', () => {
   });
 
   it('rejects a token one char over the 4096-char bound', async () => {
-    expect(await errorsFor({ ...base, token: 'x'.repeat(4097) })).toContain('token');
+    expect(await errorsFor({ ...base, token: 'x'.repeat(4097) })).toContain(
+      'token',
+    );
   });
 
   it('rejects a non-string token (an array smuggled in the body)', async () => {
@@ -66,11 +70,15 @@ describe('RegisterDeviceTokenDto', () => {
   });
 
   it('rejects a whitespace-only app version (trimmed to empty, not "optional")', async () => {
-    expect(await errorsFor({ ...base, appVersion: '   ' })).toContain('appVersion');
+    expect(await errorsFor({ ...base, appVersion: '   ' })).toContain(
+      'appVersion',
+    );
   });
 
   it('rejects an app version over 64 chars', async () => {
-    expect(await errorsFor({ ...base, appVersion: 'v'.repeat(65) })).toContain('appVersion');
+    expect(await errorsFor({ ...base, appVersion: 'v'.repeat(65) })).toContain(
+      'appVersion',
+    );
   });
 
   it('the global pipe strips a body-supplied user id (identity comes from the JWT)', async () => {
@@ -88,7 +96,9 @@ describe('RegisterDeviceTokenDto', () => {
 
 describe('DeviceTokenParamDto', () => {
   it('accepts a token path segment within bounds', async () => {
-    expect(await errorsFor({ token: 'tok-abc' }, DeviceTokenParamDto)).toEqual([]);
+    expect(await errorsFor({ token: 'tok-abc' }, DeviceTokenParamDto)).toEqual(
+      [],
+    );
   });
 
   it('rejects an oversized token (422, not a silent no-op)', async () => {
@@ -98,6 +108,8 @@ describe('DeviceTokenParamDto', () => {
   });
 
   it('rejects an empty token segment', async () => {
-    expect(await errorsFor({ token: '' }, DeviceTokenParamDto)).toContain('token');
+    expect(await errorsFor({ token: '' }, DeviceTokenParamDto)).toContain(
+      'token',
+    );
   });
 });

@@ -28,11 +28,7 @@ import {
  * (story 21-2, decision 2026-11-11). Resend turns it into a 429.
  */
 export type InviteSmsStatus =
-  | 'sent'
-  | 'failed'
-  | 'not_configured'
-  | 'refused_cap'
-  | 'skipped_active';
+  'sent' | 'failed' | 'not_configured' | 'refused_cap' | 'skipped_active';
 type AuditOutcome = InviteSmsStatus;
 
 export interface InviteSmsRequest {
@@ -67,7 +63,10 @@ export class InviteSmsService {
     // this, "09876543210" and "9876543210" count as two people (cap bypass).
     const req: InviteSmsRequest = {
       ...input,
-      phoneNumber: canonicalSubscriberNumber(input.countryCode, input.phoneNumber),
+      phoneNumber: canonicalSubscriberNumber(
+        input.countryCode,
+        input.phoneNumber,
+      ),
     };
     const admin = this.supabaseClientFactory.createAdmin();
     const masked = maskPhone(req.countryCode, req.phoneNumber);
@@ -194,7 +193,9 @@ export class InviteSmsService {
         this.logger.error(`Invite SMS audit row not written (${outcome})`);
       }
     } catch {
-      this.logger.error(`Invite SMS audit row not written (${outcome}): write threw`);
+      this.logger.error(
+        `Invite SMS audit row not written (${outcome}): write threw`,
+      );
     }
   }
 

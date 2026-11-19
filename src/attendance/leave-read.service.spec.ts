@@ -14,9 +14,7 @@ import type { LeaveListRow, PageSpan } from './leave.repository';
  * green suite — the batch is real here, so the count is derived end to end.
  */
 
-const repoActual = jest.requireActual(
-  './leave.repository',
-) as typeof import('./leave.repository');
+const repoActual = jest.requireActual('./leave.repository');
 
 const mockListLeaveRequests = jest.fn();
 const mockFindDaysForRequests = jest.fn();

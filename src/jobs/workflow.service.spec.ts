@@ -636,7 +636,7 @@ describe('WorkflowService', () => {
           latitude: 37.7749,
           longitude: -122.4194,
           accuracy: 5,
-        } as any);
+        });
         expect(rpc).toHaveBeenCalledWith(
           'advance_workflow_step',
           expect.objectContaining({
@@ -653,7 +653,7 @@ describe('WorkflowService', () => {
         await service.advanceWorkflowStep(tech, 'job-uuid', {
           step: 'on_my_way',
           longitude: -122.4194,
-        } as any);
+        });
         expect(rpc).toHaveBeenCalledWith(
           'advance_workflow_step',
           expect.objectContaining({
@@ -671,7 +671,7 @@ describe('WorkflowService', () => {
           step: 'on_my_way',
           latitude: 0,
           longitude: 0,
-        } as any);
+        });
         expect(rpc).toHaveBeenCalledWith(
           'advance_workflow_step',
           expect.objectContaining({
@@ -688,7 +688,7 @@ describe('WorkflowService', () => {
           step: 'on_my_way',
           latitude: 91,
           longitude: 0,
-        } as any);
+        });
         expect(rpc).toHaveBeenCalledWith(
           'advance_workflow_step',
           expect.objectContaining({
@@ -705,7 +705,7 @@ describe('WorkflowService', () => {
           latitude: 37.7749,
           longitude: -122.4194,
           accuracy: 150,
-        } as any);
+        });
         expect(rpc).toHaveBeenCalledWith(
           'advance_workflow_step',
           expect.objectContaining({
@@ -715,7 +715,6 @@ describe('WorkflowService', () => {
           }),
         );
       });
-
     });
   });
 });

@@ -10,7 +10,7 @@ export class JobSettingsDto {
 
   @ApiProperty({
     description:
-      'Must the owner approve this employee\'s new jobs before they are assigned? Applies to new jobs only.',
+      "Must the owner approve this employee's new jobs before they are assigned? Applies to new jobs only.",
   })
   @IsBoolean({ message: 'jobApprovalRequired must be true or false' })
   jobApprovalRequired: boolean;

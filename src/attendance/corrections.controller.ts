@@ -66,7 +66,13 @@ export class CorrectionsController {
     @Param('workDate') workDate: string,
     @Body() dto: PutCorrectionDto,
   ) {
-    return this.correctionsService.put(owner, employeeId, workDate, dto, dto.note);
+    return this.correctionsService.put(
+      owner,
+      employeeId,
+      workDate,
+      dto,
+      dto.note,
+    );
   }
 
   @Delete('corrections/:employeeId/:workDate')
@@ -83,7 +89,8 @@ export class CorrectionsController {
   })
   @ApiResponse({
     status: 422,
-    description: 'ATTENDANCE_DATE_NOT_TRACKED (a non-tracked date has nothing to remove)',
+    description:
+      'ATTENDANCE_DATE_NOT_TRACKED (a non-tracked date has nothing to remove)',
   })
   removeCorrection(
     @CurrentUser() owner: RequestUser,
@@ -122,7 +129,10 @@ export class CorrectionsController {
     summary:
       'AD-10 acknowledge the fake-location attempts on an employee-date — clears the day marker; the attempt rows are kept',
   })
-  @ApiResponse({ status: 200, description: '{ acknowledgedCount } (200 even at 0)' })
+  @ApiResponse({
+    status: 200,
+    description: '{ acknowledgedCount } (200 even at 0)',
+  })
   @ApiResponse({
     status: 404,
     description: 'ATTENDANCE_EMPLOYEE_NOT_FOUND — employee outside this tenant',

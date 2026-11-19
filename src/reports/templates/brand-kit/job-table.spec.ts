@@ -1,4 +1,10 @@
-import { brand, statusColors, statusTints, TABLE, FONT_FAMILY } from './brand-theme';
+import {
+  brand,
+  statusColors,
+  statusTints,
+  TABLE,
+  FONT_FAMILY,
+} from './brand-theme';
 import { FONT_SEMIBOLD } from './brand-assets';
 import { jobsTable, JobTableRow } from './job-table';
 
@@ -18,9 +24,11 @@ interface FlatCell {
 }
 
 function cellsOf(node: ReturnType<typeof jobsTable>) {
-  const table = (node as unknown as {
-    table: { headerRows: number; widths: unknown[]; body: FlatCell[][] };
-  }).table;
+  const table = (
+    node as unknown as {
+      table: { headerRows: number; widths: unknown[]; body: FlatCell[][] };
+    }
+  ).table;
   return table;
 }
 
@@ -115,7 +123,12 @@ describe('jobsTable — body rows', () => {
   });
 
   it('renders zero proofs as an em dash, real counts as the number', () => {
-    const table = cellsOf(jobsTable([{ ...row, proofs: 0 }, { ...row, proofs: 3 }]));
+    const table = cellsOf(
+      jobsTable([
+        { ...row, proofs: 0 },
+        { ...row, proofs: 3 },
+      ]),
+    );
 
     expect(table.body[1][6].text).toBe('—');
     expect(table.body[2][6].text).toBe('3');
@@ -138,13 +151,15 @@ describe('jobsTable — body rows', () => {
 
 describe('jobsTable — layout', () => {
   it('uses the single-stripe system: the only rule is under the header row', () => {
-    const layout = (jobsTable([row]) as unknown as {
-      layout: {
-        hLineWidth(i: number): number;
-        vLineWidth(i: number): number;
-        hLineColor(i: number): string;
-      };
-    }).layout;
+    const layout = (
+      jobsTable([row]) as unknown as {
+        layout: {
+          hLineWidth(i: number): number;
+          vLineWidth(i: number): number;
+          hLineColor(i: number): string;
+        };
+      }
+    ).layout;
 
     expect(layout.hLineWidth(0)).toBe(0);
     expect(layout.hLineWidth(1)).toBe(TABLE.borderWidth);

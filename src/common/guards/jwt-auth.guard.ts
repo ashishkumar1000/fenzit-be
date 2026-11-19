@@ -105,7 +105,10 @@ export class JwtAuthGuard implements CanActivate {
     try {
       access = await this.membershipResolver.resolve(payload.sub);
     } catch {
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Could not check your access' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Could not check your access',
+      });
     }
 
     // Unknown or disabled: the same generic 401 as a bad token, so the
@@ -148,7 +151,10 @@ export class JwtAuthGuard implements CanActivate {
     if (!value) {
       return null;
     }
-    if (!UUID_RE.test(value) || !(await this.membershipResolver.companyExists(value))) {
+    if (
+      !UUID_RE.test(value) ||
+      !(await this.membershipResolver.companyExists(value))
+    ) {
       throw new NotFoundException({
         error_code: ErrorCode.RESOURCE_NOT_FOUND,
         message: 'Company not found',

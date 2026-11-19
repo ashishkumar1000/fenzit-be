@@ -99,10 +99,13 @@ describe('weekly-off routes: override DELETE and bad input (real DB)', () => {
       expect(r.statusCode).toBe(403);
     });
 
-    maybeIt('company admin: nothing to remove is an idempotent 200', async () => {
-      const r = await del(owner());
-      expect(r.statusCode).toBe(200);
-    });
+    maybeIt(
+      'company admin: nothing to remove is an idempotent 200',
+      async () => {
+        const r = await del(owner());
+        expect(r.statusCode).toBe(200);
+      },
+    );
 
     maybeIt(
       'company admin: removes that employee override only; a colleague is untouched',
@@ -122,10 +125,7 @@ describe('weekly-off routes: override DELETE and bad input (real DB)', () => {
       'cross-tenant: another company admin gets 404 and the row is intact',
       async () => {
         await seedOverride(crew.staff[0], [6]);
-        const r = await del(
-          bearerFor(jwt, other, other.owner),
-          crew.staff[0],
-        );
+        const r = await del(bearerFor(jwt, other, other.owner), crew.staff[0]);
         expect(r.statusCode).toBe(404);
         expect(await overrideSpans(pool, crew.staff[0], T)).toEqual([
           [0, null, [6]],
@@ -133,10 +133,13 @@ describe('weekly-off routes: override DELETE and bad input (real DB)', () => {
       },
     );
 
-    maybeIt('company admin: a malformed employee id is 400, not a crash', async () => {
-      const r = await del(owner(), 'not-a-uuid');
-      expect(r.statusCode).toBe(400);
-    });
+    maybeIt(
+      'company admin: a malformed employee id is 400, not a crash',
+      async () => {
+        const r = await del(owner(), 'not-a-uuid');
+        expect(r.statusCode).toBe(400);
+      },
+    );
   });
 
   describe('PUT /attendance/weekly-offs rejects malformed input', () => {

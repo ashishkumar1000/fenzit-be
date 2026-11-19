@@ -116,9 +116,7 @@ export class MonthlyService {
     return this.pg.withTransaction(async (tx) => {
       const today = await tenantToday(tx, tenantId);
       if (to > today) {
-        throw monthlyRangeError(
-          'The end date cannot be after today',
-        );
+        throw monthlyRangeError('The end date cannot be after today');
       }
       const metas = await this.readEmployeeMetas(
         tx,
@@ -132,13 +130,7 @@ export class MonthlyService {
       if (employeeIds.length === 0) {
         return { from, to, today, employees: [] };
       }
-      const rows = await readDayStatusGrid(
-        tx,
-        tenantId,
-        employeeIds,
-        from,
-        to,
-      );
+      const rows = await readDayStatusGrid(tx, tenantId, employeeIds, from, to);
       const byEmployee = new Map<string, DayGridRow[]>();
       for (const row of rows) {
         const list = byEmployee.get(row.employeeId) ?? [];
@@ -155,9 +147,7 @@ export class MonthlyService {
         avatarUrl: avatarUrlFor(avatarUrls, meta.avatar_key),
         officeId: meta.office_id,
         officeName: meta.office_name,
-        summary: summariseEmployeeMonth(
-          byEmployee.get(meta.employee_id) ?? [],
-        ),
+        summary: summariseEmployeeMonth(byEmployee.get(meta.employee_id) ?? []),
       }));
       // Roster order: alphabetically by resolved name (deterministic; the
       // FE sorts locally if it wants another shape).
@@ -180,7 +170,11 @@ export class MonthlyService {
    * me-route precedent), the same summary shape, plus the today-effective
    * weekly-off weekdays and the tenant's next 10 upcoming holidays.
    */
-  forMe(user: RequestUser, from: string, to: string): Promise<MeMonthlyResponse> {
+  forMe(
+    user: RequestUser,
+    from: string,
+    to: string,
+  ): Promise<MeMonthlyResponse> {
     const tenantId = requireTenant(user);
     assertMonthlyRange(from, to);
     return this.pg.withTransaction(async (tx) => {
@@ -192,9 +186,20 @@ export class MonthlyService {
       if (to > today) {
         throw monthlyRangeError('The end date cannot be after today');
       }
-      const rows = await readDayStatusGrid(tx, tenantId, [user.userId], from, to);
+      const rows = await readDayStatusGrid(
+        tx,
+        tenantId,
+        [user.userId],
+        from,
+        to,
+      );
       const summary = summariseEmployeeMonth(rows);
-      const weeklyOffs = await this.readWeeklyOffDays(tx, tenantId, user.userId, today);
+      const weeklyOffs = await this.readWeeklyOffDays(
+        tx,
+        tenantId,
+        user.userId,
+        today,
+      );
       const upcomingHolidays = await this.readUpcomingHolidays(
         tx,
         tenantId,

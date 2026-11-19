@@ -26,6 +26,9 @@ export function getCorrelationContext(): CorrelationContext | null {
  * Prefer run() over enterWith() — enterWith leaks the context past its
  * boundary (Node async_context docs).
  */
-export function runWithCorrelation<T>(context: CorrelationContext, fn: () => T): T {
+export function runWithCorrelation<T>(
+  context: CorrelationContext,
+  fn: () => T,
+): T {
   return correlationStore.run(context, fn);
 }

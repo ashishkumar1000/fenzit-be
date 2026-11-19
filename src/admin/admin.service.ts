@@ -40,7 +40,8 @@ export function splitDialCode(
     .sort((a, b) => b.length - a.length);
   for (const code of candidates) {
     const rest = digits.slice(code.length);
-    if (/^\d{4,14}$/.test(rest)) return { countryCode: `+${code}`, phoneNumber: rest };
+    if (/^\d{4,14}$/.test(rest))
+      return { countryCode: `+${code}`, phoneNumber: rest };
   }
   return null;
 }
@@ -55,8 +56,10 @@ export function parsePhone(
 ): { countryCode: string; phoneNumber: string } | null {
   const digits = input.replace(/[\s().-]/g, '');
   if (digits.startsWith('+')) return splitDialCode(digits.slice(1), dialCodes);
-  if (/^\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits };
-  if (/^91\d{10}$/.test(digits)) return { countryCode: '+91', phoneNumber: digits.slice(2) };
+  if (/^\d{10}$/.test(digits))
+    return { countryCode: '+91', phoneNumber: digits };
+  if (/^91\d{10}$/.test(digits))
+    return { countryCode: '+91', phoneNumber: digits.slice(2) };
   return null;
 }
 
@@ -80,10 +83,13 @@ export class AdminService {
     if (!phone) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
-        message: 'Enter the full phone number, including the country code (for example +91 98765 43210)',
+        message:
+          'Enter the full phone number, including the country code (for example +91 98765 43210)',
       });
     }
-    const found = await this.pg.withTransaction((tx) => findUserByPhone(tx, phone));
+    const found = await this.pg.withTransaction((tx) =>
+      findUserByPhone(tx, phone),
+    );
     if (!found) {
       throw new NotFoundException({
         error_code: ErrorCode.RESOURCE_NOT_FOUND,
@@ -110,7 +116,8 @@ export class AdminService {
     if (userId.toLowerCase() === caller.userId.toLowerCase()) {
       throw new ConflictException({
         error_code: ErrorCode.PLATFORM_ADMIN_SELF,
-        message: 'You cannot change your own platform-admin flag here — ask another platform admin',
+        message:
+          'You cannot change your own platform-admin flag here — ask another platform admin',
       });
     }
     // Guarded UPDATE: the `neq` predicate makes the write a no-op when the
@@ -177,7 +184,9 @@ export class AdminService {
       [userId],
     );
     const r = rows[0] as Record<string, unknown> | undefined;
-    return r ? { tenantId: String(r.tenant_id), companyName: String(r.company_name) } : null;
+    return r
+      ? { tenantId: String(r.tenant_id), companyName: String(r.company_name) }
+      : null;
   }
 
   /** Login-identity facts from auth. Nulls when the auth schema is not
@@ -189,7 +198,8 @@ export class AdminService {
       const { data, error } = await this.supabaseFactory
         .createAdmin()
         .auth.admin.getUserById(userId);
-      if (error || !data?.user) return { lastSignInAt: null, authCreatedAt: null };
+      if (error || !data?.user)
+        return { lastSignInAt: null, authCreatedAt: null };
       return {
         lastSignInAt: data.user.last_sign_in_at ?? null,
         authCreatedAt: data.user.created_at ?? null,

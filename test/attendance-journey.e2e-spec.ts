@@ -49,7 +49,10 @@ const TZ = 'Asia/Kolkata';
 const OFF = '+05:30';
 
 /** Unwrap a MUST-succeed supabase call. */
-function must<T>(res: { data: T | null; error: { message: string } | null }): T {
+function must<T>(res: {
+  data: T | null;
+  error: { message: string } | null;
+}): T {
   if (res.error) throw new Error(`fixture failed: ${res.error.message}`);
   return res.data as T;
 }
@@ -153,207 +156,218 @@ describe('Attendance journey (real DB, real routes)', () => {
     await pool.end();
   });
 
-  maybeIt('19-4 — the owner reads the dashboard; an office filter narrows tiles AND flags, the registry never', async () => {
-    const today = await scalarDate(0);
-    const d1 = await scalarDate(-1);
+  maybeIt(
+    '19-4 — the owner reads the dashboard; an office filter narrows tiles AND flags, the registry never',
+    async () => {
+      const today = await scalarDate(0);
+      const d1 = await scalarDate(-1);
 
-    // Two live offices — the filtered steps below can only prove the
-    // registry's full scope if narrowing the tiles leaves BOTH rows.
-    const north = must(
-      await admin
-        .from('attendance_offices')
-        .insert({
-          tenant_id: tenant,
-          name: 'journey north',
-          latitude: 12.97,
-          longitude: 77.59,
-          radius_m: 100,
-        })
-        .select('id')
-        .single(),
-    ).id;
-    const south = must(
-      await admin
-        .from('attendance_offices')
-        .insert({
-          tenant_id: tenant,
-          name: 'journey south',
-          latitude: 12.98,
-          longitude: 77.6,
-          radius_m: 100,
-        })
-        .select('id')
-        .single(),
-    ).id;
-    const ruleNorth = await seedRule(north);
-    const ruleSouth = await seedRule(south);
+      // Two live offices — the filtered steps below can only prove the
+      // registry's full scope if narrowing the tiles leaves BOTH rows.
+      const north = must(
+        await admin
+          .from('attendance_offices')
+          .insert({
+            tenant_id: tenant,
+            name: 'journey north',
+            latitude: 12.97,
+            longitude: 77.59,
+            radius_m: 100,
+          })
+          .select('id')
+          .single(),
+      ).id;
+      const south = must(
+        await admin
+          .from('attendance_offices')
+          .insert({
+            tenant_id: tenant,
+            name: 'journey south',
+            latitude: 12.98,
+            longitude: 77.6,
+            radius_m: 100,
+          })
+          .select('id')
+          .single(),
+      ).id;
+      const ruleNorth = await seedRule(north);
+      const ruleSouth = await seedRule(south);
 
-    // Enrolment ∩ assignment per tech, one leg per office, inside ONE
-    // transaction (the coverage guard is DEFERRABLE — fires at COMMIT).
-    const legs = await pool.connect();
-    try {
-      await legs.query('begin');
-      const pairs: [string, string][] = [
-        [techs[0], north],
-        [techs[1], south],
-      ];
-      for (const [tech, office] of pairs) {
-        await legs.query(
-          `insert into public.attendance_enrolments
+      // Enrolment ∩ assignment per tech, one leg per office, inside ONE
+      // transaction (the coverage guard is DEFERRABLE — fires at COMMIT).
+      const legs = await pool.connect();
+      try {
+        await legs.query('begin');
+        const pairs: [string, string][] = [
+          [techs[0], north],
+          [techs[1], south],
+        ];
+        for (const [tech, office] of pairs) {
+          await legs.query(
+            `insert into public.attendance_enrolments
              (tenant_id, employee_id, valid, enabled_at)
            values ($1, $2, daterange(current_date - 60, null, '[)'), now() - interval '60 days')`,
-          [tenant, tech],
-        );
-        await legs.query(
-          `insert into public.attendance_office_assignments
+            [tenant, tech],
+          );
+          await legs.query(
+            `insert into public.attendance_office_assignments
              (tenant_id, employee_id, office_id, valid)
            values ($1, $2, $3, daterange(current_date - 60, null, '[)'))`,
-          [tenant, tech, office],
-        );
+            [tenant, tech, office],
+          );
+        }
+        await legs.query('commit');
+      } finally {
+        legs.release();
       }
-      await legs.query('commit');
-    } finally {
-      legs.release();
-    }
 
-    // TECH 1 is in_progress today; TECH 2 left a resolution-less past day.
-    await seedInOut(techs[0], today, north, ruleNorth, '09:40', null);
-    await seedInOut(techs[1], d1, south, ruleSouth, '09:40', null);
+      // TECH 1 is in_progress today; TECH 2 left a resolution-less past day.
+      await seedInOut(techs[0], today, north, ruleNorth, '09:40', null);
+      await seedInOut(techs[1], d1, south, ruleSouth, '09:40', null);
 
-    // REFEREE — the DB facts every API answer below must agree with: each
-    // live office carries exactly one covering assignment today. Order-
-    // independent compare — the SQL sorts by office_id, and the offices'
-    // server-generated UUIDs do not sort in insertion order (the pin was
-    // a run-order flake).
-    const covering = await pool.query<{ office_id: string; cnt: string }>(
-      `select office_id, count(*)::text as cnt
+      // REFEREE — the DB facts every API answer below must agree with: each
+      // live office carries exactly one covering assignment today. Order-
+      // independent compare — the SQL sorts by office_id, and the offices'
+      // server-generated UUIDs do not sort in insertion order (the pin was
+      // a run-order flake).
+      const covering = await pool.query<{ office_id: string; cnt: string }>(
+        `select office_id, count(*)::text as cnt
        from public.attendance_office_assignments
        where tenant_id = $1 and valid @> $2::date
        group by office_id order by office_id`,
-      [tenant, today],
-    );
-    expect(new Map(covering.rows.map((r) => [r.office_id, r.cnt]))).toEqual(
-      new Map([
-        [north, '1'],
-        [south, '1'],
-      ]),
-    );
+        [tenant, today],
+      );
+      expect(new Map(covering.rows.map((r) => [r.office_id, r.cnt]))).toEqual(
+        new Map([
+          [north, '1'],
+          [south, '1'],
+        ]),
+      );
 
-    // STEP 1 — owner dashboard, unfiltered: both techs tracked, tech 1's
-    // in_progress leg checked in, BOTH offices their own truth.
-    let res = await app.inject({
-      method: 'GET',
-      url: '/api/v1/attendance/dashboard',
-      headers: { authorization: `Bearer ${bearerFor(owner)}` },
-    });
-    expect(res.statusCode).toBe(200);
-    const unfiltered = JSON.parse(res.body);
-    expect(unfiltered.counts).toEqual({
-      tracked: 2,
-      checkedIn: 1,
-      notCheckedIn: 1,
-      late: 0,
-      onLeave: 0,
-      // 20-2: Short day rides the four-bucket partition — zero here (no
-      // rule-7 punch pair in this leg's fixture).
-      shortDay: 0,
-    });
-    expect(unfiltered.offices).toEqual([
-      { id: north, name: 'journey north', tracked: 1, checkedIn: 1 },
-      { id: south, name: 'journey south', tracked: 1, checkedIn: 0 },
-    ]);
-    expect(unfiltered.flags.checkoutMissing).toEqual([
-      {
-        employeeId: techs[1],
-        employeeName: 'journey tech 2',
-        workDate: d1,
-        officeName: 'journey south',
-      },
-    ]);
+      // STEP 1 — owner dashboard, unfiltered: both techs tracked, tech 1's
+      // in_progress leg checked in, BOTH offices their own truth.
+      let res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/attendance/dashboard',
+        headers: { authorization: `Bearer ${bearerFor(owner)}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const unfiltered = JSON.parse(res.body);
+      expect(unfiltered.counts).toEqual({
+        tracked: 2,
+        checkedIn: 1,
+        notCheckedIn: 1,
+        late: 0,
+        onLeave: 0,
+        // 20-2: Short day rides the four-bucket partition — zero here (no
+        // rule-7 punch pair in this leg's fixture).
+        shortDay: 0,
+      });
+      expect(unfiltered.offices).toEqual([
+        { id: north, name: 'journey north', tracked: 1, checkedIn: 1 },
+        { id: south, name: 'journey south', tracked: 1, checkedIn: 0 },
+      ]);
+      expect(unfiltered.flags.checkoutMissing).toEqual([
+        {
+          employeeId: techs[1],
+          employeeName: 'journey tech 2',
+          workDate: d1,
+          officeName: 'journey south',
+        },
+      ]);
 
-    // STEP 2 — the SAME read through the SOUTH filter: tiles narrow to
-    // south, the strip narrows with the tiles' office — and the registry
-    // stays FULL (the picker never inherits the fetch's filter; the
-    // pre-fix BE zeroed BOTH offices on every filtered fetch).
-    res = await app.inject({
-      method: 'GET',
-      url: `/api/v1/attendance/dashboard?officeId=${south}`,
-      headers: { authorization: `Bearer ${bearerFor(owner)}` },
-    });
-    expect(res.statusCode).toBe(200);
-    const filtered = JSON.parse(res.body);
-    expect(filtered.counts).toEqual({
-      tracked: 1,
-      checkedIn: 0,
-      notCheckedIn: 1,
-      late: 0,
-      onLeave: 0,
-      shortDay: 0,
-    });
-    expect(filtered.offices).toEqual(unfiltered.offices);
-    expect(filtered.flags.checkoutMissing).toEqual(
-      unfiltered.flags.checkoutMissing,
-    );
+      // STEP 2 — the SAME read through the SOUTH filter: tiles narrow to
+      // south, the strip narrows with the tiles' office — and the registry
+      // stays FULL (the picker never inherits the fetch's filter; the
+      // pre-fix BE zeroed BOTH offices on every filtered fetch).
+      res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/attendance/dashboard?officeId=${south}`,
+        headers: { authorization: `Bearer ${bearerFor(owner)}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const filtered = JSON.parse(res.body);
+      expect(filtered.counts).toEqual({
+        tracked: 1,
+        checkedIn: 0,
+        notCheckedIn: 1,
+        late: 0,
+        onLeave: 0,
+        shortDay: 0,
+      });
+      expect(filtered.offices).toEqual(unfiltered.offices);
+      expect(filtered.flags.checkoutMissing).toEqual(
+        unfiltered.flags.checkoutMissing,
+      );
 
-    // A NORTH filter drops tech 2's past row out of the strip entirely.
-    res = await app.inject({
-      method: 'GET',
-      url: `/api/v1/attendance/dashboard?officeId=${north}`,
-      headers: { authorization: `Bearer ${bearerFor(owner)}` },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).flags.checkoutMissing).toEqual([]);
-  });
+      // A NORTH filter drops tech 2's past row out of the strip entirely.
+      res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/attendance/dashboard?officeId=${north}`,
+        headers: { authorization: `Bearer ${bearerFor(owner)}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).flags.checkoutMissing).toEqual([]);
+    },
+  );
 
-  maybeIt('19-5 — the owner monthly view echoes the tenant today, and the office filter narrows the rows', async () => {
-    const today = await scalarDate(0);
-    const d1 = await scalarDate(-1);
-    const headers = { authorization: `Bearer ${bearerFor(owner)}` };
+  maybeIt(
+    '19-5 — the owner monthly view echoes the tenant today, and the office filter narrows the rows',
+    async () => {
+      const today = await scalarDate(0);
+      const d1 = await scalarDate(-1);
+      const headers = { authorization: `Bearer ${bearerFor(owner)}` };
 
-    // The two-day window [d1, today] rides the 19-4 leg's fixtures
-    // (enrolments cover 60 days back; tech 2's d1 record has a check-in
-    // and no checkout — his summary must carry it as checkout missing).
-    let res = await app.inject({
-      method: 'GET',
-      url: `/api/v1/attendance/monthly?from=${d1}&to=${today}`,
-      headers,
-    });
-    expect(res.statusCode).toBe(200);
-    const unfiltered = JSON.parse(res.body) as {
-      today: string;
-      employees: Array<{ employeeName: string; summary: { checkoutMissing: number } }>;
-    };
-    // The `today` echo (19-5 D2): the FE clamps its current-month window
-    // against THIS value — the wire truth, never a client clock.
-    expect(unfiltered.today).toBe(today);
-    expect(unfiltered.employees).toHaveLength(2);
-    const tech2 = unfiltered.employees.find(e => e.employeeName === 'journey tech 2');
-    expect(tech2?.summary.checkoutMissing).toBe(1);
+      // The two-day window [d1, today] rides the 19-4 leg's fixtures
+      // (enrolments cover 60 days back; tech 2's d1 record has a check-in
+      // and no checkout — his summary must carry it as checkout missing).
+      let res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/attendance/monthly?from=${d1}&to=${today}`,
+        headers,
+      });
+      expect(res.statusCode).toBe(200);
+      const unfiltered = JSON.parse(res.body) as {
+        today: string;
+        employees: Array<{
+          employeeName: string;
+          summary: { checkoutMissing: number };
+        }>;
+      };
+      // The `today` echo (19-5 D2): the FE clamps its current-month window
+      // against THIS value — the wire truth, never a client clock.
+      expect(unfiltered.today).toBe(today);
+      expect(unfiltered.employees).toHaveLength(2);
+      const tech2 = unfiltered.employees.find(
+        (e) => e.employeeName === 'journey tech 2',
+      );
+      expect(tech2?.summary.checkoutMissing).toBe(1);
 
-    // The filter intersects with the today-covering assignment office
-    // (BE D6): filtering by tech 1's covering office leaves exactly his
-    // row, echo intact. (The offices live in the 19-4 leg's scope — the
-    // covering assignment is the referee read, not a shared constant.)
-    const tech1Office = (
-      await pool.query<{ office_id: string }>(
-        `select office_id from public.attendance_office_assignments
+      // The filter intersects with the today-covering assignment office
+      // (BE D6): filtering by tech 1's covering office leaves exactly his
+      // row, echo intact. (The offices live in the 19-4 leg's scope — the
+      // covering assignment is the referee read, not a shared constant.)
+      const tech1Office = (
+        await pool.query<{ office_id: string }>(
+          `select office_id from public.attendance_office_assignments
          where tenant_id = $1 and employee_id = $2 and valid @> $3::date
          limit 1`,
-        [tenant, techs[0], today],
-      )
-    ).rows[0].office_id;
-    res = await app.inject({
-      method: 'GET',
-      url: `/api/v1/attendance/monthly?from=${d1}&to=${today}&officeId=${tech1Office}`,
-      headers,
-    });
-    expect(res.statusCode).toBe(200);
-    const filtered = JSON.parse(res.body);
-    expect(filtered.today).toBe(today);
-    expect(filtered.employees.map((e: { employeeName: string }) => e.employeeName)).toEqual([
-      'journey tech 1',
-    ]);
-  });
+          [tenant, techs[0], today],
+        )
+      ).rows[0].office_id;
+      res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/attendance/monthly?from=${d1}&to=${today}&officeId=${tech1Office}`,
+        headers,
+      });
+      expect(res.statusCode).toBe(200);
+      const filtered = JSON.parse(res.body);
+      expect(filtered.today).toBe(today);
+      expect(
+        filtered.employees.map((e: { employeeName: string }) => e.employeeName),
+      ).toEqual(['journey tech 1']);
+    },
+  );
 
   /** An office rule covering every probe date. */
   async function seedRule(officeId: string): Promise<string> {
@@ -406,7 +420,15 @@ describe('Attendance journey (real DB, real routes)', () => {
             checkin_at, checkin_attempt_id, checkin_lat, checkin_lng,
             checkin_accuracy_m, checkin_distance_m, checkin_mocked)
          values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false)`,
-        [tenant, employeeId, date, officeId, ruleId, `${date} ${checkinTime}${OFF}`, attemptIn],
+        [
+          tenant,
+          employeeId,
+          date,
+          officeId,
+          ruleId,
+          `${date} ${checkinTime}${OFF}`,
+          attemptIn,
+        ],
       );
       return;
     }
@@ -435,9 +457,15 @@ describe('Attendance journey (real DB, real routes)', () => {
        values ($1, $2, $3, $4, $5, 100, $6, $7, 12.97, 77.59, 10, 40, false,
                $8, $9, 12.97, 77.59, 10, 40, false)`,
       [
-        tenant, employeeId, date, officeId, ruleId,
-        `${date} ${checkinTime}${OFF}`, attemptIn,
-        `${date} ${checkoutTime}${OFF}`, attemptOut,
+        tenant,
+        employeeId,
+        date,
+        officeId,
+        ruleId,
+        `${date} ${checkinTime}${OFF}`,
+        attemptIn,
+        `${date} ${checkoutTime}${OFF}`,
+        attemptOut,
       ],
     );
   }

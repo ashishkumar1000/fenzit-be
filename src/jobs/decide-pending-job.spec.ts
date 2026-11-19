@@ -31,10 +31,10 @@ function serviceWith(rpcResult: { data: unknown; error: unknown }) {
   const factory = { createAdmin: jest.fn(() => ({ rpc })) };
   const service = new JobsService(factory as never, {} as never, {} as never);
   const refetch = jest
-    .spyOn(service as never as Record<string, unknown>, 'refetchWithEmbeds' as never)
+    .spyOn(service as never, 'refetchWithEmbeds' as never)
     .mockResolvedValue({ id: JOB_ID } as never);
   const toResponse = jest
-    .spyOn(service as never as Record<string, unknown>, 'toResponse' as never)
+    .spyOn(service as never, 'toResponse' as never)
     .mockReturnValue({ id: JOB_ID, status: 'scheduled' } as never);
   return { service, rpc, factory, refetch, toResponse };
 }
@@ -62,7 +62,10 @@ describe('JobsService.decidePendingJob (CAP-5 decisions)', () => {
   it('sends a null reason when none is given (approve, or reject without a reason)', async () => {
     const { service, rpc } = serviceWith({ data: DECISION_ROW, error: null });
     await service.decidePendingJob(owner, JOB_ID, { decision: 'approve' });
-    expect(rpc.mock.calls[0][1]).toMatchObject({ p_decision: 'approve', p_reason: null });
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_decision: 'approve',
+      p_reason: null,
+    });
   });
 
   it('returns the job after the decision, read back with its embeds', async () => {
@@ -70,36 +73,73 @@ describe('JobsService.decidePendingJob (CAP-5 decisions)', () => {
       data: DECISION_ROW,
       error: null,
     });
-    const out = await service.decidePendingJob(owner, JOB_ID, { decision: 'approve' });
-    expect(refetch).toHaveBeenCalledWith(expect.anything(), JOB_ID, 'tenant-A', DECISION_ROW[0]);
+    const out = await service.decidePendingJob(owner, JOB_ID, {
+      decision: 'approve',
+    });
+    expect(refetch).toHaveBeenCalledWith(
+      expect.anything(),
+      JOB_ID,
+      'tenant-A',
+      DECISION_ROW[0],
+    );
     expect(toResponse).toHaveBeenCalled();
     expect(out).toEqual({ id: JOB_ID, status: 'scheduled' });
   });
 
   it('a caller with no company set up is refused before any database call', async () => {
-    const { service, rpc, factory } = serviceWith({ data: DECISION_ROW, error: null });
+    const { service, rpc, factory } = serviceWith({
+      data: DECISION_ROW,
+      error: null,
+    });
     const err = await service
-      .decidePendingJob({ ...owner, tenantId: null } as never, JOB_ID, { decision: 'approve' })
+      .decidePendingJob({ ...owner, tenantId: null }, JOB_ID, {
+        decision: 'approve',
+      })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BadRequestException);
-    expect(bodyOf(err)).toMatchObject({ error_code: ErrorCode.VALIDATION_ERROR });
+    expect(bodyOf(err)).toMatchObject({
+      error_code: ErrorCode.VALIDATION_ERROR,
+    });
     expect(factory.createAdmin).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['already decided (JOB_NOT_PENDING)', { code: 'PT409', hint: ErrorCode.JOB_NOT_PENDING }, ConflictException, ErrorCode.JOB_NOT_PENDING],
-    ['not the owner (PT403)', { code: 'PT403', hint: 'FORBIDDEN' }, ForbiddenException, ErrorCode.FORBIDDEN],
-    ['job not in this company (PT404)', { code: 'PT404', hint: 'RESOURCE_NOT_FOUND' }, NotFoundException, ErrorCode.RESOURCE_NOT_FOUND],
-    ['bad input (PT400)', { code: 'PT400', hint: 'VALIDATION_ERROR' }, BadRequestException, ErrorCode.VALIDATION_ERROR],
-  ])('maps %s to the right status and error code', async (_label, rpcError, expected, code) => {
-    const { service } = serviceWith({ data: null, error: rpcError });
-    const err = await service
-      .decidePendingJob(owner, JOB_ID, { decision: 'approve' })
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(expected);
-    expect(bodyOf(err)).toMatchObject({ error_code: code });
-  });
+    [
+      'already decided (JOB_NOT_PENDING)',
+      { code: 'PT409', hint: ErrorCode.JOB_NOT_PENDING },
+      ConflictException,
+      ErrorCode.JOB_NOT_PENDING,
+    ],
+    [
+      'not the owner (PT403)',
+      { code: 'PT403', hint: 'FORBIDDEN' },
+      ForbiddenException,
+      ErrorCode.FORBIDDEN,
+    ],
+    [
+      'job not in this company (PT404)',
+      { code: 'PT404', hint: 'RESOURCE_NOT_FOUND' },
+      NotFoundException,
+      ErrorCode.RESOURCE_NOT_FOUND,
+    ],
+    [
+      'bad input (PT400)',
+      { code: 'PT400', hint: 'VALIDATION_ERROR' },
+      BadRequestException,
+      ErrorCode.VALIDATION_ERROR,
+    ],
+  ])(
+    'maps %s to the right status and error code',
+    async (_label, rpcError, expected, code) => {
+      const { service } = serviceWith({ data: null, error: rpcError });
+      const err = await service
+        .decidePendingJob(owner, JOB_ID, { decision: 'approve' })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(expected);
+      expect(bodyOf(err)).toMatchObject({ error_code: code });
+    },
+  );
 
   it('a PT409 with some other hint is not a conflict: it is a 500', async () => {
     const { service } = serviceWith({
@@ -114,14 +154,20 @@ describe('JobsService.decidePendingJob (CAP-5 decisions)', () => {
   it('an unexpected database error becomes a 500 that does not leak the raw message', async () => {
     const { service } = serviceWith({
       data: null,
-      error: { code: 'XX000', hint: null, message: 'relation "jobs" secret detail' },
+      error: {
+        code: 'XX000',
+        hint: null,
+        message: 'relation "jobs" secret detail',
+      },
     });
     const err = await service
       .decidePendingJob(owner, JOB_ID, { decision: 'approve' })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InternalServerErrorException);
     expect(JSON.stringify(bodyOf(err))).not.toContain('secret detail');
-    expect(bodyOf(err)).toMatchObject({ error_code: ErrorCode.INTERNAL_SERVER_ERROR });
+    expect(bodyOf(err)).toMatchObject({
+      error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+    });
   });
 
   it('an empty result is a 500, never a silent success', async () => {
@@ -150,12 +196,18 @@ describe('DecidePendingJobDto (request rules)', () => {
   });
 
   it('accepts a reason of exactly 500 characters and refuses 501', async () => {
-    expect(await check({ decision: 'reject', reason: 'x'.repeat(500) })).toHaveLength(0);
-    expect((await check({ decision: 'reject', reason: 'x'.repeat(501) })).length).toBeGreaterThan(0);
+    expect(
+      await check({ decision: 'reject', reason: 'x'.repeat(500) }),
+    ).toHaveLength(0);
+    expect(
+      (await check({ decision: 'reject', reason: 'x'.repeat(501) })).length,
+    ).toBeGreaterThan(0);
   });
 
   it('refuses a reason that is not text', async () => {
-    expect((await check({ decision: 'reject', reason: 42 })).length).toBeGreaterThan(0);
+    expect(
+      (await check({ decision: 'reject', reason: 42 })).length,
+    ).toBeGreaterThan(0);
   });
 
   it('accepts a missing reason (optional, even when rejecting)', async () => {

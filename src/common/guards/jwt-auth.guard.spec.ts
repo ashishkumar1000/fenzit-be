@@ -209,7 +209,12 @@ describe('JwtAuthGuard', () => {
       verifiesAs(loginClaims());
       const { ctx, request, reflector } = makeContext(headers());
       const err = await build(reflector, [
-        { userId: USER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN, disabled: true },
+        {
+          userId: USER_ID,
+          tenantId: TENANT_ID,
+          role: Role.COMPANY_ADMIN,
+          disabled: true,
+        },
       ])
         .canActivate(ctx)
         .catch((e) => e);
@@ -233,7 +238,11 @@ describe('JwtAuthGuard', () => {
     it('populates request.user from the active membership, not the claims', async () => {
       // Stale / forged claims must be ignored: only the database counts.
       verifiesAs(
-        loginClaims({ role: 'owner', tenantId: OTHER_TENANT, platformAdmin: true }),
+        loginClaims({
+          role: 'owner',
+          tenantId: OTHER_TENANT,
+          platformAdmin: true,
+        }),
       );
       const { ctx, request, reflector } = makeContext(
         headers({ 'x-company-id': OTHER_TENANT }),

@@ -55,7 +55,10 @@ function parseStep(raw: unknown): TemplateStep | null {
   }
 
   let requiresLocation = true;
-  if (raw['requires_location'] !== undefined && raw['requires_location'] !== null) {
+  if (
+    raw['requires_location'] !== undefined &&
+    raw['requires_location'] !== null
+  ) {
     if (typeof raw['requires_location'] !== 'boolean') {
       return null;
     }

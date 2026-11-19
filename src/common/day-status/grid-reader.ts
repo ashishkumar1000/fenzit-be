@@ -1,20 +1,13 @@
 import { InternalServerErrorException, Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { ErrorCode } from '../enums/error-code.enum';
-import type {
-  OfficeRuleRow,
-  WeeklyOffRow,
-} from './office-rules';
+import type { OfficeRuleRow, WeeklyOffRow } from './office-rules';
 import {
   parseDateRange,
   pickRuleForDate,
   pickWeeklyOffDays,
 } from './office-rules';
-import type {
-  DayContext,
-  DayFacts,
-  OfficeJoinRow,
-} from './day-context';
+import type { DayContext, DayFacts, OfficeJoinRow } from './day-context';
 import { assembleDayContext } from './day-context';
 
 /**
@@ -171,65 +164,72 @@ export async function readDayStatusGrid(
   to: string,
 ): Promise<DayGridRow[]> {
   const today = await resolveTenantToday(tx, tenantId);
-  const [timezone, settings, enrolments, assignments, woOverrides, woDefaults, holidays] =
-    await Promise.all([
-      tx
-        .query<{ timezone: string }>(
-          'select timezone from public.tenants where id = $1::uuid',
-          [tenantId],
-        )
-        .then((r) => r.rows[0]?.timezone ?? null),
-      tx
-        .query<{ enabled: boolean; setup_completed_at: Date | string | null }>(
-          `select enabled, setup_completed_at from public.attendance_settings
+  const [
+    timezone,
+    settings,
+    enrolments,
+    assignments,
+    woOverrides,
+    woDefaults,
+    holidays,
+  ] = await Promise.all([
+    tx
+      .query<{ timezone: string }>(
+        'select timezone from public.tenants where id = $1::uuid',
+        [tenantId],
+      )
+      .then((r) => r.rows[0]?.timezone ?? null),
+    tx
+      .query<{ enabled: boolean; setup_completed_at: Date | string | null }>(
+        `select enabled, setup_completed_at from public.attendance_settings
            where tenant_id = $1::uuid`,
-          [tenantId],
-        )
-        .then((r) => r.rows[0] ?? null),
-      tx
-        .query<EnrolmentFactRow>(
-          `select employee_id, valid::text, enabled_at
+        [tenantId],
+      )
+      .then((r) => r.rows[0] ?? null),
+    tx
+      .query<EnrolmentFactRow>(
+        `select employee_id, valid::text, enabled_at
            from public.attendance_enrolments
            where tenant_id = $1::uuid
              and employee_id = any($2::uuid[]) and valid && $3::daterange`,
-          [tenantId, employeeIds, `[${from},${to}]`],
-        )
-        .then((r) => r.rows),
-      tx
-        .query<AssignmentRow>(
-          `select a.employee_id, a.office_id, a.valid::text, o.name as office_name,
+        [tenantId, employeeIds, `[${from},${to}]`],
+      )
+      .then((r) => r.rows),
+    tx
+      .query<AssignmentRow>(
+        `select a.employee_id, a.office_id, a.valid::text, o.name as office_name,
                   o.latitude as office_lat, o.longitude as office_lng, o.radius_m
            from public.attendance_office_assignments a
            join public.attendance_offices o on o.id = a.office_id
            where a.tenant_id = $1::uuid
              and a.employee_id = any($2::uuid[]) and a.valid && $3::daterange`,
-          [tenantId, employeeIds, `[${from},${to}]`],
-        )
-        .then((r) => r.rows),
-      tx
-        .query<WeeklyOffRow & { employee_id: string }>(
-          `select employee_id, valid::text, days
+        [tenantId, employeeIds, `[${from},${to}]`],
+      )
+      .then((r) => r.rows),
+    tx
+      .query<WeeklyOffRow & { employee_id: string }>(
+        `select employee_id, valid::text, days
            from public.attendance_weekly_off_overrides
            where tenant_id = $1::uuid
              and employee_id = any($2::uuid[]) and valid && $3::daterange`,
-          [tenantId, employeeIds, `[${from},${to}]`],
-        )
-        .then((r) => r.rows),
-      tx
-        .query<WeeklyOffRow>(
-          `select valid::text, days from public.attendance_weekly_off_defaults
+        [tenantId, employeeIds, `[${from},${to}]`],
+      )
+      .then((r) => r.rows),
+    tx
+      .query<WeeklyOffRow>(
+        `select valid::text, days from public.attendance_weekly_off_defaults
            where tenant_id = $1::uuid and valid && $2::daterange`,
-          [tenantId, `[${from},${to}]`],
-        )
-        .then((r) => r.rows),
-      tx
-        .query<{ id: string; name: string; holiday_date: string }>(
-          `select id, name, holiday_date::text from public.holidays
+        [tenantId, `[${from},${to}]`],
+      )
+      .then((r) => r.rows),
+    tx
+      .query<{ id: string; name: string; holiday_date: string }>(
+        `select id, name, holiday_date::text from public.holidays
            where tenant_id = $1::uuid and holiday_date between $2::date and $3::date`,
-          [tenantId, from, to],
-        )
-        .then((r) => r.rows),
-    ]);
+        [tenantId, from, to],
+      )
+      .then((r) => r.rows),
+  ]);
   if (!timezone) {
     logger.error('Tenant timezone missing', { tenantId });
     throw internalError('Failed to resolve day-status facts');
@@ -363,7 +363,9 @@ export async function readDayStatusGrid(
         setupCompleted: settings?.setup_completed_at != null,
         enabled: settings?.enabled === true,
         enabledAt: enrolment ? new Date(enrolment.enabled_at) : null,
-        enrolmentStart: enrolment ? parseDateRange(enrolment.valid).start : null,
+        enrolmentStart: enrolment
+          ? parseDateRange(enrolment.valid).start
+          : null,
         rule: assignment
           ? pickRuleForDate(rulesByOffice.get(assignment.office_id) ?? [], date)
           : null,

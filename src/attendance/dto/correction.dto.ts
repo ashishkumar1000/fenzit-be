@@ -42,7 +42,10 @@ export class PutCorrectionDto {
       'Check-in instant, ISO-8601 with the tenant offset; anchors the work date exactly (gate 4). XOR with status.',
   })
   @IsOptional()
-  @IsDateString({ strict: true }, { message: 'checkinAt must be an ISO-8601 instant' })
+  @IsDateString(
+    { strict: true },
+    { message: 'checkinAt must be an ISO-8601 instant' },
+  )
   checkinAt?: string;
 
   @ApiPropertyOptional({
@@ -50,7 +53,10 @@ export class PutCorrectionDto {
       'Check-out instant, ISO-8601; falls on the work date (or the next day). Optional with a corrected check-in.',
   })
   @IsOptional()
-  @IsDateString({ strict: true }, { message: 'checkoutAt must be an ISO-8601 instant' })
+  @IsDateString(
+    { strict: true },
+    { message: 'checkoutAt must be an ISO-8601 instant' },
+  )
   checkoutAt?: string;
 
   @ApiProperty({
@@ -64,17 +70,23 @@ export class PutCorrectionDto {
 }
 
 export class AcknowledgeDto {
-  @ApiProperty({ description: 'The employee whose mocked attempts are acknowledged' })
+  @ApiProperty({
+    description: 'The employee whose mocked attempts are acknowledged',
+  })
   @IsUUID('4', { message: 'employeeId must be a UUID v4' })
   employeeId!: string;
 
-  @ApiProperty({ description: 'The attempted_at (tenant-local) date to acknowledge' })
+  @ApiProperty({
+    description: 'The attempted_at (tenant-local) date to acknowledge',
+  })
   @Validate(AttendanceCalendarDateConstraint)
   workDate!: string;
 }
 
 export class DayStatusesQueryDto {
-  @ApiProperty({ description: 'The employee to read (owner route, 404-no-leak)' })
+  @ApiProperty({
+    description: 'The employee to read (owner route, 404-no-leak)',
+  })
   @IsUUID('4', { message: 'employeeId must be a UUID v4' })
   employeeId!: string;
 

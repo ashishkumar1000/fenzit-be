@@ -237,7 +237,7 @@ describe('POST /api/v1/auth/invite/:membershipUserId/resend-sms, sending on (e2e
     expect(response.statusCode).toBe(201);
     // The interceptor saves the body after the handler returns. The save is
     // fire-and-forget, so give it one tick.
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     expect(idemInsert).toHaveBeenCalledWith(
       expect.objectContaining({ response_body: { sms_status: 'sent' } }),
     );

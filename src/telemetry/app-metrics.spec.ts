@@ -128,9 +128,7 @@ describe('initAppMetrics — the reminder-job gauges (NFR-9, 19-1)', () => {
 
   it('a null age observes the run counts but NO age (null stays unobserved)', async () => {
     const { meter, callbacks } = stubMeter();
-    setReminderJobMetricQuery(
-      fakeSeam([{ ...sample, age_seconds: null }]),
-    );
+    setReminderJobMetricQuery(fakeSeam([{ ...sample, age_seconds: null }]));
     initAppMetrics(meter);
 
     const seen = await runBatch(callbacks);

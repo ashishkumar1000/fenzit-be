@@ -87,7 +87,6 @@ export interface MeDayStatusesResponse {
   days: DayStatusRow[];
 }
 
-
 /**
  * Wire mapper for one engine outcome: the ctx labels plus the instants as
  * AD-7 tenant-offset ISO. `checkin`/`checkout` are the day's effective

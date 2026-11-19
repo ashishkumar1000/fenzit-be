@@ -136,9 +136,10 @@ describe('Member Invitation (e2e)', () => {
             select: jest.fn().mockReturnValue({
               eq: jest.fn().mockReturnValue({
                 eq: jest.fn().mockReturnValue({
-                  maybeSingle: jest
-                    .fn()
-                    .mockResolvedValue({ data: { status: 'invited' }, error: null }),
+                  maybeSingle: jest.fn().mockResolvedValue({
+                    data: { status: 'invited' },
+                    error: null,
+                  }),
                 }),
               }),
             }),
@@ -432,9 +433,10 @@ describe('Member Invitation (e2e)', () => {
             select: jest.fn().mockReturnValue({
               eq: jest.fn().mockReturnValue({
                 neq: jest.fn().mockReturnValue({
-                  maybeSingle: jest
-                    .fn()
-                    .mockResolvedValue({ data: invitedMembership, error: null }),
+                  maybeSingle: jest.fn().mockResolvedValue({
+                    data: invitedMembership,
+                    error: null,
+                  }),
                 }),
               }),
             }),
@@ -447,7 +449,10 @@ describe('Member Invitation (e2e)', () => {
         chain.eq = jest.fn().mockReturnValue(chain);
         chain.maybeSingle = jest.fn().mockImplementation(() =>
           Promise.resolve({
-            data: chain.eq.mock.calls.length > 1 ? invitedUser : { platform_admin: false },
+            data:
+              chain.eq.mock.calls.length > 1
+                ? invitedUser
+                : { platform_admin: false },
             error: null,
           }),
         );

@@ -23,7 +23,9 @@ describe('pushCopyForEvent', () => {
     });
 
     it('a known event with an empty payload still returns a non-empty title', () => {
-      expect(pushCopyForEvent(JOB_ASSIGNED_EVENT, {}).title.length).toBeGreaterThan(0);
+      expect(
+        pushCopyForEvent(JOB_ASSIGNED_EVENT, {}).title.length,
+      ).toBeGreaterThan(0);
     });
 
     it('truncates an over-long customer name in the body with an ellipsis', () => {
@@ -81,12 +83,16 @@ describe('pushCopyForEvent', () => {
 
     it('a tenant-defined step key gets the generic plain line, not its raw key', () => {
       expect(
-        pushCopyForEvent('inspect_meter', { ...full, step: 'inspect_meter' }).body,
+        pushCopyForEvent('inspect_meter', { ...full, step: 'inspect_meter' })
+          .body,
       ).toBe('Ravi Kumar updated the job');
     });
 
     it('without a technician name, the sentence still reads naturally', () => {
-      const copy = pushCopyForEvent('on_my_way', { job_number: 'JB-9', step: 'on_my_way' });
+      const copy = pushCopyForEvent('on_my_way', {
+        job_number: 'JB-9',
+        step: 'on_my_way',
+      });
       expect(copy.title).toBe('JB-9');
       expect(copy.body).toBe('The technician is on the way');
     });
@@ -199,7 +205,10 @@ describe('pushCopyForEvent', () => {
 
     it('an unknown type uses the payload title and message when given', () => {
       expect(
-        pushCopyForEvent('future.thing', { title: 'Heads up', message: 'Read me' }),
+        pushCopyForEvent('future.thing', {
+          title: 'Heads up',
+          message: 'Read me',
+        }),
       ).toMatchObject({ title: 'Heads up', body: 'Read me' });
     });
 

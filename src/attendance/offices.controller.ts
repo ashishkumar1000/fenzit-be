@@ -56,25 +56,40 @@ export class OfficesController {
   @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'List offices — each with the rule valid on today and a pending next rule',
+    summary:
+      'List offices — each with the rule valid on today and a pending next rule',
   })
-  @ApiResponse({ status: 200, description: 'Offices with current/next rules (empty list is fine)' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Offices with current/next rules (empty list is fine)',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   listOffices(
     @CurrentUser() user: RequestUser,
     @Query() query: ListOfficesQueryDto,
   ) {
-    return this.officesService.listOffices(user, query.includeArchived === 'true');
+    return this.officesService.listOffices(
+      user,
+      query.includeArchived === 'true',
+    );
   }
 
   @Get(':id')
   @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Office detail — full effective-dated rules history' })
+  @ApiOperation({
+    summary: 'Office detail — full effective-dated rules history',
+  })
   @ApiResponse({ status: 200, description: 'Office with its rules, ascending' })
-  @ApiResponse({ status: 404, description: 'Office not found (or belongs to another tenant)' })
+  @ApiResponse({
+    status: 404,
+    description: 'Office not found (or belongs to another tenant)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   getOffice(@CurrentUser() user: RequestUser, @Param('id') id: string) {
@@ -87,12 +102,21 @@ export class OfficesController {
   @ApiOperation({
     summary: 'Create an office with its initial rule (valid from today)',
   })
-  @ApiResponse({ status: 201, description: 'Office created with its seeded rule' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 201,
+    description: 'Office created with its seeded rule',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 409, description: 'ATTENDANCE_OFFICE_NAME_TAKEN' })
-  @ApiResponse({ status: 422, description: 'Out-of-range values (ValidationPipe or DB CHECK)' })
+  @ApiResponse({
+    status: 422,
+    description: 'Out-of-range values (ValidationPipe or DB CHECK)',
+  })
   createOffice(@CurrentUser() user: RequestUser, @Body() dto: CreateOfficeDto) {
     return this.officesService.createOffice(user, dto);
   }
@@ -104,37 +128,61 @@ export class OfficesController {
     summary:
       'Edit name/pin/radius (immediate) and/or timing/hours rules (effective from tomorrow)',
   })
-  @ApiResponse({ status: 200, description: 'Office updated; response carries the full rules history' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — nothing to update, or partial rules set' })
+  @ApiResponse({
+    status: 200,
+    description: 'Office updated; response carries the full rules history',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — nothing to update, or partial rules set',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'Office not found (or archived)' })
   @ApiResponse({ status: 409, description: 'ATTENDANCE_OFFICE_NAME_TAKEN' })
-  @ApiResponse({ status: 422, description: 'Out-of-range values (ValidationPipe or DB CHECK)' })
+  @ApiResponse({
+    status: 422,
+    description: 'Out-of-range values (ValidationPipe or DB CHECK)',
+  })
   updateOffice(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateOfficeDto,
   ) {
-    return this.officesService.updateOffice(user, this.requireOfficeId(id), dto);
+    return this.officesService.updateOffice(
+      user,
+      this.requireOfficeId(id),
+      dto,
+    );
   }
 
   @Post(':id/archive')
   @Can('attendance.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
-    summary: 'Archive an office (never deleted) — blocked by tracked employees with assignments',
+    summary:
+      'Archive an office (never deleted) — blocked by tracked employees with assignments',
   })
-  @ApiResponse({ status: 204, description: 'Archived (idempotent — already-archived is a no-op)' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 204,
+    description: 'Archived (idempotent — already-archived is a no-op)',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'Office not found' })
   @ApiResponse({
     status: 409,
-    description: 'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED — body carries blockers: [{employeeId, employeeName}]',
+    description:
+      'ATTENDANCE_OFFICE_ARCHIVE_BLOCKED — body carries blockers: [{employeeId, employeeName}]',
   })
-  async archiveOffice(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+  async archiveOffice(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ) {
     await this.officesService.archiveOffice(user, this.requireOfficeId(id));
   }
 
@@ -144,12 +192,21 @@ export class OfficesController {
   @ApiOperation({
     summary: 'Preview: who blocks archiving this office (AD-24)',
   })
-  @ApiResponse({ status: 200, description: '{ officeId, blockers: [...] } — empty list means free to archive' })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ officeId, blockers: [...] } — empty list means free to archive',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'Office not found' })
-  getArchiveBlockers(@CurrentUser() user: RequestUser, @Param('id') id: string) {
-    return this.officesService.getArchiveBlockers(user, this.requireOfficeId(id));
+  getArchiveBlockers(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ) {
+    return this.officesService.getArchiveBlockers(
+      user,
+      this.requireOfficeId(id),
+    );
   }
 }
-

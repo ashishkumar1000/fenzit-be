@@ -205,7 +205,12 @@ export class WorkflowService {
     let accuracyFlagged = false;
 
     if (stepRequiresLocation) {
-      if (dto.latitude === undefined || dto.latitude === null || dto.longitude === undefined || dto.longitude === null) {
+      if (
+        dto.latitude === undefined ||
+        dto.latitude === null ||
+        dto.longitude === undefined ||
+        dto.longitude === null
+      ) {
         locationCaptured = false;
         locationReason = 'Location not provided';
       } else if (hasInvalidCoordinates(dto.latitude, dto.longitude)) {

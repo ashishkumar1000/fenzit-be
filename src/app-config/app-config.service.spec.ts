@@ -44,7 +44,11 @@ describe('AppConfigService', () => {
     expect(channel).toHaveBeenCalledWith('app_config_changes');
     const [event, filter] = builder.on.mock.calls[0];
     expect(event).toBe('postgres_changes');
-    expect(filter).toEqual({ event: '*', schema: 'public', table: 'app_config' });
+    expect(filter).toEqual({
+      event: '*',
+      schema: 'public',
+      table: 'app_config',
+    });
   });
 
   it('returns the flat config map with the newest updated_at as configVersion', async () => {

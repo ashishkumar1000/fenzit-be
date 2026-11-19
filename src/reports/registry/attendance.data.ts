@@ -390,7 +390,11 @@ export async function fetchAttendanceReportData(
   ]);
 
   const employeeIds = enrolledIds.sort();
-  const employeeNames = await fetchEmployeeNames(supabase, ctx.tenantId, employeeIds);
+  const employeeNames = await fetchEmployeeNames(
+    supabase,
+    ctx.tenantId,
+    employeeIds,
+  );
 
   // Oversize guard BEFORE any grid read: the grid enumerates exactly
   // employeeIds × days rows, so this estimate is the real row count.

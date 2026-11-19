@@ -67,7 +67,11 @@ describe('planAd8Change — FR-2 enable / change start date / disable', () => {
   });
 
   it('re-enabling after a closed period keeps the past range untouched (history is read-only)', () => {
-    const plan = planAd8Change([row('past', '[2026-01-01,2026-02-01)')], '2026-09-27', true);
+    const plan = planAd8Change(
+      [row('past', '[2026-01-01,2026-02-01)')],
+      '2026-09-27',
+      true,
+    );
     expect(plan.deleteIds).toEqual([]);
     expect(plan.clipId).toBeNull();
     expect(plan.insertStart).toBe('2026-09-27');
@@ -75,7 +79,11 @@ describe('planAd8Change — FR-2 enable / change start date / disable', () => {
 
   it('a same-day re-edit replaces the open range (no zombie duplicates)', () => {
     // The open range starts exactly on effectiveFrom → deleted, not clipped.
-    const plan = planAd8Change([row('open', '[2026-09-27,)')], '2026-09-27', true);
+    const plan = planAd8Change(
+      [row('open', '[2026-09-27,)')],
+      '2026-09-27',
+      true,
+    );
     expect(plan.deleteIds).toEqual(['open']);
     expect(plan.clipId).toBeNull();
     expect(plan.insertStart).toBe('2026-09-27');
@@ -83,7 +91,11 @@ describe('planAd8Change — FR-2 enable / change start date / disable', () => {
 
   it('moving a future start later clips the covering range at the new date and inserts the new one', () => {
     // Start 1 Nov, owner moves it to 5 Nov: [1 Nov, 5 Nov) + [5 Nov, ∞).
-    const plan = planAd8Change([row('future', '[2026-11-01,)')], '2026-11-05', true);
+    const plan = planAd8Change(
+      [row('future', '[2026-11-01,)')],
+      '2026-11-05',
+      true,
+    );
     expect(plan.deleteIds).toEqual([]);
     expect(plan.clipId).toBe('future');
     expect(plan.clipEnd).toBe('2026-11-05');
@@ -93,14 +105,22 @@ describe('planAd8Change — FR-2 enable / change start date / disable', () => {
   it('moving a future start earlier deletes the stale future range', () => {
     // Start 5 Nov, owner pulls it back to 1 Nov: the [5 Nov, ∞) row starts
     // on/after effectiveFrom → deleted; nothing covers 1 Nov yet.
-    const plan = planAd8Change([row('future', '[2026-11-05,)')], '2026-11-01', true);
+    const plan = planAd8Change(
+      [row('future', '[2026-11-05,)')],
+      '2026-11-01',
+      true,
+    );
     expect(plan.deleteIds).toEqual(['future']);
     expect(plan.clipId).toBeNull();
     expect(plan.insertStart).toBe('2026-11-01');
   });
 
   it('disabling an active employee clips the covering range and inserts nothing', () => {
-    const plan = planAd8Change([row('open', '[2026-09-15,)')], '2026-09-27', false);
+    const plan = planAd8Change(
+      [row('open', '[2026-09-15,)')],
+      '2026-09-27',
+      false,
+    );
     expect(plan.deleteIds).toEqual([]);
     expect(plan.clipId).toBe('open');
     expect(plan.clipEnd).toBe('2026-09-27');
@@ -108,7 +128,11 @@ describe('planAd8Change — FR-2 enable / change start date / disable', () => {
   });
 
   it('cancelling a future start deletes the rows entirely (nothing covers today)', () => {
-    const plan = planAd8Change([row('future', '[2026-11-01,)')], '2026-09-27', false);
+    const plan = planAd8Change(
+      [row('future', '[2026-11-01,)')],
+      '2026-09-27',
+      false,
+    );
     expect(plan.deleteIds).toEqual(['future']);
     expect(plan.clipId).toBeNull();
     expect(plan.insertStart).toBeNull();

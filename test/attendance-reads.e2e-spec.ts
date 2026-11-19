@@ -100,7 +100,15 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
     if (!queue) throw new Error(`unexpected table ${table}`);
     const qb: Record<string, unknown> = {};
     for (const m of [
-      'select', 'eq', 'is', 'order', 'in', 'update', 'upsert', 'maybeSingle', 'single',
+      'select',
+      'eq',
+      'is',
+      'order',
+      'in',
+      'update',
+      'upsert',
+      'maybeSingle',
+      'single',
     ]) {
       qb[m] = jest.fn().mockReturnValue(qb);
     }
@@ -163,9 +171,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
     // facts ride the between spelling.
     if (sql.includes('holiday_date >= $2::date'))
       return {
-        rows: [
-          { holiday_date: '2026-10-02', holiday_name: 'Gandhi Jayanti' },
-        ],
+        rows: [{ holiday_date: '2026-10-02', holiday_name: 'Gandhi Jayanti' }],
       };
     if (sql.includes('from public.holidays')) return { rows: [] };
     if (sql.includes('from public.attendance_office_rules'))
@@ -364,9 +370,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
       expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body).error_code).toBe(
-        'ATTENDANCE_INVALID_RANGE',
-      );
+      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_INVALID_RANGE');
     });
 
     it('422 ATTENDANCE_INVALID_RANGE for a 32-day span (cap 31)', async () => {
@@ -376,9 +380,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
         headers: { authorization: `Bearer ${ownerJwt()}` },
       });
       expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body).error_code).toBe(
-        'ATTENDANCE_INVALID_RANGE',
-      );
+      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_INVALID_RANGE');
     });
 
     it('422 VALIDATION_ERROR for a non-existent calendar date (component round-trip)', async () => {
@@ -475,9 +477,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
         headers: { authorization: `Bearer ${techJwt()}` },
       });
       expect(res.statusCode).toBe(403);
-      expect(JSON.parse(res.body).error_code).toBe(
-        'ATTENDANCE_NOT_TRACKED',
-      );
+      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_NOT_TRACKED');
     });
 
     it('422 ATTENDANCE_INVALID_RANGE when to is after tenant-today', async () => {
@@ -491,9 +491,7 @@ describe('Dashboard + monthly read routes HTTP boundary (e2e, 19-2/19-3)', () =>
         headers: { authorization: `Bearer ${techJwt()}` },
       });
       expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body).error_code).toBe(
-        'ATTENDANCE_INVALID_RANGE',
-      );
+      expect(JSON.parse(res.body).error_code).toBe('ATTENDANCE_INVALID_RANGE');
     });
 
     it('403 on an owner JWT (technician surface)', async () => {

@@ -169,9 +169,12 @@ describe('Msg91SmsDeliveryProvider', () => {
       ok: true,
       status: 200,
       json: async () => {
-        throw Object.assign(new Error('The operation was aborted due to timeout'), {
-          name: 'TimeoutError',
-        });
+        throw Object.assign(
+          new Error('The operation was aborted due to timeout'),
+          {
+            name: 'TimeoutError',
+          },
+        );
       },
     } as unknown as Response);
 

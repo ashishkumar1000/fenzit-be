@@ -85,7 +85,9 @@ describe('SkillsService', () => {
 
       await service.listGlobalSkills(ownerUser);
 
-      expect(select).toHaveBeenCalledWith('id, name, description, icon, is_fallback');
+      expect(select).toHaveBeenCalledWith(
+        'id, name, description, icon, is_fallback',
+      );
       expect(eq).toHaveBeenCalledWith('is_active', true);
       expect(order).toHaveBeenCalledWith('sort_order', { ascending: true });
     });
@@ -129,9 +131,24 @@ describe('SkillsService', () => {
 
     it('should return catalog rows (id/name/description/icon) in query (seed) order', async () => {
       const rows = [
-        { id: 'skill-1', name: 'Plumbing', description: 'Pipe work', icon: 'droplets' },
-        { id: 'skill-2', name: 'Electrical', description: 'Wiring work', icon: 'zap' },
-        { id: 'skill-3', name: 'AC Service', description: 'AC work', icon: 'wind' },
+        {
+          id: 'skill-1',
+          name: 'Plumbing',
+          description: 'Pipe work',
+          icon: 'droplets',
+        },
+        {
+          id: 'skill-2',
+          name: 'Electrical',
+          description: 'Wiring work',
+          icon: 'zap',
+        },
+        {
+          id: 'skill-3',
+          name: 'AC Service',
+          description: 'AC work',
+          icon: 'wind',
+        },
       ];
       const mockClient = {
         from: jest.fn().mockReturnValue({
@@ -147,9 +164,24 @@ describe('SkillsService', () => {
       const result = await service.listGlobalSkills(ownerUser);
 
       expect(result).toEqual([
-        { id: 'skill-1', name: 'Plumbing', description: 'Pipe work', icon: 'droplets' },
-        { id: 'skill-2', name: 'Electrical', description: 'Wiring work', icon: 'zap' },
-        { id: 'skill-3', name: 'AC Service', description: 'AC work', icon: 'wind' },
+        {
+          id: 'skill-1',
+          name: 'Plumbing',
+          description: 'Pipe work',
+          icon: 'droplets',
+        },
+        {
+          id: 'skill-2',
+          name: 'Electrical',
+          description: 'Wiring work',
+          icon: 'zap',
+        },
+        {
+          id: 'skill-3',
+          name: 'AC Service',
+          description: 'AC work',
+          icon: 'wind',
+        },
       ]);
     });
 

@@ -1,4 +1,7 @@
-import { ForbiddenException, InternalServerErrorException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
@@ -7,7 +10,10 @@ import { CAN_KEY } from '../common/decorators/can.decorator';
 import { JobsController } from './jobs.controller';
 import { resolveEmployeeSubmission } from './employee-submission';
 
-type Switches = { can_create_jobs: boolean; job_approval_required: boolean } | null;
+type Switches = {
+  can_create_jobs: boolean;
+  job_approval_required: boolean;
+} | null;
 
 /** A memberships read: select().eq().eq().eq().maybeSingle(), recording every filter. */
 function membershipRead(result: { data: Switches; error: unknown }) {
@@ -21,7 +27,13 @@ function membershipRead(result: { data: Switches; error: unknown }) {
   Object.assign(node, { eq });
   const select = jest.fn(() => node);
   const from = jest.fn(() => ({ select }));
-  return { admin: { from } as unknown as SupabaseClient, from, select, filters, maybeSingle };
+  return {
+    admin: { from } as unknown as SupabaseClient,
+    from,
+    select,
+    filters,
+    maybeSingle,
+  };
 }
 
 const employee: RequestUser = {
@@ -71,7 +83,9 @@ describe('resolveEmployeeSubmission (CAP-2, CAP-3, CAP-4)', () => {
       data: { can_create_jobs: true, job_approval_required: true },
       error: null,
     });
-    expect(await resolveEmployeeSubmission(read.admin, employee, 'emp-1')).toEqual({
+    expect(
+      await resolveEmployeeSubmission(read.admin, employee, 'emp-1'),
+    ).toEqual({
       pendingApproval: true,
     });
   });
@@ -81,7 +95,9 @@ describe('resolveEmployeeSubmission (CAP-2, CAP-3, CAP-4)', () => {
       data: { can_create_jobs: true, job_approval_required: false },
       error: null,
     });
-    expect(await resolveEmployeeSubmission(read.admin, employee, 'emp-1')).toEqual({
+    expect(
+      await resolveEmployeeSubmission(read.admin, employee, 'emp-1'),
+    ).toEqual({
       pendingApproval: false,
     });
   });
@@ -91,13 +107,16 @@ describe('resolveEmployeeSubmission (CAP-2, CAP-3, CAP-4)', () => {
       data: { can_create_jobs: false, job_approval_required: true },
       error: null,
     });
-    const err = await resolveEmployeeSubmission(read.admin, employee, 'emp-1').catch(
-      (e: unknown) => e,
-    );
+    const err = await resolveEmployeeSubmission(
+      read.admin,
+      employee,
+      'emp-1',
+    ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ForbiddenException);
     expect(bodyOf(err)).toEqual({
       error_code: ErrorCode.FORBIDDEN,
-      message: 'You are not allowed to create jobs. Ask your owner to turn this on.',
+      message:
+        'You are not allowed to create jobs. Ask your owner to turn this on.',
     });
   });
 
@@ -113,9 +132,11 @@ describe('resolveEmployeeSubmission (CAP-2, CAP-3, CAP-4)', () => {
       data: { can_create_jobs: true, job_approval_required: false },
       error: null,
     });
-    const err = await resolveEmployeeSubmission(read.admin, employee, 'emp-2').catch(
-      (e: unknown) => e,
-    );
+    const err = await resolveEmployeeSubmission(
+      read.admin,
+      employee,
+      'emp-2',
+    ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ForbiddenException);
     expect(bodyOf(err)).toEqual({
       error_code: ErrorCode.FORBIDDEN,
@@ -135,6 +156,9 @@ describe('resolveEmployeeSubmission (CAP-2, CAP-3, CAP-4)', () => {
 describe('POST /jobs permission (CAP-2)', () => {
   it('both owners (job.write) and employees (job.create_own) may reach it, nobody else by default', () => {
     const handler = JobsController.prototype.createJob;
-    expect(Reflect.getMetadata(CAN_KEY, handler)).toEqual(['job.write', 'job.create_own']);
+    expect(Reflect.getMetadata(CAN_KEY, handler)).toEqual([
+      'job.write',
+      'job.create_own',
+    ]);
   });
 });

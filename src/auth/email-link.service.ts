@@ -95,7 +95,10 @@ export class EmailLinkService {
         });
       }
       // Only the email format rule means "not a valid address". Any other check failure is a server fault.
-      if (code === PG_CHECK_VIOLATION && error.message.includes('users_email_format')) {
+      if (
+        code === PG_CHECK_VIOLATION &&
+        error.message.includes('users_email_format')
+      ) {
         throw new UnprocessableEntityException({
           error_code: ErrorCode.VALIDATION_ERROR,
           message: 'Enter a valid email address.',
@@ -122,7 +125,10 @@ export class EmailLinkService {
         {
           error_code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: 'Too many attempts. Please try again later.',
-          retryAfterSeconds: Math.max(1, Math.ceil((entry.expiresAt - Date.now()) / 1000)),
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil((entry.expiresAt - Date.now()) / 1000),
+          ),
         },
         429,
       );
@@ -133,7 +139,8 @@ export class EmailLinkService {
     const key = this.takenKey(userId);
     const existing = await this.cache.get<TakenEntry>(key);
     // Keep the window's original end, so paced probing cannot extend the pause.
-    const expiresAt = existing?.expiresAt ?? Date.now() + EMAIL_LINK_WINDOW_SECONDS * 1000;
+    const expiresAt =
+      existing?.expiresAt ?? Date.now() + EMAIL_LINK_WINDOW_SECONDS * 1000;
     const next: TakenEntry = { count: (existing?.count ?? 0) + 1, expiresAt };
     await this.cache.set(key, next, Math.max(1, expiresAt - Date.now()));
   }
@@ -143,7 +150,10 @@ export class EmailLinkService {
   }
 
   /** The email itself is never logged: it is personal data. */
-  private serverError(error: unknown, userId: string): InternalServerErrorException {
+  private serverError(
+    error: unknown,
+    userId: string,
+  ): InternalServerErrorException {
     this.logger.error('email link: database call failed', {
       code: (error as { code?: string }).code,
       userId,

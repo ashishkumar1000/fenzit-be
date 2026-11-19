@@ -59,7 +59,11 @@ export class SyncService {
       .eq('tenant_id', user.tenantId)
       .eq('technician_id', user.userId)
       // A job waiting for owner approval is not on the device yet (CAP-4).
-      .not('status', 'in', `(${JobStatus.PENDING_APPROVAL},${JobStatus.REJECTED})`)
+      .not(
+        'status',
+        'in',
+        `(${JobStatus.PENDING_APPROVAL},${JobStatus.REJECTED})`,
+      )
       // Photos hidden after a report stay off the device too.
       .is('attachments.hidden_at', null);
 
@@ -73,7 +77,10 @@ export class SyncService {
 
     if (error) {
       this.logger.error('Delta sync query failed', error);
-      throw new InternalServerErrorException({ error_code: ErrorCode.INTERNAL_SERVER_ERROR, message: 'Sync query failed' });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Sync query failed',
+      });
     }
 
     // Story 4.5 — skill/template embeds map the same way the job responses do

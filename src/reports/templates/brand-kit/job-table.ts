@@ -63,9 +63,8 @@ export function jobsTable(rows: JobTableRow[]): Content {
     // status token from the normalized label. A row without a status never
     // crashes the PDF — it prints as "—" in the plain ink (found live
     // 2026-11-14 when a status outside the report's vocabulary hit here).
-    const statusKey = (row.status ?? '')
-      .toLowerCase()
-      .replace(/ /g, '_') as keyof typeof statusColors | 'unknown';
+    const statusKey = (row.status ?? '').toLowerCase().replace(/ /g, '_') as
+      keyof typeof statusColors | 'unknown';
     const statusColor =
       statusColors[statusKey as keyof typeof statusColors] ?? brand.text;
     const statusTint =

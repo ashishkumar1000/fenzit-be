@@ -1,4 +1,11 @@
-import { ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -25,7 +32,10 @@ import {
   type DayStatusesResponse,
   type MeDayStatusesResponse,
 } from './day-status-response.model';
-import { validateCorrectionValue, type LatestCorrectionView } from './correction.model';
+import {
+  validateCorrectionValue,
+  type LatestCorrectionView,
+} from './correction.model';
 import { toTenantOffsetIso } from './check-in-out.model';
 
 /**
@@ -101,14 +111,23 @@ export class DayStatusesService {
     const range = validateDayStatusRange(from, to);
     if (!range.ok) {
       throw new HttpException(
-        { error_code: ErrorCode.ATTENDANCE_INVALID_RANGE, message: range.message },
+        {
+          error_code: ErrorCode.ATTENDANCE_INVALID_RANGE,
+          message: range.message,
+        },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
     return this.pg.withTransaction(async (tx) => {
       const exists = await employeeExistsInTenant(tx, tenantId, employeeId);
       if (!exists) throw attendanceEmployeeNotFound();
-      const rows = await readDayStatusGrid(tx, tenantId, [employeeId], from, to);
+      const rows = await readDayStatusGrid(
+        tx,
+        tenantId,
+        [employeeId],
+        from,
+        to,
+      );
       return {
         employeeId,
         from,
@@ -129,7 +148,10 @@ export class DayStatusesService {
     const range = validateDayStatusRange(from, to);
     if (!range.ok) {
       throw new HttpException(
-        { error_code: ErrorCode.ATTENDANCE_INVALID_RANGE, message: range.message },
+        {
+          error_code: ErrorCode.ATTENDANCE_INVALID_RANGE,
+          message: range.message,
+        },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
@@ -138,7 +160,13 @@ export class DayStatusesService {
         this.supabaseClientFactory.createAdmin(),
         user.userId,
       );
-      const rows = await readDayStatusGrid(tx, tenantId, [user.userId], from, to);
+      const rows = await readDayStatusGrid(
+        tx,
+        tenantId,
+        [user.userId],
+        from,
+        to,
+      );
       return {
         from,
         to,

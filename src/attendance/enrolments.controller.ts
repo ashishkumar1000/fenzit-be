@@ -17,7 +17,11 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { EnrolmentsService } from './enrolments.service';
-import { EnrolmentQueryDto, ReassignOfficeDto, SetEnrolmentDto } from './dto/enrolment.dto';
+import {
+  EnrolmentQueryDto,
+  ReassignOfficeDto,
+  SetEnrolmentDto,
+} from './dto/enrolment.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { UUID_PATTERN } from '../common/utils/uuid-pattern.util';
@@ -88,7 +92,8 @@ export class EnrolmentsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
+    description:
+      'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
@@ -103,7 +108,8 @@ export class EnrolmentsController {
   })
   @ApiResponse({
     status: 422,
-    description: 'ATTENDANCE_ASSIGNMENT_GAP — coverage invariant rejected at COMMIT',
+    description:
+      'ATTENDANCE_ASSIGNMENT_GAP — coverage invariant rejected at COMMIT',
   })
   setEnrolment(
     @CurrentUser() user: RequestUser,
@@ -130,13 +136,15 @@ export class EnrolmentsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
+    description:
+      'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({
     status: 404,
-    description: 'ATTENDANCE_EMPLOYEE_NOT_FOUND / ATTENDANCE_OFFICE_NOT_FOUND / ATTENDANCE_TENANT_NOT_FOUND',
+    description:
+      'ATTENDANCE_EMPLOYEE_NOT_FOUND / ATTENDANCE_OFFICE_NOT_FOUND / ATTENDANCE_TENANT_NOT_FOUND',
   })
   @ApiResponse({
     status: 409,
@@ -168,11 +176,13 @@ export class EnrolmentsController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Post-disable state (history_only, or none after cancelling a future start)',
+    description:
+      'Post-disable state (history_only, or none after cancelling a future start)',
   })
   @ApiResponse({
     status: 400,
-    description: 'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
+    description:
+      'VALIDATION_ERROR — malformed employee id / no tenant / bad date',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })

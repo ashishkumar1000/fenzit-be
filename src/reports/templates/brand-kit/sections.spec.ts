@@ -51,23 +51,26 @@ describe('sections — empty states (FR18)', () => {
   it.each([
     ['row', emptyStateRow],
     ['block', emptyStateBlock],
-  ])('renders the empty-state %s as a single centered muted cell', (_kind, build) => {
-    const node = build('No jobs in this period.') as {
-      table: { widths: unknown[]; body: Content[][] };
-      layout: TableLayout;
-    };
+  ])(
+    'renders the empty-state %s as a single centered muted cell',
+    (_kind, build) => {
+      const node = build('No jobs in this period.') as {
+        table: { widths: unknown[]; body: Content[][] };
+        layout: TableLayout;
+      };
 
-    expect(node.table.widths).toEqual(['*']);
-    expect(node.table.body).toHaveLength(1);
-    const cell = node.table.body[0][0] as Record<string, unknown>;
-    expect(cell.text).toBe('No jobs in this period.');
-    expect(cell.alignment).toBe('center');
-    expect(cell.color).toBe(brand.textMuted);
-    expect(cell.fillColor).toBe(TABLE.zebraBackground);
-    // Hairline box on every edge — a quiet framed empty state.
-    expect(node.layout.hLineWidth(0)).toBe(0.75);
-    expect(node.layout.vLineWidth(0)).toBe(0.75);
-  });
+      expect(node.table.widths).toEqual(['*']);
+      expect(node.table.body).toHaveLength(1);
+      const cell = node.table.body[0][0] as Record<string, unknown>;
+      expect(cell.text).toBe('No jobs in this period.');
+      expect(cell.alignment).toBe('center');
+      expect(cell.color).toBe(brand.textMuted);
+      expect(cell.fillColor).toBe(TABLE.zebraBackground);
+      // Hairline box on every edge — a quiet framed empty state.
+      expect(node.layout.hLineWidth(0)).toBe(0.75);
+      expect(node.layout.vLineWidth(0)).toBe(0.75);
+    },
+  );
 
   it('differentiates the two variants: the block is larger and padded wider', () => {
     const row = emptyStateRow('x') as { table: { body: Content[][] } };
@@ -137,10 +140,12 @@ describe('sections — flagList', () => {
       expect(short.hLineWidth(i)).toBe(0);
     }
 
-    const long = flagList(Array.from({ length: 6 }, (_, i) => ({
-      title: `Flag ${i + 1}`,
-      detail: 'Detail.',
-    }))).layout as TableLayout;
+    const long = flagList(
+      Array.from({ length: 6 }, (_, i) => ({
+        title: `Flag ${i + 1}`,
+        detail: 'Detail.',
+      })),
+    ).layout as TableLayout;
     expect(long.hLineWidth(0)).toBe(0);
     expect(long.hLineWidth(1)).toBe(0);
     expect(long.hLineWidth(2)).toBe(0.5);

@@ -23,11 +23,7 @@ import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 export type SmsOutcome = 'ok' | 'error' | 'timeout';
 /** FCM per-message outcome — mirrors PushSendError's action kinds. */
 export type PushOutcome =
-  | 'ok'
-  | 'unregistered'
-  | 'invalid'
-  | 'retryable'
-  | 'permanent';
+  'ok' | 'unregistered' | 'invalid' | 'retryable' | 'permanent';
 /** Report render outcome (the pipeline's two terminal states). */
 export type ReportOutcome = 'ok' | 'error';
 
@@ -72,9 +68,7 @@ let registry: DomainMetrics | null = null;
 let poolStatsProvider: (() => DbPoolStats | null) | null = null;
 
 /** Registers the pool snapshot the DB-pool gauges poll at export time. */
-export function setDbPoolStats(
-  provider: () => DbPoolStats | null,
-): void {
+export function setDbPoolStats(provider: () => DbPoolStats | null): void {
   poolStatsProvider = provider;
 }
 

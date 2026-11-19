@@ -55,7 +55,13 @@ function updateChain(result: { data: unknown; error: unknown }) {
   }
   qb.then = jest.fn((resolve: (v: unknown) => unknown) => resolve(result));
   // Named properties (not a spread) so jest's inferred types survive.
-  return { update: qb.update, eq: qb.eq, select: qb.select, then: qb.then, eqs };
+  return {
+    update: qb.update,
+    eq: qb.eq,
+    select: qb.select,
+    then: qb.then,
+    eqs,
+  };
 }
 
 /**
@@ -71,9 +77,9 @@ async function expectErrorCode(
   await expect(promise).rejects.toBeInstanceOf(HttpException);
   await promise.catch((e: HttpException) => {
     expect(e.getStatus()).toBe(status);
-    expect(
-      (e.getResponse() as Record<string, unknown>).error_code,
-    ).toBe(errorCode);
+    expect((e.getResponse() as Record<string, unknown>).error_code).toBe(
+      errorCode,
+    );
   });
 }
 
@@ -244,7 +250,7 @@ describe('AttendanceService — setup routes (story 15-2)', () => {
       // and the post-RPC re-read (row exists → started=true). Once-queued
       // results are consumed in call order — first read null, second sees
       // the row the RPC just inserted.
-      (settingsQb.maybeSingle as jest.Mock)
+      settingsQb.maybeSingle
         .mockResolvedValueOnce({ data: unstartedSettings, error: null })
         .mockResolvedValueOnce({ data: { ...settingsRow }, error: null });
 
@@ -322,9 +328,7 @@ describe('AttendanceService — setup routes (story 15-2)', () => {
       expect(updateQb.update).toHaveBeenCalledWith({
         current_step: NEXT_STEP,
       });
-      expect(updateQb.eqs).toEqual([
-        ['tenant_id', TENANT_ID],
-      ]);
+      expect(updateQb.eqs).toEqual([['tenant_id', TENANT_ID]]);
     });
 
     it('returns 404 ATTENDANCE_SETUP_NOT_STARTED when the update matches no row', async () => {
@@ -408,7 +412,7 @@ describe('AttendanceService — setup routes (story 15-2)', () => {
       // runs) and the post-RPC re-read (completed row → the response). The
       // default chain returns the completed row; queue the un-completed one
       // for the pre-check only.
-      (settingsQb.maybeSingle as jest.Mock).mockResolvedValueOnce({
+      settingsQb.maybeSingle.mockResolvedValueOnce({
         data: { ...settingsRow },
         error: null,
       });
@@ -477,21 +481,33 @@ describe('AttendanceService — setup routes (story 15-2)', () => {
         settings: { data: settingsRow, error: null },
         rpcError: {
           code: 'PT422',
-          message: 'attendance setup could not be completed: no employee is enrolled for today.',
+          message:
+            'attendance setup could not be completed: no employee is enrolled for today.',
           details: 'tenant t has no tracked employee with an office assignment',
           hint: 'ATTENDANCE_SETUP_INCOMPLETE',
         },
       });
       const reason = jest
         .spyOn(setupReason, 'setupIncompleteMessage')
-        .mockResolvedValue('Suresh has not signed in to the app yet. Tracking can start after their first sign-in.');
+        .mockResolvedValue(
+          'Suresh has not signed in to the app yet. Tracking can start after their first sign-in.',
+        );
 
-      const err = await service.completeSetup(ownerUser).catch((e: unknown) => e);
+      const err = await service
+        .completeSetup(ownerUser)
+        .catch((e: unknown) => e);
 
-      expect(reason).toHaveBeenCalledWith(expect.anything(), ownerUser.tenantId, expect.objectContaining({ details: expect.stringContaining('no tracked employee') }));
+      expect(reason).toHaveBeenCalledWith(
+        expect.anything(),
+        ownerUser.tenantId,
+        expect.objectContaining({
+          details: expect.stringContaining('no tracked employee'),
+        }),
+      );
       expect((err as HttpException).getResponse()).toEqual({
         error_code: ErrorCode.ATTENDANCE_SETUP_INCOMPLETE,
-        message: 'Suresh has not signed in to the app yet. Tracking can start after their first sign-in.',
+        message:
+          'Suresh has not signed in to the app yet. Tracking can start after their first sign-in.',
       });
       reason.mockRestore();
     });

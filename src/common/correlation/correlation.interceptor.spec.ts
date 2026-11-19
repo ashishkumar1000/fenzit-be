@@ -1,12 +1,18 @@
 import { ExecutionContext } from '@nestjs/common';
 import { EMPTY, Observable } from 'rxjs';
 import { getCorrelationContext } from './correlation.context';
-import { CorrelationInterceptor, CorrelatedRequest } from './correlation.interceptor';
+import {
+  CorrelationInterceptor,
+  CorrelatedRequest,
+} from './correlation.interceptor';
 
 const CORRELATION = '11111111-2222-4333-8444-555555555555';
 const SESSION = '9abcdef0-1234-4567-8abc-def012345678';
 
-const makeContext = (headers: Record<string, string> = {}, user: unknown = null) => {
+const makeContext = (
+  headers: Record<string, string> = {},
+  user: unknown = null,
+) => {
   const request = {
     method: 'GET',
     url: '/health',
@@ -25,7 +31,8 @@ const makeContext = (headers: Record<string, string> = {}, user: unknown = null)
   return { ctx, request, response };
 };
 
-const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** CallHandler whose observable completes immediately. */
 const EMPTY_STUB = { handle: () => EMPTY };
@@ -42,7 +49,10 @@ describe('CorrelationInterceptor', () => {
 
     expect(request.correlationId).toBe(CORRELATION);
     expect(request.sessionId).toBe(SESSION);
-    expect(response.header).toHaveBeenCalledWith('x-correlation-id', CORRELATION);
+    expect(response.header).toHaveBeenCalledWith(
+      'x-correlation-id',
+      CORRELATION,
+    );
     expect(response.header).toHaveBeenCalledWith('x-session-id', SESSION);
   });
 
@@ -109,8 +119,12 @@ describe('CorrelationInterceptor', () => {
 
   it('warns (without the raw value) when a session header is present but invalid', () => {
     const interceptor = new CorrelationInterceptor();
-    const warnSpy = jest.spyOn(interceptor['logger'], 'warn').mockImplementation();
-    const { ctx, response } = makeContext({ 'x-session-id': 'FAKE-SESSION-INJECT' });
+    const warnSpy = jest
+      .spyOn(interceptor['logger'], 'warn')
+      .mockImplementation();
+    const { ctx, response } = makeContext({
+      'x-session-id': 'FAKE-SESSION-INJECT',
+    });
 
     interceptor.intercept(ctx, EMPTY_STUB).subscribe();
 
@@ -124,7 +138,9 @@ describe('CorrelationInterceptor', () => {
 
   it('does not warn when the session header is simply absent', () => {
     const interceptor = new CorrelationInterceptor();
-    const warnSpy = jest.spyOn(interceptor['logger'], 'warn').mockImplementation();
+    const warnSpy = jest
+      .spyOn(interceptor['logger'], 'warn')
+      .mockImplementation();
     const { ctx } = makeContext();
 
     interceptor.intercept(ctx, EMPTY_STUB).subscribe();

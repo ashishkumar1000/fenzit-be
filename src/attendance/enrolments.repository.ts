@@ -26,13 +26,14 @@ export async function lockTenantShared(
   tx: PoolClient,
   tenantId: string,
 ): Promise<void> {
-  await tx.query('select public.attendance_lock_tenant($1, false)', [
-    tenantId,
-  ]);
+  await tx.query('select public.attendance_lock_tenant($1, false)', [tenantId]);
 }
 
 /** The only source of "today" (AD-7); raises PT404/HINT for unknown tenants. */
-export async function tenantToday(tx: PoolClient, tenantId: string): Promise<string> {
+export async function tenantToday(
+  tx: PoolClient,
+  tenantId: string,
+): Promise<string> {
   const result = await tx.query<{ today: string }>(
     'select public.attendance_today($1)::text as today',
     [tenantId],
@@ -80,7 +81,9 @@ export async function readOffice(
   );
   const office = result.rows[0];
   if (!office) {
-    const err = new Error(`office ${officeId} not found in tenant ${tenantId}`) as PgError;
+    const err = new Error(
+      `office ${officeId} not found in tenant ${tenantId}`,
+    ) as PgError;
     err.code = 'PT404';
     err.hint = 'ATTENDANCE_OFFICE_NOT_FOUND';
     throw err;
@@ -140,10 +143,9 @@ export async function deleteRanges(
   if (ids.length === 0) {
     return;
   }
-  await tx.query(
-    `delete from public.${table} where id = any($1::uuid[])`,
-    [ids],
-  );
+  await tx.query(`delete from public.${table} where id = any($1::uuid[])`, [
+    ids,
+  ]);
 }
 
 export async function clipRangeEnd(
@@ -220,7 +222,10 @@ export async function readAccessState(
   if (!row) {
     // The view is user-keyed over users; a missing row means the view
     // contract broke — fail loud, never return a fabricated state.
-    logger.error('attendance_access_state returned no row', { userId, tenantId });
+    logger.error('attendance_access_state returned no row', {
+      userId,
+      tenantId,
+    });
     throw internalError('Failed to read access state');
   }
   // pg hands timestamptz back as a Date — normalise to ISO-8601 (AD-7) so
@@ -228,7 +233,9 @@ export async function readAccessState(
   return {
     ...row,
     enabled_at: row.enabled_at ? new Date(row.enabled_at).toISOString() : null,
-    onboarded_at: row.onboarded_at ? new Date(row.onboarded_at).toISOString() : null,
+    onboarded_at: row.onboarded_at
+      ? new Date(row.onboarded_at).toISOString()
+      : null,
   };
 }
 

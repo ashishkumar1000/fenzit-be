@@ -11,10 +11,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { ReportQueuePauseDto } from './dto/report-queue-pause.dto';
-import {
-  MAX_PAUSE_MINUTES,
-  ReportQueueService,
-} from './report-queue.service';
+import { MAX_PAUSE_MINUTES, ReportQueueService } from './report-queue.service';
 
 /**
  * The report-queue pause (23-8): the panel state read (getState), the
@@ -81,7 +78,9 @@ describe('ReportQueueService (23-8)', () => {
   }) {
     const rowQb = rowChain(opts.row ?? { data: null, error: null });
     const setQb = pausedSetQb(opts.pausedSet ?? { data: [], error: null });
-    const upsert = jest.fn().mockResolvedValue({ error: opts.upsertError ?? null });
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ error: opts.upsertError ?? null });
     const from = jest.fn((table: string) => {
       if (table !== 'report_queue_pauses') {
         throw new Error(`unexpected table ${table}`);
@@ -370,7 +369,9 @@ describe('ReportQueueService (23-8)', () => {
     it('a failed upsert is a 500 — never a false "paused" answer', async () => {
       mockAdmin({ upsertError: { message: 'db down' } });
 
-      await expect(service.pause(user, 60)).rejects.toBeInstanceOf(HttpException);
+      await expect(service.pause(user, 60)).rejects.toBeInstanceOf(
+        HttpException,
+      );
     });
 
     it('resume upserts paused=false with a cleared end, and answers running with nulls', async () => {

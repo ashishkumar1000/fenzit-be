@@ -23,7 +23,8 @@ export class MonthlyQueryDto {
   to!: string;
 
   @ApiPropertyOptional({
-    description: 'Filter to this office id (today’s covering assignment office)',
+    description:
+      'Filter to this office id (today’s covering assignment office)',
   })
   @IsOptional()
   @IsUUID('all', { message: 'officeId must be a UUID' })

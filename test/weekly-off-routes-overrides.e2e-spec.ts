@@ -116,20 +116,23 @@ describe('weekly-off routes: overrides (real DB, real routes)', () => {
   };
 
   describe('PUT override', () => {
-    maybeIt('company admin happy path: 200, response and DB row agree', async () => {
-      const [a] = crew.staff;
-      const r = await put(a, { days: [6, 7] });
-      expect(r.status).toBe(200);
-      expect(r.body.employeeId).toBe(a);
-      expect(r.body.employeeName).toBe('wo staff 1');
-      expect(r.body.current).toEqual({
-        days: [6, 7],
-        validFrom: T,
-        validTo: null,
-      });
-      expect(r.body.next).toBeNull();
-      expect(await overrideSpans(pool, a, T)).toEqual([[0, null, [6, 7]]]);
-    });
+    maybeIt(
+      'company admin happy path: 200, response and DB row agree',
+      async () => {
+        const [a] = crew.staff;
+        const r = await put(a, { days: [6, 7] });
+        expect(r.status).toBe(200);
+        expect(r.body.employeeId).toBe(a);
+        expect(r.body.employeeName).toBe('wo staff 1');
+        expect(r.body.current).toEqual({
+          days: [6, 7],
+          validFrom: T,
+          validTo: null,
+        });
+        expect(r.body.next).toBeNull();
+        expect(await overrideSpans(pool, a, T)).toEqual([[0, null, [6, 7]]]);
+      },
+    );
 
     maybeIt('empty days = works all 7 days, stored as a real row', async () => {
       const [a] = crew.staff;

@@ -41,8 +41,14 @@ export class AttendanceController {
     summary:
       'Setup wizard resume state — started=false until the wizard is started',
   })
-  @ApiResponse({ status: 200, description: 'Setup state (started may be false)' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Setup state (started may be false)',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   getSetupState(@CurrentUser() user: RequestUser) {
@@ -61,11 +67,17 @@ export class AttendanceController {
     description: 'Wizard started (first time); returns the current state',
   })
   @ApiResponse({ status: 200, description: 'Wizard already under way' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 409, description: 'Setup already completed' })
-  @ApiResponse({ status: 500, description: 'INTERNAL_SERVER_ERROR — start RPC failed' })
+  @ApiResponse({
+    status: 500,
+    description: 'INTERNAL_SERVER_ERROR — start RPC failed',
+  })
   async startSetup(
     @CurrentUser() user: RequestUser,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -85,13 +97,19 @@ export class AttendanceController {
     summary: 'Persist the wizard step the owner is now on (FR-1 progress)',
   })
   @ApiResponse({ status: 200, description: 'Step saved' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'Setup not started' })
   @ApiResponse({ status: 409, description: 'Setup already completed' })
   @ApiResponse({ status: 422, description: 'Unknown step value' })
-  @ApiResponse({ status: 500, description: 'INTERNAL_SERVER_ERROR — step save failed' })
+  @ApiResponse({
+    status: 500,
+    description: 'INTERNAL_SERVER_ERROR — step save failed',
+  })
   saveStep(@CurrentUser() user: RequestUser, @Body() dto: UpdateSetupStepDto) {
     return this.attendanceService.saveStep(user, dto);
   }
@@ -104,16 +122,23 @@ export class AttendanceController {
       'Complete the wizard — needs ≥1 office and ≥1 tracked employee with an office assignment',
   })
   @ApiResponse({ status: 200, description: 'Setup completed (enabled = true)' })
-  @ApiResponse({ status: 400, description: 'VALIDATION_ERROR — owner without a company (no tenantId)' })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
+  })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'Setup not started' })
   @ApiResponse({ status: 409, description: 'Setup already completed' })
   @ApiResponse({
     status: 422,
-    description: 'Gates unmet — no office or no tracked employee with an assignment',
+    description:
+      'Gates unmet — no office or no tracked employee with an assignment',
   })
-  @ApiResponse({ status: 500, description: 'INTERNAL_SERVER_ERROR — completion RPC failed' })
+  @ApiResponse({
+    status: 500,
+    description: 'INTERNAL_SERVER_ERROR — completion RPC failed',
+  })
   completeSetup(@CurrentUser() user: RequestUser) {
     return this.attendanceService.completeSetup(user);
   }

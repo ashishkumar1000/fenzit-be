@@ -49,10 +49,7 @@ export function dataTable(
     const zebra = i % 2 === 1 ? TABLE.zebraBackground : undefined;
     return row.map((value, col) => {
       const colDef = columns[col];
-      const cell =
-        typeof value === 'string'
-          ? { text: value }
-          : value;
+      const cell = typeof value === 'string' ? { text: value } : value;
       return {
         text: cell.text,
         fontSize: cell.fontSize ?? 8.5,

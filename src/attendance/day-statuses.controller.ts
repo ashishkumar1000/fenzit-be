@@ -8,7 +8,10 @@ import {
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { DayStatusesService } from './day-status.read';
-import { DayStatusesQueryDto, MeDayStatusesQueryDto } from './dto/correction.dto';
+import {
+  DayStatusesQueryDto,
+  MeDayStatusesQueryDto,
+} from './dto/correction.dto';
 import { Can } from '../common/decorators/can.decorator';
 
 /**
@@ -35,20 +38,19 @@ export class DayStatusesController {
   })
   @ApiResponse({
     status: 200,
-    description: '{ employeeId, from, to, today, days: DayStatusRow[] } — every date of the range, oldest first; today = the tenant-local date the read ran under',
+    description:
+      '{ employeeId, from, to, today, days: DayStatusRow[] } — every date of the range, oldest first; today = the tenant-local date the read ran under',
   })
   @ApiResponse({
     status: 404,
-    description: 'ATTENDANCE_EMPLOYEE_NOT_FOUND — employee outside this tenant (no existence leak)',
+    description:
+      'ATTENDANCE_EMPLOYEE_NOT_FOUND — employee outside this tenant (no existence leak)',
   })
   @ApiResponse({
     status: 422,
     description: 'ATTENDANCE_INVALID_RANGE (from > to, or span > 62 days)',
   })
-  list(
-    @CurrentUser() owner: RequestUser,
-    @Query() query: DayStatusesQueryDto,
-  ) {
+  list(@CurrentUser() owner: RequestUser, @Query() query: DayStatusesQueryDto) {
     return this.dayStatusesService.listForOwner(
       owner,
       query.employeeId,
@@ -61,7 +63,8 @@ export class DayStatusesController {
   @Can('attendance.own')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'FR-10 my day statuses for a range (identity from the JWT; AD-17 gate: none → 403)',
+    summary:
+      'FR-10 my day statuses for a range (identity from the JWT; AD-17 gate: none → 403)',
   })
   @ApiResponse({
     status: 200,
@@ -69,7 +72,8 @@ export class DayStatusesController {
   })
   @ApiResponse({
     status: 403,
-    description: 'ATTENDANCE_NOT_TRACKED — attendance not active for this employee',
+    description:
+      'ATTENDANCE_NOT_TRACKED — attendance not active for this employee',
   })
   listMine(
     @CurrentUser() user: RequestUser,

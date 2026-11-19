@@ -231,7 +231,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
           { data: page2, error: null, count: 2001 },
           { data: page3, error: null, count: 2001 },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         // 2001 jobs → ceil(2001 / 500) attachment IN-chunks.
         attachments: [
           { data: [], error: null },
@@ -270,7 +275,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [{ data: [], error: null }],
       });
 
@@ -398,7 +408,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 2,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [
           {
             data: [
@@ -434,7 +449,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [{ data: [], error: null }],
       });
 
@@ -460,7 +480,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [
           { data: fullPage, error: null },
           {
@@ -542,7 +567,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [{ data: [], error: null }],
       });
 
@@ -608,7 +638,12 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
             count: 1,
           },
         ],
-        memberships: [{ data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })], error: null }],
+        memberships: [
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-t1' })],
+            error: null,
+          },
+        ],
         attachments: [{ data: null, error: { message: 'boom' } }],
       });
 
@@ -659,7 +694,10 @@ describe('TechnicianJobActivityData — fetchTechnicianJobActivityData (story 12
           },
         ],
         memberships: [
-          { data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-002' })], error: null },
+          {
+            data: [memberRow('t1', { name: 'Ravi', employeeCode: 'EMP-002' })],
+            error: null,
+          },
         ],
         attachments: [{ data: [], error: null }],
       });

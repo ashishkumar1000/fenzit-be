@@ -85,7 +85,11 @@ describe('TechnicianJobActivityMetrics — computeMetrics (story 12-5)', () => {
 
   it('renders an em-dash (never 0%) when no completed job has a scheduled_end', () => {
     const jobs: FetchedJob[] = [
-      job({ id: 'j1', scheduledEnd: null, completedAt: '2026-09-02T04:30:00Z' }),
+      job({
+        id: 'j1',
+        scheduledEnd: null,
+        completedAt: '2026-09-02T04:30:00Z',
+      }),
       job({ id: 'j2', status: 'cancelled' }),
     ];
 
@@ -110,7 +114,11 @@ describe('TechnicianJobActivityMetrics — computeMetrics (story 12-5)', () => {
   it('excludes a completed job with a null completedAt from the on-time numerator only', () => {
     const jobs: FetchedJob[] = [
       // In denominator (has scheduled_end), not in numerator (never finished).
-      job({ id: 'j1', scheduledEnd: '2026-09-02T05:00:00Z', completedAt: null }),
+      job({
+        id: 'j1',
+        scheduledEnd: '2026-09-02T05:00:00Z',
+        completedAt: null,
+      }),
       job({
         id: 'j2',
         scheduledEnd: '2026-09-02T05:00:00Z',

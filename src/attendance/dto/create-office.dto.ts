@@ -48,7 +48,9 @@ export const OFFICE_HOURS_MAX = 99.99;
 export const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export class CreateOfficeDto {
-  @ApiProperty({ description: 'Office name, unique per tenant (case-insensitive); trimmed.' })
+  @ApiProperty({
+    description: 'Office name, unique per tenant (case-insensitive); trimmed.',
+  })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
@@ -91,7 +93,10 @@ export class CreateOfficeDto {
   @Matches(TIME_PATTERN)
   startTime: string;
 
-  @ApiProperty({ description: 'Office end time (HH:mm); must be after start, same day.', example: '18:00' })
+  @ApiProperty({
+    description: 'Office end time (HH:mm); must be after start, same day.',
+    example: '18:00',
+  })
   @Matches(TIME_PATTERN)
   @Validate(OfficeEndTimeAfterStartConstraint)
   endTime: string;

@@ -1289,7 +1289,8 @@ describe('CustomersService', () => {
         name: 'Priya Reddy',
         address: '9 Church Street',
         city: 'Bengaluru',
-        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        formatted_address:
+          '9 Church Street, Bengaluru, Karnataka 560001, India',
         pincode: '560001',
         latitude: 12.9716,
         longitude: 77.5946,
@@ -1374,7 +1375,8 @@ describe('CustomersService', () => {
       });
 
       expect(update).toHaveBeenCalledWith({
-        formatted_address: '9 Church Street, Bengaluru, Karnataka 560001, India',
+        formatted_address:
+          '9 Church Street, Bengaluru, Karnataka 560001, India',
         pincode: '560001',
         latitude: 12.9716,
         longitude: 77.5946,

@@ -100,9 +100,15 @@ describe('PushSweepService', () => {
   let errorSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -158,7 +164,9 @@ describe('PushSweepService', () => {
       const sender = new ScriptedSender();
       await tick(new PushSweepService(pg, sender, config()));
 
-      expect(calls.some((c) => c.sql.includes('unnest($1::uuid[]'))).toBe(false);
+      expect(calls.some((c) => c.sql.includes('unnest($1::uuid[]'))).toBe(
+        false,
+      );
       expect(sender.sendEach).not.toHaveBeenCalled();
     });
 
@@ -264,7 +272,14 @@ describe('PushSweepService', () => {
 
     it('omits the data id when neither job nor entity id exists', async () => {
       const { pg } = fakePg({
-        claim: [row({ job_id: null, entity_id: null, event_type: 'mystery.event', payload: {} })],
+        claim: [
+          row({
+            job_id: null,
+            entity_id: null,
+            event_type: 'mystery.event',
+            payload: {},
+          }),
+        ],
         lookup: [{ user_id: USER_1, tenant_id: TENANT_A, token: 'tok-a' }],
       });
       const sender = new ScriptedSender();
@@ -312,16 +327,17 @@ describe('PushSweepService', () => {
       await tick(new PushSweepService(pg, sender, config()));
 
       expect(sender.sendEach).not.toHaveBeenCalled();
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('skipped 1'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('skipped 1'));
     });
 
     it('never pushes a row to another tenant the same user belongs to', async () => {
       // Same user, two tenants. The tenant guard (SQL) returns the token for
       // (user, TENANT_A) only; a row for TENANT_B must not borrow it.
       const { pg } = fakePg({
-        claim: [row({ id: 'n-a', tenant_id: TENANT_A }), row({ id: 'n-b', tenant_id: TENANT_B })],
+        claim: [
+          row({ id: 'n-a', tenant_id: TENANT_A }),
+          row({ id: 'n-b', tenant_id: TENANT_B }),
+        ],
         lookup: [{ user_id: USER_1, tenant_id: TENANT_A, token: 'tok-a' }],
       });
       const sender = new ScriptedSender();
@@ -334,14 +350,18 @@ describe('PushSweepService', () => {
     it('sends nothing and does not throw for an empty claim', async () => {
       const { pg } = fakePg({ claim: [] });
       const sender = new ScriptedSender();
-      await expect(tick(new PushSweepService(pg, sender, config()))).resolves.toBeUndefined();
+      await expect(
+        tick(new PushSweepService(pg, sender, config())),
+      ).resolves.toBeUndefined();
       expect(sender.sendEach).not.toHaveBeenCalled();
     });
   });
 
   describe('send chunking', () => {
     it('splits 1,100 messages into FCM batches of 500, 500 and 100', async () => {
-      const claim = Array.from({ length: 1100 }, (_, i) => row({ id: `n-${i}` }));
+      const claim = Array.from({ length: 1100 }, (_, i) =>
+        row({ id: `n-${i}` }),
+      );
       const { pg } = fakePg({
         claim,
         lookup: [{ user_id: USER_1, tenant_id: TENANT_A, token: 'tok-a' }],
@@ -379,15 +399,22 @@ describe('PushSweepService', () => {
       const { pg, calls } = oneRowOneToken();
       const sender = new ScriptedSender();
       sender.sendEach.mockImplementationOnce(async (messages) => [
-        outcome(messages[0], 'unregistered', 'messaging/registration-token-not-registered'),
+        outcome(
+          messages[0],
+          'unregistered',
+          'messaging/registration-token-not-registered',
+        ),
       ]);
       const service = new PushSweepService(pg, sender, config());
-      (service as unknown as { retryDelayMs: () => number }).retryDelayMs = () => 0;
+      (service as unknown as { retryDelayMs: () => number }).retryDelayMs =
+        () => 0;
 
       await tick(service);
 
       expect(sender.sendEach).toHaveBeenCalledTimes(1);
-      const del = calls.find((c) => c.sql.includes('delete from public.device_tokens'));
+      const del = calls.find((c) =>
+        c.sql.includes('delete from public.device_tokens'),
+      );
       expect(del?.params).toEqual([['tok-a']]);
     });
 
@@ -401,7 +428,10 @@ describe('PushSweepService', () => {
 
       expect(sender.sendEach).toHaveBeenCalledTimes(1);
       const stamp = calls.find((c) => c.sql.includes('set last_failure'));
-      expect(stamp?.params).toEqual([['tok-a'], ['messaging/invalid-argument']]);
+      expect(stamp?.params).toEqual([
+        ['tok-a'],
+        ['messaging/invalid-argument'],
+      ]);
     });
 
     it('retries a retryable error and succeeds on the second attempt', async () => {
@@ -415,7 +445,8 @@ describe('PushSweepService', () => {
           messages.map((message) => ({ message, error: null })),
         );
       const service = new PushSweepService(pg, sender, config());
-      (service as unknown as { retryDelayMs: () => number }).retryDelayMs = () => 0;
+      (service as unknown as { retryDelayMs: () => number }).retryDelayMs =
+        () => 0;
 
       await tick(service);
 
@@ -432,7 +463,8 @@ describe('PushSweepService', () => {
         outcome(messages[0], 'retryable', 'messaging/quota-exceeded'),
       ]);
       const service = new PushSweepService(pg, sender, config());
-      (service as unknown as { retryDelayMs: () => number }).retryDelayMs = () => 0;
+      (service as unknown as { retryDelayMs: () => number }).retryDelayMs =
+        () => 0;
 
       await tick(service);
 
@@ -449,7 +481,8 @@ describe('PushSweepService', () => {
       const sender = new ScriptedSender();
       sender.sendEach.mockRejectedValue(new Error('ECONNRESET'));
       const service = new PushSweepService(pg, sender, config());
-      (service as unknown as { retryDelayMs: () => number }).retryDelayMs = () => 0;
+      (service as unknown as { retryDelayMs: () => number }).retryDelayMs =
+        () => 0;
 
       await expect(tick(service)).resolves.toBeUndefined();
 
@@ -457,6 +490,5 @@ describe('PushSweepService', () => {
       const stamp = calls.find((c) => c.sql.includes('set last_failure'));
       expect(stamp?.params).toEqual([['tok-a'], ['messaging/transport-error']]);
     });
-
   });
 });

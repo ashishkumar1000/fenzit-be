@@ -176,8 +176,14 @@ export class AuthController {
       'Another user already has this email, or this account already has a different email',
   })
   @ApiResponse({ status: 422, description: 'Email is not a valid address' })
-  @ApiResponse({ status: 429, description: 'Too many "already taken" answers for this account' })
-  @ApiResponse({ status: 404, description: 'The signed-in user row was not found' })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many "already taken" answers for this account',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The signed-in user row was not found',
+  })
   @ApiResponse({ status: 500, description: 'The email could not be saved' })
   async linkEmail(@CurrentUser() user: RequestUser, @Body() dto: LinkEmailDto) {
     return this.emailLinkService.link(user.userId, dto.email);
@@ -228,7 +234,10 @@ export class AuthController {
     status: 200,
     description: 'Company updated — idempotent upsert, tenant already existed',
   })
-  @ApiResponse({ status: 403, description: 'Forbidden — not a company admin or platform admin' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — not a company admin or platform admin',
+  })
   @ApiResponse({
     status: 422,
     description: 'Validation error (invalid GSTIN, missing stateCode)',

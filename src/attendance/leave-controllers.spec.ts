@@ -98,8 +98,17 @@ describe('LeaveController route pins (owner)', () => {
 
 describe('role guard pins (spec §7)', () => {
   it('every me/leave handler needs leave.own (employee-only)', () => {
-    for (const handler of ['previewApply', 'apply', 'list', 'previewCancel', 'cancel']) {
-      const needed = Reflect.getMetadata(CAN_KEY, MeLeaveController.prototype[handler] as object);
+    for (const handler of [
+      'previewApply',
+      'apply',
+      'list',
+      'previewCancel',
+      'cancel',
+    ]) {
+      const needed = Reflect.getMetadata(
+        CAN_KEY,
+        MeLeaveController.prototype[handler] as object,
+      );
       expect(needed).toEqual(['leave.own']);
     }
   });
@@ -117,7 +126,10 @@ describe('role guard pins (spec §7)', () => {
       ['applyOnBehalf', 'leave.create_on_behalf'],
     ];
     for (const [handler, permission] of expected) {
-      const needed = Reflect.getMetadata(CAN_KEY, LeaveController.prototype[handler] as object);
+      const needed = Reflect.getMetadata(
+        CAN_KEY,
+        LeaveController.prototype[handler] as object,
+      );
       expect(needed).toEqual([permission]);
     }
   });

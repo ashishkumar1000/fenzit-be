@@ -35,7 +35,9 @@ describe('LoggingInterceptor', () => {
     const interceptor = new LoggingInterceptor();
     const logSpy = jest.spyOn(interceptor['logger'], 'log');
 
-    const { ctx } = makeContext({ correlationId: '11111111-2222-4333-8444-555555555555' });
+    const { ctx } = makeContext({
+      correlationId: '11111111-2222-4333-8444-555555555555',
+    });
     const next = { handle: () => of('ok') };
 
     interceptor.intercept(ctx, next).subscribe(() => {

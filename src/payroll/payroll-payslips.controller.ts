@@ -43,13 +43,13 @@ export class PayrollPayslipsController {
     summary:
       "One month's payslip snapshots (slip-number order, any month state — pre-lock preview included), each with its PDF request state (status, and a fresh presigned URL when ready)",
   })
-  @ApiResponse({ status: 200, description: 'The month payslips (possibly empty)' })
+  @ApiResponse({
+    status: 200,
+    description: 'The month payslips (possibly empty)',
+  })
   @ApiResponse({ status: 422, description: 'month must be YYYY-MM' })
   @ApiResponse({ status: 403, description: 'Not a company admin' })
-  adminList(
-    @CurrentUser() user: RequestUser,
-    @Query('month') month: string,
-  ) {
+  adminList(@CurrentUser() user: RequestUser, @Query('month') month: string) {
     return this.payslipsService.adminList(user, month);
   }
 
@@ -58,7 +58,7 @@ export class PayrollPayslipsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      "Your payslip history — locked months only, newest first, each with its PDF request state (status, and a fresh presigned URL when ready)",
+      'Your payslip history — locked months only, newest first, each with its PDF request state (status, and a fresh presigned URL when ready)',
   })
   @ApiResponse({ status: 200, description: 'Your payslips (possibly empty)' })
   ownHistory(@CurrentUser() user: RequestUser) {
@@ -73,7 +73,10 @@ export class PayrollPayslipsController {
       'One of your payslips — 404 in plain English when the month was never run, when it is not locked yet, or when you were not in that month',
   })
   @ApiResponse({ status: 200, description: 'Your payslip for the month' })
-  @ApiResponse({ status: 404, description: 'Not run yet / not locked yet / none for you' })
+  @ApiResponse({
+    status: 404,
+    description: 'Not run yet / not locked yet / none for you',
+  })
   @ApiResponse({ status: 422, description: 'month must be YYYY-MM' })
   ownPayslip(@CurrentUser() user: RequestUser, @Param('month') month: string) {
     return this.payslipsService.ownPayslip(user, month);
@@ -87,8 +90,15 @@ export class PayrollPayslipsController {
     summary:
       'Request the PDF of one of your payslips (the month must be locked). Poll GET /payroll/payslips/me/:month — the pdf field carries the status and, when ready, a fresh download URL.',
   })
-  @ApiResponse({ status: 201, description: 'PDF request queued (an already in-flight request for the same payslip is returned as-is)' })
-  @ApiResponse({ status: 404, description: 'Not run yet / not locked yet / none for you' })
+  @ApiResponse({
+    status: 201,
+    description:
+      'PDF request queued (an already in-flight request for the same payslip is returned as-is)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Not run yet / not locked yet / none for you',
+  })
   @ApiResponse({ status: 422, description: 'month must be YYYY-MM' })
   @ApiResponse({
     status: 429,
@@ -107,11 +117,22 @@ export class PayrollPayslipsController {
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
     summary:
-      'Request the PDF of one employee\'s payslip for a month (any month state — a live payslip row is the only gate). Poll GET /payroll/payslips?month= — the pdf field carries the status and, when ready, a fresh download URL.',
+      "Request the PDF of one employee's payslip for a month (any month state — a live payslip row is the only gate). Poll GET /payroll/payslips?month= — the pdf field carries the status and, when ready, a fresh download URL.",
   })
-  @ApiResponse({ status: 201, description: 'PDF request queued (an already in-flight request for the same payslip is returned as-is)' })
-  @ApiResponse({ status: 404, description: 'No payslip exists for that employee in the month' })
-  @ApiResponse({ status: 422, description: 'month must be YYYY-MM / membershipId must be a valid employee id' })
+  @ApiResponse({
+    status: 201,
+    description:
+      'PDF request queued (an already in-flight request for the same payslip is returned as-is)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'No payslip exists for that employee in the month',
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      'month must be YYYY-MM / membershipId must be a valid employee id',
+  })
   @ApiResponse({ status: 403, description: 'Not a company admin' })
   @ApiResponse({
     status: 429,

@@ -38,7 +38,11 @@ interface SettingsRow {
 const PA = mid('e003', 1);
 const NOT_AN_EMPLOYEE = { code: 'PT400', hint: 'NOT_AN_EMPLOYEE' };
 
-type Settings = { member_id: string; can_create_jobs: boolean; job_approval_required: boolean }[];
+type Settings = {
+  member_id: string;
+  can_create_jobs: boolean;
+  job_approval_required: boolean;
+}[];
 
 describe('set_member_job_settings (real DB)', () => {
   jest.setTimeout(120000);
@@ -71,7 +75,9 @@ describe('set_member_job_settings (real DB)', () => {
     return data;
   };
 
-  const refusal = (r: { error: { code?: string; hint?: string | null } | null }) => ({
+  const refusal = (r: {
+    error: { code?: string; hint?: string | null } | null;
+  }) => ({
     code: r.error?.code,
     hint: r.error?.hint,
   });
@@ -87,14 +93,20 @@ describe('set_member_job_settings (real DB)', () => {
     await teardownSuite(service, [], [PA]);
   }, 120000);
 
-  maybeIt('a new employee starts with creation off and approval on', async () => {
-    const c = await makeCompany(service, 'js defaults', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    const m = await membershipIn(c.id.emp, c.tenantId);
-    expect(m).toMatchObject({ can_create_jobs: false, job_approval_required: true });
-  });
+  maybeIt(
+    'a new employee starts with creation off and approval on',
+    async () => {
+      const c = await makeCompany(service, 'js defaults', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      const m = await membershipIn(c.id.emp, c.tenantId);
+      expect(m).toMatchObject({
+        can_create_jobs: false,
+        job_approval_required: true,
+      });
+    },
+  );
 
   maybeIt(
     'success: the owner sets both switches, returns them, and writes one audit row',
@@ -107,7 +119,11 @@ describe('set_member_job_settings (real DB)', () => {
       const r = await set(c.id.admin, c.tenantId, c.id.emp, true, false);
       expect(r.error).toBeNull();
       expect(r.data).toEqual([
-        { member_id: before?.id, can_create_jobs: true, job_approval_required: false },
+        {
+          member_id: before?.id,
+          can_create_jobs: true,
+          job_approval_required: false,
+        },
       ]);
       const after = await membershipIn(c.id.emp, c.tenantId);
       expect(after).toMatchObject({
@@ -116,7 +132,9 @@ describe('set_member_job_settings (real DB)', () => {
         can_create_jobs: true,
         job_approval_required: false,
       });
-      expect(await auditFor(service, c.id.emp, 'member.job_settings_change')).toEqual([
+      expect(
+        await auditFor(service, c.id.emp, 'member.job_settings_change'),
+      ).toEqual([
         {
           actor_user_id: c.id.admin,
           actor_is_platform_admin: false,
@@ -141,40 +159,61 @@ describe('set_member_job_settings (real DB)', () => {
         admin: { role: 'company_admin' },
         emp: { role: 'employee' },
       });
-      expect((await set(c.id.admin, c.tenantId, c.id.emp, true, true)).error).toBeNull();
+      expect(
+        (await set(c.id.admin, c.tenantId, c.id.emp, true, true)).error,
+      ).toBeNull();
       const again = await set(c.id.admin, c.tenantId, c.id.emp, true, true);
       expect(again.error).toBeNull();
-      expect(again.data?.[0]).toMatchObject({ can_create_jobs: true, job_approval_required: true });
-      expect(await auditFor(service, c.id.emp, 'member.job_settings_change')).toHaveLength(1);
+      expect(again.data?.[0]).toMatchObject({
+        can_create_jobs: true,
+        job_approval_required: true,
+      });
+      expect(
+        await auditFor(service, c.id.emp, 'member.job_settings_change'),
+      ).toHaveLength(1);
     },
   );
 
-  maybeIt('each switch can be changed on its own, the other stays as it was', async () => {
-    const c = await makeCompany(service, 'js single', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    expect((await set(c.id.admin, c.tenantId, c.id.emp, true, true)).error).toBeNull();
-    expect((await set(c.id.admin, c.tenantId, c.id.emp, true, false)).error).toBeNull();
-    expect(await membershipIn(c.id.emp, c.tenantId)).toMatchObject({
-      can_create_jobs: true,
-      job_approval_required: false,
-    });
-  });
+  maybeIt(
+    'each switch can be changed on its own, the other stays as it was',
+    async () => {
+      const c = await makeCompany(service, 'js single', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      expect(
+        (await set(c.id.admin, c.tenantId, c.id.emp, true, true)).error,
+      ).toBeNull();
+      expect(
+        (await set(c.id.admin, c.tenantId, c.id.emp, true, false)).error,
+      ).toBeNull();
+      expect(await membershipIn(c.id.emp, c.tenantId)).toMatchObject({
+        can_create_jobs: true,
+        job_approval_required: false,
+      });
+    },
+  );
 
-  maybeIt('an employee cannot set their own or anyone else\'s switches', async () => {
-    const c = await makeCompany(service, 'js emp caller', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-      other: { role: 'employee' },
-    });
-    expect(refusal(await set(c.id.emp, c.tenantId, c.id.other, true, false))).toEqual(FORBIDDEN);
-    expect(refusal(await set(c.id.emp, c.tenantId, c.id.emp, true, false))).toEqual(FORBIDDEN);
-    expect(await membershipIn(c.id.other, c.tenantId)).toMatchObject({
-      can_create_jobs: false,
-      job_approval_required: true,
-    });
-  });
+  maybeIt(
+    "an employee cannot set their own or anyone else's switches",
+    async () => {
+      const c = await makeCompany(service, 'js emp caller', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+        other: { role: 'employee' },
+      });
+      expect(
+        refusal(await set(c.id.emp, c.tenantId, c.id.other, true, false)),
+      ).toEqual(FORBIDDEN);
+      expect(
+        refusal(await set(c.id.emp, c.tenantId, c.id.emp, true, false)),
+      ).toEqual(FORBIDDEN);
+      expect(await membershipIn(c.id.other, c.tenantId)).toMatchObject({
+        can_create_jobs: false,
+        job_approval_required: true,
+      });
+    },
+  );
 
   maybeIt('a viewer cannot set the switches', async () => {
     const c = await makeCompany(service, 'js viewer caller', {
@@ -182,55 +221,82 @@ describe('set_member_job_settings (real DB)', () => {
       view: { role: 'viewer' },
       emp: { role: 'employee' },
     });
-    expect(refusal(await set(c.id.view, c.tenantId, c.id.emp, true, false))).toEqual(FORBIDDEN);
+    expect(
+      refusal(await set(c.id.view, c.tenantId, c.id.emp, true, false)),
+    ).toEqual(FORBIDDEN);
   });
 
-  maybeIt('the platform admin flag grants no job-settings power in a company', async () => {
-    const c = await makeCompany(service, 'js platform admin', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    expect(refusal(await set(PA, c.tenantId, c.id.emp, true, false))).toEqual(FORBIDDEN);
-    expect(await membershipIn(c.id.emp, c.tenantId)).toMatchObject({
-      can_create_jobs: false,
-    });
-  });
+  maybeIt(
+    'the platform admin flag grants no job-settings power in a company',
+    async () => {
+      const c = await makeCompany(service, 'js platform admin', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      expect(refusal(await set(PA, c.tenantId, c.id.emp, true, false))).toEqual(
+        FORBIDDEN,
+      );
+      expect(await membershipIn(c.id.emp, c.tenantId)).toMatchObject({
+        can_create_jobs: false,
+      });
+    },
+  );
 
-  maybeIt('an owner of another company cannot set this company\'s employee', async () => {
-    const a = await makeCompany(service, 'js cross A', {
-      admin: { role: 'company_admin' },
-    });
-    const b = await makeCompany(service, 'js cross B', {
-      admin: { role: 'company_admin' },
-      emp: { role: 'employee' },
-    });
-    // Caller is owner of A, names company B as the tenant: refused.
-    expect(refusal(await set(a.id.admin, b.tenantId, b.id.emp, true, false))).toEqual(FORBIDDEN);
-    // Caller is owner of A, names A, but the employee belongs to B: not found.
-    expect(refusal(await set(a.id.admin, a.tenantId, b.id.emp, true, false))).toEqual(NOT_FOUND);
-    expect(await membershipIn(b.id.emp, b.tenantId)).toMatchObject({
-      can_create_jobs: false,
-    });
-  });
+  maybeIt(
+    "an owner of another company cannot set this company's employee",
+    async () => {
+      const a = await makeCompany(service, 'js cross A', {
+        admin: { role: 'company_admin' },
+      });
+      const b = await makeCompany(service, 'js cross B', {
+        admin: { role: 'company_admin' },
+        emp: { role: 'employee' },
+      });
+      // Caller is owner of A, names company B as the tenant: refused.
+      expect(
+        refusal(await set(a.id.admin, b.tenantId, b.id.emp, true, false)),
+      ).toEqual(FORBIDDEN);
+      // Caller is owner of A, names A, but the employee belongs to B: not found.
+      expect(
+        refusal(await set(a.id.admin, a.tenantId, b.id.emp, true, false)),
+      ).toEqual(NOT_FOUND);
+      expect(await membershipIn(b.id.emp, b.tenantId)).toMatchObject({
+        can_create_jobs: false,
+      });
+    },
+  );
 
   maybeIt('a disabled owner cannot set the switches', async () => {
     const c = await makeCompany(service, 'js disabled owner', {
       admin: { role: 'company_admin', disabled: true },
       emp: { role: 'employee' },
     });
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.emp, true, false))).toEqual(FORBIDDEN);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, c.id.emp, true, false)),
+    ).toEqual(FORBIDDEN);
   });
 
-  maybeIt('the target must be an employee: owners and viewers are refused', async () => {
-    const c = await makeCompany(service, 'js target role', {
-      admin: { role: 'company_admin' },
-      other_admin: { role: 'company_admin' },
-      view: { role: 'viewer' },
-    });
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.other_admin, true, false))).toEqual(NOT_AN_EMPLOYEE);
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.view, true, false))).toEqual(NOT_AN_EMPLOYEE);
-    expect(await auditFor(service, c.id.view, 'member.job_settings_change')).toEqual([]);
-  });
+  maybeIt(
+    'the target must be an employee: owners and viewers are refused',
+    async () => {
+      const c = await makeCompany(service, 'js target role', {
+        admin: { role: 'company_admin' },
+        other_admin: { role: 'company_admin' },
+        view: { role: 'viewer' },
+      });
+      expect(
+        refusal(
+          await set(c.id.admin, c.tenantId, c.id.other_admin, true, false),
+        ),
+      ).toEqual(NOT_AN_EMPLOYEE);
+      expect(
+        refusal(await set(c.id.admin, c.tenantId, c.id.view, true, false)),
+      ).toEqual(NOT_AN_EMPLOYEE);
+      expect(
+        await auditFor(service, c.id.view, 'member.job_settings_change'),
+      ).toEqual([]);
+    },
+  );
 
   maybeIt('an invited, removed or unknown person is not found', async () => {
     const c = await makeCompany(service, 'js not active', {
@@ -238,9 +304,15 @@ describe('set_member_job_settings (real DB)', () => {
       inv: { role: 'employee', status: 'invited' },
       gone: { role: 'employee', status: 'removed' },
     });
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.inv, true, false))).toEqual(NOT_FOUND);
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.gone, true, false))).toEqual(NOT_FOUND);
-    expect(refusal(await set(c.id.admin, c.tenantId, mid('e003', 99), true, false))).toEqual(NOT_FOUND);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, c.id.inv, true, false)),
+    ).toEqual(NOT_FOUND);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, c.id.gone, true, false)),
+    ).toEqual(NOT_FOUND);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, mid('e003', 99), true, false)),
+    ).toEqual(NOT_FOUND);
   });
 
   maybeIt('a null switch value is refused, and nothing changes', async () => {
@@ -248,8 +320,12 @@ describe('set_member_job_settings (real DB)', () => {
       admin: { role: 'company_admin' },
       emp: { role: 'employee' },
     });
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.emp, null, false))).toEqual(VALIDATION);
-    expect(refusal(await set(c.id.admin, c.tenantId, c.id.emp, true, null))).toEqual(VALIDATION);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, c.id.emp, null, false)),
+    ).toEqual(VALIDATION);
+    expect(
+      refusal(await set(c.id.admin, c.tenantId, c.id.emp, true, null)),
+    ).toEqual(VALIDATION);
     expect(await membershipIn(c.id.emp, c.tenantId)).toMatchObject({
       can_create_jobs: false,
       job_approval_required: true,
