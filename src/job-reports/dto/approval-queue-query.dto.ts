@@ -21,7 +21,7 @@ export class ApprovalQueueQueryDto {
     description: 'Show only jobs this employee created.',
   })
   @IsOptional()
-  @IsUUID()
+  @IsUUID('loose') // never '4'/'all' — real user ids fail 'all' (see leave.dto.ts)
   employeeId?: string;
 
   @ApiPropertyOptional({

@@ -73,7 +73,8 @@ export class AcknowledgeDto {
   @ApiProperty({
     description: 'The employee whose mocked attempts are acknowledged',
   })
-  @IsUUID('4', { message: 'employeeId must be a UUID v4' })
+  // 'loose' — never '4'/'all': 83/173 real user ids fail those (see leave.dto.ts)
+  @IsUUID('loose', { message: 'employeeId must be a UUID' })
   employeeId!: string;
 
   @ApiProperty({
@@ -87,7 +88,8 @@ export class DayStatusesQueryDto {
   @ApiProperty({
     description: 'The employee to read (owner route, 404-no-leak)',
   })
-  @IsUUID('4', { message: 'employeeId must be a UUID v4' })
+  // 'loose' — never '4'/'all': 83/173 real user ids fail those (see leave.dto.ts)
+  @IsUUID('loose', { message: 'employeeId must be a UUID' })
   employeeId!: string;
 
   @ApiProperty({ description: 'Range start, YYYY-MM-DD (tenant-local)' })

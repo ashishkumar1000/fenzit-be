@@ -16,6 +16,6 @@ export class MarkReadDto {
   @IsArray()
   @ArrayNotEmpty()
   @ArrayMaxSize(100) // the one client-controlled unbounded input — cap it
-  @IsUUID(undefined, { each: true }) // never '4' (Story 1 IsUUID('4') trap)
+  @IsUUID('loose', { each: true }) // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   ids!: string[];
 }

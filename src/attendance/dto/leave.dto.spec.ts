@@ -4,6 +4,7 @@ import {
   ApplyLeaveDto,
   ListLeaveQueryDto,
   OnBehalfLeaveDto,
+  OnBehalfPreviewQueryDto,
   PreviewApplyQueryDto,
   RejectLeaveDto,
   RevokeLeaveDto,
@@ -83,7 +84,7 @@ describe('ApplyLeaveDto', () => {
     ).toHaveLength(0);
   });
 
-  it('requires a UUID v4 employeeId on the on-behalf variant', async () => {
+  it('requires a UUID employeeId on the on-behalf variant', async () => {
     const dto = plainToInstance(OnBehalfLeaveDto, {
       ...valid,
       employeeId: 'not-a-uuid',
@@ -158,7 +159,7 @@ describe('ListLeaveQueryDto', () => {
     ).toBe(true);
   });
 
-  it('validates the employee filter as a UUID v4', async () => {
+  it('validates the employee filter as a UUID when present', async () => {
     expect(
       (
         await validate(plainToInstance(ListLeaveQueryDto, { employeeId: 'x' }))
@@ -184,5 +185,62 @@ describe('PreviewApplyQueryDto', () => {
         )
       ).some((e) => e.property === 'part'),
     ).toBe(true);
+  });
+});
+
+/**
+ * The Story 1 IsUUID trap (regression pin): real user ids in the wild
+ * are NOT all RFC v4 — Ajay EMP-080's id below has version nibble 'd'
+ * and variant 'd', so `@IsUUID('4')` 422s on a perfectly real employee.
+ * Worse, `@IsUUID()` (validator-lib 'all') ALSO rejects it — 'all' is
+ * version 1-7 + 89AB variant, and 83/173 real user ids in the DB fail
+ * it (hash-style seeded ids). The house contract is `@IsUUID('loose')`
+ * — shape-only hex-dash, exactly NestJS ParseUUIDPipe's 'all' — on
+ * every id-carrying DTO. A '4' or bare-'all' pin here reproduces as
+ * "employeeId must be a UUID" on live on-behalf apply/preview.
+ */
+describe('the Story 1 IsUUID trap — real-world non-RFC ids must pass', () => {
+  // Real-world id shape: version nibble 'd', variant 'd' — valid under
+  // IsUUID('all'), REJECTED by IsUUID('4').
+  const NON_V4 = '183c1349-8e1b-d7a6-d69e-be77cbc654a1';
+  const range = { startDate: '2026-12-01', endDate: '2026-12-02' };
+
+  it('OnBehalfLeaveDto accepts a non-v4 employeeId', async () => {
+    const dto = plainToInstance(OnBehalfLeaveDto, {
+      ...range,
+      reason: 'Fever',
+      employeeId: NON_V4,
+    });
+    expect((await validate(dto)).some((e) => e.property === 'employeeId')).toBe(
+      false,
+    );
+  });
+
+  it('ListLeaveQueryDto accepts a non-v4 employeeId filter', async () => {
+    const dto = plainToInstance(ListLeaveQueryDto, { employeeId: NON_V4 });
+    expect((await validate(dto)).some((e) => e.property === 'employeeId')).toBe(
+      false,
+    );
+  });
+
+  it('PreviewApplyQueryDto accepts a non-v4 leaveTypeId', async () => {
+    const dto = plainToInstance(PreviewApplyQueryDto, {
+      startDate: '2026-12-01',
+      leaveTypeId: NON_V4,
+    });
+    expect((await validate(dto)).some((e) => e.property === 'leaveTypeId')).toBe(
+      false,
+    );
+  });
+
+  it('OnBehalfPreviewQueryDto accepts non-v4 employeeId + leaveTypeId', async () => {
+    const dto = plainToInstance(OnBehalfPreviewQueryDto, {
+      startDate: '2026-12-01',
+      employeeId: NON_V4,
+      leaveTypeId: NON_V4,
+    });
+    const props = (await validate(dto)).map((e) => e.property);
+    expect(props).not.toContain('employeeId');
+    expect(props).not.toContain('leaveTypeId');
   });
 });

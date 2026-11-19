@@ -75,13 +75,19 @@ export class ApplyLeaveDto {
     nullable: true,
   })
   @IsOptional()
-  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  // 'loose' = shape-only hex-dash. Story 1 trap, re-found 2026-11-20: never
+  // '4' AND never bare 'all' — class-validator's 'all' checks version 1-7 +
+  // 89AB variant and rejects 83/173 REAL user ids (hash-style seeded ids,
+  // e.g. Ajay EMP-080). 'loose' = parity with NestJS ParseUUIDPipe's 'all'.
+  @IsUUID('loose', { message: 'leaveTypeId must be a UUID' })
   leaveTypeId?: string | null;
 }
 
 export class OnBehalfLeaveDto extends ApplyLeaveDto {
   @ApiProperty({ description: 'The employee the leave is created for' })
-  @IsUUID('4', { message: 'employeeId must be a UUID v4' })
+  // 'loose' — never '4', never bare 'all' (83/173 real user ids fail 'all';
+  // see the leaveTypeId note above).
+  @IsUUID('loose')
   employeeId!: string;
 }
 
@@ -122,7 +128,7 @@ export class ListLeaveQueryDto {
     description: 'Filter to one employee (owner list only)',
   })
   @IsOptional()
-  @IsUUID('4')
+  @IsUUID('loose') // never '4'/'all' — 83/173 real user ids fail 'all' (see OnBehalfLeaveDto)
   employeeId?: string;
 
   @ApiPropertyOptional({ description: 'Opaque cursor from the previous page' })
@@ -170,7 +176,8 @@ export class PreviewApplyQueryDto {
     nullable: true,
   })
   @IsOptional()
-  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  // 'loose' — never '4'/'all' (see ApplyLeaveDto.leaveTypeId).
+  @IsUUID('loose', { message: 'leaveTypeId must be a UUID' })
   leaveTypeId?: string | null;
 }
 
@@ -181,6 +188,7 @@ export class PreviewApplyQueryDto {
  *  instead of at submit. */
 export class OnBehalfPreviewQueryDto extends PreviewApplyQueryDto {
   @ApiProperty({ description: 'The employee the leave would be created for' })
-  @IsUUID('4', { message: 'employeeId must be a UUID v4' })
+  // 'loose' — never '4'/'all' (see OnBehalfLeaveDto.employeeId).
+  @IsUUID('loose')
   employeeId!: string;
 }

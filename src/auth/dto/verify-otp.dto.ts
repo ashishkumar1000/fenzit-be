@@ -2,7 +2,8 @@ import { IsString, IsUUID, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class VerifyOtpDto {
-  @IsUUID()
+  // 'loose' — never '4'/'all' (Story 1 trap; see attendance/dto/leave.dto.ts)
+  @IsUUID('loose')
   @ApiProperty({
     description: 'OTP session ID returned from /auth/otp/send',
     example: '550e8400-e29b-41d4-a716-446655440000',

@@ -15,7 +15,8 @@ export const OFF_CYCLE_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export class CreateOffCycleLineDto {
   @ApiProperty({ format: 'uuid' })
-  @IsUUID()
+  // 'loose' — never '4'/'all' (Story 1 trap; see attendance/dto/leave.dto.ts)
+  @IsUUID('loose')
   membershipId!: string;
 
   @ApiProperty({ example: '2026-10' })
@@ -61,7 +62,7 @@ export class CreateOffCycleLineDto {
 export class UpdateOffCycleLineDto {
   @ApiProperty({ required: false, format: 'uuid' })
   @IsOptional()
-  @IsUUID()
+  @IsUUID('loose') // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   membershipId?: string;
 
   @ApiProperty({ required: false, example: '2026-11' })

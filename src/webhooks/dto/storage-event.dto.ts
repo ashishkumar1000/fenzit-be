@@ -24,10 +24,11 @@ export class StorageEventDto {
   @Max(PG_INT_MAX)
   size: number;
 
-  @IsUUID()
+  // 'loose' — never '4'/'all' (Story 1 trap; see attendance/dto/leave.dto.ts)
+  @IsUUID('loose')
   tenantId: string;
 
-  @IsUUID()
+  @IsUUID('loose')
   jobId: string;
 
   @IsIn(['photo', 'signature'])

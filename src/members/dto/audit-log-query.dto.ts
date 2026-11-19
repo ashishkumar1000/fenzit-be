@@ -31,6 +31,6 @@ export class AuditLogQueryDto {
       "The previous page's last `id`. Send it with `before` so rows that share one timestamp are not skipped.",
   })
   @IsOptional()
-  @IsUUID()
+  @IsUUID('loose') // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   beforeId?: string;
 }

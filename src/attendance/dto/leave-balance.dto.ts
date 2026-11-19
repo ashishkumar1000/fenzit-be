@@ -12,14 +12,18 @@ export class CreditLeaveDto {
       'The employee receiving the credit (must belong to this company)',
     example: '8f6ad6cd-0f2e-4d9a-9c6d-6f0d1a2b3c4d',
   })
-  @IsUUID('4', { message: 'userId must be a UUID' })
+  // 'loose' = shape-only hex-dash. Story 1 trap, re-found 2026-11-20: never
+  // '4' AND never bare 'all' — class-validator's 'all' checks version 1-7 +
+  // 89AB variant and rejects 83/173 REAL user ids (hash-style seeded ids,
+  // e.g. Ajay EMP-080). 'loose' = parity with NestJS ParseUUIDPipe's 'all'.
+  @IsUUID('loose', { message: 'userId must be a UUID' })
   userId!: string;
 
   @ApiProperty({
     description: 'The accrual-bearing leave type the credit belongs to',
     example: '8f6ad6cd-0f2e-4d9a-9c6d-6f0d1a2b3c4d',
   })
-  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  @IsUUID('loose', { message: 'leaveTypeId must be a UUID' })
   leaveTypeId!: string;
 
   @ApiProperty({

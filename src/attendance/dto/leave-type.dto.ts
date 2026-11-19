@@ -76,7 +76,8 @@ export class SetLeaveRequestTypeDto {
       'The catalog type for this request (must belong to the same company and be enabled), or null to clear the typing back to the untyped = paid default. Absent leaves it untouched.',
   })
   @IsOptional()
-  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  // 'loose' — never '4'/'all' (Story 1 trap; see leave.dto.ts for the why)
+  @IsUUID('loose', { message: 'leaveTypeId must be a UUID' })
   leaveTypeId?: string | null;
 }
 

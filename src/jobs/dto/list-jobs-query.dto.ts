@@ -111,7 +111,7 @@ export class ListJobsQueryDto {
       'Owner only — filter to one technician. Ignored for technician callers.',
   })
   @IsOptional()
-  @IsUUID() // default version 'all' — never '4' (Story 1 IsUUID('4') trap)
+  @IsUUID('loose') // never '4'/'all' — real user ids fail 'all' (see leave.dto.ts)
   technicianId?: string;
 
   @ApiPropertyOptional({

@@ -15,7 +15,9 @@ export class SetEnrolmentDto {
       'Live office to enrol the employee with (FR-6: one office per tracked date).',
     example: '9f1c3e2a-1111-4c4c-8c8c-222233334444',
   })
-  @IsUUID()
+  // 'loose' — shape-only hex-dash; class-validator 'all' rejects real-world
+  // non-RFC ids (Story 1 trap; see leave.dto.ts for the why)
+  @IsUUID('loose')
   officeId!: string;
 
   @ApiPropertyOptional({
@@ -34,7 +36,9 @@ export class ReassignOfficeDto {
     description: 'The new office. Archived offices are refused (409).',
     example: '9f1c3e2a-1111-4c4c-8c8c-222233334444',
   })
-  @IsUUID()
+  // 'loose' — shape-only hex-dash; class-validator 'all' rejects real-world
+  // non-RFC ids (Story 1 trap; see leave.dto.ts for the why)
+  @IsUUID('loose')
   officeId!: string;
 
   @ApiPropertyOptional({

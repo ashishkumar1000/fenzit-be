@@ -29,7 +29,9 @@ export class CreateJobDto {
     description: 'Existing customer UUID. Mutually exclusive with newCustomer.',
   })
   @IsOptional()
-  @IsUUID() // default version 'all' — never '4' (Story 1 IsUUID('4') trap)
+  // 'loose' — never '4'/'all' (Story 1 trap, re-found 2026-11-20: class-validator's
+  // 'all' rejects 83/173 real seeded ids; see attendance/dto/leave.dto.ts)
+  @IsUUID('loose')
   customerId?: string;
 
   @ApiPropertyOptional({
@@ -55,7 +57,7 @@ export class CreateJobDto {
       'Global skills-catalog UUID — exactly what GET /skills serves. ' +
       'Validated against the active catalog before the create RPC runs.',
   })
-  @IsUUID() // default version 'all' — never '4' (Story 1 IsUUID('4') trap)
+  @IsUUID('loose') // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   skillId: string;
 
   @ApiProperty({
@@ -68,7 +70,8 @@ export class CreateJobDto {
   scheduledStart: string;
 
   @ApiProperty({ format: 'uuid' })
-  @IsUUID()
+  // 'loose' — a REAL user id; bare 'all' rejects 83/173 of them in the wild
+  @IsUUID('loose')
   technicianId: string;
 
   @ApiPropertyOptional({

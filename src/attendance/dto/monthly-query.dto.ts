@@ -27,7 +27,8 @@ export class MonthlyQueryDto {
       'Filter to this office id (today’s covering assignment office)',
   })
   @IsOptional()
-  @IsUUID('all', { message: 'officeId must be a UUID' })
+  // 'loose' — never '4'/'all' (Story 1 trap; see leave.dto.ts for the why)
+  @IsUUID('loose', { message: 'officeId must be a UUID' })
   officeId?: string;
 }
 

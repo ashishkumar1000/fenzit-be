@@ -58,6 +58,6 @@ export class InviteMemberDto {
   @IsArray()
   @ArrayMaxSize(20, { message: 'At most 20 skill IDs are allowed' })
   @ArrayUnique({ message: 'Skill IDs must be unique' })
-  @IsUUID('all', { each: true, message: 'Each skill ID must be a valid UUID' })
+  @IsUUID('loose', { each: true, message: 'Each skill ID must be a valid UUID' }) // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   skillIds?: string[];
 }

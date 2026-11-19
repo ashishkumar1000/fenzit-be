@@ -19,8 +19,8 @@ export const trimToUndefined = ({ value }: TransformFnParams): unknown => {
 
 /**
  * Trims every string element of an array value in place — for bulk-id DTOs
- * whose per-element validators (@IsUUID({ each: true })) run after the
- * transform, so a padded id would otherwise fail validation.
+ * whose per-element validators (@IsUUID('loose', { each: true })) run after
+ * the transform, so a padded id would otherwise fail validation.
  */
 export const trimArray = ({ value }: TransformFnParams): unknown =>
   Array.isArray(value)
