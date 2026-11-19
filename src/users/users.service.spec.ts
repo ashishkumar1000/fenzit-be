@@ -291,6 +291,7 @@ describe('UsersService', () => {
       'overdue',
       'completed',
       'cancelled',
+      'pending',
     ];
     const select = jest.fn(
       (_cols: string, opts?: { count?: string; head?: boolean }) => {
@@ -370,6 +371,7 @@ describe('UsersService', () => {
       overdue: 0,
       completed: 0,
       cancelled: 0,
+      pending: 0,
     };
     // Story 3.9 batched embed fetches — only hit when the jobs page is
     // non-empty.
@@ -506,6 +508,7 @@ describe('UsersService', () => {
           overdue: 1,
           completed: 5,
           cancelled: 0,
+          pending: 6,
         },
       });
       customersService.listCustomers.mockResolvedValue(emptyCustomersPage);
@@ -620,6 +623,7 @@ describe('UsersService', () => {
         overdue: 1,
         completed: 5,
         cancelled: 0,
+        pending: 6,
       });
     });
 
@@ -652,7 +656,7 @@ describe('UsersService', () => {
       });
     });
 
-    it('issues the five count queries with the Story 3.7 bucket predicates', async () => {
+    it('issues the six count queries with the Story 3.7 bucket predicates', async () => {
       const { countBuilders } = mockAdmin({
         jobCounts: {
           today: 1,
@@ -660,6 +664,7 @@ describe('UsersService', () => {
           overdue: 3,
           completed: 4,
           cancelled: 5,
+          pending: 6,
         },
       });
       const range = getIstDayRange();
@@ -667,17 +672,20 @@ describe('UsersService', () => {
       const result = await service.getMyProfile(ownerUser, {});
 
       expectCompany(result);
-      // Call order is fixed: today, upcoming, overdue, completed, cancelled.
+      // Call order is fixed: today, upcoming, overdue, completed,
+      // cancelled, pending (the owner-approvals queue).
       expect(result.jobCounts).toEqual({
         today: 1,
         upcoming: 2,
         overdue: 3,
         completed: 4,
         cancelled: 5,
+        pending: 6,
       });
-      expect(countBuilders).toHaveLength(5);
+      expect(countBuilders).toHaveLength(6);
 
-      const [today, upcoming, overdue, completed, cancelled] = countBuilders;
+      const [today, upcoming, overdue, completed, cancelled, pending] =
+        countBuilders;
       // today: scheduled_start within [start, end), action statuses only
       expect(today.gte).toHaveBeenCalledWith(
         'scheduled_start',
@@ -708,9 +716,13 @@ describe('UsersService', () => {
         JobStatus.SCHEDULED,
         JobStatus.IN_PROGRESS,
       ]);
-      // completed / cancelled: all-time totals, no day window
+      // completed / cancelled / pending: all-time totals, no day window
       expect(completed.eq).toHaveBeenCalledWith('status', JobStatus.COMPLETED);
       expect(cancelled.eq).toHaveBeenCalledWith('status', JobStatus.CANCELLED);
+      expect(pending.eq).toHaveBeenCalledWith(
+        'status',
+        JobStatus.PENDING_APPROVAL,
+      );
       // every bucket is tenant-wide and head:true count:'exact'
       for (const b of countBuilders) {
         expect(b.eq).toHaveBeenCalledWith('tenant_id', 'tenant-uuid');
@@ -842,6 +854,7 @@ describe('UsersService', () => {
         overdue: 0,
         completed: 0,
         cancelled: 0,
+        pending: 0,
       });
       // No tenant → no view row → the attendance-free default (the shape
       // stays present so the FE gate reads one stable field).
@@ -933,6 +946,7 @@ describe('UsersService', () => {
           overdue: 0,
           completed: 0,
           cancelled: 0,
+          pending: 0,
         },
         // 15-7: the access view rides the same profile response.
         accessState: {
@@ -990,6 +1004,7 @@ describe('UsersService', () => {
         overdue: 0,
         completed: 0,
         cancelled: 0,
+        pending: 0,
       });
     });
 
@@ -1311,12 +1326,16 @@ describe('UsersService', () => {
         'id, name, country_code, phone_number, address, city',
       );
       // The names come from the company-member reader: ONE read for the
-      // page's distinct technician ids, never one query per row.
+      // page's distinct technician ids, never one query per row. The
+      // reader selects memberships with the named users embed (the
+      // identity cols ride the embed).
       const embedReads = membershipsHandler.reads.filter(
         (r) => !r.cols.includes('user_skills'),
       );
       expect(embedReads).toHaveLength(1);
-      expect(embedReads[0].cols).toContain('name, country_code, phone_number');
+      expect(embedReads[0].cols).toContain(
+        'users!memberships_user_id_fkey(name, email, country_code, phone_number',
+      );
       // Every plain-columns select returns its own in() builder; collect the
       // ones that were actually driven by the batched embed fetch.
       const inCalls = (handlerSelect: jest.Mock): unknown[][] =>

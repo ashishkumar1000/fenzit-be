@@ -256,9 +256,12 @@ describe('SyncService', () => {
 
     await service.sync(user);
 
+    // The technician/customer relation embeds sit between the skills and
+    // template embeds in the shared JOB_COLUMNS, so the pair is pinned
+    // as an ordered regex rather than one contiguous substring.
     expect(chain.select).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'skills(id, name), workflow_templates(version, steps)',
+      expect.stringMatching(
+        /skills\(id, name\)[\s\S]*workflow_templates\(version, steps\)/,
       ),
     );
     expect(chain.select).toHaveBeenCalledWith(
