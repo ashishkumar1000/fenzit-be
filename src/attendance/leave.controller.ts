@@ -30,6 +30,7 @@ import { LeaveBalanceService } from './leave-balance.service';
 import {
   ListLeaveQueryDto,
   OnBehalfLeaveDto,
+  OnBehalfPreviewQueryDto,
   RejectLeaveDto,
   RevokeLeaveDto,
 } from './dto/leave.dto';
@@ -239,6 +240,25 @@ export class LeaveController {
     @Body() dto: SetLeaveRequestTypeDto,
   ) {
     return this.leaveTypesService.setRequestType(user, requestId, dto);
+  }
+
+  @Get('on-behalf/preview')
+  @Can('leave.create_on_behalf')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      '23-14 on-behalf apply preview: the same validation the on-behalf POST runs (persist:false) for a proposed spend on one employee — the apply-on-behalf form catches a refusal (insufficient balance, locked month, overlap) at pick time instead of at submit',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ ok, workingDays, totalDays, part, dates[] } — or { ok: false, errorCode, message } rendered inline by the app (previews never 404/422)',
+  })
+  previewApplyOnBehalf(
+    @CurrentUser() user: RequestUser,
+    @Query() query: OnBehalfPreviewQueryDto,
+  ) {
+    return this.leaveReadService.previewApplyOnBehalf(user, query);
   }
 
   @Post('on-behalf')

@@ -107,6 +107,9 @@ export class MeLeaveController {
       startDate: query.startDate,
       endDate: query.endDate,
       part: query.part ?? 'full_day',
+      // 23-14: a named type makes the preview run the apply-time balance
+      // check too — the form catches the refusal at pick time.
+      leaveTypeId: query.leaveTypeId ?? null,
       reason: '',
     });
   }

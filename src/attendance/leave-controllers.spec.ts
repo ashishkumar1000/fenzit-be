@@ -94,6 +94,10 @@ describe('LeaveController route pins (owner)', () => {
   it('the owner list takes the query (status/employeeId/cursor)', () => {
     expect(queryArgAt(LeaveController, 'list', 1)).toBe(true);
   });
+
+  it('the on-behalf preview takes the query (employeeId + the proposed spend)', () => {
+    expect(queryArgAt(LeaveController, 'previewApplyOnBehalf', 1)).toBe(true);
+  });
 });
 
 describe('role guard pins (spec §7)', () => {
@@ -124,6 +128,7 @@ describe('role guard pins (spec §7)', () => {
       ['reject', 'leave.approve'],
       ['revoke', 'leave.approve'],
       ['applyOnBehalf', 'leave.create_on_behalf'],
+      ['previewApplyOnBehalf', 'leave.create_on_behalf'],
     ];
     for (const [handler, permission] of expected) {
       const needed = Reflect.getMetadata(

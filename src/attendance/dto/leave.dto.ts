@@ -163,4 +163,24 @@ export class PreviewApplyQueryDto {
   @IsOptional()
   @IsIn(LEAVE_PARTS)
   part?: 'full_day' | 'first_half' | 'second_half';
+
+  @ApiPropertyOptional({
+    description:
+      'A catalog type to validate the spend against — the preview then runs the apply-time balance check (23-14: the form catches an insufficient balance at pick time, not as a submit 422)',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsUUID('4', { message: 'leaveTypeId must be a UUID' })
+  leaveTypeId?: string | null;
+}
+
+/** The owner's on-behalf apply preview (23-14): the FR-12 validation for a
+ *  PROPOSED spend on a chosen employee — the same checks the on-behalf
+ *  POST runs (persist:false), so the apply-on-behalf form catches a
+ *  rejection (insufficient balance, locked month, overlap) at pick time
+ *  instead of at submit. */
+export class OnBehalfPreviewQueryDto extends PreviewApplyQueryDto {
+  @ApiProperty({ description: 'The employee the leave would be created for' })
+  @IsUUID('4', { message: 'employeeId must be a UUID v4' })
+  employeeId!: string;
 }

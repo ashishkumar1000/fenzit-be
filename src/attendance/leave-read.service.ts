@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpException } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
@@ -24,6 +24,7 @@ import {
   type LeaveActionPreview,
   type LeaveApplyPreview,
   type LeaveDayRow,
+  type LeaveRejection,
   type LeaveRequestView,
 } from './leave.model';
 import {
@@ -33,11 +34,15 @@ import {
   findRequestWithDays,
   listLeaveRequests,
   readEnrolmentFloor,
+  readLeaveTypeConfig,
   readPageSpanFacts,
   readSettingsGate,
   readSpanFacts,
   type LeaveListRow,
 } from './leave.repository';
+import { assertBalanceForApply } from './leave-balance.service';
+import type { AccrualTypeConfig } from './leave-balance.math';
+import { assertPayrollDatesEditable } from './payroll-date-gate';
 import { findActiveOverrideDates } from './corrections.repository';
 import {
   countWorkingDays,
@@ -47,7 +52,10 @@ import {
   validateApplyFacts,
   validateApplyShape,
 } from './leave-validation';
-import { ApplyLeaveDto } from './dto/leave.dto';
+import {
+  ApplyLeaveDto,
+  OnBehalfPreviewQueryDto,
+} from './dto/leave.dto';
 import {
   avatarUrlFor,
   presignAvatarUrls,
@@ -88,6 +96,22 @@ export class LeaveReadService {
     const tenantId = requireTenant(user);
     return this.pg.withTransaction((tx) =>
       this.previewApplyTransact(tx, tenantId, user.userId, dto),
+    );
+  }
+
+  /** 23-14: the owner's on-behalf apply preview — the same validation the
+   *  on-behalf POST runs (persist:false) for a PROPOSED spend on the
+   *  chosen employee. The apply-on-behalf form has no technician-scoped
+   *  `me` preview (the owner JWT answers 403 there), so this route is
+   *  what lets that form catch a rejection (insufficient balance, locked
+   *  month, overlap) at pick time instead of as a submit 422. */
+  previewApplyOnBehalf(
+    owner: RequestUser,
+    dto: OnBehalfPreviewQueryDto,
+  ): Promise<LeaveApplyPreview> {
+    const tenantId = requireTenant(owner);
+    return this.pg.withTransaction((tx) =>
+      this.previewApplyTransact(tx, tenantId, dto.employeeId, dto),
     );
   }
 
@@ -169,21 +193,89 @@ export class LeaveReadService {
 
   // ---------------------------------------------------------------- apply
 
+  /** Reverse-map a write-path gate exception (they all carry
+   *  `{error_code, message}`) into the preview's inline rejection — the
+   *  preview answers the SAME verdict the POST would, as 200 (D13:
+   *  previews never 404/422). */
+  private rejectionFromException(error: unknown): LeaveRejection {
+    const response =
+      error instanceof HttpException ? error.getResponse() : null;
+    if (
+      response &&
+      typeof response === 'object' &&
+      'error_code' in response &&
+      'message' in response
+    ) {
+      return {
+        errorCode: (response as { error_code: ErrorCode }).error_code,
+        message: String((response as { message: unknown }).message),
+      };
+    }
+    return {
+      errorCode: ErrorCode.VALIDATION_ERROR,
+      message: 'This request cannot be applied for',
+    };
+  }
+
   private async previewApplyTransact(
     tx: PoolClient,
     tenantId: string,
     employeeId: string,
-    dto: ApplyLeaveDto,
+    // The apply-preview's input slice — the wire fields the validation
+    // reads (the write DTO carries `reason` too; a preview never needs
+    // it). Both the me query and the on-behalf query satisfy this.
+    dto: {
+      startDate: string;
+      endDate?: string;
+      part?: 'full_day' | 'first_half' | 'second_half';
+      leaveTypeId?: string | null;
+    },
   ): Promise<LeaveApplyPreview> {
+    const part = dto.part ?? 'full_day';
+    // CAP-12 first — the write path validates a named type before
+    // anything else, so the preview's verdict precedence matches it
+    // exactly (23-14: a disabled row or a foreign id answers inline).
+    let balanceType: AccrualTypeConfig | null = null;
+    if (dto.leaveTypeId) {
+      const type = await readLeaveTypeConfig(tx, tenantId, dto.leaveTypeId);
+      if (!type) {
+        // The write path 404s (RESOURCE_NOT_FOUND, "The leave type is not
+        // in this company") — previews never 404 (D13), so the same
+        // verdict rides the inline rejection instead.
+        return {
+          ok: false,
+          errorCode: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The leave type is not in this company',
+        };
+      }
+      if (type.code === null || !type.enabled) {
+        return {
+          ok: false,
+          errorCode: ErrorCode.LEAVE_TYPE_DISABLED,
+          message: 'This leave type is no longer available to apply for',
+        };
+      }
+      balanceType = type;
+    }
     const shape = validateApplyShape({
       startDate: dto.startDate,
       endDate: dto.endDate ?? dto.startDate,
-      part: dto.part,
+      part,
     });
     if (shape) {
       return { ok: false, errorCode: shape.errorCode, message: shape.message };
     }
     const dates = enumerateDates(dto.startDate, dto.endDate ?? dto.startDate);
+    // The write path's payroll-lock gate (23-7 follow-up): a locked month
+    // is final, so its answer outranks the eligibility facts — catch it
+    // here too, as the same plain-English message the POST would 422
+    // with (23-14: catch the mistake at pick time, not at submit).
+    try {
+      await assertPayrollDatesEditable(tx, tenantId, dates);
+    } catch (error) {
+      const rejection = this.rejectionFromException(error);
+      return { ok: false, ...rejection };
+    }
     const today = await tenantToday(tx, tenantId);
     const [
       enrolment,
@@ -241,11 +333,33 @@ export class LeaveReadService {
         message: rejection.message,
       };
     }
+    // 23-13's balance check (reads only — the write path holds the
+    // per-employee advisory lock around it because it then WRITES): the
+    // preview answers the exact insufficient-balance message the POST
+    // would 422 with, so neither form ever submits a known-refused
+    // request.
+    if (balanceType) {
+      try {
+        await assertBalanceForApply(
+          tx,
+          tenantId,
+          employeeId,
+          balanceType,
+          dates,
+          part,
+          spanFacts,
+          today,
+        );
+      } catch (error) {
+        const balanceRejection = this.rejectionFromException(error);
+        return { ok: false, ...balanceRejection };
+      }
+    }
     return {
       ok: true,
       workingDays: countWorkingDays(dates, spanFacts),
       totalDays: dates.length,
-      part: dto.part,
+      part,
       dates: dates.map((date) => {
         const fact = spanFacts.get(date)!;
         return { date, isWorkingDay: fact.isWorkingDay, kind: fact.kind };
