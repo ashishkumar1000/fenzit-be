@@ -32,6 +32,7 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { DecidePendingJobDto } from './dto/decide-pending-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
+import { JobsPageQueryDto } from './dto/jobs-page-query.dto';
 import { insertJobAssignedNotification } from './job-notifications';
 import {
   editLockedForOwner,
@@ -215,6 +216,87 @@ export interface JobRow {
   // both shapes are normalized when mapping (mirrors UserSkillRow below).
   skills: { id: string; name: string } | { id: string; name: string }[] | null;
   workflow_templates: { version: number; steps: unknown } | null;
+}
+
+/**
+ * One row of the jobs_overview view (the paged console list's flattened read
+ * model, 20261120000000) — the joined names ride along as bare columns so the
+ * page endpoint can search and sort by them. Typed leniently on every joined
+ * column: the view left-joins, so a missing counterpart maps to null without
+ * dropping the row (the same read-leniency contract as toResponse).
+ */
+interface JobsOverviewRow {
+  id: string;
+  job_number: string;
+  tenant_id: string;
+  customer_id: string;
+  technician_id: string | null;
+  service_location: string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  status: JobStatus;
+  priority: JobPriority;
+  description: string | null;
+  completed_at: string | null;
+  current_step: string | null;
+  skill_id: string | null;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+  rejection_reason: string | null;
+  customer_name: string | null;
+  technician_name: string | null;
+  skill_name: string | null;
+  template_version: number | null;
+  template_steps: unknown;
+}
+
+/** Whole-company counters for the console's job stat tiles and status chips —
+ *  counted before any filter, so they stay stable while the table narrows
+ *  (the members/customers stats contract). One counter per status keeps every
+ *  chip's count honest; completed30d feeds the tile. */
+export interface JobsStats {
+  total: number;
+  scheduled: number;
+  inProgress: number;
+  pendingApproval: number;
+  completed: number;
+  cancelled: number;
+  rejected: number;
+  /** Jobs whose completed_at falls in the last 30 days. */
+  completed30d: number;
+}
+
+/** One row of the console's paged jobs table — the lean shape the web reads (mirrors the FE JobRow: no tenant ids, no notes, no embeds beyond the names). */
+export interface JobPageItem {
+  id: string;
+  jobNumber: string;
+  status: JobStatus;
+  priority: JobPriority;
+  scheduledStart: string | null;
+  currentStep: string | null;
+  skill: { id: string; name: string } | null;
+  technician: { id: string; name: string | null } | null;
+  customer: { id: string; name: string | null } | null;
+  description: string | null;
+  serviceLocation: string;
+  completedAt: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+  rejectionReason: string | null;
+  /** 0-based position of current_step in the stamped template; null on a fresh job. */
+  currentStepIndex: number | null;
+  workflowTemplate: WorkflowTemplateResponse | null;
+}
+
+/** GET /jobs/page response: one page + the filtered exact total + whole-company stats. */
+export interface JobsPage {
+  data: JobPageItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+  stats: JobsStats;
 }
 
 interface TechnicianRow {
@@ -1089,6 +1171,272 @@ export class JobsService {
       pageRows.map((row) => this.toResponse(row)),
       nextCursor,
     );
+  }
+
+  /**
+   * One page of the console's jobs list — the customers-page contract over the
+   * jobs_overview view: DB-side filtering/sorting/paging (a company's job
+   * history grows without bound, so the list can never be loaded whole), a
+   * filtered exact total, and whole-company stats that ignore the filters.
+   * Owner-facing (@Can('job.read_all')); the mobile app keeps the cursor
+   * listJobs above untouched.
+   */
+  async getJobsPage(
+    owner: RequestUser,
+    query: JobsPageQueryDto,
+  ): Promise<JobsPage> {
+    if (!owner.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing jobs',
+      });
+    }
+
+    const admin = this.supabaseClientFactory.createAdmin();
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 10;
+
+    // The tenant/search/status/skill/priority filters, applied to a fresh
+    // builder — the list query and the past-the-end recount (below) share
+    // them. The select expression and its options ride in as parameters
+    // because the options-bearing select() overload only exists at the
+    // from() level.
+    const filtered = (
+      columns: string,
+      options: { head?: boolean; count?: 'exact' },
+    ) => {
+      let q = admin
+        .from('jobs_overview')
+        .select(columns, options)
+        .eq('tenant_id', owner.tenantId);
+
+      const term = query.search ? this.sanitizeSearchTerm(query.search) : '';
+      if (term) {
+        // Inside .or() the ilike wildcard is '*' (PostgREST translates to
+        // '%'). The view flattens the joined names, so the search reaches the
+        // people and places of a job as plain columns.
+        q = q.or(
+          `job_number.ilike.*${term}*,description.ilike.*${term}*,service_location.ilike.*${term}*,customer_name.ilike.*${term}*,technician_name.ilike.*${term}*,skill_name.ilike.*${term}*`,
+        );
+      }
+
+      if (query.status) q = q.eq('status', query.status);
+      if (query.skillId) q = q.eq('skill_id', query.skillId);
+      if (query.priority) q = q.eq('priority', query.priority);
+
+      return q;
+    };
+
+    let qb = filtered('*', { count: 'exact' });
+
+    // Every sort carries an id tiebreak, so two rows that share the sort key
+    // can never straddle a page boundary.
+    switch (query.sort) {
+      case 'soonest':
+        // Earliest scheduled first; a job with no date sorts last (nullsFirst:
+        // false on an ascending order puts the nulls at the end).
+        qb = qb
+          .order('scheduled_start', { ascending: true, nullsFirst: false })
+          .order('id', { ascending: true });
+        break;
+      default:
+        qb = qb
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false });
+    }
+
+    const [listResult, stats] = await Promise.all([
+      qb.range((page - 1) * pageSize, page * pageSize - 1),
+      this.getJobsStats(owner.tenantId),
+    ]);
+
+    const { data, error, count } = listResult;
+    if (error) {
+      // A page entirely past the end (a hand-edited address — the app's own
+      // pager clamps) is an EMPTY page, not a failure: PostgREST answers
+      // PGRST103. The filtered total still counts, so the envelope stays
+      // honest and the pager shows the real last page.
+      if (error.code === 'PGRST103') {
+        const { count: recount, error: recountError } = await filtered('id', {
+          count: 'exact',
+          head: true,
+        });
+        if (recountError) {
+          this.logger.error('Failed to recount jobs:', { error: recountError });
+          throw new InternalServerErrorException({
+            error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+            message: 'Failed to list jobs',
+          });
+        }
+        const recountTotal = recount ?? 0;
+        return {
+          data: [],
+          total: recountTotal,
+          page,
+          pageSize,
+          pages: Math.max(1, Math.ceil(recountTotal / pageSize)),
+          stats,
+        };
+      }
+      this.logger.error('Failed to list jobs page:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to list jobs',
+      });
+    }
+
+    const total = count ?? 0;
+    // The select expression is a parameter, so postgrest-js can't narrow the
+    // row type — the double cast just restores the shape we asked for.
+    const rows = (data ?? []) as unknown as JobsOverviewRow[];
+
+    return {
+      data: rows.map((row) => this.toPageItem(row)),
+      total,
+      page,
+      pageSize,
+      pages: Math.max(1, Math.ceil(total / pageSize)),
+      stats,
+    };
+  }
+
+  /**
+   * The whole-company counters the console's job stat tiles show, counted
+   * before any filter (the members/customers stats contract). One head-count
+   * query per status plus the whole tenant run in one Promise.all: each
+   * transfers only its count (head: true,
+   * no rows), so all four cost one wall-clock round trip and the fold never
+   * scales with job volume.
+   */
+  private async getJobsStats(tenantId: string): Promise<JobsStats> {
+    const admin = this.supabaseClientFactory.createAdmin();
+    const cutoff = new Date(
+      Date.now() - 30 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    // One head-count query per status plus the whole tenant — each transfers
+    // only its count, so the whole fold still costs one wall-clock round trip.
+    const countByStatus = async (status: JobStatus) =>
+      admin
+        .from('jobs_overview')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('status', status);
+
+    const [
+      totalQ,
+      scheduledQ,
+      inProgressQ,
+      pendingQ,
+      completedQ,
+      cancelledQ,
+      rejectedQ,
+      completed30dQ,
+    ] = await Promise.all([
+      admin
+        .from('jobs_overview')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId),
+      countByStatus(JobStatus.SCHEDULED),
+      countByStatus(JobStatus.IN_PROGRESS),
+      countByStatus(JobStatus.PENDING_APPROVAL),
+      countByStatus(JobStatus.COMPLETED),
+      countByStatus(JobStatus.CANCELLED),
+      countByStatus(JobStatus.REJECTED),
+      admin
+        .from('jobs_overview')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('status', JobStatus.COMPLETED)
+        .gte('completed_at', cutoff),
+    ]);
+
+    const counted = [
+      totalQ,
+      scheduledQ,
+      inProgressQ,
+      pendingQ,
+      completedQ,
+      cancelledQ,
+      rejectedQ,
+      completed30dQ,
+    ];
+    for (const result of counted) {
+      if (result.error) {
+        this.logger.error('Failed to count jobs:', { error: result.error });
+        throw new InternalServerErrorException({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+          message: 'Failed to count jobs',
+        });
+      }
+    }
+
+    return {
+      total: totalQ.count ?? 0,
+      scheduled: scheduledQ.count ?? 0,
+      inProgress: inProgressQ.count ?? 0,
+      pendingApproval: pendingQ.count ?? 0,
+      completed: completedQ.count ?? 0,
+      cancelled: cancelledQ.count ?? 0,
+      rejected: rejectedQ.count ?? 0,
+      completed30d: completed30dQ.count ?? 0,
+    };
+  }
+
+  /** jobs_overview row → the lean page-item shape the web console reads. */
+  private toPageItem(row: JobsOverviewRow): JobPageItem {
+    // Lenient like every job read: an unreadable template (unreachable under
+    // the FK + no-delete posture) maps to null fields, never a 500.
+    const steps = row.template_steps
+      ? parseTemplateSteps(row.template_steps)
+      : null;
+    return {
+      id: row.id,
+      jobNumber: row.job_number,
+      status: row.status,
+      priority: row.priority,
+      scheduledStart: row.scheduled_start,
+      currentStep: row.current_step,
+      skill:
+        row.skill_id && row.skill_name
+          ? { id: row.skill_id, name: row.skill_name }
+          : null,
+      technician: row.technician_id
+        ? { id: row.technician_id, name: row.technician_name ?? null }
+        : null,
+      customer: row.customer_id
+        ? { id: row.customer_id, name: row.customer_name ?? null }
+        : null,
+      description: row.description,
+      serviceLocation: row.service_location,
+      completedAt: row.completed_at,
+      createdAt: row.created_at,
+      decidedAt: row.decided_at ?? null,
+      rejectionReason: row.rejection_reason ?? null,
+      workflowTemplate:
+        steps && row.template_version != null
+          ? { version: row.template_version, steps: steps.map(stepToResponse) }
+          : null,
+      currentStepIndex: steps
+        ? currentStepIndexForRead(steps, row.current_step)
+        : null,
+    };
+  }
+
+  /**
+   * Neutralizes PostgREST/LIKE-significant characters before a term is
+   * interpolated into an unsanitized `.or()` filter string (the customers
+   * service's copy of the same contract):
+   * - escapes LIKE metacharacters `%` and `_` so they match literally
+   * - strips PostgREST-structural chars (`, ( )`), the `*` wildcard, and
+   *   backslash (`.` and `:` are safe inside an ilike value and are preserved)
+   * Returns the cleaned term ('' means "no search filter").
+   */
+  private sanitizeSearchTerm(q: string): string {
+    return q
+      .replace(/[,()*\\]/g, '')
+      .replace(/[%_]/g, (m) => `\\${m}`)
+      .trim();
   }
 
   async getJobDetail(

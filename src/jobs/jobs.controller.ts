@@ -26,6 +26,7 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { DecidePendingJobDto } from './dto/decide-pending-job.dto';
 import { ListJobsQueryDto } from './dto/list-jobs-query.dto';
+import { JobsPageQueryDto } from './dto/jobs-page-query.dto';
 import { AdvanceWorkflowDto } from './dto/advance-workflow.dto';
 import { UploadAttachmentDto } from './dto/upload-attachment.dto';
 import { ConfirmAttachmentDto } from './dto/confirm-attachment.dto';
@@ -81,6 +82,28 @@ export class JobsController {
   @ApiResponse({ status: 422, description: 'Validation error' })
   listJobs(@CurrentUser() user: RequestUser, @Query() query: ListJobsQueryDto) {
     return this.jobsService.listJobs(user, query);
+  }
+
+  // The web console's paged jobs table — owner-facing (the mobile app keeps
+  // the cursor list above). NOTE: `:id` must stay BELOW both @Get() routes —
+  // it is a catch-all that would otherwise shadow `GET /jobs` and `GET /jobs/page`.
+  @Get('page')
+  @Can('job.read_all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "One paged page of the company's jobs for the web console: DB-side search (job words + customer/employee/skill names), status/skill/priority filters, latest|soonest sort, exact total and whole-company stat tiles",
+  })
+  @ApiResponse({ status: 200, description: 'One page of jobs + stats' })
+  @ApiResponse({ status: 400, description: 'Company not set up' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden — Technician JWT (read_own has no page view)',
+  })
+  @ApiResponse({ status: 422, description: 'Validation error' })
+  jobsPage(@CurrentUser() user: RequestUser, @Query() query: JobsPageQueryDto) {
+    return this.jobsService.getJobsPage(user, query);
   }
 
   // NOTE: `:id` must stay BELOW the parameterless `@Get()` list route above —
