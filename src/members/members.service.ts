@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -13,8 +14,10 @@ import { MembershipRole, Role } from '../common/enums/role.enum';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import {
   CompanyMember,
+  findCompanyMember,
   listCompanyMembers,
 } from '../common/members/company-members';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import {
   avatarUrlFor,
@@ -37,6 +40,8 @@ export interface MembersStats {
   total: number;
   active: number;
   invited: number;
+  /** Members parked by the owner (status `deactivated`). */
+  deactivated: number;
   /** Active employees whose jobs wait for the owner's approval first. */
   needsApproval: number;
   /** Per-role counts for the role dropdown's option rows. */
@@ -220,6 +225,7 @@ export class MembersService {
   constructor(
     private readonly supabaseFactory: SupabaseClientFactory,
     private readonly storageService: StorageService,
+    private readonly pgPool: PgPoolFactory,
   ) {}
 
   async list(caller: RequestUser): Promise<MemberView[]> {
@@ -275,6 +281,7 @@ export class MembersService {
         total: all.length,
         active: all.filter((m) => m.status === 'active').length,
         invited: all.filter((m) => m.status === 'invited').length,
+        deactivated: all.filter((m) => m.status === 'deactivated').length,
         needsApproval: all.filter(
           (m) =>
             m.status === 'active' && m.canCreateJobs && m.jobApprovalRequired,
@@ -358,6 +365,167 @@ export class MembersService {
         message: 'Failed to list members',
       });
     }
+  }
+
+  /**
+   * One member of the company, as the list serves them (plus skills). The
+   * statutory fields deliberately stay behind GET /members/:userId/employment
+   * — the 23-1 privacy invariant keeps PAN/DOB/PF/UAN/bank off every other
+   * member surface. A removed member answers 404: the lists hide them, and
+   * the profile is a list sibling.
+   */
+  async getMember(caller: RequestUser, memberUserId: string): Promise<MemberView> {
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
+    try {
+      const member = await findCompanyMember(
+        this.supabaseFactory.createAdmin(),
+        caller.tenantId,
+        memberUserId,
+        { withSkills: true },
+      );
+      if (!member) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        [member.avatarKey],
+      );
+      const { avatarKey, ...rest } = member;
+      return { ...rest, avatarUrl: avatarUrlFor(avatarUrls, avatarKey) };
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Failed to read the member:', { error });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to read the member',
+      });
+    }
+  }
+
+  /**
+   * The owner parks or reinstates a member (employee profile story). The
+   * rules mirror the role-change and remove functions: never yourself, an
+   * active company always keeps an admin, a move only leaves the state it
+   * names. Those rules hold together inside ONE pg transaction under the
+   * exclusive tenant lock (the same lock space the member functions use), so
+   * two concurrent deactivations cannot both pass the last-admin count.
+   */
+  async setActive(
+    caller: RequestUser,
+    memberUserId: string,
+    active: boolean,
+  ): Promise<{ userId: string; status: string; employeeCode: string }> {
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
+    if (caller.userId === memberUserId) {
+      throw new ForbiddenException({
+        error_code: ErrorCode.MEMBERSHIP_SELF,
+        message: 'You cannot change your own access — ask another admin',
+      });
+    }
+    const tenantId = caller.tenantId;
+    const expectedFrom = active ? 'deactivated' : 'active';
+    const newStatus = active ? 'active' : 'deactivated';
+
+    const outcome = await this.pgPool.withTransaction(async (tx) => {
+      // Exclusive tenant lock: serialized against the member functions'
+      // role-change/remove, which count admins under the same lock.
+      await tx.query('select public.attendance_lock_tenant($1, true)', [
+        tenantId,
+      ]);
+      const member = await tx.query<{
+        status: string;
+        role: string;
+        employee_code: string;
+      }>(
+        `select status, role, employee_code from public.memberships
+          where user_id = $1 and tenant_id = $2 for update`,
+        [memberUserId, tenantId],
+      );
+      const row = member.rows[0];
+      if (!row) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+      if (row.status !== expectedFrom) {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBERSHIP_STATE,
+          message:
+            active
+              ? 'Only a deactivated member can be reinstated'
+              : 'Only an active member can be deactivated',
+        });
+      }
+      if (!active && row.role === Role.COMPANY_ADMIN) {
+        const others = await tx.query<{ n: number }>(
+          `select count(*)::int as n from public.memberships m
+             join public.users u on u.id = m.user_id
+            where m.tenant_id = $1 and m.role = 'company_admin'
+              and m.status = 'active' and m.user_id <> $2 and not u.disabled`,
+          [tenantId, memberUserId],
+        );
+        if ((others.rows[0]?.n ?? 0) === 0) {
+          throw new ConflictException({
+            error_code: ErrorCode.LAST_ADMIN,
+            message: 'The company must keep at least one active admin',
+          });
+        }
+      }
+      const updated = await tx.query<{ status: string }>(
+        `update public.memberships set status = $1, updated_at = now()
+          where user_id = $2 and tenant_id = $3 and status = $4
+          returning status`,
+        [newStatus, memberUserId, tenantId, expectedFrom],
+      );
+      if (updated.rowCount !== 1) {
+        // The guarded write is the race backstop; under the exclusive lock it
+        // should never miss — treat a miss as the conflict it would be.
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBERSHIP_STATE,
+          message: 'The member changed since it was read — reload and retry',
+        });
+      }
+      return { employeeCode: row.employee_code };
+    });
+
+    // Audit after the commit, the employment-save way: what happened, never
+    // the values behind it; a failed audit entry does not undo the write.
+    try {
+      const auditCall = (await this.supabaseFactory
+        .createAdmin()
+        .rpc('write_audit_row', {
+          p_actor: caller.userId,
+          p_action: active ? 'member.reinstated' : 'member.deactivated',
+          p_tenant_id: tenantId,
+          p_target_user: memberUserId,
+          p_details: { employee_code: outcome.employeeCode },
+        })) as { error: { code?: string; message?: string } | null };
+      if (auditCall.error) {
+        this.logger.error('Failed to write the member audit entry:', {
+          error: auditCall.error,
+        });
+      }
+    } catch (auditError: unknown) {
+      this.logger.error('Failed to write the member audit entry:', {
+        error: auditError,
+      });
+    }
+
+    return { userId: memberUserId, status: newStatus, employeeCode: outcome.employeeCode };
   }
 
   async changeRole(

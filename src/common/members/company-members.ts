@@ -16,7 +16,12 @@ export interface CompanyMember {
   phoneNumber: string;
   employeeCode: string;
   role: MembershipRole;
-  status: 'invited' | 'active' | 'removed';
+  /**
+   * `invited` = not signed in yet, `active` = a live member, `deactivated` =
+   * parked by the owner (keeps the row and every record, but holds no live
+   * membership — the auth resolver counts only `active`), `removed` = gone.
+   */
+  status: 'invited' | 'active' | 'deactivated' | 'removed';
   createdAt: string;
   /**
    * Storage key of the person's photo, or null. Internal: callers turn it into

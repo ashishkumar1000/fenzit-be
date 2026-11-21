@@ -152,6 +152,10 @@ export interface EnrolmentOverviewResponse extends AccessStateResponse {
   phone: string;
   /** Short-lived link to the person's photo, or null when none is set. */
   avatarUrl: string | null;
-  /** `invited` until the person signs in for the first time; only `active` people can be tracked. */
-  memberStatus: 'invited' | 'active';
+  /**
+   * `invited` until the person signs in for the first time; only `active`
+   * people can be tracked; `deactivated` is parked access (the owner's
+   * profile story) — the row keeps its history but every write is refused.
+   */
+  memberStatus: 'invited' | 'active' | 'deactivated';
 }

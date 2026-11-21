@@ -51,11 +51,17 @@ export async function readEmployee(
   tx: PoolClient,
   tenantId: string,
   employeeId: string,
-): Promise<{ id: string; name: string | null } | null> {
+): Promise<{ id: string; name: string | null; status: string } | null> {
   // Only a tracked employee: a company admin, a viewer, a removed member or a
   // disabled person is not someone the attendance module can enrol or alert on.
-  const result = await tx.query<{ id: string; name: string | null }>(
-    `select u.id, u.name
+  // The status rides along so the write paths can refuse a deactivated
+  // member with honest copy instead of a misleading "not found".
+  const result = await tx.query<{
+    id: string;
+    name: string | null;
+    status: string;
+  }>(
+    `select u.id, u.name, m.status
        from public.memberships m
        join public.users u on u.id = m.user_id
       where m.user_id = $1 and m.tenant_id = $2

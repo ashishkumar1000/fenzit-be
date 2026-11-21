@@ -26,6 +26,7 @@ import { ChangeRoleDto } from './dto/change-role.dto';
 import { EmploymentView } from './dto/employment-view.dto';
 import { JobSettingsDto } from './dto/job-settings.dto';
 import { MembersPageQueryDto } from './dto/members-page-query.dto';
+import { SetMemberActiveDto } from './dto/set-member-active.dto';
 import { UpdateEmploymentDto } from './dto/update-employment.dto';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { MembersService } from './members.service';
@@ -51,7 +52,7 @@ export class MembersController {
   @ApiQuery({
     name: 'status',
     required: false,
-    enum: ['all', 'active', 'invited'],
+    enum: ['all', 'active', 'invited', 'deactivated'],
   })
   @ApiQuery({
     name: 'role',
@@ -61,12 +62,12 @@ export class MembersController {
   @ApiQuery({
     name: 'jobSetting',
     required: false,
-    enum: ['all', 'create', 'off'],
+    enum: ['all', 'off', 'create_only', 'approval'],
   })
   @ApiQuery({
     name: 'sort',
     required: false,
-    enum: ['joined_new', 'joined_old', 'name_az'],
+    enum: ['joined_new', 'joined_old', 'name_az', 'name_za', 'code_az', 'code_za'],
   })
   @ApiOperation({
     summary:
@@ -77,6 +78,53 @@ export class MembersController {
     @Query() query: MembersPageQueryDto,
   ) {
     return this.membersService.listPaged(user, query);
+  }
+
+  @Get('members/:userId')
+  @Can('member.read')
+  @ApiOperation({
+    summary:
+      "One member of the company: identity, employee code, role, status, flags and skills. The statutory fields (PAN, DOB, bank) are only on the employment endpoint.",
+  })
+  @ApiOkResponse({
+    description: 'The member as the list serves them (plus skills)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not a member of this company',
+  })
+  getMember(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ) {
+    return this.membersService.getMember(user, userId);
+  }
+
+  @Patch('members/:userId/active')
+  @Can('member.deactivate')
+  @ApiOperation({
+    summary:
+      "Park or reinstate a member: false deactivates an active member (they keep every record but lose access), true reinstates a deactivated one",
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Deactivating yourself, or not a company admin of this company',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The person is not a member of this company',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The member is not in a state this move allows, or the company would be left without an active admin',
+  })
+  setActive(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetMemberActiveDto,
+  ) {
+    return this.membersService.setActive(user, userId, dto.active);
   }
 
   @Patch('members/:userId/role')

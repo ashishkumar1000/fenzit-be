@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
@@ -34,7 +34,6 @@ import {
   findRequestWithDays,
   findRequestIdByKey,
   insertLeaveRequest,
-  employeeExistsInTenant,
   readLeaveTypeConfig,
   readEnrolmentFloor,
   readEmployeeName,
@@ -193,14 +192,24 @@ export class LeaveService {
     await lockTenantShared(tx, input.tenantId);
     // D10: a foreign on-behalf target answers 404 before the gate — no
     // existence leak, and never an ATTENDANCE_NOT_TRACKED for a person
-    // who was never in this tenant.
+    // who was never in this tenant. A deactivated member answers 409 with
+    // honest copy: parked access cannot take new leave, even filed for them.
     if (input.onBehalf) {
-      const exists = await employeeExistsInTenant(
-        tx,
-        input.tenantId,
-        input.employeeId,
+      const member = await tx.query<{ status: string }>(
+        `select m.status from public.memberships m
+          where m.tenant_id = $1::uuid and m.user_id = $2::uuid
+            and m.role = 'employee' and m.status <> 'removed'`,
+        [input.tenantId, input.employeeId],
       );
-      if (!exists) throw leaveEmployeeNotFound();
+      const row = member.rows[0];
+      if (!row) throw leaveEmployeeNotFound();
+      if (row.status === 'deactivated') {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBERSHIP_STATE,
+          message:
+            'This member is deactivated — reinstate them before filing leave on their behalf',
+        });
+      }
     }
     await tx.query('select public.attendance_lock_employee($1)', [
       input.employeeId,

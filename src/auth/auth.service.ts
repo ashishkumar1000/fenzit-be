@@ -432,12 +432,14 @@ export class AuthService {
       return { tenantId: null, role: Role.PLATFORM_ADMIN, formerMember: false };
     }
 
-    // The one-live-membership index makes this at most one row.
+    // The one-live-membership index makes this at most one row. `deactivated`
+    // is deliberately NOT live here (parked access): the person signs into the
+    // no-company state instead of a session that 403s every call.
     const { data: live, error } = await admin
       .from('memberships')
       .select('tenant_id, role, status')
       .eq('user_id', userId)
-      .neq('status', 'removed')
+      .in('status', ['invited', 'active'])
       .maybeSingle<{
         tenant_id: string;
         role: MembershipRole;
@@ -452,16 +454,16 @@ export class AuthService {
       });
     }
     if (!live) {
-      // No live membership. A removed row tells the app to say "no access"
-      // rather than walk a brand-new person through company setup.
-      const { data: removed, error: removedError } = await admin
+      // No live membership. A removed or deactivated row tells the app to say
+      // "no access" rather than walk a brand-new person through company setup.
+      const { data: parked, error: parkedError } = await admin
         .from('memberships')
         .select('id')
         .eq('user_id', userId)
-        .eq('status', 'removed');
-      if (removedError) {
+        .in('status', ['removed', 'deactivated']);
+      if (parkedError) {
         this.logger.error('Failed to read removed membership at login:', {
-          error: removedError,
+          error: parkedError,
         });
         throw new InternalServerErrorException({
           error_code: ErrorCode.INTERNAL_SERVER_ERROR,
@@ -471,7 +473,7 @@ export class AuthService {
       return {
         tenantId: null,
         role: null,
-        formerMember: (removed ?? []).length > 0,
+        formerMember: (parked ?? []).length > 0,
       };
     }
 

@@ -133,6 +133,10 @@ function baseRouter(
     // shape, kept OFF the `select u.name` route below.
     if (sql.includes('from public.memberships') && sql.includes('count(*)'))
       return { rows: [{ n: '1' }] };
+    // The D10 on-behalf membership read (the 404 + deactivated guard) —
+    // the status-row shape, kept OFF the `select u.name` route below.
+    if (sql.includes('from public.memberships') && sql.includes('m.status'))
+      return { rows: [{ status: 'active' }] };
     // readEnrolmentFloor AND buildDayContext both read this table — the
     // row carries both shapes (valid+enabled_at for the context).
     if (sql.includes('from public.attendance_enrolments'))

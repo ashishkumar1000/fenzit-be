@@ -83,6 +83,15 @@ export class JobsPageQueryDto {
   skillId?: string;
 
   @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Filter to one employee’s jobs (the profile page’s Jobs tab). When set, `stats` describes THAT employee’s jobs, not the whole company.',
+  })
+  @IsOptional()
+  @IsUUID('loose')
+  technicianId?: string;
+
+  @ApiPropertyOptional({
     enum: JobPriority,
     description: 'Filter to one dispatch priority.',
   })

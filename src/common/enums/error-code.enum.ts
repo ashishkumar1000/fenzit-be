@@ -112,6 +112,13 @@ export enum ErrorCode {
   /** The employment record changed between this read and write (409) — the
    *  database CHECK backstop caught a stale read; reload and retry. */
   EMPLOYMENT_RECORD_CHANGED = 'EMPLOYMENT_RECORD_CHANGED',
+  /** The member is not in a state this move allows (409) — deactivating an
+   *  invited/removed member, reinstating one that is not deactivated, or the
+   *  row moved between this read and write. */
+  MEMBERSHIP_STATE = 'MEMBERSHIP_STATE',
+  /** Deactivating yourself is refused (403) — the owner cannot park their own
+   *  access (mirrors the role-change and remove refusals). */
+  MEMBERSHIP_SELF = 'MEMBERSHIP_SELF',
   /** The chosen leave type vanished while this typing was in flight (409) —
    *  the foreign-key RESTRICT backstop caught the race; reload and retry. */
   LEAVE_TYPE_CHANGED = 'LEAVE_TYPE_CHANGED',

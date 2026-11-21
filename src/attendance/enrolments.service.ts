@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -145,8 +146,15 @@ export class EnrolmentsService {
         employeeCode: t.employeeCode ?? null,
         phone,
         avatarUrl: avatarUrlFor(avatarUrls, t.avatarKey),
-        // Fail closed: only an active membership can be tracked.
-        memberStatus: t.status === 'active' ? 'active' : 'invited',
+        // Fail closed: only an active membership can be tracked. A
+        // deactivated member passes through under their own name — the
+        // roster must not dress them up as "invited".
+        memberStatus:
+          t.status === 'active'
+            ? 'active'
+            : t.status === 'deactivated'
+              ? 'deactivated'
+              : 'invited',
       };
     });
   }
@@ -420,6 +428,15 @@ export class EnrolmentsService {
       throw new NotFoundException({
         error_code: ErrorCode.ATTENDANCE_EMPLOYEE_NOT_FOUND,
         message: 'Employee not found',
+      });
+    }
+    // Parked access: a deactivated member keeps their history (reads still
+    // show it) but no new enrolment or office move can be written for them.
+    if (employee.status === 'deactivated') {
+      throw new ConflictException({
+        error_code: ErrorCode.MEMBERSHIP_STATE,
+        message:
+          'This member is deactivated — reinstate them before changing their attendance',
       });
     }
   }

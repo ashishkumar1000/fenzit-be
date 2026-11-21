@@ -15,7 +15,7 @@ import {
   type MembershipRole,
 } from '../../common/enums/role.enum';
 
-const STATUS_FILTERS = ['all', 'active', 'invited'] as const;
+const STATUS_FILTERS = ['all', 'active', 'invited', 'deactivated'] as const;
 const JOB_SETTING_FILTERS = ['all', 'off', 'create_only', 'approval'] as const;
 const SORTS = [
   'joined_new',
@@ -66,7 +66,9 @@ export class MembersPageQueryDto {
 
   @ApiPropertyOptional({ enum: STATUS_FILTERS, default: 'all' })
   @IsOptional()
-  @IsIn(STATUS_FILTERS, { message: 'status must be all, active or invited' })
+  @IsIn(STATUS_FILTERS, {
+    message: 'status must be all, active, invited or deactivated',
+  })
   status?: StatusFilter;
 
   @ApiPropertyOptional({ enum: ['all', ...MEMBERSHIP_ROLES], default: 'all' })

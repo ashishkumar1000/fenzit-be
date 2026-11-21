@@ -21,6 +21,8 @@ import { LeaveTypesController } from './leave-types.controller';
 import { LeaveBalanceService } from './leave-balance.service';
 import { DayStatusesService } from './day-status.read';
 import { DayStatusesController } from './day-statuses.controller';
+import { PunchesService } from './punches.read';
+import { PunchesController } from './punches.controller';
 import { CorrectionsService } from './corrections.service';
 import { CorrectionsController } from './corrections.controller';
 import { DashboardService } from './dashboard';
@@ -56,6 +58,7 @@ import { StorageModule } from '../storage/storage.module';
     LeaveController,
     LeaveTypesController,
     DayStatusesController,
+    PunchesController,
     CorrectionsController,
     DashboardController,
     MonthlyController,
@@ -73,6 +76,7 @@ import { StorageModule } from '../storage/storage.module';
     LeaveTypesService,
     LeaveBalanceService,
     DayStatusesService,
+    PunchesService,
     CorrectionsService,
     DashboardService,
     DashboardFlagReads,

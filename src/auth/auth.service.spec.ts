@@ -1307,6 +1307,8 @@ describe('AuthService', () => {
       const chain: Record<string, unknown> = {};
       chain['select'] = jest.fn(() => chain);
       chain['eq'] = jest.fn(() => chain);
+      chain['neq'] = jest.fn(() => chain);
+      chain['in'] = jest.fn(() => chain);
       chain['then'] = (resolve: (v: unknown) => void) => resolve(result);
       return chain;
     }

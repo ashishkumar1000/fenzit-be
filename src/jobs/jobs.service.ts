@@ -1223,6 +1223,7 @@ export class JobsService {
       if (query.status) q = q.eq('status', query.status);
       if (query.skillId) q = q.eq('skill_id', query.skillId);
       if (query.priority) q = q.eq('priority', query.priority);
+      if (query.technicianId) q = q.eq('technician_id', query.technicianId);
 
       return q;
     };
@@ -1247,7 +1248,10 @@ export class JobsService {
 
     const [listResult, stats] = await Promise.all([
       qb.range((page - 1) * pageSize, page * pageSize - 1),
-      this.getJobsStats(owner.tenantId),
+      // With a technician filter the stats describe THAT employee's jobs —
+      // the profile page's chips must tell the truth about the person, and
+      // the jobs page (no filter) keeps the whole-company counts.
+      this.getJobsStats(owner.tenantId, query.technicianId),
     ]);
 
     const { data, error, count } = listResult;
@@ -1308,7 +1312,10 @@ export class JobsService {
    * no rows), so all four cost one wall-clock round trip and the fold never
    * scales with job volume.
    */
-  private async getJobsStats(tenantId: string): Promise<JobsStats> {
+  private async getJobsStats(
+    tenantId: string,
+    technicianId?: string,
+  ): Promise<JobsStats> {
     const admin = this.supabaseClientFactory.createAdmin();
     const cutoff = new Date(
       Date.now() - 30 * 24 * 60 * 60 * 1000,
@@ -1316,12 +1323,25 @@ export class JobsService {
 
     // One head-count query per status plus the whole tenant — each transfers
     // only its count, so the whole fold still costs one wall-clock round trip.
-    const countByStatus = async (status: JobStatus) =>
-      admin
+    // An optional technician scope narrows every count (profile page).
+    const countByStatus = async (status: JobStatus) => {
+      let q = admin
         .from('jobs_overview')
         .select('id', { count: 'exact', head: true })
         .eq('tenant_id', tenantId)
         .eq('status', status);
+      if (technicianId) q = q.eq('technician_id', technicianId);
+      return q;
+    };
+
+    const wholeTenant = () => {
+      let q = admin
+        .from('jobs_overview')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId);
+      if (technicianId) q = q.eq('technician_id', technicianId);
+      return q;
+    };
 
     const [
       totalQ,
@@ -1333,22 +1353,23 @@ export class JobsService {
       rejectedQ,
       completed30dQ,
     ] = await Promise.all([
-      admin
-        .from('jobs_overview')
-        .select('id', { count: 'exact', head: true })
-        .eq('tenant_id', tenantId),
+      wholeTenant(),
       countByStatus(JobStatus.SCHEDULED),
       countByStatus(JobStatus.IN_PROGRESS),
       countByStatus(JobStatus.PENDING_APPROVAL),
       countByStatus(JobStatus.COMPLETED),
       countByStatus(JobStatus.CANCELLED),
       countByStatus(JobStatus.REJECTED),
-      admin
-        .from('jobs_overview')
-        .select('id', { count: 'exact', head: true })
-        .eq('tenant_id', tenantId)
-        .eq('status', JobStatus.COMPLETED)
-        .gte('completed_at', cutoff),
+      (() => {
+        let q = admin
+          .from('jobs_overview')
+          .select('id', { count: 'exact', head: true })
+          .eq('tenant_id', tenantId)
+          .eq('status', JobStatus.COMPLETED)
+          .gte('completed_at', cutoff);
+        if (technicianId) q = q.eq('technician_id', technicianId);
+        return q;
+      })(),
     ]);
 
     const counted = [
