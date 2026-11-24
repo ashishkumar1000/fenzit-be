@@ -53,6 +53,8 @@ interface TxOptions {
   today?: string;
   todayError?: { hint?: string };
   employeeFound?: boolean;
+  /** The membership status the employee read answers (default: active). */
+  employeeStatus?: string;
   office?: { id: string; name: string; archived_at: string | null };
   enrolments?: Array<{ id: string; valid: string }>;
   assignments?: Array<{ id: string; valid: string }>;
@@ -102,7 +104,13 @@ function makeTx(options: TxOptions = {}) {
         rows:
           options.employeeFound === false
             ? []
-            : [{ id: EMPLOYEE, name: 'Ravi' }],
+            : [
+                {
+                  id: EMPLOYEE,
+                  name: 'Ravi',
+                  status: options.employeeStatus ?? 'active',
+                },
+              ],
       };
     }
     if (sql.includes('attendance_offices')) {
@@ -255,6 +263,23 @@ describe('EnrolmentsService (story 15-7)', () => {
       });
     });
 
+    it('refuses to enrol a deactivated member with 409 MEMBERSHIP_STATE, writing nothing', async () => {
+      const { service, writes } = serviceWith({
+        employeeStatus: 'deactivated',
+      });
+
+      const error = await service
+        .setEnrolment(owner, EMPLOYEE, { officeId: OFFICE })
+        .catch((e: HttpException) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect(error.getStatus()).toBe(HttpStatus.CONFLICT);
+      expect((error.getResponse() as { error_code: string }).error_code).toBe(
+        ErrorCode.MEMBERSHIP_STATE,
+      );
+      expect(writes).toHaveLength(0);
+    });
+
     it('maps an unknown tenant (attendance_today HINT) to 404 ATTENDANCE_TENANT_NOT_FOUND', async () => {
       const { service } = serviceWith({
         todayError: { hint: 'ATTENDANCE_TENANT_NOT_FOUND' },
@@ -299,6 +324,25 @@ describe('EnrolmentsService (story 15-7)', () => {
       expect((error.getResponse() as { error_code: string }).error_code).toBe(
         ErrorCode.ATTENDANCE_ASSIGNMENT_NOT_ENROLLED,
       );
+    });
+
+    it('refuses an office move for a deactivated member with 409 MEMBERSHIP_STATE', async () => {
+      const { service, writes } = serviceWith({
+        employeeStatus: 'deactivated',
+        enrolments: [{ id: 'enr', valid: '[2026-09-15,)' }],
+        assignments: [{ id: 'asg', valid: '[2026-09-15,)' }],
+      });
+
+      const error = await service
+        .reassignOffice(owner, EMPLOYEE, { officeId: OFFICE_2 })
+        .catch((e: HttpException) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect(error.getStatus()).toBe(HttpStatus.CONFLICT);
+      expect((error.getResponse() as { error_code: string }).error_code).toBe(
+        ErrorCode.MEMBERSHIP_STATE,
+      );
+      expect(writes).toHaveLength(0);
     });
 
     it('applies from tomorrow once Epic 16 exists and the employee checked in today (FR-6)', async () => {
@@ -576,6 +620,50 @@ describe('EnrolmentsService (story 15-7)', () => {
       const roster = await service.listEnrolments(owner);
 
       expect(roster[0]?.memberStatus).toBe('invited');
+    });
+
+    it('reports a deactivated member as deactivated — the roster never dresses them up as invited', async () => {
+      const admin = {
+        from: jest.fn((table: string) => {
+          const qb: Record<string, jest.Mock> = {};
+          for (const m of ['select', 'eq', 'neq', 'in', 'order']) {
+            qb[m] = jest.fn().mockReturnValue(qb);
+          }
+          const result =
+            table === 'memberships'
+              ? {
+                  data: [
+                    {
+                      user_id: EMPLOYEE,
+                      role: 'employee',
+                      status: 'deactivated',
+                      employee_code: 'E-004',
+                      created_at: '2026-10-20T00:00:00Z',
+                      users: {
+                        name: 'Parked',
+                        country_code: '+91',
+                        phone_number: '1414141414',
+                      },
+                    },
+                  ],
+                  error: null,
+                }
+              : { data: [], error: null };
+          qb.then = jest.fn((resolve: (v: unknown) => unknown) =>
+            Promise.resolve(resolve(result)),
+          );
+          return qb;
+        }),
+      };
+      const service = new EnrolmentsService(
+        { createAdmin: () => admin } as unknown as SupabaseClientFactory,
+        {} as unknown as PgPoolFactory,
+        storageStub,
+      );
+
+      const roster = await service.listEnrolments(owner);
+
+      expect(roster[0]?.memberStatus).toBe('deactivated');
     });
   });
 });

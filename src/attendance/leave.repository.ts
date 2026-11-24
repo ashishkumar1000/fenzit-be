@@ -1,4 +1,6 @@
 import type { PoolClient } from 'pg';
+import { ConflictException } from '@nestjs/common';
+import { ErrorCode } from '../common/enums/error-code.enum';
 import type { AccrualTypeConfig } from './leave-balance.math';
 import {
   ACTIVE_LEAVE_STATES,
@@ -472,6 +474,33 @@ export async function employeeExistsInTenant(
     [tenantId, employeeId],
   );
   return Number(result.rows[0]?.n ?? 0) > 0;
+}
+
+/**
+ * Parked access (employee-profile deactivation, owner decision 2026-11-24):
+ * a deactivated member keeps every record and every read, but NO new
+ * attendance write may land for them. Called at the WRITE gates only, after
+ * the 404 existence check — same membership read as `employeeExistsInTenant`
+ * above, same query style, never wired into the READ paths.
+ */
+export async function assertEmployeeNotDeactivated(
+  tx: PoolClient,
+  tenantId: string,
+  employeeId: string,
+): Promise<void> {
+  const result = await tx.query<{ status: string }>(
+    `select status from public.memberships
+     where tenant_id = $1::uuid and user_id = $2::uuid
+       and role = 'employee' and status <> 'removed'`,
+    [tenantId, employeeId],
+  );
+  if (result.rows[0]?.status === 'deactivated') {
+    throw new ConflictException({
+      error_code: ErrorCode.MEMBERSHIP_STATE,
+      message:
+        'This member is deactivated — reinstate them before changing their attendance',
+    });
+  }
 }
 
 /** The active day rows of one request in the given source states. */

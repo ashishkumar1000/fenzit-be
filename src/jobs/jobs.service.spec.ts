@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -16,6 +17,7 @@ import { Role } from '../common/enums/role.enum';
 import { memberRow, membersTable } from '../../test/helpers/member-rows-stub';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
+import { JobsPageQueryDto } from './dto/jobs-page-query.dto';
 import { JobStatus } from './enums/job-status.enum';
 import { JobListScope } from './enums/job-list-scope.enum';
 import { JobPriority } from './enums/job-priority.enum';
@@ -431,6 +433,31 @@ describe('JobsService', () => {
     await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it('throws 409 MEMBERSHIP_STATE when the technician is deactivated — never handed new work', async () => {
+    // The memberships read excludes only 'removed', so a deactivated row
+    // comes back — the parked-access guard (owner decision 2026-11-24) must
+    // turn it into an honest 409 BEFORE the RPC writes anything.
+    const { rpc } = mockAdmin({
+      technician: {
+        data: [memberRow('tech-1', { status: 'deactivated' })],
+        error: null,
+      },
+    });
+
+    await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
+      ConflictException,
+    );
+    await service
+      .createJob(owner, dtoExisting)
+      .catch((e: HttpException) => {
+        expect(e.getStatus()).toBe(HttpStatus.CONFLICT);
+        expect((e.getResponse() as { error_code: string }).error_code).toBe(
+          'MEMBERSHIP_STATE',
+        );
+      });
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it('throws 404 when the existing customerId is not in the tenant', async () => {
@@ -1745,6 +1772,236 @@ describe('JobsService', () => {
     });
   });
 
+  // --- getJobsPage ----------------------------------------------------------
+  // The console's paged table rides the jobs_overview view: 1 list query
+  // (select '*' + filters + sort + .range) and 8 stats head-counts
+  // (select('id', {count:'exact', head:true}), awaited directly). Every
+  // builder records its filter calls so a test can pin the technician_id
+  // narrowing reaching BOTH the list and every count — the profile page's
+  // chips must tell the truth about the person, not the company.
+  type OverviewFilters = Array<[string, string, unknown]>;
+
+  interface OverviewBuilder {
+    filters: OverviewFilters;
+    orders: Array<[string, Record<string, unknown>]>;
+    columns?: string;
+    selectOptions?: Record<string, unknown>;
+    rangeArgs?: [number, number];
+    select: jest.Mock;
+    eq: jest.Mock;
+    gte: jest.Mock;
+    or: jest.Mock;
+    order: jest.Mock;
+    range: jest.Mock;
+    then: (
+      resolve: (v: { count: number; error: unknown }) => void,
+      reject: (e: unknown) => void,
+    ) => Promise<void>;
+  }
+
+  const PERSON_TECH = 'tech-person';
+  const COMPANY_TOTAL = 7;
+  const PERSON_TOTAL = 2;
+  const STATUS_COUNTS: Record<string, number> = {
+    [JobStatus.SCHEDULED]: 3,
+    [JobStatus.IN_PROGRESS]: 2,
+    [JobStatus.PENDING_APPROVAL]: 1,
+    [JobStatus.COMPLETED]: 4,
+    [JobStatus.CANCELLED]: 1,
+    [JobStatus.REJECTED]: 0,
+  };
+
+  function overviewFrom(
+    opts: { list?: { data: unknown[]; count?: number; error?: unknown } } = {},
+  ) {
+    const builders: OverviewBuilder[] = [];
+
+    // A head-count resolves from its own filters: the status eq names the
+    // counter, a completed_at gte marks completed30d, a technician_id eq
+    // scopes the whole thing to the person.
+    const countFor = (filters: OverviewFilters): number => {
+      const scoped = filters.some(
+        ([kind, col]) => kind === 'eq' && col === 'technician_id',
+      );
+      if (
+        filters.some(([kind, col]) => kind === 'gte' && col === 'completed_at')
+      ) {
+        return scoped ? 1 : 2;
+      }
+      const status = filters.find(
+        ([kind, col]) => kind === 'eq' && col === 'status',
+      )?.[2];
+      if (typeof status === 'string') return STATUS_COUNTS[status] ?? 0;
+      return scoped ? PERSON_TOTAL : COMPANY_TOTAL;
+    };
+
+    const from = jest.fn(() => {
+      const b: any = { filters: [], orders: [] };
+      builders.push(b);
+      b.select = jest.fn((columns: string, options?: Record<string, unknown>) => {
+        b.columns = columns;
+        b.selectOptions = options;
+        return b;
+      });
+      ['eq', 'gte'].forEach((kind) => {
+        b[kind] = jest.fn((col: string, val: unknown) => {
+          b.filters.push([kind, col, val]);
+          return b;
+        });
+      });
+      b.or = jest.fn((expr: string) => {
+        b.filters.push(['or', 'expr', expr]);
+        return b;
+      });
+      b.order = jest.fn((col: string, o: Record<string, unknown>) => {
+        b.orders.push([col, o]);
+        return b;
+      });
+      b.range = jest.fn(async (start: number, end: number) => {
+        b.rangeArgs = [start, end];
+        const list = opts.list ?? { data: [] as unknown[] };
+        return {
+          data: list.data,
+          error: list.error ?? null,
+          count: list.count ?? list.data.length,
+        };
+      });
+      // the head-counts transfer only their count (head: true, no rows)
+      b.then = (
+        resolve: (v: { count: number; error: unknown }) => void,
+        reject: (e: unknown) => void,
+      ) =>
+        Promise.resolve({ count: countFor(b.filters), error: null }).then(
+          resolve,
+          reject,
+        );
+      return b as OverviewBuilder;
+    });
+    return { from, builders };
+  }
+
+  describe('getJobsPage — the console paged table over jobs_overview', () => {
+    const overviewRow = {
+      id: 'job-uuid',
+      job_number: 'JB-2026-0001',
+      tenant_id: 'tenant-uuid',
+      customer_id: 'cust-1',
+      technician_id: PERSON_TECH,
+      service_location: 'Loc',
+      scheduled_start: '2099-06-22T09:30:00Z',
+      scheduled_end: null,
+      status: JobStatus.SCHEDULED,
+      priority: JobPriority.NORMAL,
+      description: null,
+      completed_at: null,
+      current_step: null,
+      skill_id: 'skill-uuid-1',
+      created_at: '2026-06-21T00:00:00Z',
+      updated_at: '2026-06-21T00:00:00Z',
+      decided_at: null,
+      rejection_reason: null,
+      customer_name: 'Priya',
+      technician_name: 'Ravi',
+      skill_name: 'Plumbing',
+      template_version: null,
+      template_steps: null,
+    };
+
+    it('narrows the list AND every stats head-count by technician_id — the chips tell the truth about the person', async () => {
+      const { from, builders } = overviewFrom({
+        list: { data: [overviewRow], count: PERSON_TOTAL },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
+
+      const result = await service.getJobsPage(owner, {
+        technicianId: PERSON_TECH,
+      } as JobsPageQueryDto);
+
+      // 1 list query + 8 head-counts, all against the overview view.
+      expect(from).toHaveBeenCalledTimes(9);
+      expect(from).toHaveBeenCalledWith('jobs_overview');
+      expect(builders).toHaveLength(9);
+      for (const b of builders) {
+        expect(b.filters).toContainEqual([
+          'eq',
+          'technician_id',
+          PERSON_TECH,
+        ]);
+      }
+      // The list builder keeps its exact-count select and its page window.
+      const list = builders[0];
+      expect(list.columns).toBe('*');
+      expect(list.selectOptions).toEqual({ count: 'exact' });
+      expect(list.rangeArgs).toEqual([0, 9]); // page 1, pageSize 10
+      expect(list.orders).toEqual([
+        ['created_at', { ascending: false }],
+        ['id', { ascending: false }],
+      ]);
+      // Every stats builder is a head-count on id (head: true).
+      for (const b of builders.slice(1)) {
+        expect(b.columns).toBe('id');
+        expect(b.selectOptions).toEqual({ count: 'exact', head: true });
+      }
+      // The person's numbers: 2 jobs of theirs, not the company's 7.
+      expect(result.total).toBe(PERSON_TOTAL);
+      expect(result.stats).toEqual({
+        total: PERSON_TOTAL,
+        scheduled: STATUS_COUNTS[JobStatus.SCHEDULED],
+        inProgress: STATUS_COUNTS[JobStatus.IN_PROGRESS],
+        pendingApproval: STATUS_COUNTS[JobStatus.PENDING_APPROVAL],
+        completed: STATUS_COUNTS[JobStatus.COMPLETED],
+        cancelled: STATUS_COUNTS[JobStatus.CANCELLED],
+        rejected: STATUS_COUNTS[JobStatus.REJECTED],
+        completed30d: 1,
+      });
+      // The row maps through the lean page-item shape (no tenant ids, no
+      // template embed on a null template_version).
+      expect(result.pages).toBe(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({
+        id: 'job-uuid',
+        jobNumber: 'JB-2026-0001',
+        technician: { id: PERSON_TECH, name: 'Ravi' },
+        customer: { id: 'cust-1', name: 'Priya' },
+        skill: { id: 'skill-uuid-1', name: 'Plumbing' },
+        workflowTemplate: null,
+        currentStepIndex: null,
+      });
+    });
+
+    it('with no technician filter no builder narrows technician_id and the stats stay whole-company', async () => {
+      const { from, builders } = overviewFrom({
+        list: { data: [], count: COMPANY_TOTAL },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
+
+      const result = await service.getJobsPage(owner, {} as JobsPageQueryDto);
+
+      expect(from).toHaveBeenCalledTimes(9);
+      for (const b of builders) {
+        expect(b.filters.map((f) => f[1])).not.toContain('technician_id');
+      }
+      expect(result.stats.total).toBe(COMPANY_TOTAL);
+      expect(result.data).toEqual([]);
+    });
+
+    it('sort=soonest orders by scheduled_start ascending with nulls last, id tiebreak', async () => {
+      const { from, builders } = overviewFrom({
+        list: { data: [], count: 0 },
+      });
+      supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
+
+      await service.getJobsPage(owner, {
+        sort: 'soonest',
+      } as JobsPageQueryDto);
+
+      expect(builders[0].orders).toEqual([
+        ['scheduled_start', { ascending: true, nullsFirst: false }],
+        ['id', { ascending: true }],
+      ]);
+    });
+  });
+
   describe('updateJob', () => {
     it('edits a scheduled job (no cancel, no reassign) and maps to camelCase', async () => {
       const { rpc, from } = mockAdmin({});
@@ -1874,6 +2131,29 @@ describe('JobsService', () => {
       await expect(
         service.updateJob(owner, 'job-uuid', { technicianId: 'ghost' }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws 409 MEMBERSHIP_STATE when the new technician is deactivated — a parked member takes no reassignment', async () => {
+      // Parked access, same as createJob: the guard fires before the RPC.
+      const { rpc } = mockAdmin({
+        technician: {
+          data: [memberRow('tech-2', { status: 'deactivated' })],
+          error: null,
+        },
+      });
+
+      await expect(
+        service.updateJob(owner, 'job-uuid', { technicianId: 'tech-2' }),
+      ).rejects.toThrow(ConflictException);
+      await service
+        .updateJob(owner, 'job-uuid', { technicianId: 'tech-2' })
+        .catch((e: HttpException) => {
+          expect(e.getStatus()).toBe(HttpStatus.CONFLICT);
+          expect((e.getResponse() as { error_code: string }).error_code).toBe(
+            'MEMBERSHIP_STATE',
+          );
+        });
+      expect(rpc).not.toHaveBeenCalled();
     });
 
     it('throws 404 when the RPC raises an FK violation (23503 — raced technician delete)', async () => {

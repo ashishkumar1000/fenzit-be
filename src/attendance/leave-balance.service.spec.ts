@@ -67,6 +67,7 @@ function build(
     dayRows?: Array<Record<string, unknown>>;
     creditRows?: Array<Record<string, unknown>>;
     memberExists?: boolean;
+    memberStatus?: string;
   } = {},
 ) {
   const queries: { sql: string; params?: unknown[] }[] = [];
@@ -146,6 +147,12 @@ function build(
       if (sql.includes('from public.memberships') && sql.includes('count(*)'))
         return Promise.resolve({
           rows: [{ n: opts.memberExists === false ? '0' : '1' }],
+        });
+      // assertEmployeeNotDeactivated — the parked-access write gate reads the
+      // member's status row with this exact select (leave.repository).
+      if (sql.includes('select status from public.memberships'))
+        return Promise.resolve({
+          rows: [{ status: opts.memberStatus ?? 'active' }],
         });
       if (sql.includes('from public.attendance_enrolments'))
         return Promise.resolve({
@@ -750,6 +757,17 @@ describe('applyCredit — the manual credit write', () => {
       service.applyCredit(user(ADMIN, 'company_admin'), dtoBase),
     );
     expect(status).toBe(404);
+  });
+
+  it('a deactivated target answers 409 MEMBERSHIP_STATE — a parked member takes no new credit', async () => {
+    const { service, creditInserts } = build({ memberStatus: 'deactivated' });
+    const { status, body } = await rejectionOf(
+      service.applyCredit(user(ADMIN, 'company_admin'), dtoBase),
+    );
+    expect(status).toBe(409);
+    expect(body).toMatchObject({ error_code: 'MEMBERSHIP_STATE' });
+    expect(String(body['message'])).toContain('deactivated');
+    expect(creditInserts).toHaveLength(0);
   });
 
   it('a failed audit entry does not undo the credit', async () => {

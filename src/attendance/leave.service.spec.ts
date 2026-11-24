@@ -87,6 +87,8 @@ function baseRouter(
     holidays?: unknown[];
     lockedMonths?: string[];
     updateCount?: number;
+    /** The on-behalf target's membership status (default: active). */
+    memberStatus?: string;
     leaveTypeRow?: Record<string, unknown> | null;
     joinDateRow?: { join_date: string | null; exit_date: string | null } | null;
     existingLeaveDays?: Array<Record<string, unknown>>;
@@ -136,7 +138,7 @@ function baseRouter(
     // The D10 on-behalf membership read (the 404 + deactivated guard) —
     // the status-row shape, kept OFF the `select u.name` route below.
     if (sql.includes('from public.memberships') && sql.includes('m.status'))
-      return { rows: [{ status: 'active' }] };
+      return { rows: [{ status: overrides.memberStatus ?? 'active' }] };
     // readEnrolmentFloor AND buildDayContext both read this table — the
     // row carries both shapes (valid+enabled_at for the context).
     if (sql.includes('from public.attendance_enrolments'))
@@ -809,6 +811,32 @@ describe('LeaveService — apply (17-1)', () => {
       ),
     );
     expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
+  });
+
+  it('an on-behalf apply for a deactivated member answers 409 MEMBERSHIP_STATE with the honest copy, writing nothing', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({ memberStatus: 'deactivated' }),
+    );
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: EMPLOYEE,
+    });
+    const { status, body } = await rejectionOf(
+      service.applyOnBehalf(
+        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+        onBehalf,
+        KEY,
+      ),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.MEMBERSHIP_STATE);
+    // The copy says what to do — it never dresses the refusal up as a 404.
+    expect(String(body['message'])).toContain('deactivated');
+    expect(String(body['message'])).toContain(
+      'filing leave on their behalf',
+    );
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(false);
   });
 
   it('an apply whose dates no locked month owns passes the gate untouched', async () => {

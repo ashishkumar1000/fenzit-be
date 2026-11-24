@@ -22,7 +22,10 @@ import {
 } from '../common/day-status/grid-reader';
 import { computeDayStatus } from '../common/day-status/day-status.model';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
-import { employeeExistsInTenant } from './leave.repository';
+import {
+  assertEmployeeNotDeactivated,
+  employeeExistsInTenant,
+} from './leave.repository';
 import { AttendanceCalendarDateConstraint } from './dto/attendance-date.validator';
 import { isUUID } from 'class-validator';
 import {
@@ -159,6 +162,8 @@ export class CorrectionsService {
       if (!(await employeeExistsInTenant(tx, tenantId, employeeId))) {
         throw attendanceEmployeeNotFound();
       }
+      // Parked access: no correction lands for a deactivated member.
+      await assertEmployeeNotDeactivated(tx, tenantId, employeeId);
       const note = rawNote.trim();
       if (CONTROL_CHARS.test(note)) {
         throw unprocessable(
@@ -281,6 +286,8 @@ export class CorrectionsService {
       if (!(await employeeExistsInTenant(tx, tenantId, employeeId))) {
         throw attendanceEmployeeNotFound();
       }
+      // Parked access: not even a removal is written for a deactivated member.
+      await assertEmployeeNotDeactivated(tx, tenantId, employeeId);
       await this.lockEmployee(tx, employeeId);
       const row = await this.dayRow(tx, tenantId, employeeId, workDate);
 
@@ -341,6 +348,8 @@ export class CorrectionsService {
       if (!(await employeeExistsInTenant(tx, tenantId, employeeId))) {
         throw attendanceEmployeeNotFound();
       }
+      // Parked access: an ack is a write too — refused for a deactivated member.
+      await assertEmployeeNotDeactivated(tx, tenantId, employeeId);
       // The AD-5 lock — ack serialises against a concurrent put/remove on
       // the same employee like every other write path.
       await this.lockEmployee(tx, employeeId);

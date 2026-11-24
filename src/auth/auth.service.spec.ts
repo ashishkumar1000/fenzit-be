@@ -1340,6 +1340,108 @@ describe('AuthService', () => {
       });
     });
 
+    /**
+     * A predicate-aware membership read: unlike queryChain/awaitedRead above,
+     * it APPLIES the chained `.in('status', [...])` the way PostgREST would —
+     * the row returns only when its status is inside the filter list. This is
+     * what makes a deactivated member provably invisible to the live read.
+     */
+    function statusAwareMembershipRead(row: {
+      tenant_id: string;
+      role: string;
+      status: string;
+    } | null) {
+      const inCalls: Array<[string, string[]]> = [];
+      const matches = () =>
+        row !== null &&
+        inCalls.some(
+          ([column, values]) => column === 'status' && values.includes(row.status),
+        );
+      const chain: Record<string, jest.Mock> = {};
+      for (const m of ['select', 'eq', 'neq']) {
+        chain[m] = jest.fn(() => chain);
+      }
+      chain['in'] = jest.fn((column: string, values: string[]) => {
+        inCalls.push([column, values]);
+        return chain;
+      });
+      // The live read resolves through maybeSingle.
+      chain['maybeSingle'] = jest.fn(() =>
+        Promise.resolve({ data: matches() ? row : null, error: null }),
+      );
+      // The parked fallback read is awaited directly (no maybeSingle).
+      chain['then'] = (resolve: (v: unknown) => void) =>
+        resolve({ data: matches() ? [{ id: 'm-1' }] : [], error: null });
+      return { chain, inCalls };
+    }
+
+    it('a deactivated member signs into the no-company state: the live read excludes them, formerMember true', async () => {
+      const otp = await arrangeLiveSession();
+      const users = queryChain({ data: userRow({ id: userId }), error: null });
+      const parkedRow = {
+        tenant_id: tenantId,
+        role: 'employee',
+        status: 'deactivated',
+      };
+      // The SAME deactivated row feeds both reads; only the filter decides.
+      const liveRead = statusAwareMembershipRead(parkedRow);
+      const parkedRead = statusAwareMembershipRead(parkedRow);
+      const memberships = [liveRead.chain, parkedRead.chain];
+      const admin = {
+        from: jest.fn((table: string) =>
+          table === 'users' ? users : memberships.shift(),
+        ),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      const result = await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      // The live read only ever invites/activates — a deactivated status can
+      // never match it, so the person lands in the parked no-company state.
+      expect(liveRead.inCalls).toContainEqual(['status', ['invited', 'active']]);
+      expect(parkedRead.inCalls).toContainEqual([
+        'status',
+        ['removed', 'deactivated'],
+      ]);
+      expect(result.token).toBe('member-jwt');
+      expect(result.user).toMatchObject({
+        tenantId: null,
+        role: null,
+        formerMember: true,
+      });
+    });
+
+    it('the parked fallback read names deactivated in its status filter — a parked person is recognised, not treated as brand-new', async () => {
+      const otp = await arrangeLiveSession();
+      const users = queryChain({ data: userRow({ id: userId }), error: null });
+      const liveRead = statusAwareMembershipRead(null);
+      const parkedRead = statusAwareMembershipRead({
+        tenant_id: tenantId,
+        role: 'employee',
+        status: 'deactivated',
+      });
+      const memberships = [liveRead.chain, parkedRead.chain];
+      const admin = {
+        from: jest.fn((table: string) =>
+          table === 'users' ? users : memberships.shift(),
+        ),
+      };
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+
+      await service.verifyOtp({
+        otpSessionId: 'session-id',
+        otpCode: otp,
+      });
+
+      expect(parkedRead.inCalls).toContainEqual([
+        'status',
+        ['removed', 'deactivated'],
+      ]);
+    });
+
     it('a failed read of removed memberships is a structured 500 and gives no token', async () => {
       const otp = await arrangeLiveSession();
       const users = queryChain({ data: userRow({ id: userId }), error: null });

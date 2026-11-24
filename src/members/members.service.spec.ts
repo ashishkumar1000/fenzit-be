@@ -1,8 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { StorageService } from '../storage/storage.service';
 import { MembersService } from './members.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
@@ -189,6 +192,94 @@ describe('MembersService', () => {
       expect(members[1].avatarUrl).toBe(
         'https://signed.example/avatars/u-2/ok.jpg',
       );
+    });
+  });
+
+  describe('getMember', () => {
+    /** A full membership row as the company-member reader selects it. */
+    function memberDetailRow(overrides: Record<string, unknown> = {}) {
+      return {
+        user_id: 'member-1',
+        role: 'employee',
+        status: 'active',
+        employee_code: 'EMP-001',
+        created_at: '2026-06-20T00:00:00Z',
+        can_create_jobs: false,
+        job_approval_required: false,
+        users: {
+          name: 'Ravi Kumar',
+          email: 'ravi@example.com',
+          country_code: '+91',
+          phone_number: '9000000000',
+          disabled: false,
+          avatar_key: null,
+          user_skills: [{ skills: { id: 's-1', name: 'Plumbing' } }],
+        },
+        ...overrides,
+      };
+    }
+
+    it('answers 404 RESOURCE_NOT_FOUND when the person is not a member of this company (cross-tenant, removed, or unknown)', async () => {
+      const { service } = build({ query: { data: [], error: null } });
+
+      const err = await service
+        .getMember(companyAdmin, 'stranger-1')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect(bodyOf(err)).toMatchObject({
+        error_code: 'RESOURCE_NOT_FOUND',
+        message: 'The person is not a member of this company',
+      });
+    });
+
+    it('serves the exact member view — skills and photo link in, and NO statutory field on it (23-1)', async () => {
+      const { service } = build({
+        query: { data: [memberDetailRow()], error: null },
+      });
+
+      const view = await service.getMember(companyAdmin, 'member-1');
+
+      // Exact shape: the list sibling plus skills and the signed photo link.
+      expect(Object.keys(view).sort()).toEqual(
+        [
+          'avatarUrl',
+          'canCreateJobs',
+          'countryCode',
+          'createdAt',
+          'employeeCode',
+          'email',
+          'jobApprovalRequired',
+          'name',
+          'phoneNumber',
+          'role',
+          'skills',
+          'status',
+          'userId',
+        ].sort(),
+      );
+      // The 23-1 privacy invariant spelled out field by field: PAN, DOB, PF,
+      // UAN and the bank details stay behind GET /members/:id/employment only.
+      for (const statutory of [
+        'pan',
+        'date_of_birth',
+        'dateOfBirth',
+        'pf_account_number',
+        'pfAccountNumber',
+        'uan_number',
+        'uanNumber',
+        'bank_account_number',
+        'bankAccountNumber',
+        'ifsc',
+        'ifscCode',
+        'bank_name',
+        'bankName',
+      ]) {
+        expect(view).not.toHaveProperty(statutory);
+      }
+      expect(JSON.stringify(view)).not.toContain('avatarKey');
+      expect(view.skills).toEqual([{ id: 's-1', name: 'Plumbing' }]);
+      expect(view.avatarUrl).toBeNull();
     });
   });
 
@@ -915,6 +1006,223 @@ describe('MembersService', () => {
       expect(status).toBe(409);
       expect(body).toMatchObject({ error_code: 'EMPLOYMENT_RECORD_CHANGED' });
       expect(String(body['message'])).toContain('changed since it was read');
+    });
+  });
+
+  describe('setActive — park / reinstate a member', () => {
+    /**
+     * setActive runs ONE pg transaction (the employment describe's table
+     * cousin): the stand-in dispatches on the SQL shape — the exclusive
+     * tenant lock, the `for update` membership read, the last-admin count
+     * and the guarded UPDATE — never on call order.
+     */
+    function buildSetActive(
+      opts: {
+        memberRow?: Record<string, unknown> | null;
+        otherAdmins?: number;
+        updateRowCount?: number;
+        rpcResult?: { data: unknown; error: unknown };
+      } = {},
+    ) {
+      const queries: { sql: string; params?: unknown[] }[] = [];
+      const tx = {
+        query: jest.fn((sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          if (sql.includes('attendance_lock_tenant')) return { rows: [] };
+          if (sql.includes('for update'))
+            return { rows: opts.memberRow ? [opts.memberRow] : [] };
+          if (sql.includes('count(*)::int'))
+            return { rows: [{ n: opts.otherAdmins ?? 0 }] };
+          if (sql.includes('update public.memberships'))
+            return {
+              rowCount: opts.updateRowCount ?? 1,
+              rows: [{ status: 'set' }],
+            };
+          throw new Error(`unclassified query: ${sql}`);
+        }),
+      };
+      const pg = {
+        withTransaction: (work: (client: unknown) => Promise<unknown>) =>
+          work(tx),
+      } as unknown as PgPoolFactory;
+      const factory = {
+        createAdmin: jest.fn(() => admin),
+      } as unknown as jest.Mocked<SupabaseClientFactory>;
+      const rpc = jest
+        .fn()
+        .mockResolvedValue(opts.rpcResult ?? { data: null, error: null });
+      const admin = { rpc };
+      const storage = { presignReadUrl: jest.fn() };
+      const service = new MembersService(
+        factory,
+        storage as unknown as StorageService,
+        pg,
+      );
+      return { service, tx, queries, rpc };
+    }
+
+    const membershipRow = (
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      status: 'active',
+      role: 'employee',
+      employee_code: 'EMP-001',
+      ...overrides,
+    });
+
+    it('refuses to change your own access with 403 MEMBERSHIP_SELF, before any read', async () => {
+      const { service, tx } = buildSetActive();
+
+      const err = await service
+        .setActive(companyAdmin, 'admin-1', false)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'MEMBERSHIP_SELF' });
+      expect(tx.query).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 RESOURCE_NOT_FOUND for a person who is not a member of this company', async () => {
+      const { service } = buildSetActive({ memberRow: null });
+
+      const err = await service
+        .setActive(companyAdmin, 'stranger-1', false)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    });
+
+    it('deactivating someone who is not active answers 409 MEMBERSHIP_STATE — a move only leaves the state it names', async () => {
+      const { service } = buildSetActive({
+        memberRow: membershipRow({ status: 'invited' }),
+      });
+
+      const err = await service
+        .setActive(companyAdmin, 'member-1', false)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({
+        error_code: 'MEMBERSHIP_STATE',
+        message: 'Only an active member can be deactivated',
+      });
+    });
+
+    it('reinstating someone who is not deactivated answers the same 409, with its own message', async () => {
+      const { service } = buildSetActive({ memberRow: membershipRow() });
+
+      const err = await service
+        .setActive(companyAdmin, 'member-1', true)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({
+        error_code: 'MEMBERSHIP_STATE',
+        message: 'Only a deactivated member can be reinstated',
+      });
+    });
+
+    it('deactivating the last active admin answers 409 LAST_ADMIN', async () => {
+      const { service } = buildSetActive({
+        memberRow: membershipRow({ role: 'company_admin' }),
+        otherAdmins: 0,
+      });
+
+      const err = await service
+        .setActive(companyAdmin, 'member-1', false)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'LAST_ADMIN' });
+    });
+
+    it('a second active admin exists — the deactivation proceeds', async () => {
+      const { service } = buildSetActive({
+        memberRow: membershipRow({ role: 'company_admin' }),
+        otherAdmins: 1,
+      });
+
+      await expect(
+        service.setActive(companyAdmin, 'member-1', false),
+      ).resolves.toMatchObject({ status: 'deactivated' });
+    });
+
+    it('runs under the exclusive tenant lock and writes a guarded UPDATE (state re-checked in the WHERE)', async () => {
+      const { service, queries } = buildSetActive({ memberRow: membershipRow() });
+
+      await service.setActive(companyAdmin, 'member-1', false);
+
+      // First statement: the exclusive tenant lock (same lock space as the
+      // role-change/remove functions), (tenant, true) = exclusive.
+      expect(queries[0].sql).toContain('attendance_lock_tenant');
+      expect(queries[0].params?.[0]).toBe('tenant-A');
+      expect(queries[0].sql).toContain(', true');
+      // The UPDATE carries the from-state as a guard: two racers cannot both win.
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.sql).toContain('status = $4');
+      expect(update?.params).toEqual([
+        'deactivated',
+        'member-1',
+        'tenant-A',
+        'active',
+      ]);
+    });
+
+    it('deactivates and answers the parked state; the audit names member.deactivated with the employee code', async () => {
+      const { service, rpc } = buildSetActive({ memberRow: membershipRow() });
+
+      await expect(
+        service.setActive(companyAdmin, 'member-1', false),
+      ).resolves.toEqual({
+        userId: 'member-1',
+        status: 'deactivated',
+        employeeCode: 'EMP-001',
+      });
+
+      expect(rpc).toHaveBeenCalledWith(
+        'write_audit_row',
+        expect.objectContaining({
+          p_action: 'member.deactivated',
+          p_target_user: 'member-1',
+          p_details: { employee_code: 'EMP-001' },
+        }),
+      );
+    });
+
+    it('reinstates a deactivated member back to active, and the audit names member.reinstated', async () => {
+      const { service, rpc } = buildSetActive({
+        memberRow: membershipRow({ status: 'deactivated' }),
+      });
+
+      await expect(
+        service.setActive(companyAdmin, 'member-1', true),
+      ).resolves.toEqual({
+        userId: 'member-1',
+        status: 'active',
+        employeeCode: 'EMP-001',
+      });
+
+      expect(rpc).toHaveBeenCalledWith(
+        'write_audit_row',
+        expect.objectContaining({ p_action: 'member.reinstated' }),
+      );
+    });
+
+    it('a guarded UPDATE that lost the row (race backstop) answers 409 MEMBERSHIP_STATE', async () => {
+      const { service } = buildSetActive({
+        memberRow: membershipRow(),
+        updateRowCount: 0,
+      });
+
+      const err = await service
+        .setActive(companyAdmin, 'member-1', false)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'MEMBERSHIP_STATE' });
     });
   });
 

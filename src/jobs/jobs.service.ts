@@ -516,6 +516,16 @@ export class JobsService {
           message: 'Technician not found',
         });
       }
+      // Parked access: a deactivated member keeps their records but cannot be
+      // handed new work (the enrolments guard's shape — honest 409, never the
+      // misleading 404 the removed-only filter would miss).
+      if (employee.status === 'deactivated') {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBERSHIP_STATE,
+          message:
+            'This member is deactivated — reinstate them before assigning them a job',
+        });
+      }
     }
 
     // Story 4.3 — skillId must exist in the global skills catalog and be
@@ -882,6 +892,15 @@ export class JobsService {
         throw new NotFoundException({
           error_code: ErrorCode.RESOURCE_NOT_FOUND,
           message: 'Technician not found',
+        });
+      }
+      // Parked access, same as createJob: a deactivated member cannot take a
+      // reassignment either.
+      if (employee.status === 'deactivated') {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBERSHIP_STATE,
+          message:
+            'This member is deactivated — reinstate them before assigning them a job',
         });
       }
     }

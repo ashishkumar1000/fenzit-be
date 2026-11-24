@@ -31,6 +31,7 @@ import {
   type DayDebitRow,
 } from './leave-balance.math';
 import {
+  assertEmployeeNotDeactivated,
   employeeExistsInTenant,
   readEnrolmentFloor,
   readPageSpanFacts,
@@ -419,6 +420,9 @@ export class LeaveBalanceService {
       if (!(await employeeExistsInTenant(tx, tenantId, dto.userId))) {
         throw employeeNotFound();
       }
+      // Parked access: a deactivated member's balance stays viewable but no
+      // new credit lands for them.
+      await assertEmployeeNotDeactivated(tx, tenantId, dto.userId);
       await tx.query('select public.attendance_lock_employee($1)', [
         dto.userId,
       ]);
