@@ -18,12 +18,10 @@ import { pickWeeklyOffDays } from './me-summary.model';
 import {
   CANCEL_SOURCE_STATES,
   type DerivedLeaveStatus,
-  LEAVE_MAX_SPAN_DAYS,
   REVOKE_SOURCE_STATES,
 } from './leave.constants';
 import {
   leaveNotFound,
-  leaveRejectionToException,
   toRequestView,
   type LeaveActionPreview,
   type LeaveApplyPreview,
@@ -32,8 +30,10 @@ import {
   type LeaveRequestView,
 } from './leave.model';
 import {
+  countActiveEmployees,
   findCheckedInDates,
   findDaysForRequests,
+  findOfficeNames,
   findOverlappingDays,
   findRequestWithDays,
   listLeaveRequests,
@@ -449,6 +449,16 @@ export class LeaveReadService {
     };
   }
 
+  /** The calendar rail's team-size fact: this company's active employees —
+   *  the console's availability meter divides the month's leave days by
+   *  this headcount's working capacity. */
+  async readSummary(owner: RequestUser): Promise<{ activeEmployees: number }> {
+    const tenantId = requireTenant(owner);
+    return this.pg.withTransaction(async (tx) => ({
+      activeEmployees: await countActiveEmployees(tx, tenantId),
+    }));
+  }
+
   // ----------------------------------------------------------------- list
 
   private async listTransact(
@@ -523,6 +533,18 @@ export class LeaveReadService {
       this.storageService,
       pageRows.map((r) => r.avatar_key),
     );
+    // The office line is an owner-list concern (the timeline card's
+    // "EMP-1015 • Office") — one batched read keyed by the tenant's today,
+    // never a join into the keyset query.
+    const officeNames =
+      input.scope === OWNER_LIST_SCOPE
+        ? await findOfficeNames(
+            tx,
+            tenantId,
+            pageRows.map((row) => row.employee_id),
+            await tenantToday(tx, tenantId),
+          )
+        : null;
     const data: LeaveRequestView[] = [];
     for (const row of pageRows) {
       const days: LeaveDayRow[] = daysByRequest.get(row.id) ?? [];
@@ -545,6 +567,10 @@ export class LeaveReadService {
         status: row.derived_status,
         employeeName: row.employee_name ?? undefined,
         employeeCode: row.employee_code ?? undefined,
+        leaveTypeId: row.leave_type_id ?? undefined,
+        leaveTypeCode: row.leave_type_code ?? undefined,
+        leaveTypeName: row.leave_type_name ?? undefined,
+        officeName: officeNames?.get(row.employee_id) ?? undefined,
         employeeAvatarUrl: avatarUrlFor(avatarUrls, row.avatar_key),
       });
     }

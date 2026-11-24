@@ -21,6 +21,8 @@ const repoActual = jest.requireActual('./leave.repository');
 const mockListLeaveRequests = jest.fn();
 const mockFindDaysForRequests = jest.fn();
 const mockReadPageSpanFacts = jest.fn();
+const mockFindOfficeNames = jest.fn();
+const mockCountActiveEmployees = jest.fn();
 // 23-14 — the apply-preview path's dependencies (the write path's
 // validation, re-run read-only).
 const mockReadLeaveTypeConfig = jest.fn();
@@ -39,6 +41,9 @@ jest.mock('./leave.repository', () => ({
   listLeaveRequests: (...args: unknown[]) => mockListLeaveRequests(...args),
   findDaysForRequests: (...args: unknown[]) => mockFindDaysForRequests(...args),
   readPageSpanFacts: (...args: unknown[]) => mockReadPageSpanFacts(...args),
+  findOfficeNames: (...args: unknown[]) => mockFindOfficeNames(...args),
+  countActiveEmployees: (...args: unknown[]) =>
+    mockCountActiveEmployees(...args),
   readLeaveTypeConfig: (...args: unknown[]) => mockReadLeaveTypeConfig(...args),
   readEnrolmentFloor: (...args: unknown[]) => mockReadEnrolmentFloor(...args),
   readSettingsGate: (...args: unknown[]) => mockReadSettingsGate(...args),
@@ -74,6 +79,7 @@ const TENANT = '11111111-1111-4111-8111-111111111111';
 const EMP = '22222222-2222-4222-8222-222222222222';
 const OWNER = '55555555-5555-4555-8555-555555555555';
 const ROW_ID = '33333333-3333-4333-8333-333333333333';
+const TYPE_ID = '66666666-6666-4666-8666-666666666666';
 
 function listRow(overrides: Partial<LeaveListRow> = {}): LeaveListRow {
   return {
@@ -90,6 +96,9 @@ function listRow(overrides: Partial<LeaveListRow> = {}): LeaveListRow {
     employee_name: 'Ravi Kumar',
     employee_code: 'EMP-007',
     derived_status: 'approved',
+    leave_type_id: TYPE_ID,
+    leave_type_code: 'earned',
+    leave_type_name: 'Earned Leave',
     ...overrides,
   };
 }
@@ -143,6 +152,8 @@ describe('LeaveReadService listTransact wiring', () => {
     mockListLeaveRequests.mockReset();
     mockFindDaysForRequests.mockReset();
     mockReadPageSpanFacts.mockReset();
+    mockFindOfficeNames.mockReset();
+    mockTenantToday.mockReset();
     // By default the spy DELEGATES to the real batch — the wiring tests
     // below run the whole chain, not a stubbed facts map.
     mockReadPageSpanFacts.mockImplementation(
@@ -170,6 +181,74 @@ describe('LeaveReadService listTransact wiring', () => {
       limit: 20,
     });
     expect(noPhoto.data[0].employeeAvatarUrl).toBeNull();
+  });
+
+  it('carries the request\u2019s leave type for the day modal\u2019s pills \u2014 undefined on legacy rows', async () => {
+    const tx = txWithRows([
+      [], // overrides
+      [{ valid: '[2026-01-01,)', days: [6] }], // tenant default: Saturday off
+      [], // holidays
+    ]);
+    mockListLeaveRequests.mockResolvedValue([
+      listRow(),
+      listRow({
+        id: '33333333-3333-4333-8333-333333333334',
+        leave_type_id: null,
+        leave_type_code: null,
+        leave_type_name: null,
+      }),
+    ]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+
+    const result = await serviceOver(tx).listForOwner(ownerUser(), {
+      limit: 20,
+    });
+
+    expect(result.data[0].leaveTypeId).toBe(TYPE_ID);
+    expect(result.data[0].leaveTypeCode).toBe('earned');
+    expect(result.data[0].leaveTypeName).toBe('Earned Leave');
+    // A legacy request (pre-catalog, nullable column) labels no type.
+    expect(result.data[1].leaveTypeId).toBeUndefined();
+    expect(result.data[1].leaveTypeName).toBeUndefined();
+  });
+
+  it('carries each person\u2019s office covering the tenant\u2019s today — owner list only, undefined without one', async () => {
+    const tx = txWithRows([[], [], []]);
+    const EMP2 = '22222222-2222-4222-8222-222222222223';
+    mockListLeaveRequests.mockResolvedValue([
+      listRow(),
+      listRow({
+        id: '33333333-3333-4333-8333-333333333334',
+        employee_id: EMP2,
+        avatar_key: null,
+      }),
+    ]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map([[EMP, 'Gurgaon Hub']]));
+    mockTenantToday.mockResolvedValue('2026-11-24');
+
+    const result = await serviceOver(tx).listForOwner(ownerUser(), {
+      limit: 20,
+    });
+
+    expect(mockFindOfficeNames).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+      [EMP, EMP2],
+      '2026-11-24', // the tenant's today — never a client date
+    );
+    expect(result.data[0].officeName).toBe('Gurgaon Hub');
+    expect(result.data[1].officeName).toBeUndefined();
+  });
+
+  it('listMine never fetches office names — the office line is owner-list-only', async () => {
+    const tx = txWithRows([[], [], []]);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+
+    await serviceOver(tx).listMine(techUser(), { limit: 20 });
+
+    expect(mockFindOfficeNames).not.toHaveBeenCalled();
   });
 
   it('derives workingDays through the REAL batch: the Saturday weekly off is excluded, and the spans are keyed by row.employee_id', async () => {
@@ -202,6 +281,9 @@ describe('LeaveReadService listTransact wiring', () => {
     expect(result.data[0].status).toBe('approved');
     expect(result.data[0].employeeName).toBe('Ravi Kumar');
     expect(result.data[0].employeeCode).toBe('EMP-007');
+    expect(result.data[0].leaveTypeId).toBe(TYPE_ID);
+    expect(result.data[0].leaveTypeCode).toBe('earned');
+    expect(result.data[0].leaveTypeName).toBe('Earned Leave');
     expect(result.hasMore).toBe(false);
     expect(result.nextCursor).toBeNull();
 
@@ -340,6 +422,21 @@ describe('LeaveReadService listTransact wiring', () => {
     };
     expect(input.from).toBeUndefined();
     expect(input.to).toBeUndefined();
+  });
+});
+
+describe('LeaveReadService readSummary — the rail\u2019s team-size fact', () => {
+  it('answers the active-employee headcount for the owner\u2019s tenant', async () => {
+    mockCountActiveEmployees.mockReset();
+    mockCountActiveEmployees.mockResolvedValue(4);
+
+    const result = await serviceOver({} as PoolClient).readSummary(ownerUser());
+
+    expect(result).toEqual({ activeEmployees: 4 });
+    expect(mockCountActiveEmployees).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+    );
   });
 });
 

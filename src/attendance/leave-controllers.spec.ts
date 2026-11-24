@@ -19,6 +19,11 @@ import { Permission } from '../common/permissions/permissions';
 // me-attendance.controller.spec uses — imported enum, never literals).
 const ROUTE_ARGS_METADATA = '__routeArguments__';
 
+// Nest route metadata keys (the same string mirrors
+// me-attendance.controller.spec uses — never imported enum literals).
+const PATH_METADATA = 'path';
+const METHOD_METADATA = 'method';
+
 type ArgMap = Record<string, { index: number } | undefined>;
 
 function argsOf(target: object, handler: string): ArgMap {
@@ -95,6 +100,20 @@ describe('LeaveController route pins (owner)', () => {
     expect(queryArgAt(LeaveController, 'list', 1)).toBe(true);
   });
 
+  it('the summary read is a bare GET — no param, query, header or body', () => {
+    expect(paramArgAt(LeaveController, 'summary', 1)).toBe(false);
+    expect(queryArgAt(LeaveController, 'summary', 1)).toBe(false);
+    expect(headerArgAt(LeaveController, 'summary', 1)).toBe(false);
+    expect(bodyArgAt(LeaveController, 'summary', 2)).toBe(false);
+  });
+
+  it('the summary read is WIRED as GET attendance/leave/summary — a rename or drop darkens the whole calendar tab while every direct-call test stays green', () => {
+    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe('attendance/leave');
+    const target = LeaveController.prototype['summary'] as object;
+    expect(Reflect.getMetadata(PATH_METADATA, target)).toBe('summary');
+    expect(Reflect.getMetadata(METHOD_METADATA, target)).toBe(0); // RequestMethod.GET
+  });
+
   it('the on-behalf preview takes the query (employeeId + the proposed spend)', () => {
     expect(queryArgAt(LeaveController, 'previewApplyOnBehalf', 1)).toBe(true);
   });
@@ -123,6 +142,7 @@ describe('role guard pins (spec §7)', () => {
     // apply-on-behalf leave.create_on_behalf.
     const expected: Array<[string, Permission]> = [
       ['list', 'leave.read_all'],
+      ['summary', 'leave.read_all'],
       ['previewRevoke', 'leave.read_all'],
       ['approve', 'leave.approve'],
       ['reject', 'leave.approve'],

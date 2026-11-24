@@ -56,6 +56,16 @@ export interface LeaveRequestView {
   employeeCode?: string;
   /** Short-lived link to the employee's photo — list reads only; null when none is set. */
   employeeAvatarUrl?: string | null;
+  /** Owner list reads only — the request's leave type, for the day modal's
+   *  type pills and filters. All three are absent on legacy rows created
+   *  before the fixed catalog (the column is nullable). */
+  leaveTypeId?: string;
+  leaveTypeCode?: string;
+  leaveTypeName?: string;
+  /** Owner list reads only — the employee's office assignment covering the
+   *  tenant's today (the timeline card's office line); absent when the
+   *  person has no current office or on a me-list read. */
+  officeName?: string;
   startDate: string;
   endDate: string;
   part: LeavePart;

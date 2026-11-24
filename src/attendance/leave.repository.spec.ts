@@ -1,10 +1,12 @@
 import type { PoolClient } from 'pg';
 import { DERIVED_STATUS_ORDER, PG_OVERLAP_CONSTRAINT } from './leave.constants';
 import {
+  countActiveEmployees,
   derivedStatusSql,
-  insertLeaveRequest,
   findCheckedInDates,
+  findOfficeNames,
   findOverlappingDays,
+  insertLeaveRequest,
   listLeaveRequests,
   readEnrolmentFloor,
   readPageSpanFacts,
@@ -83,6 +85,39 @@ describe('statement contracts', () => {
     expect(tx.query.mock.calls[0][1]).toContain('2026-09-29');
   });
 
+  it('countActiveEmployees counts employees whose membership is ACTIVE — status pinned so invited/deactivated/removed stay out', async () => {
+    const tx = fakeTx();
+    tx.query.mockResolvedValueOnce({ rows: [{ n: '7' }], rowCount: 1 });
+    await expect(countActiveEmployees(tx, TENANT)).resolves.toBe(7);
+    const [sql, params] = tx.query.mock.calls[0];
+    expect(sql).toContain("role = 'employee'");
+    expect(sql).toContain("status = 'active'");
+    expect(sql).toContain('tenant_id = $1::uuid');
+    expect(params).toEqual([TENANT]);
+  });
+
+  it('findOfficeNames reads the assignment covering the TENANT\u2019s today in one any-array statement (never current_date)', async () => {
+    const tx = fakeTx();
+    tx.query.mockResolvedValueOnce({
+      rows: [{ employee_id: EMPLOYEE, name: 'Gurgaon Hub' }],
+      rowCount: 1,
+    });
+    const names = await findOfficeNames(tx, TENANT, [EMPLOYEE], '2026-11-24');
+    expect(names.get(EMPLOYEE)).toBe('Gurgaon Hub');
+    const [sql, params] = tx.query.mock.calls[0];
+    expect(sql).toContain('= any($2::uuid[])');
+    expect(sql).toContain('valid @> $3::date');
+    expect(sql).not.toContain('current_date');
+    expect(params).toEqual([TENANT, [EMPLOYEE], '2026-11-24']);
+  });
+
+  it('findOfficeNames with an empty page answers an empty map and issues NO statements', async () => {
+    const tx = fakeTx();
+    const names = await findOfficeNames(tx, TENANT, [], '2026-11-24');
+    expect(names.size).toBe(0);
+    expect(tx.query).not.toHaveBeenCalled();
+  });
+
   it('readEnrolmentFloor guards the PG17 lower() NULL of unbounded ranges', async () => {
     const tx = fakeTx();
     await readEnrolmentFloor(tx, EMPLOYEE, '2026-09-29');
@@ -106,6 +141,15 @@ describe('statement contracts', () => {
     expect(sql).toContain('order by r.created_at desc, r.id desc');
     // The derived-status subquery groups by request — one status per request.
     expect(sql).toContain('group by leave_request_id');
+  });
+
+  it('listLeaveRequests carries the type display columns off a LEFT join — a legacy row with no type still lists (the console calendar reads these)', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, { tenantId: TENANT, limit: 20 });
+    const sql = tx.query.mock.calls[0][0] as string;
+    expect(sql).toContain('left join public.leave_types lt on lt.id = r.leave_type_id');
+    expect(sql).toContain('lt.code as leave_type_code');
+    expect(sql).toContain('lt.name as leave_type_name');
   });
 
   it('listLeaveRequests bounds the 27-1 window to the OVERLAP pair, parameterised', async () => {

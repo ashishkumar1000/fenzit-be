@@ -572,6 +572,12 @@ export interface LeaveListRow extends LeaveRequestRow {
   employee_code: string | null;
   avatar_key: string | null;
   derived_status: DerivedLeaveStatus;
+  /** The request's leave type — nullable column (legacy rows pre-catalog).
+   *  The type row is left-joined, so a renamed type still labels its old
+   *  requests honestly. */
+  leave_type_id: string | null;
+  leave_type_code: string | null;
+  leave_type_name: string | null;
 }
 
 /**
@@ -624,6 +630,7 @@ export async function listLeaveRequests(
   const result = await tx.query<LeaveListRow>(
     `select r.id, r.tenant_id, r.employee_id, r.request_id, r.start_date::text,
             r.end_date::text, r.part, r.reason, r.created_by, r.created_at,
+            r.leave_type_id, lt.code as leave_type_code, lt.name as leave_type_name,
             u.name as employee_name, m.employee_code, u.avatar_key,
             s.derived_status
      from public.leave_requests r
@@ -635,12 +642,59 @@ export async function listLeaveRequests(
      left join public.users u on u.id = r.employee_id
      left join public.memberships m
        on m.user_id = r.employee_id and m.tenant_id = r.tenant_id
+     left join public.leave_types lt on lt.id = r.leave_type_id
      where ${conditions.join(' and ')}
      order by r.created_at desc, r.id desc
      limit $${params.length}`,
     params,
   );
   return result.rows;
+}
+
+/** The calendar rail's team size: employees whose membership is 'active' —
+ *  the auth resolver's own notion of "in" (invited has not joined yet,
+ *  deactivated is parked, removed is gone). The console's availability
+ *  meter divides the month's leave days by this headcount's capacity. */
+export async function countActiveEmployees(
+  tx: PoolClient,
+  tenantId: string,
+): Promise<number> {
+  const result = await tx.query<{ n: string }>(
+    `select count(*)::text as n from public.memberships
+     where tenant_id = $1::uuid and role = 'employee' and status = 'active'`,
+    [tenantId],
+  );
+  return Number(result.rows[0]?.n ?? 0);
+}
+
+/**
+ * The page's office names in ONE read — each person's assignment covering
+ * the tenant's today (`today` is TENANT-local, like every date gate here;
+ * the EXCLUDE constraint admits at most one assignment per person per
+ * date, so one row per employee). The owner list's office line reads from
+ * it; the me list never calls this.
+ */
+export async function findOfficeNames(
+  tx: PoolClient,
+  tenantId: string,
+  employeeIds: string[],
+  today: string,
+): Promise<Map<string, string | null>> {
+  const map = new Map<string, string | null>();
+  if (employeeIds.length === 0) return map;
+  const result = await tx.query<{ employee_id: string; name: string | null }>(
+    `select a.employee_id, o.name
+       from public.attendance_office_assignments a
+       join public.attendance_offices o on o.id = a.office_id
+      where a.tenant_id = $1::uuid
+        and a.employee_id = any($2::uuid[])
+        and a.valid @> $3::date`,
+    [tenantId, employeeIds, today],
+  );
+  for (const row of result.rows) {
+    map.set(row.employee_id, row.name);
+  }
+  return map;
 }
 
 /** Day rows for a page of requests (batched; the view builder groups them). */

@@ -129,6 +129,21 @@ export class LeaveController {
     return this.leaveReadService.listForOwner(user, query);
   }
 
+  @Get('summary')
+  @Can('leave.read_all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'The calendar rail\u2019s team-size fact — this company\u2019s active employees',
+  })
+  @ApiOkResponse({
+    description:
+      '{ activeEmployees } — the headcount the console\u2019s availability meter divides the month\u2019s leave days by',
+  })
+  summary(@CurrentUser() user: RequestUser) {
+    return this.leaveReadService.readSummary(user);
+  }
+
   @Get(':id/preview')
   @Can('leave.read_all')
   @HttpCode(HttpStatus.OK)
