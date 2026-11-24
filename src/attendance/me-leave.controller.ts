@@ -29,7 +29,7 @@ import { LeaveTypeView } from './dto/leave-type.dto';
 import { LeaveBalanceView } from './dto/leave-balance.dto';
 import {
   ApplyLeaveDto,
-  ListLeaveQueryDto,
+  ListMeLeaveQueryDto,
   PreviewApplyQueryDto,
 } from './dto/leave.dto';
 import { Can } from '../common/decorators/can.decorator';
@@ -163,7 +163,7 @@ export class MeLeaveController {
     status: 200,
     description: 'PaginatedResponse<request view>, newest first',
   })
-  list(@CurrentUser() user: RequestUser, @Query() query: ListLeaveQueryDto) {
+  list(@CurrentUser() user: RequestUser, @Query() query: ListMeLeaveQueryDto) {
     return this.leaveReadService.listMine(user, query);
   }
 

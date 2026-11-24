@@ -585,6 +585,11 @@ export async function listLeaveRequests(
     tenantId: string;
     employeeId?: string;
     status?: DerivedLeaveStatus;
+    /** Overlap window (owner list, 27-1): the request matches when it
+     *  covers any day of [from, to] — end_date >= from AND
+     *  start_date <= to — so a span hanging over either edge matches. */
+    from?: string;
+    to?: string;
     cursorCreatedAt?: string;
     cursorId?: string;
     limit: number;
@@ -600,6 +605,14 @@ export async function listLeaveRequests(
   if (input.status) {
     params.push(input.status);
     conditions.push(`s.derived_status = $${params.length}::text`);
+  }
+  if (input.from) {
+    params.push(input.from);
+    conditions.push(`r.end_date >= $${params.length}::date`);
+  }
+  if (input.to) {
+    params.push(input.to);
+    conditions.push(`r.start_date <= $${params.length}::date`);
   }
   if (input.cursorCreatedAt && input.cursorId) {
     params.push(input.cursorCreatedAt, input.cursorId);

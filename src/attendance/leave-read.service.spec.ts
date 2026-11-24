@@ -262,6 +262,85 @@ describe('LeaveReadService listTransact wiring', () => {
       }),
     );
   });
+
+  it('listForOwner threads the 27-1 from/to overlap window through to the repository', async () => {
+    const tx = txWithRows([[], [], []]);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+
+    await serviceOver(tx).listForOwner(ownerUser(), {
+      status: 'approved',
+      from: '2026-11-01',
+      to: '2026-11-30',
+    });
+
+    expect(mockListLeaveRequests).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ from: '2026-11-01', to: '2026-11-30' }),
+    );
+  });
+
+  it('listForOwner refuses from > to with a 422 before any query runs (27-1)', () => {
+    const tx = txWithRows([[], [], []]);
+    mockListLeaveRequests.mockResolvedValue([]);
+
+    // The pairing check throws synchronously — before any promise exists.
+    let thrown: unknown;
+    try {
+      serviceOver(tx).listForOwner(ownerUser(), {
+        from: '2026-11-30',
+        to: '2026-11-01',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    // A doomed call never opens the transaction — zero statements ran.
+    expect(mockListLeaveRequests).not.toHaveBeenCalled();
+    expect(tx.query).not.toHaveBeenCalled();
+  });
+
+  it('listForOwner refuses a half-supplied window with a 422 before any query (27-1)', () => {
+    const tx = txWithRows([[], [], []]);
+    mockListLeaveRequests.mockResolvedValue([]);
+
+    let thrown: unknown;
+    try {
+      serviceOver(tx).listForOwner(ownerUser(), { from: '2026-11-01' });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect(mockListLeaveRequests).not.toHaveBeenCalled();
+    expect(tx.query).not.toHaveBeenCalled();
+  });
+
+  it('listMine never carries the 27-1 window — it stays an owner-only capability', async () => {
+    const tx = txWithRows([[], [], []]);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+
+    await serviceOver(tx).listMine(techUser(), {
+      from: '2026-11-01',
+      to: '2026-11-30',
+      limit: 20,
+    });
+
+    const input = mockListLeaveRequests.mock.calls[0][1] as {
+      from?: string;
+      to?: string;
+    };
+    expect(input.from).toBeUndefined();
+    expect(input.to).toBeUndefined();
+  });
 });
 
 // --- 23-14: the apply preview runs the WRITE path's full validation. -------

@@ -1,4 +1,8 @@
-import { Injectable, HttpException } from '@nestjs/common';
+import {
+  Injectable,
+  HttpException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
@@ -52,10 +56,7 @@ import {
   validateApplyFacts,
   validateApplyShape,
 } from './leave-validation';
-import {
-  ApplyLeaveDto,
-  OnBehalfPreviewQueryDto,
-} from './dto/leave.dto';
+import { ApplyLeaveDto, OnBehalfPreviewQueryDto } from './dto/leave.dto';
 import {
   avatarUrlFor,
   presignAvatarUrls,
@@ -72,6 +73,10 @@ export interface LeaveListQuery {
   limit?: number;
   status?: DerivedLeaveStatus;
   employeeId?: string;
+  /** Overlap-window start (owner list, 27-1): end_date >= from. */
+  from?: string;
+  /** Overlap-window end (owner list, 27-1): start_date <= to; from <= to. */
+  to?: string;
 }
 
 /**
@@ -170,7 +175,12 @@ export class LeaveReadService {
     );
   }
 
-  /** FR-17: the owner's list — `?status=pending` is the queue. */
+  /** FR-17: the owner's list — `?status=pending` is the queue; the 27-1
+   *  `from`/`to` pair bounds it to requests OVERLAPPING the window (the
+   *  calendar's month read). Both window checks run here, before the
+   *  transaction — a doomed call never opens one: the pair must be sent
+   *  together (a lone edge is not the documented [from, to] window), and
+   *  from <= to. */
   listForOwner(
     owner: RequestUser,
     query: LeaveListQuery,
@@ -180,10 +190,24 @@ export class LeaveReadService {
     hasMore: boolean;
   }> {
     const tenantId = requireTenant(owner);
+    if ((query.from && !query.to) || (query.to && !query.from)) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'from and to must be sent together',
+      });
+    }
+    if (query.from && query.to && query.from > query.to) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'from must be on or before to',
+      });
+    }
     return this.pg.withTransaction((tx) =>
       this.listTransact(tx, tenantId, {
         employeeId: query.employeeId,
         status: query.status,
+        from: query.from,
+        to: query.to,
         cursor: query.cursor,
         limit: query.limit,
         scope: OWNER_LIST_SCOPE,
@@ -433,6 +457,8 @@ export class LeaveReadService {
     input: {
       employeeId?: string;
       status?: DerivedLeaveStatus;
+      from?: string;
+      to?: string;
       cursor?: string;
       limit?: number;
       scope: CursorScope;
@@ -457,6 +483,8 @@ export class LeaveReadService {
       tenantId,
       employeeId: input.employeeId,
       status: input.status,
+      from: input.from,
+      to: input.to,
       cursorCreatedAt,
       cursorId,
       limit: pageSize,

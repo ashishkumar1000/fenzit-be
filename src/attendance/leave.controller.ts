@@ -115,11 +115,15 @@ export class LeaveController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'FR-17: all leave requests (filters: status — pending is the queue — and employeeId), derived status per request',
+      'FR-17: all leave requests (filters: status — pending is the queue — employeeId, and the 27-1 from/to overlap window), derived status per request',
   })
   @ApiResponse({
     status: 200,
     description: 'PaginatedResponse<request view + employeeName>, newest first',
+  })
+  @ApiResponse({
+    status: 422,
+    description: 'from or to is not a YYYY-MM-DD date, or from > to',
   })
   list(@CurrentUser() user: RequestUser, @Query() query: ListLeaveQueryDto) {
     return this.leaveReadService.listForOwner(user, query);

@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsDateString,
@@ -12,7 +12,9 @@ import {
   Max,
   MaxLength,
   Min,
+  Validate,
 } from 'class-validator';
+import { AttendanceCalendarDateConstraint } from './attendance-date.validator';
 import {
   LEAVE_MAX_SPAN_DAYS,
   LEAVE_PARTS,
@@ -144,7 +146,36 @@ export class ListLeaveQueryDto {
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? Number(value) : value))
   limit?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "Owner list only: window start, YYYY-MM-DD (tenant-local). Requests OVERLAPPING the window match — end_date >= from AND start_date <= to, both edges inclusive. from and to are sent together, from <= to (422 otherwise) — the calendar's month read.",
+    example: '2026-11-01',
+  })
+  @IsOptional()
+  @Validate(AttendanceCalendarDateConstraint)
+  from?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Owner list only: window end, YYYY-MM-DD (tenant-local); sent together with from, from <= to (422 otherwise).',
+    example: '2026-11-30',
+  })
+  @IsOptional()
+  @Validate(AttendanceCalendarDateConstraint)
+  to?: string;
 }
+
+/**
+ * The employee's own list binds a narrowed copy of the owner query: the 27-1
+ * window is an owner-list capability (listMine drops it), so this endpoint
+ * neither validates nor advertises from/to — a client sending them there
+ * gets the same silent-strip every unknown key gets.
+ */
+export class ListMeLeaveQueryDto extends OmitType(ListLeaveQueryDto, [
+  'from',
+  'to',
+] as const) {}
 
 export class PreviewApplyQueryDto {
   @ApiProperty({ description: 'Range start, YYYY-MM-DD' })

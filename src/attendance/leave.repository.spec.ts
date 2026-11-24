@@ -108,6 +108,38 @@ describe('statement contracts', () => {
     expect(sql).toContain('group by leave_request_id');
   });
 
+  it('listLeaveRequests bounds the 27-1 window to the OVERLAP pair, parameterised', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, {
+      tenantId: TENANT,
+      status: 'approved',
+      from: '2026-11-01',
+      to: '2026-11-30',
+      limit: 20,
+    });
+    const sql = tx.query.mock.calls[0][0] as string;
+    // Overlap, not containment: a span hanging over either window edge matches.
+    expect(sql).toContain('r.end_date >= $3::date');
+    expect(sql).toContain('r.start_date <= $4::date');
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    expect(params).toContain('2026-11-01');
+    expect(params).toContain('2026-11-30');
+    expect(sql).not.toContain('2026-11-01');
+    expect(sql).not.toContain('2026-11-30');
+  });
+
+  it('listLeaveRequests without the window ships no overlap predicates (27-1 regression)', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, {
+      tenantId: TENANT,
+      status: 'pending',
+      limit: 20,
+    });
+    const sql = tx.query.mock.calls[0][0] as string;
+    expect(sql).not.toContain('r.end_date >=');
+    expect(sql).not.toContain('r.start_date <=');
+  });
+
   it('every list statement is parameterised end to end (no string interpolation of inputs)', async () => {
     const tx = fakeTx();
     await listLeaveRequests(tx, {

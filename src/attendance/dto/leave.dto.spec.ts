@@ -166,6 +166,38 @@ describe('ListLeaveQueryDto', () => {
       ).some((e) => e.property === 'employeeId'),
     ).toBe(true);
   });
+
+  it('admits a well-formed from/to window; malformed and impossible dates fail (27-1)', async () => {
+    expect(
+      await validate(
+        plainToInstance(ListLeaveQueryDto, {
+          from: '2026-11-01',
+          to: '2026-11-30',
+        }),
+      ),
+    ).toHaveLength(0);
+    expect(
+      (
+        await validate(plainToInstance(ListLeaveQueryDto, { from: 'garbage' }))
+      ).some((e) => e.property === 'from'),
+    ).toBe(true);
+    // The house constraint is calendar-aware, not shape-only.
+    expect(
+      (
+        await validate(plainToInstance(ListLeaveQueryDto, { to: '2026-02-30' }))
+      ).some((e) => e.property === 'to'),
+    ).toBe(true);
+    // Date-time strings are not the documented YYYY-MM-DD shape.
+    expect(
+      (
+        await validate(
+          plainToInstance(ListLeaveQueryDto, {
+            from: '2026-11-01T10:00:00.000Z',
+          }),
+        )
+      ).some((e) => e.property === 'from'),
+    ).toBe(true);
+  });
 });
 
 describe('PreviewApplyQueryDto', () => {
@@ -228,9 +260,9 @@ describe('the Story 1 IsUUID trap — real-world non-RFC ids must pass', () => {
       startDate: '2026-12-01',
       leaveTypeId: NON_V4,
     });
-    expect((await validate(dto)).some((e) => e.property === 'leaveTypeId')).toBe(
-      false,
-    );
+    expect(
+      (await validate(dto)).some((e) => e.property === 'leaveTypeId'),
+    ).toBe(false);
   });
 
   it('OnBehalfPreviewQueryDto accepts non-v4 employeeId + leaveTypeId', async () => {
