@@ -1,9 +1,12 @@
 import 'reflect-metadata';
 import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
 import { MeLeaveController } from './me-leave.controller';
 import { LeaveController } from './leave.controller';
 import { CAN_KEY } from '../common/decorators/can.decorator';
 import { Permission } from '../common/permissions/permissions';
+import { ListLeaveQueryDto } from './dto/leave.dto';
 
 /**
  * Route wiring pins for the leave controllers (17-1..17-4). The 16-1
@@ -90,10 +93,10 @@ describe('LeaveController route pins (owner)', () => {
     expect(bodyArgAt(LeaveController, 'applyOnBehalf', 2)).toBe(true);
   });
 
-  it('approve takes neither header nor body (state-guarded, not keyed)', () => {
+  it('approve binds its optional note body and still takes no header — the note is an audit fact, never an idempotency concern (AD-6)', () => {
     expect(paramArgAt(LeaveController, 'approve', 1)).toBe(true);
     expect(headerArgAt(LeaveController, 'approve', 1)).toBe(false);
-    expect(bodyArgAt(LeaveController, 'approve', 2)).toBe(false);
+    expect(bodyArgAt(LeaveController, 'approve', 2)).toBe(true);
   });
 
   it('the owner list takes the query (status/employeeId/cursor)', () => {
@@ -114,8 +117,28 @@ describe('LeaveController route pins (owner)', () => {
     expect(Reflect.getMetadata(METHOD_METADATA, target)).toBe(0); // RequestMethod.GET
   });
 
+  it('the coverage read is WIRED as GET attendance/leave/:id/coverage — a rename or drop blanks the details card\u2019s coverage line while every direct-call test stays green', () => {
+    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe('attendance/leave');
+    const target = LeaveController.prototype['readCoverage'] as object;
+    expect(Reflect.getMetadata(PATH_METADATA, target)).toBe(':id/coverage');
+    expect(Reflect.getMetadata(METHOD_METADATA, target)).toBe(0); // RequestMethod.GET
+  });
+
   it('the on-behalf preview takes the query (employeeId + the proposed spend)', () => {
     expect(queryArgAt(LeaveController, 'previewApplyOnBehalf', 1)).toBe(true);
+  });
+});
+
+describe('ListLeaveQueryDto validation pins', () => {
+  it('q bans NUL — the one character Postgres cannot carry in a text parameter — for an honest 422 instead of a 500, and nothing else', () => {
+    const bad = validateSync(plainToInstance(ListLeaveQueryDto, { q: 'a\u0000b' }));
+    expect(bad.some((error) => error.property === 'q')).toBe(true);
+    // The ban is NUL only: DEL, wildcards and whitespace stay searchable —
+    // Postgres carries them fine and escapeLike handles the wildcards.
+    const good = validateSync(
+      plainToInstance(ListLeaveQueryDto, { q: 'asha\u007F 100%_ok\t' }),
+    );
+    expect(good.some((error) => error.property === 'q')).toBe(false);
   });
 });
 
@@ -144,6 +167,7 @@ describe('role guard pins (spec §7)', () => {
       ['list', 'leave.read_all'],
       ['summary', 'leave.read_all'],
       ['previewRevoke', 'leave.read_all'],
+      ['readCoverage', 'leave.read_all'],
       ['approve', 'leave.approve'],
       ['reject', 'leave.approve'],
       ['revoke', 'leave.approve'],

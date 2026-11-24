@@ -860,6 +860,7 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const view = await service.approve(
       { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
+      null,
     );
     const update = queries.find((q) =>
       q.sql.includes('update public.leave_request_days'),
@@ -883,6 +884,7 @@ describe('LeaveService — approve / reject (17-2)', () => {
       service.approve(
         { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
         REQ_DB_ID,
+        null,
       ),
     );
     expect(status).toBe(409);
@@ -923,6 +925,7 @@ describe('LeaveService — approve / reject (17-2)', () => {
     await service.approve(
       { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
       REQ_DB_ID,
+      null,
     );
     expect(
       queries.some((q) => q.sql.includes('update public.leave_request_days')),
@@ -955,9 +958,49 @@ describe('LeaveService — approve / reject (17-2)', () => {
       service.approve(
         { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
         REQ_DB_ID,
+        null,
       ),
     );
     expect(status).toBe(404);
+  });
+
+  it('rides the approval note onto the audit event’s reason slot — the same home the rejection reason uses, zero new tables', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.approve(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      'Covered by Priya — welcome back',
+    );
+    const event = queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[5]).toBe('Covered by Priya — welcome back');
+  });
+
+  it('approves with NO note and the audit event’s reason slot stays null — never an empty string', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.approve(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      null,
+    );
+    const event = queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[5]).toBeNull();
+  });
+
+  it('approves with a WHITESPACE-ONLY note the same as no note — the DTO trim leaves "", the service stores null', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    await service.approve(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      '   ',
+    );
+    const event = queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[5]).toBeNull();
   });
 });
 

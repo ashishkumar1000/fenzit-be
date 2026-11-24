@@ -112,12 +112,18 @@ export class LeaveService {
     );
   }
 
-  /** 17-2: owner approves — all pending days of the request. */
+  /** 17-2: owner approves — all pending days of the request; the optional
+   *  note rides the approval event's reason slot (the rejection reason's
+   *  own slot — one audit shape, no new column). A note of pure whitespace
+   *  (the DTO's trim leaves `''`) stores as null — never an empty string,
+   *  whatever the client sent. */
   approve(
     owner: RequestUser,
     leaveRequestId: string,
+    note: string | null,
   ): Promise<LeaveRequestView> {
     const tenantId = requireTenant(owner);
+    const trimmedNote = note?.trim() ? note.trim() : null;
     return this.pg.withTransaction((tx) =>
       this.actTransact(tx, tenantId, owner.userId, leaveRequestId, {
         sourceStates: PENDING_SOURCE_STATES,
@@ -125,7 +131,7 @@ export class LeaveService {
         cause: 'approve',
         conflictCode: ErrorCode.LEAVE_NOT_PENDING,
         conflictMessage: 'This request is no longer pending',
-        reason: null,
+        reason: trimmedNote,
       }),
     );
   }

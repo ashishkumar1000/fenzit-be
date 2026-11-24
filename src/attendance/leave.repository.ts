@@ -580,6 +580,13 @@ export interface LeaveListRow extends LeaveRequestRow {
   leave_type_name: string | null;
 }
 
+/** LIKE-pattern escape: the wildcard characters and the escape character
+ *  itself — a needle of "100%" must match "100%", not every "100"
+ *  (user data never reaches the pattern unescaped). */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
 /**
  * One list page (owner or me). Keyset paging under (created_at DESC,
  * id DESC) on the OUTER query — the derived-status subquery never changes
@@ -596,6 +603,10 @@ export async function listLeaveRequests(
      *  start_date <= to — so a span hanging over either edge matches. */
     from?: string;
     to?: string;
+    /** Free-text needle over the person's name, their employee code and
+     *  the request's reason — one case-insensitive contains, one param
+     *  reused across all three columns (owner list only). */
+    q?: string;
     cursorCreatedAt?: string;
     cursorId?: string;
     limit: number;
@@ -619,6 +630,12 @@ export async function listLeaveRequests(
   if (input.to) {
     params.push(input.to);
     conditions.push(`r.start_date <= $${params.length}::date`);
+  }
+  if (input.q) {
+    params.push(`%${escapeLike(input.q)}%`);
+    conditions.push(
+      `(u.name ilike $${params.length} or m.employee_code ilike $${params.length} or r.reason ilike $${params.length})`,
+    );
   }
   if (input.cursorCreatedAt && input.cursorId) {
     params.push(input.cursorCreatedAt, input.cursorId);
@@ -665,6 +682,44 @@ export async function countActiveEmployees(
     [tenantId],
   );
   return Number(result.rows[0]?.n ?? 0);
+}
+
+/**
+ * The whole tenant's request counts by DERIVED status — the requests tab's
+ * filter pills ("Needs review 3"). The same generated CASE the list filters
+ * with, so a pill's number can never disagree with what that filter yields.
+ */
+export async function countLeaveRequestsByStatus(
+  tx: PoolClient,
+  tenantId: string,
+): Promise<Record<DerivedLeaveStatus, number>> {
+  const statusCase = derivedStatusSql();
+  const result = await tx.query<{
+    derived_status: DerivedLeaveStatus;
+    n: string;
+  }>(
+    `select s.derived_status, count(*)::text as n
+     from public.leave_requests r
+     join (
+       select leave_request_id, ${statusCase} as derived_status
+       from public.leave_request_days
+       group by leave_request_id
+     ) s on s.leave_request_id = r.id
+     where r.tenant_id = $1::uuid
+     group by s.derived_status`,
+    [tenantId],
+  );
+  const counts: Record<DerivedLeaveStatus, number> = {
+    pending: 0,
+    approved: 0,
+    revoked: 0,
+    cancelled: 0,
+    rejected: 0,
+  };
+  for (const row of result.rows) {
+    counts[row.derived_status] = Number(row.n);
+  }
+  return counts;
 }
 
 /**
@@ -717,6 +772,93 @@ export async function findDaysForRequests(
     map.set(row.leave_request_id, list);
   }
   return map;
+}
+
+/** One person's office assignment covering the tenant's today — the same
+ *  single-assignment rule findOfficeNames leans on (the EXCLUDE constraint
+ *  admits at most one per person per date), carrying the office id the
+ *  coverage check scopes its roster by. */
+export async function findOfficeAssignment(
+  tx: PoolClient,
+  tenantId: string,
+  employeeId: string,
+  today: string,
+): Promise<{ officeId: string; officeName: string } | null> {
+  const result = await tx.query<{ office_id: string; name: string }>(
+    `select a.office_id, o.name
+       from public.attendance_office_assignments a
+       join public.attendance_offices o on o.id = a.office_id
+      where a.tenant_id = $1::uuid
+        and a.employee_id = $2::uuid
+        and a.valid @> $3::date
+      limit 1`,
+    [tenantId, employeeId, today],
+  );
+  const row = result.rows[0];
+  return row ? { officeId: row.office_id, officeName: row.name } : null;
+}
+
+export interface AvailableColleague {
+  id: string;
+  name: string;
+}
+
+/**
+ * The coverage check's roster: ACTIVE employees (countActiveEmployees' own
+ * notion of "in" — no office or enrolment test) — scoped to the requester's
+ * office when they have one, company-wide when they do not (which must NOT
+ * require an office assignment: an office-less active employee is still a
+ * colleague who can cover) — excluding the requester, and holding NO
+ * pending-or-approved leave day OF THIS TENANT inside the span (the tenant
+ * predicate keeps a re-invited user's stale days at a previous company
+ * from punching them out here). Ordered by name so the one named on-duty
+ * person is deterministic.
+ */
+export async function findAvailableColleagues(
+  tx: PoolClient,
+  input: {
+    tenantId: string;
+    excludeEmployeeId: string;
+    today: string;
+    officeId: string | null;
+    start: string;
+    end: string;
+  },
+): Promise<AvailableColleague[]> {
+  const officeScoped = input.officeId !== null;
+  const conditions = [
+    'm.tenant_id = $1::uuid',
+    "m.role = 'employee'",
+    "m.status = 'active'",
+    'm.user_id <> $2::uuid',
+  ];
+  const params: unknown[] = [input.tenantId, input.excludeEmployeeId];
+  if (officeScoped) {
+    params.push(input.today, input.officeId);
+    conditions.push('a.valid @> $3::date', 'a.office_id = $4::uuid');
+  }
+  params.push(ACTIVE_LEAVE_STATES);
+  const statesAt = params.length;
+  conditions.push(
+    `not exists (
+       select 1 from public.leave_request_days d
+        where d.employee_id = m.user_id
+          and d.tenant_id = $1::uuid
+          and d.state = any($${statesAt}::text[])
+          and d.leave_date between $${statesAt + 1}::date and $${statesAt + 2}::date
+     )`,
+  );
+  params.push(input.start, input.end);
+  const result = await tx.query<AvailableColleague>(
+    `select u.id, u.name
+       from public.memberships m
+       join public.users u on u.id = m.user_id
+       ${officeScoped ? 'join public.attendance_office_assignments a on a.employee_id = m.user_id and a.tenant_id = m.tenant_id' : ''}
+      where ${conditions.join(' and ')}
+      order by u.name`,
+    params,
+  );
+  return result.rows;
 }
 
 /**

@@ -23,6 +23,10 @@ const mockFindDaysForRequests = jest.fn();
 const mockReadPageSpanFacts = jest.fn();
 const mockFindOfficeNames = jest.fn();
 const mockCountActiveEmployees = jest.fn();
+const mockCountLeaveRequestsByStatus = jest.fn();
+const mockFindRequestWithDays = jest.fn();
+const mockFindOfficeAssignment = jest.fn();
+const mockFindAvailableColleagues = jest.fn();
 // 23-14 — the apply-preview path's dependencies (the write path's
 // validation, re-run read-only).
 const mockReadLeaveTypeConfig = jest.fn();
@@ -44,6 +48,13 @@ jest.mock('./leave.repository', () => ({
   findOfficeNames: (...args: unknown[]) => mockFindOfficeNames(...args),
   countActiveEmployees: (...args: unknown[]) =>
     mockCountActiveEmployees(...args),
+  countLeaveRequestsByStatus: (...args: unknown[]) =>
+    mockCountLeaveRequestsByStatus(...args),
+  findRequestWithDays: (...args: unknown[]) => mockFindRequestWithDays(...args),
+  findOfficeAssignment: (...args: unknown[]) =>
+    mockFindOfficeAssignment(...args),
+  findAvailableColleagues: (...args: unknown[]) =>
+    mockFindAvailableColleagues(...args),
   readLeaveTypeConfig: (...args: unknown[]) => mockReadLeaveTypeConfig(...args),
   readEnrolmentFloor: (...args: unknown[]) => mockReadEnrolmentFloor(...args),
   readSettingsGate: (...args: unknown[]) => mockReadSettingsGate(...args),
@@ -423,19 +434,168 @@ describe('LeaveReadService listTransact wiring', () => {
     expect(input.from).toBeUndefined();
     expect(input.to).toBeUndefined();
   });
+
+  it('the owner list forwards the free-text needle to the repository; the me list drops it', async () => {
+    mockListLeaveRequests.mockReset();
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockReadPageSpanFacts.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map());
+
+    await serviceOver(txWithRows([[], [], []])).listForOwner(ownerUser(), {
+      q: 'Asha',
+      limit: 20,
+    });
+    expect(
+      (mockListLeaveRequests.mock.calls[0][1] as { q?: string }).q,
+    ).toBe('Asha');
+
+    mockListLeaveRequests.mockClear();
+    await serviceOver(txWithRows([[], [], []])).listMine(techUser(), {
+      q: 'Asha',
+      limit: 20,
+    });
+    expect(
+      (mockListLeaveRequests.mock.calls[0][1] as { q?: string }).q,
+    ).toBeUndefined();
+  });
 });
 
-describe('LeaveReadService readSummary — the rail\u2019s team-size fact', () => {
-  it('answers the active-employee headcount for the owner\u2019s tenant', async () => {
+describe('LeaveReadService readSummary — the rail\u2019s team-size fact and the pills\u2019 counts', () => {
+  it('answers the headcount plus the whole-tenant counts by derived status', async () => {
     mockCountActiveEmployees.mockReset();
     mockCountActiveEmployees.mockResolvedValue(4);
+    mockCountLeaveRequestsByStatus.mockReset();
+    mockCountLeaveRequestsByStatus.mockResolvedValue({
+      pending: 3,
+      approved: 11,
+      revoked: 2,
+      cancelled: 1,
+      rejected: 1,
+    });
 
     const result = await serviceOver({} as PoolClient).readSummary(ownerUser());
 
-    expect(result).toEqual({ activeEmployees: 4 });
+    expect(result).toEqual({
+      activeEmployees: 4,
+      counts: {
+        pending: 3,
+        approved: 11,
+        revoked: 2,
+        cancelled: 1,
+        rejected: 1,
+      },
+    });
     expect(mockCountActiveEmployees).toHaveBeenCalledWith(
       expect.anything(),
       TENANT,
+    );
+    expect(mockCountLeaveRequestsByStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+    );
+  });
+});
+
+describe('LeaveReadService readCoverage — the details card\u2019s coverage check', () => {
+  const REQUEST = {
+    request: {
+      id: ROW_ID,
+      tenant_id: TENANT,
+      employee_id: EMP,
+      request_id: '44444444-4444-4444-8444-444444444444',
+      start_date: '2026-11-27',
+      end_date: '2026-11-28',
+      part: 'full_day' as const,
+      reason: '',
+      created_by: EMP,
+      created_at: '2026-11-20T10:00:00.000Z',
+    },
+    days: [],
+  };
+  const OFFICE = { officeId: 'o-1', officeName: 'San Francisco Office' };
+
+  beforeEach(() => {
+    for (const mock of [
+      mockFindRequestWithDays,
+      mockTenantToday,
+      mockFindOfficeAssignment,
+      mockFindAvailableColleagues,
+    ]) {
+      mock.mockReset();
+    }
+    mockTenantToday.mockResolvedValue('2026-11-24');
+    mockFindRequestWithDays.mockResolvedValue(REQUEST);
+  });
+
+  it('scopes the roster to the requester\u2019s office and names the first available colleague', async () => {
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([
+      { id: 'c-1', name: 'Priya Sharma' },
+      { id: 'c-2', name: 'Ravi Kumar' },
+    ]);
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    expect(result).toEqual({
+      officeName: 'San Francisco Office',
+      availableCount: 2,
+      onDutyName: 'Priya Sharma',
+    });
+    expect(mockFindAvailableColleagues).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        tenantId: TENANT,
+        excludeEmployeeId: EMP,
+        today: '2026-11-24',
+        officeId: OFFICE.officeId,
+        start: '2026-11-27',
+        end: '2026-11-28',
+      },
+    );
+  });
+
+  it('falls back to the company-wide roster when the requester has no office', async () => {
+    mockFindOfficeAssignment.mockResolvedValue(null);
+    mockFindAvailableColleagues.mockResolvedValue([]);
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    expect(result).toEqual({
+      officeName: null,
+      availableCount: 0,
+      onDutyName: null,
+    });
+    expect(mockFindAvailableColleagues).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ officeId: null }),
+    );
+  });
+
+  it('404s a request outside the tenant — no existence leak, no roster read', async () => {
+    mockFindRequestWithDays.mockResolvedValue(null);
+    const thrown = await serviceOver({} as PoolClient)
+      .readCoverage(ownerUser(), ROW_ID)
+      .catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(HttpStatus.NOT_FOUND);
+    expect(mockFindAvailableColleagues).not.toHaveBeenCalled();
+  });
+
+  it('reads the request with the OWNER\u2019s tenant id — the isolation-bearing first read', async () => {
+    mockFindOfficeAssignment.mockResolvedValue(null);
+    mockFindAvailableColleagues.mockResolvedValue([]);
+    await serviceOver({} as PoolClient).readCoverage(ownerUser(), ROW_ID);
+    expect(mockFindRequestWithDays).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+      ROW_ID,
     );
   });
 });

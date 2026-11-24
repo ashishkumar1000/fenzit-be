@@ -1,9 +1,16 @@
 import type { PoolClient } from 'pg';
-import { DERIVED_STATUS_ORDER, PG_OVERLAP_CONSTRAINT } from './leave.constants';
+import {
+  ACTIVE_LEAVE_STATES,
+  DERIVED_STATUS_ORDER,
+  PG_OVERLAP_CONSTRAINT,
+} from './leave.constants';
 import {
   countActiveEmployees,
+  countLeaveRequestsByStatus,
   derivedStatusSql,
+  findAvailableColleagues,
   findCheckedInDates,
+  findOfficeAssignment,
   findOfficeNames,
   findOverlappingDays,
   insertLeaveRequest,
@@ -25,6 +32,7 @@ import { isoWeekdayOf } from '../common/day-status/day-context';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const EMPLOYEE = '22222222-2222-4222-8222-222222222222';
+const OFFICE = '33333333-3333-4333-8333-333333333333';
 
 function fakeTx() {
   const tx = {
@@ -199,6 +207,139 @@ describe('statement contracts', () => {
     expect(sql).not.toContain(EMPLOYEE);
     expect(sql).not.toContain('2026-09-28T10:00:00.000Z');
     expect(sql).not.toContain('req-0');
+  });
+
+  it('listLeaveRequests applies the search needle as ONE parameter across name, code and reason — escaped against LIKE wildcards', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, { tenantId: TENANT, q: '100%', limit: 20 });
+    const sql = tx.query.mock.calls[0][0] as string;
+    expect(sql).toContain('u.name ilike $');
+    expect(sql).toContain('m.employee_code ilike $');
+    expect(sql).toContain('r.reason ilike $');
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    // "100%" matches "100%", never every "100" — the wildcards are escaped.
+    expect(params).toContain('%100\\%%');
+    // The other two wildcard characters escape too: a bare `_` is a
+    // single-char wildcard and a raw trailing backslash corrupts the
+    // escape sequence itself.
+    await listLeaveRequests(tx, { tenantId: TENANT, q: 'a_b', limit: 20 });
+    expect(tx.query.mock.calls[1][1]).toContain('%a\\_b%');
+    await listLeaveRequests(tx, { tenantId: TENANT, q: 'c:\\path', limit: 20 });
+    expect(tx.query.mock.calls[2][1]).toContain('%c:\\\\path%');
+  });
+
+  it('listLeaveRequests without the needle ships no ilike predicate', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, { tenantId: TENANT, limit: 20 });
+    expect(tx.query.mock.calls[0][0] as string).not.toContain('ilike');
+  });
+
+  it('countLeaveRequestsByStatus counts over the SAME generated CASE the list filters with and zero-defaults the statuses with no rows', async () => {
+    const tx = fakeTx();
+    tx.query.mockResolvedValueOnce({
+      rows: [
+        { derived_status: 'pending', n: '3' },
+        { derived_status: 'approved', n: '11' },
+      ],
+      rowCount: 2,
+    });
+    const counts = await countLeaveRequestsByStatus(tx, TENANT);
+    const sql = tx.query.mock.calls[0][0] as string;
+    expect(sql).toContain('select s.derived_status, count(*)::text as n');
+    expect(sql).toContain('group by s.derived_status');
+    expect(sql).toContain('r.tenant_id = $1::uuid');
+    // The pill counts and the status filter read the same CASE — they can
+    // never disagree.
+    expect(sql).toContain(derivedStatusSql());
+    expect(tx.query.mock.calls[0][1]).toEqual([TENANT]);
+    expect(counts).toEqual({
+      pending: 3,
+      approved: 11,
+      revoked: 0,
+      cancelled: 0,
+      rejected: 0,
+    });
+  });
+
+  it('findOfficeAssignment reads the one TODAY-covering assignment — office id and name to scope the coverage roster by', async () => {
+    const tx = fakeTx();
+    tx.query.mockResolvedValueOnce({
+      rows: [{ office_id: OFFICE, name: 'San Francisco Office' }],
+      rowCount: 1,
+    });
+    const found = await findOfficeAssignment(
+      tx,
+      TENANT,
+      EMPLOYEE,
+      '2026-11-24',
+    );
+    expect(found).toEqual({
+      officeId: OFFICE,
+      officeName: 'San Francisco Office',
+    });
+    const [sql, params] = tx.query.mock.calls[0];
+    expect(sql).toContain('a.valid @> $3::date');
+    expect(sql).toContain('limit 1');
+    expect(params).toEqual([TENANT, EMPLOYEE, '2026-11-24']);
+  });
+
+  it('findAvailableColleagues keeps ACTIVE colleagues of the requester\u2019s office only — excluding the requester and anyone holding a pending-or-approved day in the span', async () => {
+    const tx = fakeTx();
+    await findAvailableColleagues(tx, {
+      tenantId: TENANT,
+      excludeEmployeeId: EMPLOYEE,
+      today: '2026-11-24',
+      officeId: OFFICE,
+      start: '2026-11-27',
+      end: '2026-11-28',
+    });
+    const sql = tx.query.mock.calls[0][0] as string;
+    expect(sql).toContain("m.role = 'employee'");
+    expect(sql).toContain("m.status = 'active'");
+    expect(sql).toContain('m.user_id <> $2::uuid');
+    expect(sql).toContain('a.valid @> $3::date');
+    expect(sql).toContain('a.office_id = $4::uuid');
+    expect(sql).toContain('not exists');
+    // The leave-day exclusion is TENANT-scoped — a re-invited user's stale
+    // days at a previous company must not punch them out of this roster.
+    expect(sql).toContain('d.tenant_id = $1::uuid');
+    expect(sql).toContain('d.state = any($5::text[])');
+    expect(sql).toContain('d.leave_date between $6::date and $7::date');
+    expect(sql).toContain('order by u.name');
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    expect(params.slice(0, 4)).toEqual([
+      TENANT,
+      EMPLOYEE,
+      '2026-11-24',
+      OFFICE,
+    ]);
+    expect(params[4]).toEqual(ACTIVE_LEAVE_STATES);
+    expect(params.slice(5)).toEqual(['2026-11-27', '2026-11-28']);
+  });
+
+  it('findAvailableColleagues with NO requester office goes COMPANY-WIDE — the office join disappears entirely so office-less actives count too, and today leaves the param list ($3 states, $4/$5 span)', async () => {
+    const tx = fakeTx();
+    await findAvailableColleagues(tx, {
+      tenantId: TENANT,
+      excludeEmployeeId: EMPLOYEE,
+      today: '2026-11-24',
+      officeId: null,
+      start: '2026-11-27',
+      end: '2026-11-28',
+    });
+    const sql = tx.query.mock.calls[0][0] as string;
+    // No join at all — company-wide must include active employees with no
+    // current office assignment (countActiveEmployees' own notion of "in").
+    expect(sql).not.toContain('attendance_office_assignments');
+    expect(sql).not.toContain('a.valid');
+    expect(sql).not.toContain('a.office_id =');
+    expect(sql).toContain("m.role = 'employee'");
+    expect(sql).toContain('d.tenant_id = $1::uuid');
+    expect(sql).toContain('d.state = any($3::text[])');
+    expect(sql).toContain('d.leave_date between $4::date and $5::date');
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    expect(params.slice(0, 3)).toEqual([TENANT, EMPLOYEE, ACTIVE_LEAVE_STATES]);
+    expect(params.slice(3)).toEqual(['2026-11-27', '2026-11-28']);
   });
 });
 

@@ -105,6 +105,19 @@ export class RejectLeaveDto {
   reason?: string | null = null;
 }
 
+export class ApproveLeaveDto {
+  @ApiPropertyOptional({
+    description:
+      'Optional approval note — stored on the approval audit event (leave_events.reason), the same slot the rejection reason uses; the employee-facing surface ships with the mobile decision screens.',
+    maxLength: LEAVE_REASON_MAX,
+  })
+  @Transform(trimString)
+  @IsOptional()
+  @IsString()
+  @MaxLength(LEAVE_REASON_MAX)
+  note?: string | null = null;
+}
+
 export class RevokeLeaveDto {
   @ApiProperty({
     description: 'Why the approved leave is being revoked (required, FR-14)',
@@ -164,17 +177,34 @@ export class ListLeaveQueryDto {
   @IsOptional()
   @Validate(AttendanceCalendarDateConstraint)
   to?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Owner list only: free-text needle over the person's name, their employee code and the request's reason — case-insensitive contains.",
+  })
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  @MaxLength(100)
+  // NUL is the one character Postgres cannot carry in a text parameter —
+  // without this ban it surfaces as a 500 instead of an honest 422.
+  @Matches(/^[^\0]*$/, {
+    message: 'q contains a character that cannot be searched',
+  })
+  q?: string;
 }
 
 /**
  * The employee's own list binds a narrowed copy of the owner query: the 27-1
- * window is an owner-list capability (listMine drops it), so this endpoint
- * neither validates nor advertises from/to — a client sending them there
- * gets the same silent-strip every unknown key gets.
+ * window and the free-text needle are owner-list capabilities (listMine
+ * drops them), so this endpoint neither validates nor advertises from/to/q —
+ * a client sending them there gets the same silent-strip every unknown key
+ * gets.
  */
 export class ListMeLeaveQueryDto extends OmitType(ListLeaveQueryDto, [
   'from',
   'to',
+  'q',
 ] as const) {}
 
 export class PreviewApplyQueryDto {

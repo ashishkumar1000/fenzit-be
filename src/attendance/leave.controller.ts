@@ -28,6 +28,7 @@ import { LeaveReadService } from './leave-read.service';
 import { LeaveTypesService } from './leave-types.service';
 import { LeaveBalanceService } from './leave-balance.service';
 import {
+  ApproveLeaveDto,
   ListLeaveQueryDto,
   OnBehalfLeaveDto,
   OnBehalfPreviewQueryDto,
@@ -134,11 +135,11 @@ export class LeaveController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'The calendar rail\u2019s team-size fact — this company\u2019s active employees',
+      'The console\u2019s leave facts in one read — the calendar rail\u2019s team-size fact and the requests tab\u2019s per-status pill counts',
   })
   @ApiOkResponse({
     description:
-      '{ activeEmployees } — the headcount the console\u2019s availability meter divides the month\u2019s leave days by',
+      '{ activeEmployees, counts } — the headcount the availability meter divides by, plus the whole tenant\u2019s request counts by derived status (the same CASE the list filters with)',
   })
   summary(@CurrentUser() user: RequestUser) {
     return this.leaveReadService.readSummary(user);
@@ -162,12 +163,34 @@ export class LeaveController {
     return this.leaveReadService.previewRevoke(user, id);
   }
 
+  @Get(':id/coverage')
+  @Can('leave.read_all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'The request\u2019s coverage check — who else is available while the requester is out',
+  })
+  @ApiOkResponse({
+    description:
+      '{ officeName, availableCount, onDutyName } — active colleagues at the requester\u2019s office (company-wide when they have none) holding no pending-or-approved day inside the request\u2019s span; onDutyName names one deterministically (first by name)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'The request is not in this company',
+  })
+  readCoverage(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.leaveReadService.readCoverage(user, id);
+  }
+
   @Post(':id/approve')
   @Can('leave.approve')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'FR-13 approve: every pending day becomes approved; the employee is notified',
+      'FR-13 approve: every pending day becomes approved; the employee is notified; the optional note rides the approval audit event',
   })
   @ApiResponse({
     status: 200,
@@ -180,8 +203,9 @@ export class LeaveController {
   approve(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ApproveLeaveDto,
   ) {
-    return this.leaveService.approve(user, id);
+    return this.leaveService.approve(user, id, dto.note ?? null);
   }
 
   @Post(':id/reject')

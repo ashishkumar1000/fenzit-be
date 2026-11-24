@@ -31,8 +31,11 @@ import {
 } from './leave.model';
 import {
   countActiveEmployees,
+  countLeaveRequestsByStatus,
+  findAvailableColleagues,
   findCheckedInDates,
   findDaysForRequests,
+  findOfficeAssignment,
   findOfficeNames,
   findOverlappingDays,
   findRequestWithDays,
@@ -77,6 +80,8 @@ export interface LeaveListQuery {
   from?: string;
   /** Overlap-window end (owner list, 27-1): start_date <= to; from <= to. */
   to?: string;
+  /** Free-text needle over person/code/reason (owner list only). */
+  q?: string;
 }
 
 /**
@@ -208,6 +213,7 @@ export class LeaveReadService {
         status: query.status,
         from: query.from,
         to: query.to,
+        q: query.q,
         cursor: query.cursor,
         limit: query.limit,
         scope: OWNER_LIST_SCOPE,
@@ -449,14 +455,59 @@ export class LeaveReadService {
     };
   }
 
-  /** The calendar rail's team-size fact: this company's active employees —
-   *  the console's availability meter divides the month's leave days by
-   *  this headcount's working capacity. */
-  async readSummary(owner: RequestUser): Promise<{ activeEmployees: number }> {
+  /** The calendar rail's team-size fact plus the requests tab's pill
+   *  counts, in one read: this company's active employees, and the whole
+   *  tenant's request counts by derived status (the same CASE the list
+   *  filters with — a pill's number can never disagree with its filter). */
+  async readSummary(owner: RequestUser): Promise<{
+    activeEmployees: number;
+    counts: Record<DerivedLeaveStatus, number>;
+  }> {
     const tenantId = requireTenant(owner);
     return this.pg.withTransaction(async (tx) => ({
       activeEmployees: await countActiveEmployees(tx, tenantId),
+      counts: await countLeaveRequestsByStatus(tx, tenantId),
     }));
+  }
+
+  /** The requests tab's coverage check: who else is available while this
+   *  requester is out. The span is the REQUEST's own; the roster is the
+   *  active employees at the requester's office (company-wide when the
+   *  person has no current office), each holding no pending-or-approved
+   *  day inside the span. */
+  async readCoverage(
+    owner: RequestUser,
+    leaveRequestId: string,
+  ): Promise<{
+    officeName: string | null;
+    availableCount: number;
+    onDutyName: string | null;
+  }> {
+    const tenantId = requireTenant(owner);
+    return this.pg.withTransaction(async (tx) => {
+      const found = await findRequestWithDays(tx, tenantId, leaveRequestId);
+      if (!found) throw leaveNotFound();
+      const today = await tenantToday(tx, tenantId);
+      const office = await findOfficeAssignment(
+        tx,
+        tenantId,
+        found.request.employee_id,
+        today,
+      );
+      const colleagues = await findAvailableColleagues(tx, {
+        tenantId,
+        excludeEmployeeId: found.request.employee_id,
+        today,
+        officeId: office?.officeId ?? null,
+        start: found.request.start_date,
+        end: found.request.end_date,
+      });
+      return {
+        officeName: office?.officeName ?? null,
+        availableCount: colleagues.length,
+        onDutyName: colleagues[0]?.name ?? null,
+      };
+    });
   }
 
   // ----------------------------------------------------------------- list
@@ -469,6 +520,7 @@ export class LeaveReadService {
       status?: DerivedLeaveStatus;
       from?: string;
       to?: string;
+      q?: string;
       cursor?: string;
       limit?: number;
       scope: CursorScope;
@@ -495,6 +547,7 @@ export class LeaveReadService {
       status: input.status,
       from: input.from,
       to: input.to,
+      q: input.q,
       cursorCreatedAt,
       cursorId,
       limit: pageSize,
