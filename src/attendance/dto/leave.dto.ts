@@ -158,6 +158,12 @@ export class ListLeaveQueryDto {
   })
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? Number(value) : value))
+  // The transform alone turned "abc" into NaN and let PG's 22P02 surface as
+  // a 500 — the validators make it an honest 422 (1..50 is the page the
+  // service clamps to anyway).
+  @IsInt()
+  @Min(1)
+  @Max(50)
   limit?: number;
 
   @ApiPropertyOptional({

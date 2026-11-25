@@ -874,6 +874,35 @@ describe('LeaveService — approve / reject (17-2)', () => {
     expect(view.status).toBe('pending'); // fixture days stay pending — the journey proves the real update
   });
 
+  it('the approval note rides the notification payload (param $4 JSON) — and reads null when the owner sent none', async () => {
+    const noted = fakeTx(baseRouter());
+    await noted.service.approve(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      'Welcome back on the 5th',
+    );
+    const notedInsert = noted.queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(JSON.parse(notedInsert?.params?.[3] as string)['reason']).toBe(
+      'Welcome back on the 5th',
+    );
+    expect(
+      typeof JSON.parse(notedInsert?.params?.[3] as string)['workingDays'],
+    ).toBe('number');
+
+    const silent = fakeTx(baseRouter());
+    await silent.service.approve(
+      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
+      REQ_DB_ID,
+      null,
+    );
+    const silentInsert = silent.queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(JSON.parse(silentInsert?.params?.[3] as string)['reason']).toBeNull();
+  });
+
   // ---- 23-7 follow-up: the freeze gate on the action paths ----
 
   it('refuses an approve whose pending days a locked month owns — the run already consumed them', async () => {
@@ -1001,6 +1030,12 @@ describe('LeaveService — approve / reject (17-2)', () => {
       q.sql.includes('insert into public.leave_events'),
     );
     expect(event?.params?.[5]).toBeNull();
+    // The notification payload rides the same trimmed null — a whitespace
+    // note never reaches the wire as "" or the raw spaces.
+    const notification = queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(JSON.parse(notification?.params?.[3] as string)['reason']).toBeNull();
   });
 });
 

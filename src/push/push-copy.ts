@@ -429,6 +429,10 @@ const PUSH_COPY: {
       visibility: 'PRIVATE',
     },
     ['leave.approved']: {
+      // The payload carries `reason` (the owner's approval note, shipped for
+      // wire parity + the upcoming mobile decision screens) — this copy
+      // deliberately reads the span only. Quoting the note waits on those
+      // screens; revise HERE in the table when they land, nowhere else.
       title: 'Leave approved',
       body: (p) => spanOrEmpty(p),
       channel: PUSH_CHANNEL.attendance,

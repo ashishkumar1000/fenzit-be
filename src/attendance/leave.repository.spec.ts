@@ -149,6 +149,10 @@ describe('statement contracts', () => {
     expect(sql).toContain('order by r.created_at desc, r.id desc');
     // The derived-status subquery groups by request — one status per request.
     expect(sql).toContain('group by leave_request_id');
+    // …and only over THIS tenant's day rows (the plain `tenant_id` without
+    // the `r.` prefix is the subquery's own predicate) — the count used to
+    // group every tenant's days before the join filtered them.
+    expect(sql).toContain('where tenant_id = $1::uuid');
   });
 
   it('listLeaveRequests carries the type display columns off a LEFT join — a legacy row with no type still lists (the console calendar reads these)', async () => {
@@ -248,6 +252,10 @@ describe('statement contracts', () => {
     expect(sql).toContain('select s.derived_status, count(*)::text as n');
     expect(sql).toContain('group by s.derived_status');
     expect(sql).toContain('r.tenant_id = $1::uuid');
+    // The day-row subquery is tenant-scoped too (no `r.` prefix = the
+    // subquery's own where) — grouping all tenants' days before the join
+    // was correct but scanned cross-tenant rows on every summary read.
+    expect(sql).toContain('where tenant_id = $1::uuid');
     // The pill counts and the status filter read the same CASE — they can
     // never disagree.
     expect(sql).toContain(derivedStatusSql());
@@ -288,7 +296,7 @@ describe('statement contracts', () => {
     await findAvailableColleagues(tx, {
       tenantId: TENANT,
       excludeEmployeeId: EMPLOYEE,
-      today: '2026-11-24',
+      anchor: '2026-11-24',
       officeId: OFFICE,
       start: '2026-11-27',
       end: '2026-11-28',
@@ -322,7 +330,7 @@ describe('statement contracts', () => {
     await findAvailableColleagues(tx, {
       tenantId: TENANT,
       excludeEmployeeId: EMPLOYEE,
-      today: '2026-11-24',
+      anchor: '2026-11-24',
       officeId: null,
       start: '2026-11-27',
       end: '2026-11-28',

@@ -45,6 +45,7 @@ import {
   readPageSpanFacts,
   readSettingsGate,
   readSpanFacts,
+  type AvailableColleague,
   type LeaveListRow,
 } from './leave.repository';
 import { assertBalanceForApply } from './leave-balance.service';
@@ -471,10 +472,15 @@ export class LeaveReadService {
   }
 
   /** The requests tab's coverage check: who else is available while this
-   *  requester is out. The span is the REQUEST's own; the roster is the
-   *  active employees at the requester's office (company-wide when the
-   *  person has no current office), each holding no pending-or-approved
-   *  day inside the span. */
+   *  requester is out. The span is the REQUEST's own, and everything
+   *  date-anchored reads the span's FIRST day — an upcoming leave after a
+   *  planned transfer answers the office the leave starts under, not
+   *  today's. The roster is the active employees at that office
+   *  (company-wide when the person has none there), each holding no
+   *  pending-or-approved day inside the span; a SINGLE-day span also drops
+   *  colleagues whose day is a weekly off or holiday, so "available"
+   *  reads "actually working that day" exactly where the card's line
+   *  names someone on duty. */
   async readCoverage(
     owner: RequestUser,
     leaveRequestId: string,
@@ -482,32 +488,71 @@ export class LeaveReadService {
     officeName: string | null;
     availableCount: number;
     onDutyName: string | null;
+    anchorDate: string;
   }> {
     const tenantId = requireTenant(owner);
     return this.pg.withTransaction(async (tx) => {
       const found = await findRequestWithDays(tx, tenantId, leaveRequestId);
       if (!found) throw leaveNotFound();
-      const today = await tenantToday(tx, tenantId);
+      const anchor = found.request.start_date;
       const office = await findOfficeAssignment(
         tx,
         tenantId,
         found.request.employee_id,
-        today,
+        anchor,
       );
       const colleagues = await findAvailableColleagues(tx, {
         tenantId,
         excludeEmployeeId: found.request.employee_id,
-        today,
+        anchor,
         officeId: office?.officeId ?? null,
         start: found.request.start_date,
         end: found.request.end_date,
       });
+      const roster =
+        found.request.start_date === found.request.end_date
+          ? await this.workingThatDay(
+              tx,
+              tenantId,
+              colleagues,
+              found.request.start_date,
+            )
+          : colleagues;
       return {
         officeName: office?.officeName ?? null,
-        availableCount: colleagues.length,
-        onDutyName: colleagues[0]?.name ?? null,
+        availableCount: roster.length,
+        // users.name is nullable and PG sorts an empty string FIRST among
+        // names — pair with the first colleague whose name is a real name
+        // (truthiness, not a null check) so neither null nor '' ever
+        // surfaces as a blank on-duty name.
+        onDutyName: roster.find((c) => c.name)?.name ?? null,
+        anchorDate: anchor,
       };
     });
+  }
+
+  /** Single-day spans only: the leave-free roster minus whoever is on a
+   *  weekly off or holiday that day — the list page's own batched span
+   *  facts (3 statements for the whole roster, the 17s-page lesson's
+   *  machinery). A member with no fact row stays IN: the filter only ever
+   *  proves someone OFF, never invents an absence. */
+  private async workingThatDay(
+    tx: PoolClient,
+    tenantId: string,
+    colleagues: AvailableColleague[],
+    date: string,
+  ): Promise<AvailableColleague[]> {
+    if (colleagues.length === 0) return colleagues;
+    const facts = await readPageSpanFacts(
+      tx,
+      tenantId,
+      colleagues.map((c) => ({ employeeId: c.id, dates: [date] })),
+      pickWeeklyOffDays,
+      isoWeekdayOf,
+    );
+    return colleagues.filter(
+      (c) => facts.get(c.id)?.get(date)?.isWorkingDay !== false,
+    );
   }
 
   // ----------------------------------------------------------------- list

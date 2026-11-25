@@ -140,6 +140,23 @@ describe('ListLeaveQueryDto validation pins', () => {
     );
     expect(good.some((error) => error.property === 'q')).toBe(false);
   });
+
+  it('limit is an integer 1..50 — non-numeric text once NaN\u2019d into PG 22P02 (a 500), 0 and 51 are honest 422s', () => {
+    for (const bad of ['abc', '1.5', '0', '51']) {
+      const errors = validateSync(
+        plainToInstance(ListLeaveQueryDto, { limit: bad }),
+      );
+      expect(errors.some((error) => error.property === 'limit')).toBe(true);
+    }
+    // The Number transform runs in plainToInstance, so a string page size
+    // (the query wire's only shape) validates through to a real integer.
+    const good = validateSync(
+      plainToInstance(ListLeaveQueryDto, { limit: '20' }),
+    );
+    expect(good.some((error) => error.property === 'limit')).toBe(false);
+    const absent = validateSync(plainToInstance(ListLeaveQueryDto, {}));
+    expect(absent.some((error) => error.property === 'limit')).toBe(false);
+  });
 });
 
 describe('role guard pins (spec §7)', () => {

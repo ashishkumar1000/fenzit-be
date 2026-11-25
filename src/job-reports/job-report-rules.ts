@@ -32,7 +32,10 @@ export interface MemberFact {
   role: 'company_admin' | 'employee' | 'viewer';
   name: string | null;
   canCreateJobs: boolean;
-  status: 'invited' | 'active' | 'removed';
+  // 'deactivated' is a real membership status since the profile round
+  // (2026-11-21); the only status branch (`=== 'active'`) already drops
+  // deactivated members from job permission — same treatment as removed.
+  status: 'invited' | 'active' | 'deactivated' | 'removed';
 }
 
 export type CreatorKind = 'owner' | 'employee';

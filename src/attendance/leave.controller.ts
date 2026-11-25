@@ -172,7 +172,7 @@ export class LeaveController {
   })
   @ApiOkResponse({
     description:
-      '{ officeName, availableCount, onDutyName } — active colleagues at the requester\u2019s office (company-wide when they have none) holding no pending-or-approved day inside the request\u2019s span; onDutyName names one deterministically (first by name)',
+      '{ officeName, availableCount, onDutyName, anchorDate } — active colleagues at the requester\u2019s office (company-wide when they have none) holding no pending-or-approved day inside the request\u2019s span. anchorDate is the span\u2019s first day — the date-anchored reads answer the office as of that day, not today (the planned-transfer story). A single-day span also drops colleagues on a weekly off or holiday that day, so the count reads "actually working that day"; multi-day spans read plain leave-free. onDutyName names one deterministically — the first colleague with a real (non-null, non-empty) name, null when nobody is named',
   })
   @ApiResponse({
     status: 404,

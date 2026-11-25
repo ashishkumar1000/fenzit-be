@@ -48,7 +48,7 @@ const TECH_CROSS = randomUUID(); // duplicate-key probe + FR-9
 const TECH_LATE = randomUUID(); // rule 23:59 → today always actionable
 const TECH_EARLY = randomUUID(); // rule 00:30 → cutoff passed all day
 const TECH_FUTURE = randomUUID(); // upcoming — enrolment starts in 5 days
-const TECH_OFF = randomUUID(); // today is a weekly off for them
+const TECH_OFF = randomUUID(); // the half-day check-through probe (18)
 const TECH_DISABLE = randomUUID(); // the D12 disable sweep
 const TECH_OFFDAY = randomUUID(); // the D11 off-day-inside-a-span probe
 const ALL_TECHS = [
@@ -365,7 +365,9 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     await enroll(TECH_OFF, OFFICE_ID, 30);
     await enroll(TECH_DISABLE, OFFICE_ID, 30);
     await enroll(TECH_OFFDAY, OFFICE_ID, 30);
-    // TECH_FUTURE: upcoming — starts in 5 days.
+    // TECH_FUTURE: upcoming — both ranges are UNBOUNDED [today+5,), so at
+    // any later date (probe 29's +120) their enrolment and assignment
+    // cover: they are roster IN, not out.
     await inTx(async (tx) => {
       await tx.query(
         `insert into public.attendance_enrolments (tenant_id, employee_id, valid, enabled_at)
@@ -1190,5 +1192,141 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
       const { error } = await anon.from(table).select('id').limit(1);
       expect(error?.code).toBe('42501'); // permission denied — REVOKE ALL held
     }
+  });
+
+  // ================== round-4 reads (2026-11-25): summary / q / coverage
+
+  it('probe 27: readSummary counts this tenant only — every status counter registers at least one request the probes themselves created', async () => {
+    const summary = await leaveRead.readSummary(ownerUser() as never);
+    // countActiveEmployees reads MEMBERSHIP status: all eight techs are
+    // active employees; the owner (company_admin) never counts.
+    expect(summary.activeEmployees).toBe(ALL_TECHS.length);
+    for (const status of [
+      'pending',
+      'approved',
+      'revoked',
+      'cancelled',
+      'rejected',
+    ] as const) {
+      expect(Number.isInteger(summary.counts[status])).toBe(true);
+    }
+    // The journey above manufactured ≥1 of every derived status: pending
+    // (probes 7/23), approved (10/12), revoked (13/15/24), cancelled (16),
+    // rejected (11/23/25).
+    expect(summary.counts.pending).toBeGreaterThanOrEqual(1);
+    expect(summary.counts.approved).toBeGreaterThanOrEqual(1);
+    expect(summary.counts.revoked).toBeGreaterThanOrEqual(1);
+    expect(summary.counts.cancelled).toBeGreaterThanOrEqual(1);
+    expect(summary.counts.rejected).toBeGreaterThanOrEqual(1);
+    const replay = await leaveRead.readSummary(ownerUser() as never);
+    expect(replay.counts).toEqual(summary.counts);
+  });
+
+  it('probe 28: the owner list answers q over name AND reason — and stays empty for a needle nothing carries', async () => {
+    // q over the person's name: fixture users are literally
+    // `17-4 probe tech <i>` — tech 2 is TECH_LATE.
+    const byName = await leaveRead.listForOwner(ownerUser() as never, {
+      q: 'probe tech 2',
+    });
+    expect(byName.data.length).toBeGreaterThanOrEqual(1);
+    expect(
+      byName.data.every((r) => (r.employeeName ?? '').includes('probe tech 2')),
+    ).toBe(true);
+    // The needle is case-insensitive: the SAME rows answer either spelling.
+    // (Without this leg a LIKE regression — case-sensitive — passes unseen.)
+    const byNameUpper = await leaveRead.listForOwner(ownerUser() as never, {
+      q: 'PROBE TECH 2',
+    });
+    expect(byNameUpper.data.map((r) => r.id).sort()).toEqual(
+      byName.data.map((r) => r.id).sort(),
+    );
+    // q over the request's reason: every apply in this spec files
+    // `17-4 journey probe` (the applyDto default).
+    const byReason = await leaveRead.listForOwner(ownerUser() as never, {
+      q: 'journey probe',
+    });
+    expect(byReason.data.length).toBeGreaterThanOrEqual(1);
+    expect(byReason.data.every((r) => r.reason.includes('journey probe'))).toBe(
+      true,
+    );
+    const nothing = await leaveRead.listForOwner(ownerUser() as never, {
+      q: 'no-such-needle-xyz',
+    });
+    expect(nothing.data).toEqual([]);
+  });
+
+  it('probe 29: readCoverage anchors at the span start — HQ roster, leave-free and working that day, deterministic named on-duty', async () => {
+    const start = addDays(today, 120); // untouched by every earlier span
+    const request = await leave.applyForSelf(
+      techUser(TECH_MAIN) as never,
+      applyDto({ startDate: start, endDate: start }),
+      KEY(),
+    );
+    // The fixture fact the count rides, pinned in the DB itself: HQ
+    // assignments covering +120 belong to exactly MAIN, CROSS, LATE, OFF,
+    // OFFDAY, FUTURE. DISABLE's disable (probe 22) clipped their
+    // assignment to before +120 — they are OUT; FUTURE's [today+5,) is
+    // unbounded so +120 sits INSIDE it (the span-start anchor is exactly
+    // why they count); EARLY is in their own office.
+    const covering = await pool.query(
+      `select a.employee_id from public.attendance_office_assignments a
+       join public.attendance_offices o on o.id = a.office_id
+       where a.tenant_id = $1 and o.name = 'HQ' and a.valid @> $2::date`,
+      [TENANT, start],
+    );
+    expect(covering.rows.map((r) => r.employee_id).sort()).toEqual(
+      [TECH_MAIN, TECH_CROSS, TECH_LATE, TECH_OFF, TECH_OFFDAY, TECH_FUTURE].sort(),
+    );
+    const coverage = await leaveRead.readCoverage(ownerUser() as never, request.id);
+    // TECH_MAIN's HQ assignment ([today-30,)) covers the span start.
+    expect(coverage.officeName).toBe('HQ');
+    expect(coverage.anchorDate).toBe(start);
+    // The six assignees above minus the requester: CROSS, LATE, OFF,
+    // OFFDAY, FUTURE. Nobody holds leave on +120, the fixture sets no
+    // weekly offs or holidays (the +120 single-day workingThatDay filter
+    // drops nobody), so all five are working that day.
+    expect(coverage.availableCount).toBe(5);
+    expect(coverage.onDutyName).toBe('17-4 probe tech 1');
+  });
+
+  it('probe 31: the trgm indexes behind the q needle exist — the manual apply is an enforced pairing', async () => {
+    // Migration 20261125000000 is applied manually (nothing in the jest
+    // path runs migrations), so this pin is the verification half of that
+    // constraint: the three indexes must exist in prod before this suite
+    // is green.
+    const idx = await pool.query(
+      `select indexname from pg_indexes
+       where schemaname = 'public' and indexname in (
+         'users_name_trgm_idx',
+         'memberships_employee_code_trgm_idx',
+         'leave_requests_reason_trgm_idx'
+       )`,
+    );
+    expect(idx.rows.map((r) => r.indexname).sort()).toEqual([
+      'leave_requests_reason_trgm_idx',
+      'memberships_employee_code_trgm_idx',
+      'users_name_trgm_idx',
+    ]);
+  });
+
+  it('probe 30: the approval note rides the real notification payload beside workingDays', async () => {
+    const request = await leave.applyForSelf(
+      techUser(TECH_MAIN) as never,
+      applyDto({ startDate: addDays(today, 130), endDate: addDays(today, 131) }),
+      KEY(),
+    );
+    const approved = await leave.approve(
+      ownerUser() as never,
+      request.id,
+      'Probe approval note',
+    );
+    expect(approved.status).toBe('approved');
+    const payload = await pool.query(
+      "select payload from public.notifications where event_type = 'leave.approved' and entity_id = $1",
+      [request.id],
+    );
+    expect(payload.rows[0].payload['reason']).toBe('Probe approval note');
+    expect(payload.rows[0].payload['workingDays']).toBe(2);
+    expect(payload.rows[0].payload['startDate']).toBe(addDays(today, 130));
   });
 });

@@ -654,6 +654,7 @@ export async function listLeaveRequests(
      join (
        select leave_request_id, ${statusCase} as derived_status
        from public.leave_request_days
+       where tenant_id = $1::uuid
        group by leave_request_id
      ) s on s.leave_request_id = r.id
      left join public.users u on u.id = r.employee_id
@@ -703,6 +704,7 @@ export async function countLeaveRequestsByStatus(
      join (
        select leave_request_id, ${statusCase} as derived_status
        from public.leave_request_days
+       where tenant_id = $1::uuid
        group by leave_request_id
      ) s on s.leave_request_id = r.id
      where r.tenant_id = $1::uuid
@@ -800,26 +802,29 @@ export async function findOfficeAssignment(
 
 export interface AvailableColleague {
   id: string;
-  name: string;
+  /** users.name is nullable — the wire can carry null and the coverage
+   *  line pairs with the first NAMED colleague instead. */
+  name: string | null;
 }
 
 /**
  * The coverage check's roster: ACTIVE employees (countActiveEmployees' own
- * notion of "in" — no office or enrolment test) — scoped to the requester's
- * office when they have one, company-wide when they do not (which must NOT
+ * notion of "in" — no office or enrolment test) — scoped to the office
+ * whose assignment covers `anchor` (the caller passes the leave span's
+ * first day; company-wide when the requester has none — which must NOT
  * require an office assignment: an office-less active employee is still a
  * colleague who can cover) — excluding the requester, and holding NO
  * pending-or-approved leave day OF THIS TENANT inside the span (the tenant
  * predicate keeps a re-invited user's stale days at a previous company
- * from punching them out here). Ordered by name so the one named on-duty
- * person is deterministic.
+ * from punching them out here). Ordered by name (nulls last — Postgres'
+ * ASC default) so the one named on-duty person is deterministic.
  */
 export async function findAvailableColleagues(
   tx: PoolClient,
   input: {
     tenantId: string;
     excludeEmployeeId: string;
-    today: string;
+    anchor: string;
     officeId: string | null;
     start: string;
     end: string;
@@ -834,7 +839,7 @@ export async function findAvailableColleagues(
   ];
   const params: unknown[] = [input.tenantId, input.excludeEmployeeId];
   if (officeScoped) {
-    params.push(input.today, input.officeId);
+    params.push(input.anchor, input.officeId);
     conditions.push('a.valid @> $3::date', 'a.office_id = $4::uuid');
   }
   params.push(ACTIVE_LEAVE_STATES);

@@ -633,6 +633,11 @@ export class LeaveService {
         startDate: request.start_date,
         endDate: request.end_date,
         workingDays: countWorkingDays(actionDates, spanFacts),
+        // The owner's note rides the approval payload like reject/revoke's
+        // reason — for wire parity and the upcoming mobile decision screens.
+        // No employee-facing surface QUOTES it yet (the push copy reads the
+        // span only); when the screens land they decide whether it shows.
+        reason,
       },
     };
   }

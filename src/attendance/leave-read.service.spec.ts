@@ -521,6 +521,7 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
       mockTenantToday,
       mockFindOfficeAssignment,
       mockFindAvailableColleagues,
+      mockReadPageSpanFacts,
     ]) {
       mock.mockReset();
     }
@@ -528,7 +529,7 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
     mockFindRequestWithDays.mockResolvedValue(REQUEST);
   });
 
-  it('scopes the roster to the requester\u2019s office and names the first available colleague', async () => {
+  it('scopes the roster to the span-start office and names the first available colleague — everything anchors at the SPAN, not today', async () => {
     mockFindOfficeAssignment.mockResolvedValue(OFFICE);
     mockFindAvailableColleagues.mockResolvedValue([
       { id: 'c-1', name: 'Priya Sharma' },
@@ -544,18 +545,30 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
       officeName: 'San Francisco Office',
       availableCount: 2,
       onDutyName: 'Priya Sharma',
+      anchorDate: '2026-11-27',
     });
+    // `anchor` is the span's FIRST day — an upcoming leave after a planned
+    // transfer answers the office the leave starts under.
+    expect(mockFindOfficeAssignment).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+      EMP,
+      '2026-11-27',
+    );
     expect(mockFindAvailableColleagues).toHaveBeenCalledWith(
       expect.anything(),
       {
         tenantId: TENANT,
         excludeEmployeeId: EMP,
-        today: '2026-11-24',
+        anchor: '2026-11-27',
         officeId: OFFICE.officeId,
         start: '2026-11-27',
         end: '2026-11-28',
       },
     );
+    // A multi-day span keeps the plain leave-free roster — the working-day
+    // filter is a single-day refinement only.
+    expect(mockReadPageSpanFacts).not.toHaveBeenCalled();
   });
 
   it('falls back to the company-wide roster when the requester has no office', async () => {
@@ -571,11 +584,137 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
       officeName: null,
       availableCount: 0,
       onDutyName: null,
+      anchorDate: '2026-11-27',
     });
     expect(mockFindAvailableColleagues).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ officeId: null }),
     );
+  });
+
+  it('pairs on duty with the first NAMED colleague — an unnamed member ahead in name order never renders a blank name', async () => {
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([
+      // PG ASC orders NULLS LAST (a null name trails at the END), but ''
+      // sorts FIRST among real names — the truthiness pick must skip both.
+      { id: 'c-0', name: null },
+      { id: 'c-0b', name: '' },
+      { id: 'c-1', name: 'Ravi Kumar' },
+    ]);
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    expect(result.availableCount).toBe(3);
+    expect(result.onDutyName).toBe('Ravi Kumar');
+  });
+
+  it('a PAST span anchors the reads at the span start too — the office the leave opened under, not today\u2019s', async () => {
+    mockFindRequestWithDays.mockResolvedValue({
+      ...REQUEST,
+      request: {
+        ...REQUEST.request,
+        start_date: '2026-11-10',
+        end_date: '2026-11-12',
+      },
+    });
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([
+      { id: 'c-1', name: 'Then Roster' },
+    ]);
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    // tenantToday is 2026-11-24 — every date-anchored read answers
+    // 2026-11-10, the day the span opened (the planned-transfer story's
+    // inverse: who covered it THEN, not who is around now).
+    expect(result.anchorDate).toBe('2026-11-10');
+    expect(mockFindOfficeAssignment).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+      EMP,
+      '2026-11-10',
+    );
+    expect(mockFindAvailableColleagues).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        anchor: '2026-11-10',
+        start: '2026-11-10',
+        end: '2026-11-12',
+      }),
+    );
+  });
+
+  it('a single-day span drops weekly-off/holiday colleagues — available reads actually working that day (batched span facts)', async () => {
+    mockFindRequestWithDays.mockResolvedValue({
+      ...REQUEST,
+      request: { ...REQUEST.request, start_date: '2026-11-27', end_date: '2026-11-27' },
+    });
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([
+      { id: 'c-1', name: 'Off Roster' },
+      { id: 'c-2', name: 'Ravi Kumar' },
+    ]);
+    const facts = new Map([
+      [
+        'c-1',
+        new Map([
+          ['2026-11-27', { date: '2026-11-27', isWorkingDay: false, kind: 'weekly_off' }],
+        ]),
+      ],
+      [
+        'c-2',
+        new Map([
+          ['2026-11-27', { date: '2026-11-27', isWorkingDay: true, kind: 'working' }],
+        ]),
+      ],
+    ]);
+    mockReadPageSpanFacts.mockResolvedValue(facts);
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    expect(result).toEqual({
+      officeName: 'San Francisco Office',
+      availableCount: 1,
+      onDutyName: 'Ravi Kumar',
+      anchorDate: '2026-11-27',
+    });
+    expect(mockReadPageSpanFacts).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT,
+      [
+        { employeeId: 'c-1', dates: ['2026-11-27'] },
+        { employeeId: 'c-2', dates: ['2026-11-27'] },
+      ],
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it('a fact-less roster member stays IN — the filter only proves someone off, never invents an absence', async () => {
+    mockFindRequestWithDays.mockResolvedValue({
+      ...REQUEST,
+      request: { ...REQUEST.request, start_date: '2026-11-27', end_date: '2026-11-27' },
+    });
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([{ id: 'c-1', name: 'Solo' }]);
+    mockReadPageSpanFacts.mockResolvedValue(new Map()); // the read missed entirely
+
+    const result = await serviceOver({} as PoolClient).readCoverage(
+      ownerUser(),
+      ROW_ID,
+    );
+
+    expect(result.availableCount).toBe(1);
+    expect(result.onDutyName).toBe('Solo');
   });
 
   it('404s a request outside the tenant — no existence leak, no roster read', async () => {
