@@ -193,6 +193,7 @@ const rejectionOf = async (
 describe('readBalancesFor — the derivation read', () => {
   it('returns one row per accrual-bearing type — disabled included, mode-none and remnants excluded', async () => {
     const { tx } = build({
+      dayRows: [dayRow('2026-08-03', { leave_type_id: SICK_ID })],
       catalogRows: [
         catalogRow(),
         catalogRow({
@@ -229,6 +230,17 @@ describe('readBalancesFor — the derivation read', () => {
       paid: true,
     });
     expect(rows[1]).toMatchObject({ enabled: false });
+    // The disabled gate: sick's 0.5/mo would accrue 2.5 by the as-of — it
+    // answers 0; the row stays and its consumed day still answers — that
+    // visibility is exactly why disabled rows survive the read.
+    expect(rows[1]).toMatchObject({
+      accrualDays: 0.5,
+      credits: 0,
+      accrued: 0,
+      carryForward: 0,
+      consumed: 1,
+      remaining: -1,
+    });
   });
 
   it('derives the FY numbers: credits + as-of accrual + carry-forward - consumed', async () => {
@@ -348,6 +360,27 @@ describe('assertBalanceForApply — the apply-time ladder', () => {
     expect(body).toMatchObject({ error_code: 'LEAVE_INSUFFICIENT_BALANCE' });
     expect(String(body['message'])).toContain('1 day left');
     expect(String(body['message'])).toContain('needs 3 days');
+  });
+
+  it('a disabled type accrues nothing even in the defense gate (callers refuse first)', async () => {
+    const { tx } = build();
+    // The 1/mo rate would grant 5 by the as-of — the enabled gate zeroes
+    // it (both callers already refuse disabled types before this runs;
+    // this pins that the two derivations can never disagree).
+    const { status, body } = await rejectionOf(
+      assertBalanceForApply(
+        tx as unknown as PoolClient,
+        TENANT,
+        EMPLOYEE,
+        { ...earned, enabled: false },
+        dates,
+        'full_day',
+        allWorking,
+        '2026-09-29',
+      ),
+    );
+    expect(status).toBe(422);
+    expect(String(body['message'])).toContain('0 days left');
   });
 
   it('a type that allows over-balance never throws', async () => {

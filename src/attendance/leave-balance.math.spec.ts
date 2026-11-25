@@ -23,7 +23,9 @@ import type { SpanDayFacts } from './leave.repository';
  * join-month-full accrual with its clamps (FY edges, as-of, leaver exit),
  * the part weighting, the floored carry-forward chain (credits + full-FY
  * accrual + prior CF - consumed, only from completed FYs), and the
- * bucket aggregation the service reads feed it.
+ * bucket aggregation the service reads feed it. A disabled type accrues
+ * nothing in any FY — retroactive like a rate edit; its credits and
+ * consumption still answer.
  */
 
 const working = (date: string): [string, SpanDayFacts] => [
@@ -360,16 +362,57 @@ describe('deriveTypeBalance', () => {
     expect(derived.accrued).toBe(5);
   });
 
-  it('a type disabled or without a mode still derives (the caller filters)', () => {
+  it('a disabled type accrues nothing in any FY — credits and consumption still speak', () => {
     const derived = deriveTypeBalance(
       type({ enabled: false }),
       '2026-05-01',
       null,
       '2026-09-29',
-      new Map(),
-      new Map(),
+      new Map([[2026, 2]]),
+      new Map([[2026, 1]]),
     );
-    expect(derived.accrued).toBe(5);
+    // The rate would accrue 5 by September — the disabled gate zeroes it,
+    // retroactively like a rate edit; the credit and the debit still answer.
+    expect(derived).toEqual({
+      credits: 2,
+      accrued: 0,
+      carryForward: 0,
+      consumed: 1,
+      remaining: 1,
+    });
+  });
+
+  it('a disabled type still walks its carry-forward chain, from credits alone', () => {
+    const walk = walkCarryForward(
+      type({ enabled: false }),
+      '2025-04-01',
+      null,
+      2026,
+      new Map([[2025, 10]]),
+      new Map([[2025, 4]]),
+    );
+    // FY2025 unused = 10 credits - 4 consumed = 6 — no accrual term in the
+    // walked year either, so what carries is the credit surplus only.
+    expect(walk.carryForward).toBe(6);
+    expect(walk.unusedByFy.get(2025)).toBe(6);
+  });
+
+  it('a disabled type composes the full read: the prior-FY credit surplus carries, the current accrual stays zero', () => {
+    // The shape readBalancesFor serves: one disabled type, a completed
+    // prior FY with a credit surplus, nothing accruing anywhere.
+    const derived = deriveTypeBalance(
+      type({ enabled: false }),
+      '2025-04-01',
+      null,
+      '2026-09-29',
+      new Map([[2025, 10]]),
+      new Map([[2025, 4]]),
+    );
+    // FY2025 walked: 10 credits + 0 accrual - 4 consumed = 6 → carries 6.
+    // FY2026: accrual zeroed; remaining = 0 credits + 0 + 6 - 0 = 6.
+    expect(derived.carryForward).toBe(6);
+    expect(derived.accrued).toBe(0);
+    expect(derived.remaining).toBe(6);
   });
 });
 

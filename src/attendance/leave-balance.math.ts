@@ -14,6 +14,9 @@ import type { SpanDayFacts } from './leave.repository';
  * prior FY completed before asOf, floored at 0 so a negative balance
  * never carries as debt. Every sum is rounded to 2dp half-up (the house
  * roundMoney) and the sufficiency comparison runs on rounded values.
+ * A disabled type accrues nothing in ANY FY — retroactive, the same way
+ * a rate edit re-derives the past; its credits and consumption stay on
+ * the books, its accrual never does.
  */
 
 /** One catalog type as the accrual math sees it (the service maps the
@@ -99,6 +102,26 @@ export function accruedMonthly(
  */
 export function accruedAnnual(days: number): number {
   return roundMoney(Math.max(0, days));
+}
+
+/**
+ * The accrual one type earns in one FY as of a date — the single home of
+ * the disabled gate (a disabled type accrues nothing in ANY FY, the
+ * retroactive rule the module header states). Every derivation site
+ * calls this, so the rule cannot drift between them.
+ */
+export function accruedFor(
+  type: AccrualTypeConfig,
+  joinDate: string,
+  fyStartYear: number,
+  asOf: string,
+  exitDate?: string | null,
+): number {
+  return !type.enabled
+    ? 0
+    : type.accrualMode === 'monthly'
+      ? accruedMonthly(type.accrualDays, joinDate, fyStartYear, asOf, exitDate)
+      : accruedAnnual(type.accrualDays);
 }
 
 /** A day row's debit: full day 1, either half 0.5. Half-day requests are
@@ -221,12 +244,17 @@ export function walkCarryForward(
   consumedForType: Map<number, number>,
 ): { carryForward: number; unusedByFy: Map<number, number> } {
   const unusedByFy = new Map<number, number>();
-  const isMonthly = type.accrualMode === 'monthly';
   let carryForward = 0;
   for (let f = fyOf(joinDate); f < throughFy; f++) {
-    const accruedFull = isMonthly
-      ? accruedMonthly(type.accrualDays, joinDate, f, fyWindow(f).end, exitDate)
-      : accruedAnnual(type.accrualDays);
+    // A disabled type's walked FY accrues nothing — accruedFor owns that
+    // rule; the credit and the debit still speak.
+    const accruedFull = accruedFor(
+      type,
+      joinDate,
+      f,
+      fyWindow(f).end,
+      exitDate,
+    );
     const unused = roundMoney(
       (creditsForType.get(f) ?? 0) +
         accruedFull +
@@ -262,11 +290,10 @@ export function deriveTypeBalance(
     creditsForType,
     consumedForType,
   );
-  const isMonthly = type.accrualMode === 'monthly';
   const credits = roundMoney(creditsForType.get(fy) ?? 0);
-  const accrued = isMonthly
-    ? accruedMonthly(type.accrualDays, joinDate, fy, asOf, exitDate)
-    : accruedAnnual(type.accrualDays);
+  // A disabled type accrues nothing as of today either — accruedFor owns
+  // the rule the walk applies to every completed FY.
+  const accrued = accruedFor(type, joinDate, fy, asOf, exitDate);
   const consumed = roundMoney(consumedForType.get(fy) ?? 0);
   const remaining = roundMoney(credits + accrued + carryForward - consumed);
   return { credits, accrued, carryForward, consumed, remaining };

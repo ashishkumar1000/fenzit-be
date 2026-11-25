@@ -18,8 +18,7 @@ import {
   consumedForType,
   creditsByTypeYear,
   consumedByTypeFy,
-  accruedAnnual,
-  accruedMonthly,
+  accruedFor,
   deriveTypeBalance,
   fyOf,
   fyWindow,
@@ -227,18 +226,21 @@ export async function assertBalanceForApply(
     credits,
     consumedForThisType,
   );
-  const isMonthly = type.accrualMode === 'monthly';
   const derivedRemaining = roundMoney(
     roundMoney(credits.get(fy) ?? 0) +
-      (isMonthly
-        ? accruedMonthly(
-            type.accrualDays,
-            employment.joinDate,
-            fy,
-            today,
-            employment.exitDate,
-          )
-        : accruedAnnual(type.accrualDays)) +
+      // Defensive consistency with the shared math: accruedFor owns the
+      // disabled gate (a disabled type accrues nothing). Both callers —
+      // the POST and the preview, each refusing 422 LEAVE_TYPE_DISABLED
+      // — already turn disabled types away before this runs, so the
+      // gate is dead code on live paths; it only keeps the two
+      // derivations from ever disagreeing.
+      accruedFor(
+        type,
+        employment.joinDate,
+        fy,
+        today,
+        employment.exitDate,
+      ) +
       carryForward -
       roundMoney(consumedForThisType.get(fy) ?? 0),
   );
