@@ -148,7 +148,8 @@ export async function previewRestore(db: Db, fileArg: string): Promise<RestorePr
     const missingColumns = [...keys].filter((k) => !cols.has(k));
     planned.push({ table: section.table, rows: section.rows?.length ?? 0, missingColumns });
     total += section.rows?.length ?? 0;
-  }  const meta = backup.meta ?? {};
+  }
+  const meta = backup.meta ?? {};
   return {
     file,
     targetLine: meta.target ?? null,

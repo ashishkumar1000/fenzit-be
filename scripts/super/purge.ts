@@ -46,10 +46,12 @@ export interface Step {
 }
 
 /**
- * 2026-11-07 snapshot of every RESTRICT / NO-ACTION foreign key that
- * references users, memberships, tenants, jobs or customers. Compared
- * sorted (column order in pg_constraint differs between environments) and
- * CASCADE edges are ignored — they can never block a delete.
+ * 2026-11-25 snapshot (originally 2026-11-07) of every RESTRICT / NO-ACTION
+ * foreign key that references users, memberships, tenants, jobs or customers,
+ * plus the 2026-11 plan tables themselves (invite_sms_audit, the payroll lock
+ * and off-cycle tables, report_queue_pauses). Compared sorted (column order
+ * in pg_constraint differs between environments) and CASCADE edges are
+ * ignored — they can never block a delete.
  * Checked, not trusted: any mismatch aborts the run.
  */
 export const EXPECTED_EDGES: readonly string[] = [
@@ -78,7 +80,10 @@ export const EXPECTED_EDGES: readonly string[] = [
   'attendance_records|checkout_attempt_id|attendance_attempts|r',
   'attendance_records|office_id,tenant_id|attendance_offices|r',
   'attendance_records|office_rules_id|attendance_office_rules|r',
+  'invite_sms_audit|membership_user_id,tenant_id|memberships|r',
+  'jobs|created_by|users|r',
   'jobs|customer_id|customers|r',
+  'jobs|decided_by|users|r',
   'jobs|technician_id|users|r',
   'leave_events|actor_id|users|r',
   'leave_events|employee_id,tenant_id|memberships|r',
@@ -92,6 +97,9 @@ export const EXPECTED_EDGES: readonly string[] = [
   'memberships|user_id|users|r',
   'notifications|tenant_id|tenants|a',
   'notifications|user_id|users|a',
+  'payroll_month_locks|locked_by|users|r',
+  'payroll_off_cycle_lines|created_by|users|r',
+  'report_queue_pauses|paused_by|users|a',
   'report_requests|requested_by|users|r',
   'skill_requests|requested_by|users|r',
   'skill_requests|tenant_id|tenants|r',
@@ -109,12 +117,16 @@ export function personPlan(userId: string): Step[] {
     params: [u],
     audit,
   });
+  // Every job the plan DELETES: their own work, plus rejected pending jobs
+  // they decided (the status CHECK pins decided_by NOT NULL there, so that
+  // link cannot be NULLed away — the job goes with its decision).
+  const deletedJobs = `technician_id = $1 or (status = 'rejected' and decided_by = $1)`;
   return [
     one('audit_log', 'actor_user_id = $1 OR target_user_id = $1', true),
     // The person's own activity plus everything on their jobs (a job's
     // activity may be authored by the owner) — one step, so no row is
     // backed up or counted twice.
-    { table: 'activity_logs', where: 'actor_id = $1 OR job_id in (select id from public.jobs where technician_id = $1)', params: [u] },
+    { table: 'activity_logs', where: `actor_id = $1 OR job_id in (select id from public.jobs where ${deletedJobs})`, params: [u] },
     // corrections reference day_overrides (employee_id, work_date) — children first
     one('attendance_corrections', 'actor_id = $1 OR employee_id = $1'),
     one('attendance_day_overrides', 'created_by = $1 OR employee_id = $1'),
@@ -133,17 +145,34 @@ export function personPlan(userId: string): Step[] {
     one('attendance_weekly_off_overrides', 'employee_id = $1'),
     // Photo reports this person filed, plus reports on their jobs' photos
     // (those photos go below). reporter_id RESTRICTs the users delete.
-    { table: 'attachment_reports', where: 'reporter_id = $1 OR attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where technician_id = $1))', params: [u] },
+    { table: 'attachment_reports', where: `reporter_id = $1 OR attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where ${deletedJobs}))`, params: [u] },
     // The job's attachments CASCADE away with the job — delete and back them
     // up explicitly, or a restore brings the job back without its photos.
-    { table: 'attachment_uploads', where: 'job_id in (select id from public.jobs where technician_id = $1)', params: [u] },
-    { table: 'attachments', where: 'job_id in (select id from public.jobs where technician_id = $1)', params: [u] },
-    one('jobs', 'technician_id = $1'),
-    one('notifications', 'user_id = $1'),
+    { table: 'attachment_uploads', where: `job_id in (select id from public.jobs where ${deletedJobs})`, params: [u] },
+    { table: 'attachments', where: `job_id in (select id from public.jobs where ${deletedJobs})`, params: [u] },
+    // Authorship links NULL out so the company keeps the job — mirroring
+    // memberships.invited_by below.
+    { table: 'jobs', where: 'created_by = $1', params: [u], updateSet: 'created_by = NULL' },
+    { table: 'jobs', where: `decided_by = $1 and status <> 'rejected'`, params: [u], updateSet: 'decided_by = NULL' },
+    one('jobs', deletedJobs),
+    // Notifications to OTHERS about the jobs going (job_id cascades with the
+    // job) — backed up here or restore returns the job without them.
+    one('notifications', `user_id = $1 or job_id in (select id from public.jobs where ${deletedJobs})`),
     one('report_requests', 'requested_by = $1'),
     one('skill_requests', 'requested_by = $1'),
     one('account_deletion_requests', 'user_id = $1'),
     one('user_skills', 'user_id = $1'),
+    // Payroll/invite bookkeeping that points at the person: their invite SMS
+    // audit rows hang off their memberships; month locks and off-cycle lines
+    // name them NOT NULL; a report-queue pause they set keeps running with
+    // the authorship dropped (the row itself is the company's state).
+    one('invite_sms_audit', 'membership_user_id = $1'),
+    one('payroll_month_locks', 'locked_by = $1'),
+    // Lines on the person's memberships that OTHERS staged (owner bonuses,
+    // recovery) cascade away with the membership — take them here so the
+    // backup holds them.
+    one('payroll_off_cycle_lines', 'created_by = $1 or membership_id in (select id from public.memberships where user_id = $1)'),
+    { table: 'report_queue_pauses', where: 'paused_by = $1', params: [u], updateSet: 'paused_by = NULL' },
     { table: 'memberships', where: 'invited_by = $1', params: [u], updateSet: 'invited_by = NULL' },
     one('memberships', 'user_id = $1'),
     one('users', 'id = $1'),
@@ -162,6 +191,10 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     where: `(${where}) and tenant_id <> $2`,
     params: [m, t],
   });
+  // Every cross-tenant job the plan DELETES for the members: their own work
+  // there, plus rejected pending jobs they decided there (the status CHECK
+  // pins decided_by NOT NULL there, so that link cannot be NULLed away).
+  const deletedJobs = `technician_id = ANY($1::uuid[]) or (status = 'rejected' and decided_by = ANY($1::uuid[]))`;
   return [
     {
       table: 'audit_log',
@@ -184,22 +217,36 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     ct('attendance_office_assignments', 'employee_id = ANY($1::uuid[])'),
     ct('attendance_onboarding', 'employee_id = ANY($1::uuid[])'),
     ct('attendance_weekly_off_overrides', 'employee_id = ANY($1::uuid[])'),
-    ct('notifications', 'user_id = ANY($1::uuid[])'),
+    ct('notifications', `user_id = ANY($1::uuid[]) or job_id in (select id from public.jobs where ${deletedJobs})`),
     ct('report_requests', 'requested_by = ANY($1::uuid[])'),
     ct('skill_requests', 'requested_by = ANY($1::uuid[])'),
     // Account-deletion requests have no tenant_id, so no ct() twin: every
     // member's request goes, wherever they belong.
     { table: 'account_deletion_requests', where: 'user_id = ANY($1::uuid[])', params: [m] },
-    ct('activity_logs', 'actor_id = ANY($1::uuid[])'),
+    ct('activity_logs', `actor_id = ANY($1::uuid[]) or job_id in (select id from public.jobs where ${deletedJobs})`),
     // Photo reports by members, or on the cross-tenant jobs' photos, go with
     // the photos (explicitly, so the backup holds them).
-    ct('attachment_reports', 'reporter_id = ANY($1::uuid[]) or attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where technician_id = ANY($1::uuid[])))'),
+    ct('attachment_reports', `reporter_id = ANY($1::uuid[]) or attachment_id in (select id from public.attachments where job_id in (select id from public.jobs where ${deletedJobs}))`),
     // The cross-tenant jobs' attachments CASCADE away with them — delete and
     // back them up explicitly, or a restore brings those jobs back without
     // their photos.
-    ct('attachment_uploads', 'job_id in (select id from public.jobs where technician_id = ANY($1::uuid[]))'),
-    ct('attachments', 'job_id in (select id from public.jobs where technician_id = ANY($1::uuid[]))'),
-    ct('jobs', 'technician_id = ANY($1::uuid[])'),
+    ct('attachment_uploads', `job_id in (select id from public.jobs where ${deletedJobs})`),
+    ct('attachments', `job_id in (select id from public.jobs where ${deletedJobs})`),
+    // Authorship links NULL out so the other company keeps the job —
+    // mirroring memberships.invited_by.
+    { table: 'jobs', where: 'created_by = ANY($1::uuid[]) and tenant_id <> $2', params: [m, t], updateSet: 'created_by = NULL' },
+    { table: 'jobs', where: `decided_by = ANY($1::uuid[]) and status <> 'rejected' and tenant_id <> $2`, params: [m, t], updateSet: 'decided_by = NULL' },
+    ct('jobs', deletedJobs),
+    // Payroll/invite bookkeeping that points at members from OTHER tenants:
+    // their invite SMS audit rows and month locks there RESTRICT the users
+    // delete; off-cycle lines name them NOT NULL; a report-queue pause a
+    // member set in another company keeps running with the authorship dropped.
+    ct('invite_sms_audit', 'membership_user_id = ANY($1::uuid[])'),
+    ct('payroll_month_locks', 'locked_by = ANY($1::uuid[])'),
+    // Others' staged lines on the members' cross-tenant memberships cascade
+    // with those memberships — backed up here.
+    ct('payroll_off_cycle_lines', 'created_by = ANY($1::uuid[]) or membership_id in (select id from public.memberships where user_id = ANY($1::uuid[]))'),
+    { table: 'report_queue_pauses', where: 'paused_by = ANY($1::uuid[]) and tenant_id <> $2', params: [m, t], updateSet: 'paused_by = NULL' },
     byTenant('activity_logs'),
     byTenant('attachment_reports'),
     byTenant('attachment_uploads'),
@@ -232,6 +279,13 @@ export function companyPlan(tenantId: string, memberIds: string[]): Step[] {
     byTenant('idempotency_log'),
     byTenant('job_sequences'),
     byTenant('employee_sequences'),
+    // Payroll/invite bookkeeping dies with the company: the invite SMS audit
+    // rows RESTRICT the memberships delete; locks and off-cycle lines and the
+    // queue pause would cascade away with the tenant unbacked otherwise.
+    byTenant('invite_sms_audit'),
+    byTenant('payroll_month_locks'),
+    byTenant('payroll_off_cycle_lines'),
+    byTenant('report_queue_pauses'),
     { table: 'user_skills', where: 'user_id = ANY($1::uuid[])', params: [m] },
     byTenant('memberships'),
     { table: 'memberships', where: 'user_id = ANY($1::uuid[]) and tenant_id <> $2', params: [m, t] },
@@ -267,7 +321,8 @@ export async function checkSchemaDrift(db: Db): Promise<string[]> {
          'attendance_onboarding','attendance_records','attendance_weekly_off_overrides',
          'attendance_office_rules','attendance_offices','holidays',
          'user_skills','report_requests','attendance_settings','attendance_setup_progress',
-         'attendance_weekly_off_defaults','idempotency_log','job_sequences','employee_sequences')
+         'attendance_weekly_off_defaults','idempotency_log','job_sequences','employee_sequences',
+         'invite_sms_audit','payroll_month_locks','payroll_off_cycle_lines','report_queue_pauses')
        and con.confdeltype in ('r','a')`);
   // The same columns can carry two constraints (e.g. r and a) — keep the strongest.
   const strongest = new Map<string, string>();

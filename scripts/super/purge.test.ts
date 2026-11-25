@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { EXPECTED_EDGES, companyPlan, personPlan, reviewedRequestCount } from './purge';
+import { EXPECTED_EDGES, checkSchemaDrift, companyPlan, personPlan, reviewedRequestCount } from './purge';
 import type { Db } from './db';
 
 /**
@@ -85,6 +85,7 @@ describe('purge plans', () => {
       'leave_requests', 'attendance_records', 'attendance_attempts', 'attendance_enrolments',
       'attendance_office_assignments', 'attendance_onboarding', 'attendance_weekly_off_overrides',
       'notifications', 'report_requests', 'activity_logs', 'attachment_uploads', 'attachments', 'jobs',
+      'invite_sms_audit', 'payroll_month_locks', 'payroll_off_cycle_lines', 'report_queue_pauses',
     ];
     for (const table of crossTables) {
       const step = plan.find((s) => s.table === table && s.where.includes('tenant_id <> $2'));
@@ -128,8 +129,15 @@ describe('purge plans', () => {
         ? steps.find((s) => s.where.includes('job_id'))
         : steps[0];
       expect(step, `${table} must be job-scoped in the person plan`).toBeDefined();
+      // The backup scope must match the jobs delete EXACTLY (technician work
+      // plus rejected jobs they decided) — a partial revert here would leave
+      // the cascade victims of the decided-rejected jobs unbacked.
+      expect(step!.where).toContain("(status = 'rejected' and decided_by = $1)");
       expect(plan.indexOf(step!)).toBeLessThan(jobsAt);
     }
+    // Notifications to others about the deleted jobs cascade too — same scope.
+    const notif = plan.find((s) => s.table === 'notifications');
+    expect(notif!.where).toContain("(status = 'rejected' and decided_by = $1)");
   });
 
   test('person plan covers leave the target CREATED for other employees', () => {
@@ -187,6 +195,37 @@ describe('EXPECTED_EDGES snapshot hygiene', () => {
       expect(EXPECTED_EDGES, edge).toContain(edge);
     }
   });
+
+  test('snapshot includes the edges of the invite-SMS, employee-created-jobs and payroll tables (2026-11-25 drift)', () => {
+    for (const edge of [
+      'invite_sms_audit|membership_user_id,tenant_id|memberships|r',
+      'jobs|created_by|users|r',
+      'jobs|decided_by|users|r',
+      'payroll_month_locks|locked_by|users|r',
+      'payroll_off_cycle_lines|created_by|users|r',
+      'report_queue_pauses|paused_by|users|a',
+    ]) {
+      expect(EXPECTED_EDGES, edge).toContain(edge);
+    }
+  });
+
+  // The stub-based tests above can only pin self-consistency — a mis-transcribed
+  // edge string passes them while the live schema disagrees, and the next real
+  // `super purge` aborts on drift again. This probe runs the drift check against
+  // the real database (catalog SELECTs only) — opt in with SUPER_LIVE_DRIFT=1:
+  //   SUPER_LIVE_DRIFT=1 bun test scripts/super
+  test.skipIf(!process.env['SUPER_LIVE_DRIFT'] || !process.env['DATABASE_URL'])(
+    'live schema matches the snapshot (catalog read-only; SUPER_LIVE_DRIFT=1)',
+    async () => {
+      const { makePgDb } = await import('./db');
+      const db = makePgDb(process.env['DATABASE_URL']!);
+      try {
+        expect(await checkSchemaDrift(db)).toEqual([]);
+      } finally {
+        await db.close();
+      }
+    },
+  );
 });
 
 describe('reviewed-request refusal', () => {
@@ -225,8 +264,9 @@ describe('2026-11 tables are purged with their people and company', () => {
     expect(rep!.where).toContain('reporter_id = $1');
     // Reports on the person's job photos go too — they would cascade away silently otherwise.
     expect(rep!.where).toContain('attachment_id in (select id from public.attachments');
-    // ...and only on photos of THIS person's jobs, never on the whole platform.
-    expect(rep!.where).toContain('job_id in (select id from public.jobs where technician_id = $1)');
+    // ...and only on photos of jobs THIS plan deletes (their own work plus
+    // rejected jobs they decided), never on the whole platform.
+    expect(rep!.where).toContain("job_id in (select id from public.jobs where technician_id = $1 or (status = 'rejected' and decided_by = $1))");
   });
 
   test('person photo reports are backed up before the job attachments cascade them away', () => {
@@ -260,6 +300,8 @@ describe('2026-11 tables are purged with their people and company', () => {
     // The cross-tenant step is scoped to the members (reporter, or the photo of a member's job) — never "all other tenants".
     expect(repCross!.where).toContain('reporter_id = ANY($1::uuid[])');
     expect(repCross!.where).toContain('technician_id = ANY($1::uuid[])');
+    // ...and its backup scope covers the decided-rejected jobs the plan deletes.
+    expect(repCross!.where).toContain("decided_by = ANY($1::uuid[])");
     expect(repCross!.params).toEqual([['m1', 'm2'], 't']);
 
     // Every new step is gone before users; own-tenant reports go before the
@@ -270,5 +312,90 @@ describe('2026-11 tables are purged with their people and company', () => {
     const attOwnAt = plan.findIndex((s) => s.table === 'attachments' && s.where === 'tenant_id = $1');
     expect(attOwnAt).toBeGreaterThan(-1);
     expect(plan.indexOf(repOwn!)).toBeLessThan(attOwnAt);
+  });
+});
+
+describe('2026-11-25 drift tables (invite SMS audit, job authorship, payroll locks, queue pauses)', () => {
+  test('person plan deletes the rows that pin memberships/users and NULLs the preserveable links', () => {
+    const plan = personPlan('u');
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    const membershipsAt = plan.findIndex((s) => s.table === 'memberships');
+    // Rows whose NOT NULL references pin the purge: deleted outright.
+    const invite = plan.find((s) => s.table === 'invite_sms_audit');
+    const lock = plan.find((s) => s.table === 'payroll_month_locks');
+    const offCycle = plan.find((s) => s.table === 'payroll_off_cycle_lines');
+    expect(invite!.where).toBe('membership_user_id = $1');
+    expect(lock!.where).toBe('locked_by = $1');
+    // Lines OTHERS staged on the person's memberships cascade away with them —
+    // the step must take those too, or the backup loses them.
+    expect(offCycle!.where).toBe('created_by = $1 or membership_id in (select id from public.memberships where user_id = $1)');
+    for (const step of [invite, lock, offCycle]) {
+      expect(plan.indexOf(step!)).toBeLessThan(membershipsAt);
+      expect(plan.indexOf(step!)).toBeLessThan(usersAt);
+    }
+    // A report-queue pause is the company's state — the authorship NULLs out
+    // (like memberships.invited_by), the pause itself survives the purge.
+    const pause = plan.find((s) => s.table === 'report_queue_pauses');
+    expect(pause!.updateSet).toBe('paused_by = NULL');
+    expect(pause!.where).toBe('paused_by = $1');
+    expect(plan.indexOf(pause!)).toBeLessThan(usersAt);
+  });
+
+  test('person plan keeps jobs the person authored and decided — except rejected ones the CHECK pins', () => {
+    const plan = personPlan('u');
+    const jobSteps = plan.filter((s) => s.table === 'jobs');
+    expect(jobSteps).toHaveLength(3);
+    // created_by NULLs out so the company keeps the job (invited_by precedent).
+    expect(jobSteps[0]!.updateSet).toBe('created_by = NULL');
+    expect(jobSteps[0]!.where).toBe('created_by = $1');
+    // decided_by NULLs out too — but a rejected job PINS decided_by via its
+    // status CHECK, so only non-rejected rows can lose the link.
+    expect(jobSteps[1]!.updateSet).toBe('decided_by = NULL');
+    expect(jobSteps[1]!.where).toBe("decided_by = $1 and status <> 'rejected'");
+    // The delete takes their own work plus the rejected jobs they decided.
+    expect(jobSteps[2]!.updateSet).toBeUndefined();
+    expect(jobSteps[2]!.where).toBe("technician_id = $1 or (status = 'rejected' and decided_by = $1)");
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    for (const step of jobSteps) expect(plan.indexOf(step)).toBeLessThan(usersAt);
+  });
+
+  test('company plan deletes the tenant payroll/invite rows and twins the cross-tenant pins', () => {
+    const plan = companyPlan('t', ['m1', 'm2']);
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    for (const table of ['invite_sms_audit', 'payroll_month_locks', 'payroll_off_cycle_lines', 'report_queue_pauses']) {
+      const own = plan.find((s) => s.table === table && s.where === 'tenant_id = $1');
+      expect(own, `byTenant step for ${table}`).toBeDefined();
+      expect(plan.indexOf(own!)).toBeLessThan(usersAt);
+    }
+    // Cross-tenant pins: NOT NULL references delete, the nullable pause NULLs.
+    const inviteCross = plan.find((s) => s.table === 'invite_sms_audit' && s.where.includes('tenant_id <> $2'));
+    expect(inviteCross!.where).toBe('(membership_user_id = ANY($1::uuid[])) and tenant_id <> $2');
+    const lockCross = plan.find((s) => s.table === 'payroll_month_locks' && s.where.includes('tenant_id <> $2'));
+    expect(lockCross!.where).toBe('(locked_by = ANY($1::uuid[])) and tenant_id <> $2');
+    const offCross = plan.find((s) => s.table === 'payroll_off_cycle_lines' && s.where.includes('tenant_id <> $2'));
+    expect(offCross!.where).toBe('(created_by = ANY($1::uuid[]) or membership_id in (select id from public.memberships where user_id = ANY($1::uuid[]))) and tenant_id <> $2');
+    const pauseCross = plan.find((s) => s.table === 'report_queue_pauses' && s.where.includes('tenant_id <> $2'));
+    expect(pauseCross!.updateSet).toBe('paused_by = NULL');
+    expect(pauseCross!.where).toBe('paused_by = ANY($1::uuid[]) and tenant_id <> $2');
+    for (const step of [inviteCross, lockCross, offCross, pauseCross]) {
+      expect(plan.indexOf(step!)).toBeLessThan(usersAt);
+    }
+  });
+
+  test('company plan: cross-tenant job authorship NULLs out, rejected decisions delete, backups cover them', () => {
+    const plan = companyPlan('t', ['m1', 'm2']);
+    const usersAt = plan.findIndex((s) => s.table === 'users');
+    const jobCross = plan.filter((s) => s.table === 'jobs' && s.where.includes('tenant_id <> $2'));
+    expect(jobCross).toHaveLength(3);
+    expect(jobCross[0]!.updateSet).toBe('created_by = NULL');
+    expect(jobCross[1]!.updateSet).toBe('decided_by = NULL');
+    expect(jobCross[2]!.where).toBe("(technician_id = ANY($1::uuid[]) or (status = 'rejected' and decided_by = ANY($1::uuid[]))) and tenant_id <> $2");
+    for (const step of jobCross) expect(plan.indexOf(step)).toBeLessThan(usersAt);
+    // The cross-tenant activity/attachment steps scope to the same job set
+    // (their photos and other actors' activity are backed up before the job goes).
+    for (const table of ['activity_logs', 'attachment_uploads', 'attachments']) {
+      const step = plan.find((s) => s.table === table && s.where.includes('tenant_id <> $2'));
+      expect(step!.where).toContain("(status = 'rejected' and decided_by = ANY($1::uuid[]))");
+    }
   });
 });
