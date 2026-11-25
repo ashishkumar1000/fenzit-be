@@ -17,6 +17,7 @@ import { SmsDeliveryProvider, SmsDeliveryError } from './sms-delivery.provider';
 import { SMS_TEMPLATES } from '../common/constants/sms-templates';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { SendOtpDto } from './dto/send-otp.dto';
@@ -94,8 +95,14 @@ describe('AuthService', () => {
   let supabaseClientFactory: jest.Mocked<SupabaseClientFactory>;
   let jwtService: jest.Mocked<JwtService>;
   let inviteSmsService: { sendInviteSms: jest.Mock };
+  // The invite runs inside pgPool.withTransaction; the fake hands it whatever
+  // tx the current test installed (only the invite tests install one).
+  let currentTx: { query: jest.Mock } | null = null;
+  let withTransaction: jest.Mock;
 
   beforeEach(async () => {
+    // The invite fake is installed per-test; never let one leak into the next.
+    currentTx = null;
     const mockOtpSessionStore = {
       set: jest.fn(),
       get: jest.fn(),
@@ -122,6 +129,11 @@ describe('AuthService', () => {
       sendInviteSms: jest.fn().mockResolvedValue('not_configured'),
     };
 
+    withTransaction = jest.fn(
+      (work: (tx: unknown) => Promise<unknown>) => work(currentTx),
+    );
+    const mockPgPoolFactory = { withTransaction };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -130,6 +142,7 @@ describe('AuthService', () => {
         { provide: SupabaseClientFactory, useValue: mockSupabaseClientFactory },
         { provide: JwtService, useValue: mockJwtService },
         { provide: InviteSmsService, useValue: mockInviteSmsService },
+        { provide: PgPoolFactory, useValue: mockPgPoolFactory },
       ],
     }).compile();
 
@@ -867,14 +880,14 @@ describe('AuthService', () => {
       skillIds: [SKILL_ID],
     };
 
-    function makeMockAdmin(opts: {
+    /** Admin client for the post-transaction steps: the skills-catalog check
+     *  (pre-tx) and the write_audit_row call (post-commit). */
+    function makeInviteAdmin(opts: {
       validSkills?: { id: string }[];
       validSkillsError?: { code?: string; message?: string } | null;
-      rpcResult?: {
-        data: unknown;
-        error: { code?: string; message?: string; hint?: string } | null;
-      };
-    }) {
+      auditError?: { code?: string; message?: string } | null;
+      auditReject?: unknown;
+    } = {}) {
       const validSkillsData =
         opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
 
@@ -885,127 +898,352 @@ describe('AuthService', () => {
       });
       const skillCheckIn = jest.fn().mockReturnValue({ eq: skillCheckEq });
 
+      const rpc =
+        opts.auditReject !== undefined
+          ? jest.fn().mockRejectedValue(opts.auditReject)
+          : jest
+              .fn()
+              .mockResolvedValue({ data: null, error: opts.auditError ?? null });
+
       return {
         skillCheckEq,
         skillCheckIn,
-        rpc: jest.fn().mockResolvedValue(
-          opts.rpcResult ?? {
-            data: [
-              {
-                member_user_id: 'invite-uuid',
-                member_employee_code: 'EMP-0001',
-              },
-            ],
-            error: null,
-          },
-        ),
+        rpc,
         from: jest.fn().mockReturnValue({
           select: jest.fn().mockReturnValue({ in: skillCheckIn }),
         }),
       };
     }
 
-    const rpcFails = (code: string, hint?: string) =>
-      makeMockAdmin({
-        rpcResult: { data: null, error: { code, message: 'x', hint } },
-      });
+    interface TxOpts {
+      /** The caller-check row: absent = caller missing (no user row). */
+      callerMissing?: boolean;
+      callerPlatformAdmin?: boolean;
+      callerDisabled?: boolean;
+      /** False = the caller is not an active company_admin of the tenant. */
+      callerIsAdmin?: boolean;
+      tenantMissing?: boolean;
+      countryUnsupported?: boolean;
+      /** True = a person with this phone already exists. Default: fresh number. */
+      personFound?: boolean;
+      personId?: string;
+      /** Default null so the invite fills the name (the found-path branch). */
+      personName?: string | null;
+      personPlatformAdmin?: boolean;
+      personDisabled?: boolean;
+      sameTeam?: boolean;
+      elsewhere?: boolean;
+      /** A removed membership for this person in this tenant (reactivation). */
+      removedMembershipId?: string;
+      /** Codes the existence check reports as already taken. */
+      takenCodes?: string[];
+      /** The first counter bump returns this. Default 4 → EMP-004. */
+      seqStart?: number;
+      /** The membership insert rejects with this pg error (every attempt). */
+      membershipError?: { code: string; constraint?: string };
+      /** …unless onlyOnce, which rejects only the first attempt. */
+      membershipErrorOnce?: boolean;
+      /** The person insert rejects with this pg error (an unknown writer won the phone race). */
+      userInsertError?: { code: string; constraint?: string };
+    }
+
+    /**
+     * SQL-shape-dispatching fake tx for the invite (the buildSetActive style
+     * from members.service.spec): each statement answers like the real DB
+     * would, and unclassified SQL throws — the mock tracks the contract.
+     */
+    function makeInviteTx(opts: TxOpts = {}) {
+      let seq = opts.seqStart ?? 4;
+      const bumps: number[] = [];
+      const membershipInserts: string[][] = [];
+      const nameFills: string[][] = [];
+      const savepoints: string[] = [];
+      const releases: string[] = [];
+      const rollbacksToSavepoint: string[] = [];
+      // Real Postgres aborts the whole transaction on a failed statement —
+      // every later statement answers 25P02 until ROLLBACK TO SAVEPOINT. The
+      // fake models that, so a mint retry is only exercisable the way it
+      // actually works on the database.
+      let aborted = false;
+      const query = jest.fn(
+        (sql: string, params: unknown[] = []): Promise<unknown> => {
+          // Savepoint traffic first (rollback/release both contain the word
+          // 'savepoint'); the rollback un-poisons the transaction.
+          if (sql.includes('rollback to savepoint')) {
+            rollbacksToSavepoint.push(sql);
+            aborted = false;
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (aborted)
+            return Promise.reject(
+              Object.assign(
+                new Error(
+                  'current transaction is aborted, commands ignored until end of transaction block',
+                ),
+                { code: '25P02' },
+              ),
+            );
+          if (sql.includes('release savepoint')) {
+            releases.push(sql);
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (sql.includes('savepoint invite_code_mint')) {
+            savepoints.push(sql);
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (sql.includes('pg_advisory_xact_lock'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('attendance_lock_tenant'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          // Caller check under the locks.
+          if (sql.includes('is_company_admin')) {
+            if (opts.callerMissing)
+              return Promise.resolve({ rows: [], rowCount: 0 });
+            return Promise.resolve({
+              rows: [
+                {
+                  platform_admin: opts.callerPlatformAdmin ?? false,
+                  disabled: opts.callerDisabled ?? false,
+                  is_company_admin: opts.callerIsAdmin ?? true,
+                },
+              ],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('from public.tenants where id')) {
+            return opts.tenantMissing
+              ? Promise.resolve({ rows: [], rowCount: 0 })
+              : Promise.resolve({ rows: [{ n: 1 }], rowCount: 1 });
+          }
+          if (sql.includes('from public.country_codes')) {
+            return opts.countryUnsupported
+              ? Promise.resolve({ rows: [], rowCount: 0 })
+              : Promise.resolve({ rows: [{ dial_code: '+91' }], rowCount: 1 });
+          }
+          // Person lookup by phone (for update).
+          if (sql.includes('select id, name, platform_admin')) {
+            if (!opts.personFound)
+              return Promise.resolve({ rows: [], rowCount: 0 });
+            return Promise.resolve({
+              rows: [
+                {
+                  id: opts.personId ?? 'person-uuid-1',
+                  name: opts.personName === undefined ? null : opts.personName,
+                  platform_admin: opts.personPlatformAdmin ?? false,
+                  disabled: opts.personDisabled ?? false,
+                },
+              ],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('insert into public.users')) {
+            if (opts.userInsertError) {
+              aborted = true;
+              return Promise.reject(
+                Object.assign(new Error('unique violation'), opts.userInsertError),
+              );
+            }
+            return Promise.resolve({ rows: [{ id: 'new-person-uuid' }], rowCount: 1 });
+          }
+          if (sql.includes('update public.users set name')) {
+            nameFills.push(params as string[]);
+            return Promise.resolve({ rows: [], rowCount: 1 });
+          }
+          // Live-membership checks: same team vs. any company.
+          if (sql.includes("status <> 'removed'")) {
+            const taken = { rows: [{ n: 1 }], rowCount: 1 };
+            const free = { rows: [], rowCount: 0 };
+            return Promise.resolve(
+              sql.includes('tenant_id = $2')
+                ? opts.sameTeam
+                  ? taken
+                  : free
+                : opts.elsewhere
+                  ? taken
+                  : free,
+            );
+          }
+          // Removed-membership lookup (reactivation path).
+          if (sql.includes('select id from public.memberships')) {
+            return opts.removedMembershipId
+              ? Promise.resolve({
+                  rows: [{ id: opts.removedMembershipId }],
+                  rowCount: 1,
+                })
+              : Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (sql.includes('update public.memberships'))
+            return Promise.resolve({
+              rows: [{ employee_code: 'EMP-0007' }],
+              rowCount: 1,
+            });
+          if (sql.includes('employee_sequences')) {
+            bumps.push(seq);
+            return Promise.resolve({ rows: [{ last_seq: seq++ }], rowCount: 1 });
+          }
+          // Employee-code existence check.
+          if (sql.includes('tenant_id = $1 and employee_code = $2')) {
+            const code = params[1] as string;
+            return (opts.takenCodes ?? []).includes(code)
+              ? Promise.resolve({ rows: [{ n: 1 }], rowCount: 1 })
+              : Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (sql.includes('insert into public.memberships')) {
+            membershipInserts.push(params as string[]);
+            if (opts.membershipError) {
+              const firstPass = membershipInserts.length === 1;
+              if (!opts.membershipErrorOnce || firstPass) {
+                aborted = true;
+                return Promise.reject(
+                  Object.assign(new Error('unique violation'), opts.membershipError),
+                );
+              }
+            }
+            return Promise.resolve({
+              rows: [{ employee_code: params[3] }],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('user_skills'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          return Promise.reject(new Error(`unclassified invite SQL: ${sql}`));
+        },
+      );
+      return {
+        tx: { query },
+        bumps,
+        membershipInserts,
+        nameFills,
+        savepoints,
+        releases,
+        rollbacksToSavepoint,
+      };
+    }
 
     // Decision 2 (2026-11-11): a capped invite SMS is reported as refused_cap.
     // The invite is still created and returned.
     it('should return sms_status refused_cap when the cap stopped the invite SMS', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx().tx;
       inviteSmsService.sendInviteSms.mockResolvedValueOnce('refused_cap');
 
       expect(await service.inviteMember(adminUser, dto)).toEqual({
-        invite_id: 'invite-uuid',
-        employee_code: 'EMP-0001',
+        invite_id: 'new-person-uuid',
+        employee_code: 'EMP-004',
         sms_status: 'refused_cap',
       });
     });
 
-    it('should create an invite through the invite_member function and return invite_id + employee_code (201 path)', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+    it('creates the invite in one transaction: locks, minted code, skills, audit (201 path)', async () => {
+      const admin = makeInviteAdmin();
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+      const world = makeInviteTx();
+      currentTx = world.tx;
+
       expect(await service.inviteMember(adminUser, dto)).toEqual({
-        invite_id: 'invite-uuid',
-        employee_code: 'EMP-0001',
+        invite_id: 'new-person-uuid',
+        employee_code: 'EMP-004',
         // Story 21-1: the template is still the placeholder, so no SMS is sent.
         sms_status: 'not_configured',
       });
-      // Story 4.2 — validation runs against the global catalog, not tenant_skills,
-      // and only active skills are assignable.
-      expect(mockAdmin.from).toHaveBeenCalledWith('skills');
-      expect(mockAdmin.skillCheckEq).toHaveBeenCalledWith('is_active', true);
-      // The caller and company come from the request user, never the body.
-      expect(mockAdmin.rpc).toHaveBeenCalledWith('invite_member', {
-        p_caller: adminUser.userId,
-        p_tenant_id: 'tenant-uuid-111',
-        p_country_code: '+91',
-        p_phone_number: '1111111111',
-        p_name: 'Ravi Kumar',
-        p_role: Role.EMPLOYEE,
-        p_skill_ids: [SKILL_ID],
-      });
+
+      const sqls = world.tx.query.mock.calls.map(([sql]: string[]) => sql);
+      // The same xact-scoped locks the old invite_member function held.
+      expect(sqls.some((s) => s.includes('pg_advisory_xact_lock'))).toBe(true);
+      expect(sqls.some((s) => s.includes('attendance_lock_tenant'))).toBe(true);
+      // Story 4.2 — validation runs against the global catalog, not
+      // tenant_skills, and only active skills are assignable.
+      expect(admin.from).toHaveBeenCalledWith('skills');
+      expect(admin.skillCheckEq).toHaveBeenCalledWith('is_active', true);
+      // The mint: one counter bump for a fresh number, free code on insert.
+      expect(world.bumps).toEqual([4]);
+      expect(world.membershipInserts).toEqual([
+        [
+          'new-person-uuid',
+          'tenant-uuid-111',
+          'employee',
+          'EMP-004',
+          adminUser.userId,
+        ],
+      ]);
+      // Skills attach inside the same transaction.
+      expect(sqls.some((s) => s.includes('user_skills'))).toBe(true);
+      // Audit after the commit, the employment-save way.
+      expect(admin.rpc).toHaveBeenCalledWith(
+        'write_audit_row',
+        expect.objectContaining({
+          p_action: 'member.invite',
+          p_tenant_id: 'tenant-uuid-111',
+          p_target_user: 'new-person-uuid',
+          p_details: {
+            role: 'employee',
+            reactivated: false,
+            employee_code: 'EMP-004',
+          },
+        }),
+      );
     });
 
     it('defaults the role to employee when none is sent, and passes an explicit role through', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx();
+      currentTx = world.tx;
       await service.inviteMember(adminUser, dto);
-      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
-        p_role: 'employee',
-      });
-
       await service.inviteMember(adminUser, {
         ...dto,
         role: Role.COMPANY_ADMIN,
       });
-      expect(mockAdmin.rpc.mock.calls[1][1]).toMatchObject({
-        p_role: 'company_admin',
-      });
+      expect(world.membershipInserts.map((p) => p[2])).toEqual([
+        'employee',
+        'company_admin',
+      ]);
     });
 
-    it('invites a viewer without skills: no skills lookup, empty p_skill_ids', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+    it('invites a viewer without skills: no skills lookup, no skill rows', async () => {
+      const admin = makeInviteAdmin();
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+      const world = makeInviteTx();
+      currentTx = world.tx;
       const { skillIds: _skillIds, ...noSkills } = dto;
       void _skillIds;
       await service.inviteMember(adminUser, { ...noSkills, role: Role.VIEWER });
-      expect(mockAdmin.from).not.toHaveBeenCalled();
-      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
-        p_role: 'viewer',
-        p_skill_ids: [],
-      });
+      expect(admin.from).not.toHaveBeenCalled();
+      const sqls = world.tx.query.mock.calls.map(([sql]: string[]) => sql);
+      expect(sqls.some((s) => s.includes('user_skills'))).toBe(false);
+      expect(world.membershipInserts[0][2]).toBe('viewer');
     });
 
-    it('skills are OPTIONAL at invite: any role invites with missing or empty skillIds — empty p_skill_ids, no skills lookup', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+    it('skills are OPTIONAL at invite: missing or empty skillIds are valid, no catalog lookup', async () => {
+      const admin = makeInviteAdmin();
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+      const world = makeInviteTx();
+      currentTx = world.tx;
       const { skillIds: _skillIds, ...noSkills } = dto;
       void _skillIds;
-      for (const candidate of [noSkills, { ...dto, skillIds: [] }]) {
-        await service.inviteMember(adminUser, candidate);
-      }
-      // Optional skills means no catalog lookup and no rejection — the
-      // invite lands with an empty skill set.
-      expect(mockAdmin.from).not.toHaveBeenCalled();
-      expect(mockAdmin.rpc).toHaveBeenCalledTimes(2);
-      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({ p_skill_ids: [] });
-      expect(mockAdmin.rpc.mock.calls[1][1]).toMatchObject({ p_skill_ids: [] });
+      await service.inviteMember(adminUser, noSkills);
+      await service.inviteMember(adminUser, { ...dto, skillIds: [] });
+      expect(admin.from).not.toHaveBeenCalled();
+      expect(world.membershipInserts).toHaveLength(2);
     });
 
-    it('removes duplicate skill IDs before validating and sending', async () => {
-      const mockAdmin = makeMockAdmin({});
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+    it('removes duplicate skill IDs before validating and attaching', async () => {
+      const admin = makeInviteAdmin();
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+      const world = makeInviteTx();
+      currentTx = world.tx;
       await service.inviteMember(adminUser, {
         ...dto,
         skillIds: [SKILL_ID, SKILL_ID],
       });
-      expect(mockAdmin.skillCheckIn).toHaveBeenCalledWith('id', [SKILL_ID]);
-      expect(mockAdmin.rpc.mock.calls[0][1]).toMatchObject({
-        p_skill_ids: [SKILL_ID],
-      });
+      expect(admin.skillCheckIn).toHaveBeenCalledWith('id', [SKILL_ID]);
+      const skillsCall = world.tx.query.mock.calls.find(([sql]: string[]) =>
+        sql.includes('user_skills'),
+      );
+      expect(skillsCall?.[1]).toEqual(['new-person-uuid', [SKILL_ID]]);
     });
 
     it('should throw BadRequestException when the caller has no tenantId (company not set up)', async () => {
@@ -1014,15 +1252,16 @@ describe('AuthService', () => {
         BadRequestException,
       );
       expect(supabaseClientFactory.createAdmin).not.toHaveBeenCalled();
+      expect(withTransaction).not.toHaveBeenCalled();
     });
 
     it('should throw BadRequestException when skillIds are not in the global catalog (AC5)', async () => {
-      const mockAdmin = makeMockAdmin({ validSkills: [] });
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      const admin = makeInviteAdmin({ validSkills: [] });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
       await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         BadRequestException,
       );
-      expect(mockAdmin.rpc).not.toHaveBeenCalled();
+      expect(withTransaction).not.toHaveBeenCalled();
     });
 
     it('should throw BadRequestException when only some skillIds are valid (AC5 partial)', async () => {
@@ -1030,17 +1269,17 @@ describe('AuthService', () => {
         ...dto,
         skillIds: [SKILL_ID, '550e8400-e29b-41d4-a716-446655440002'],
       };
-      const mockAdmin = makeMockAdmin({ validSkills: [{ id: SKILL_ID }] });
-      supabaseClientFactory.createAdmin.mockReturnValue(mockAdmin as never);
+      const admin = makeInviteAdmin({ validSkills: [{ id: SKILL_ID }] });
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
       await expect(service.inviteMember(adminUser, dtoWithTwo)).rejects.toThrow(
         BadRequestException,
       );
-      expect(mockAdmin.rpc).not.toHaveBeenCalled();
+      expect(withTransaction).not.toHaveBeenCalled();
     });
 
     it('should throw InternalServerErrorException when skill validation DB query fails', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({
+        makeInviteAdmin({
           validSkillsError: {
             code: '42P01',
             message: 'relation does not exist',
@@ -1050,33 +1289,74 @@ describe('AuthService', () => {
       await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         InternalServerErrorException,
       );
+      expect(withTransaction).not.toHaveBeenCalled();
     });
 
-    it('maps PT403 to 403, PT404 to 404 and PT400 to 400', async () => {
+    it('refuses a caller who is not an active company_admin of the company (403)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('PT403') as never,
+        makeInviteAdmin() as never,
       );
-      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-        ForbiddenException,
-      );
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('PT404') as never,
-      );
-      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-        NotFoundException,
-      );
-      supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('PT400') as never,
-      );
-      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-        BadRequestException,
-      );
+      currentTx = makeInviteTx({ callerIsAdmin: false }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 403,
+        response: expect.objectContaining({ error_code: ErrorCode.FORBIDDEN }),
+      });
     });
 
-    it('should throw ConflictException DUPLICATE_RESOURCE when the person already belongs to a company (PT409)', async () => {
+    it('refuses a caller the database has no row for (403)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('PT409') as never,
+        makeInviteAdmin() as never,
       );
+      currentTx = makeInviteTx({ callerMissing: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 403,
+        response: expect.objectContaining({ error_code: ErrorCode.FORBIDDEN }),
+      });
+    });
+
+    it('refuses a disabled caller (403)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({ callerDisabled: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 403,
+        response: expect.objectContaining({ error_code: ErrorCode.FORBIDDEN }),
+      });
+    });
+
+    it('answers 404 RESOURCE_NOT_FOUND when the company does not exist', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({ tenantMissing: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 404,
+        response: expect.objectContaining({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        }),
+      });
+    });
+
+    it('answers 400 VALIDATION_ERROR for a dial code we do not serve', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({ countryUnsupported: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 400,
+        response: expect.objectContaining({
+          error_code: ErrorCode.VALIDATION_ERROR,
+          message: 'Invalid country code',
+        }),
+      });
+    });
+
+    it('should throw ConflictException DUPLICATE_RESOURCE when the person already belongs to another company', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({ personFound: true, elsewhere: true }).tx;
       await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
         status: 409,
         response: expect.objectContaining({
@@ -1085,60 +1365,248 @@ describe('AuthService', () => {
       });
     });
 
-    it('maps a PT409 carrying the LAST_ADMIN hint to the LAST_ADMIN code', async () => {
+    it('should throw ConflictException ALREADY_IN_TEAM when the person is already in THIS company', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('PT409', ErrorCode.LAST_ADMIN) as never,
+        makeInviteAdmin() as never,
       );
+      currentTx = makeInviteTx({ personFound: true, sameTeam: true }).tx;
       await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
         status: 409,
         response: expect.objectContaining({
-          error_code: ErrorCode.LAST_ADMIN,
+          error_code: ErrorCode.ALREADY_IN_TEAM,
         }),
       });
     });
 
-    it('should throw BadRequestException on invalid country code FK violation (23503)', async () => {
+    it('refuses Fenzit staff with PLATFORM_STAFF_NOT_MEMBER (400)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('23503') as never,
+        makeInviteAdmin() as never,
       );
-      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-        BadRequestException,
-      );
+      currentTx = makeInviteTx({ personFound: true, personPlatformAdmin: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 400,
+        response: expect.objectContaining({
+          error_code: ErrorCode.PLATFORM_STAFF_NOT_MEMBER,
+        }),
+      });
     });
 
-    it('should throw ConflictException on a concurrent duplicate invite (23505)', async () => {
+    it('refuses a disabled person (403)', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('23505') as never,
+        makeInviteAdmin() as never,
       );
-      await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-        ConflictException,
+      currentTx = makeInviteTx({ personFound: true, personDisabled: true }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 403,
+        response: expect.objectContaining({ error_code: ErrorCode.FORBIDDEN }),
+      });
+    });
+
+    // THE INCIDENT, AS A TEST: the counter can sit below codes already in use
+    // (fixture seeding and hand-set codes never advance it). The mint steps
+    // over taken codes instead of crashing on the unique constraint — which,
+    // mislabeled as "already belongs to a company", broke every invite for
+    // brand-new numbers (prod incident 2026-11-25).
+    it('mints the next FREE code, stepping over the codes a drifted counter lands on', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
       );
+      const world = makeInviteTx({ takenCodes: ['EMP-004', 'EMP-005'] });
+      currentTx = world.tx;
+
+      const result = await service.inviteMember(adminUser, dto);
+
+      expect(world.bumps).toEqual([4, 5, 6]);
+      expect(world.membershipInserts[0][3]).toBe('EMP-006');
+      expect(result.employee_code).toBe('EMP-006');
+    });
+
+    it('renders 4-digit sequences in full — lpad parity (EMP-1000, never truncated to EMP-000)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({ seqStart: 1000 });
+      currentTx = world.tx;
+      const result = await service.inviteMember(adminUser, dto);
+      expect(world.membershipInserts[0][3]).toBe('EMP-1000');
+      expect(result.employee_code).toBe('EMP-1000');
+    });
+
+    it('re-mints when a hand-set code takes ours between the check and the insert', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        membershipError: {
+          code: '23505',
+          constraint: 'memberships_tenant_employee_code_key',
+        },
+        membershipErrorOnce: true,
+      });
+      currentTx = world.tx;
+
+      const result = await service.inviteMember(adminUser, dto);
+
+      expect(world.bumps).toEqual([4, 5]);
+      expect(world.membershipInserts).toHaveLength(2);
+      // The failed first attempt ran under its own savepoint and was rolled
+      // back to it — the second bump must not hit an aborted transaction.
+      expect(world.savepoints).toHaveLength(2);
+      expect(world.rollbacksToSavepoint).toHaveLength(1);
+      expect(world.releases).toHaveLength(1);
+      expect(result.employee_code).toBe('EMP-005');
+    });
+
+    it('gives up honestly after five mint attempts (500, never a duplicate-phone 409)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        membershipError: {
+          code: '23505',
+          constraint: 'memberships_tenant_employee_code_key',
+        },
+      });
+      currentTx = world.tx;
+
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        }),
+      });
+      // Every attempt was bounded the same way: bump → insert under a fresh
+      // savepoint → roll back to it. Five tries, five bumps, no releases.
+      expect(world.bumps).toHaveLength(5);
+      expect(world.membershipInserts).toHaveLength(5);
+      expect(world.savepoints).toHaveLength(5);
+      expect(world.rollbacksToSavepoint).toHaveLength(5);
+      expect(world.releases).toHaveLength(0);
+    });
+
+    // A phone race is impossible under the invite advisory lock — invites are
+    // the only writers of person rows — so a users_phone_key violation means
+    // an unknown writer or a bug. It gets the honest 500, never the blanket
+    // duplicate-phone 409 that shipped the incident.
+    it('answers the honest 500 when the person insert itself hits a unique violation', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({
+        userInsertError: { code: '23505', constraint: 'users_phone_key' },
+      }).tx;
+
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        }),
+      });
+    });
+
+    it('lets a platform admin invite without a company_admin membership', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        callerIsAdmin: false,
+        callerPlatformAdmin: true,
+      });
+      currentTx = world.tx;
+
+      const result = await service.inviteMember(adminUser, dto);
+
+      expect(result.employee_code).toBe('EMP-004');
+      expect(world.membershipInserts).toHaveLength(1);
+    });
+
+    // A unique violation on a constraint the mint does not retry means an
+    // unknown writer or a bug — it gets the honest 500. Mapping ANY 23505 to
+    // the duplicate-phone 409 is what shipped the 2026-11-25 incident.
+    it('should throw InternalServerErrorException on an unrecognised unique violation (23505)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx({
+        membershipError: { code: '23505', constraint: 'something_else_key' },
+      }).tx;
+      await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
+        status: 500,
+        response: expect.objectContaining({
+          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        }),
+      });
     });
 
     it('should throw InternalServerErrorException on an unexpected database error', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        rpcFails('42P01') as never,
+        makeInviteAdmin() as never,
       );
+      currentTx = makeInviteTx({ membershipError: { code: '42P01' } }).tx;
       await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
         InternalServerErrorException,
       );
     });
 
-    it('should throw InternalServerErrorException when the function returns no row', async () => {
-      for (const data of [[], null]) {
-        supabaseClientFactory.createAdmin.mockReturnValue(
-          makeMockAdmin({ rpcResult: { data, error: null } }) as never,
-        );
-        await expect(service.inviteMember(adminUser, dto)).rejects.toThrow(
-          InternalServerErrorException,
-        );
-      }
+    it('reactivates a removed member: old code kept, no new mint, audit says reactivated', async () => {
+      const admin = makeInviteAdmin();
+      supabaseClientFactory.createAdmin.mockReturnValue(admin as never);
+      const world = makeInviteTx({
+        personFound: true,
+        removedMembershipId: 'membership-uuid-9',
+      });
+      currentTx = world.tx;
+
+      const result = await service.inviteMember(adminUser, dto);
+
+      expect(result).toEqual({
+        invite_id: 'person-uuid-1',
+        employee_code: 'EMP-0007',
+        sms_status: 'not_configured',
+      });
+      expect(world.bumps).toEqual([]);
+      expect(world.membershipInserts).toHaveLength(0);
+      const sqls = world.tx.query.mock.calls.map(([sql]: string[]) => sql);
+      expect(sqls.some((s) => s.includes('update public.memberships'))).toBe(
+        true,
+      );
+      expect(admin.rpc).toHaveBeenCalledWith(
+        'write_audit_row',
+        expect.objectContaining({
+          p_details: expect.objectContaining({ reactivated: true }),
+        }),
+      );
     });
 
-    it('should use createAdmin (service role) for the invite', async () => {
+    it('fills a person with no name from the invite, write-once', async () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
-        makeMockAdmin({}) as never,
+        makeInviteAdmin() as never,
       );
+      const world = makeInviteTx({ personFound: true });
+      currentTx = world.tx;
+
+      await service.inviteMember(adminUser, dto);
+
+      expect(world.nameFills).toEqual([['person-uuid-1', 'Ravi Kumar']]);
+    });
+
+    it('a failed audit entry does not undo the invite (the SMS still goes)', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin({ auditReject: new Error('audit down') }) as never,
+      );
+      currentTx = makeInviteTx().tx;
+
+      expect(await service.inviteMember(adminUser, dto)).toMatchObject({
+        employee_code: 'EMP-004',
+      });
+      expect(inviteSmsService.sendInviteSms).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use createAdmin (service role) for the pre/post-transaction steps', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      currentTx = makeInviteTx().tx;
       await service.inviteMember(adminUser, dto);
       expect(supabaseClientFactory.createAdmin).toHaveBeenCalled();
     });

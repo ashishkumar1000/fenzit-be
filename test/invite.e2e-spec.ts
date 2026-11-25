@@ -8,6 +8,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../src/app.module';
 import { SupabaseClientFactory } from '../src/common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 import { Role } from '../src/common/enums/role.enum';
 import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { withOpenSubscription } from './helpers/open-subscription-admin';
@@ -27,6 +28,9 @@ describe('Member Invitation (e2e)', () => {
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
   let mockSend: jest.Mock;
+  // The invite's one all-or-nothing step runs in the pg pool; each test
+  // installs its SQL-dispatching fake tx here (see makeInviteTx below).
+  let currentTx: { query: jest.Mock } | null = null;
 
   const TENANT_ID = '33333333-3333-4333-8333-333333333333';
   const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -49,7 +53,13 @@ describe('Member Invitation (e2e)', () => {
           createAdmin: () => withOpenSubscription(mockCreateAdmin()),
         })
         .overrideProvider(SmsDeliveryProvider)
-        .useValue({ send: (...args: unknown[]) => mockSend(...args) }),
+        .useValue({ send: (...args: unknown[]) => mockSend(...args) })
+        .overrideProvider(PgPoolFactory)
+        .useValue({
+          withTransaction: (work: (tx: unknown) => Promise<unknown>) =>
+            work(currentTx),
+          onModuleDestroy: async () => undefined,
+        }),
       [
         { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
         { userId: TECH_ID, tenantId: TENANT_ID, role: Role.EMPLOYEE },
@@ -88,26 +98,17 @@ describe('Member Invitation (e2e)', () => {
 
   /** Builds a Supabase admin mock for the invite endpoint's database calls:
    *  1. from('skills').select().in().eq()  — global skills-catalog check
-   *  2. rpc('invite_member', ...)          — the one all-or-nothing invite step
-   *     (finds or creates the person, refuses someone already in a company,
-   *     creates the membership, attaches skills, writes the audit row)
+   *  2. rpc('write_audit_row', ...)        — the post-commit audit entry
    *  Then the SMS send path (sending is on): the status guard's
    *  from('memberships') read, rpc('invite_sms_reserve_send') for the cap,
    *  and the audit insert.
    */
-  function makeInviteMock(opts: {
-    validSkills?: { id: string }[];
-    rpcData?: unknown;
-    rpcError?: { code?: string; message?: string; hint?: string } | null;
-  }) {
+  function makeInviteMock(opts: { validSkills?: { id: string }[] }) {
     const validSkillsData =
       opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
     const rpc = jest.fn((name: string) => {
-      if (name === 'invite_member') {
-        return Promise.resolve({
-          data: opts.rpcData ?? null,
-          error: opts.rpcError ?? null,
-        });
+      if (name === 'write_audit_row') {
+        return Promise.resolve({ data: null, error: null });
       }
       if (name === 'invite_sms_reserve_send') {
         return Promise.resolve({ data: 'counter-1', error: null });
@@ -153,14 +154,143 @@ describe('Member Invitation (e2e)', () => {
     };
   }
 
-  const inviteRow = [
-    { member_user_id: NEW_USER_ID, member_employee_code: 'EMP-002' },
-  ];
+  interface InviteTxOpts {
+    callerIsAdmin?: boolean;
+    personFound?: boolean;
+    sameTeam?: boolean;
+    elsewhere?: boolean;
+    /** Codes already in memberships — the mint loop must step over them. */
+    takenCodes?: string[];
+    seqStart?: number;
+    /** The membership insert rejects with this pg error (every attempt). */
+    membershipError?: { code: string; constraint?: string };
+  }
+
+  /** SQL-dispatching fake of the pg transaction the invite runs inside
+   *  (pgPool.withTransaction — the same shape as the unit harness in
+   *  auth.service.spec): each statement the service sends maps to one arm,
+   *  and unclassified SQL throws, so the mock tracks the service's contract.
+   */
+  function makeInviteTx(opts: InviteTxOpts = {}) {
+    let seq = opts.seqStart ?? 1;
+    const bumps: number[] = [];
+    const membershipInserts: unknown[][] = [];
+    const tx = {
+      query: jest.fn(
+        (sql: string, params: unknown[] = []): Promise<unknown> => {
+          // Savepoint traffic around each mint attempt (rollback/release
+          // both contain the word 'savepoint'). No abort modeling here: no
+          // e2e scenario continues past a failed statement, so plain
+          // resolves track the contract.
+          if (sql.includes('rollback to savepoint'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('release savepoint'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('savepoint invite_code_mint'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('pg_advisory_xact_lock'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('attendance_lock_tenant'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          // Caller check under the locks.
+          if (sql.includes('is_company_admin')) {
+            if (opts.callerIsAdmin === false)
+              return Promise.resolve({ rows: [], rowCount: 0 });
+            return Promise.resolve({
+              rows: [
+                {
+                  platform_admin: false,
+                  disabled: false,
+                  is_company_admin: true,
+                },
+              ],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('from public.tenants where id'))
+            return Promise.resolve({ rows: [{ n: 1 }], rowCount: 1 });
+          if (sql.includes('from public.country_codes'))
+            return Promise.resolve({ rows: [{ dial_code: '+91' }], rowCount: 1 });
+          // Person lookup by phone (for update).
+          if (sql.includes('select id, name, platform_admin')) {
+            if (!opts.personFound)
+              return Promise.resolve({ rows: [], rowCount: 0 });
+            return Promise.resolve({
+              rows: [
+                {
+                  id: NEW_USER_ID,
+                  name: null,
+                  platform_admin: false,
+                  disabled: false,
+                },
+              ],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('insert into public.users'))
+            return Promise.resolve({ rows: [{ id: NEW_USER_ID }], rowCount: 1 });
+          if (sql.includes('update public.users set name'))
+            return Promise.resolve({ rows: [], rowCount: 1 });
+          // Live-membership checks: same team vs. any company.
+          if (sql.includes("status <> 'removed'")) {
+            const taken = { rows: [{ n: 1 }], rowCount: 1 };
+            const free = { rows: [], rowCount: 0 };
+            return Promise.resolve(
+              sql.includes('tenant_id = $2')
+                ? opts.sameTeam
+                  ? taken
+                  : free
+                : opts.elsewhere
+                  ? taken
+                  : free,
+            );
+          }
+          // Removed-membership lookup (reactivation path) + its update.
+          if (sql.includes('select id from public.memberships'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          if (sql.includes('update public.memberships'))
+            return Promise.resolve({
+              rows: [{ employee_code: 'EMP-0007' }],
+              rowCount: 1,
+            });
+          if (sql.includes('employee_sequences')) {
+            bumps.push(seq);
+            return Promise.resolve({ rows: [{ last_seq: seq++ }], rowCount: 1 });
+          }
+          // Employee-code existence check.
+          if (sql.includes('tenant_id = $1 and employee_code = $2')) {
+            const code = params[1] as string;
+            return (opts.takenCodes ?? []).includes(code)
+              ? Promise.resolve({ rows: [{ n: 1 }], rowCount: 1 })
+              : Promise.resolve({ rows: [], rowCount: 0 });
+          }
+          if (sql.includes('insert into public.memberships')) {
+            membershipInserts.push(params);
+            if (opts.membershipError) {
+              return Promise.reject(
+                Object.assign(new Error('unique violation'), opts.membershipError),
+              );
+            }
+            return Promise.resolve({
+              rows: [{ employee_code: params[3] }],
+              rowCount: 1,
+            });
+          }
+          if (sql.includes('user_skills'))
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          return Promise.reject(new Error(`unclassified invite SQL: ${sql}`));
+        },
+      ),
+    };
+    return { tx, bumps, membershipInserts };
+  }
 
   describe('POST /api/v1/auth/invite', () => {
     it('AC1 — should return 201 with invite_id on successful invite', async () => {
-      const admin = makeInviteMock({ rpcData: inviteRow });
+      const admin = makeInviteMock({});
       mockCreateAdmin.mockReturnValue(admin);
+      const world = makeInviteTx();
+      currentTx = world.tx;
 
       const response = await app.inject({
         method: 'POST',
@@ -180,58 +310,38 @@ describe('Member Invitation (e2e)', () => {
       // mocked provider received exactly one send.
       expect(body).toEqual({
         invite_id: NEW_USER_ID,
-        employee_code: 'EMP-002',
+        employee_code: 'EMP-001',
         sms_status: 'sent',
       });
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(admin.auditInsert.mock.calls[0][0].outcome).toBe('sent');
-      // The company comes from the caller's membership, never the request.
-      expect(admin.rpc).toHaveBeenCalledWith('invite_member', {
-        p_caller: OWNER_ID,
-        p_tenant_id: TENANT_ID,
-        p_country_code: '+91',
-        p_phone_number: '1111111111',
-        p_name: 'Ravi Kumar',
-        p_role: 'employee',
-        p_skill_ids: [SKILL_ID],
-      });
-    });
-
-    it('AC2 — should return 409 when phone is already active in tenant', async () => {
-      mockCreateAdmin.mockReturnValue(
-        makeInviteMock({
-          // The database function refuses a person who already belongs to a
-          // company with PT409.
-          rpcError: { code: 'PT409', message: 'already a member' },
-        }),
-      );
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/v1/auth/invite',
-        headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: {
-          countryCode: '+91',
-          phoneNumber: '1111111111',
-          name: 'Ravi Kumar',
-          skillIds: [SKILL_ID],
-        },
-      });
-
-      expect(response.statusCode).toBe(409);
-      const body = JSON.parse(response.body);
-      expect(body.error_code).toBe('DUPLICATE_RESOURCE');
-    });
-
-    it('AC2 — should return 409 on duplicate phone unique constraint (23505)', async () => {
-      mockCreateAdmin.mockReturnValue(
-        makeInviteMock({
-          rpcError: {
-            code: '23505',
-            message: 'duplicate key value violates unique constraint',
+      // The membership was minted inside the transaction — a new person, the
+      // first free code, the role defaulting to employee.
+      expect(world.membershipInserts).toEqual([
+        [NEW_USER_ID, TENANT_ID, 'employee', 'EMP-001', OWNER_ID],
+      ]);
+      // The audit row followed the commit.
+      expect(admin.rpc).toHaveBeenCalledWith(
+        'write_audit_row',
+        expect.objectContaining({
+          p_actor: OWNER_ID,
+          p_action: 'member.invite',
+          p_tenant_id: TENANT_ID,
+          p_target_user: NEW_USER_ID,
+          p_details: {
+            role: 'employee',
+            reactivated: false,
+            employee_code: 'EMP-001',
           },
         }),
       );
+    });
+
+    it('AC2 — should return 409 when phone already belongs to a company', async () => {
+      mockCreateAdmin.mockReturnValue(makeInviteMock({}));
+      // The person exists (invited by another company, still pending there) —
+      // the live-membership check refuses them before any write.
+      currentTx = makeInviteTx({ personFound: true, elsewhere: true }).tx;
 
       const response = await app.inject({
         method: 'POST',
@@ -248,14 +358,44 @@ describe('Member Invitation (e2e)', () => {
       expect(response.statusCode).toBe(409);
       const body = JSON.parse(response.body);
       expect(body.error_code).toBe('DUPLICATE_RESOURCE');
+    });
+
+    // A raw 23505 escaping the invite is an unrecognised constraint (the
+    // code-mint loop retries its own known one). It used to be blanket-mapped
+    // to the duplicate-phone 409 — which shipped the 2026-11-25 incident where
+    // brand-new numbers failed as "already belongs to a company" — so it must
+    // surface as the honest 500.
+    it('should return 500 on an unrecognised unique constraint (23505)', async () => {
+      mockCreateAdmin.mockReturnValue(makeInviteMock({}));
+      currentTx = makeInviteTx({
+        membershipError: { code: '23505', constraint: 'mystery_constraint' },
+      }).tx;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/invite',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          countryCode: '+91',
+          phoneNumber: '1111111111',
+          name: 'Ravi Kumar',
+          skillIds: [SKILL_ID],
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      const body = JSON.parse(response.body);
+      expect(body.error_code).toBe('INTERNAL_SERVER_ERROR');
     });
 
     // Changed 2026-11-11: skills are optional (commit d9fa073), so an empty
     // skillIds list is now a valid invite. The old "422 for an empty array"
     // expectation described a rule that no longer exists.
     it('AC3 — should accept an empty skillIds list (skills are optional)', async () => {
-      const admin = makeInviteMock({ rpcData: inviteRow });
+      const admin = makeInviteMock({});
       mockCreateAdmin.mockReturnValue(admin);
+      const world = makeInviteTx();
+      currentTx = world.tx;
 
       const response = await app.inject({
         method: 'POST',
@@ -270,10 +410,12 @@ describe('Member Invitation (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(201);
-      expect(admin.rpc).toHaveBeenCalledWith(
-        'invite_member',
-        expect.objectContaining({ p_skill_ids: [] }),
-      );
+      // An empty list attaches nothing: no user_skills statement was sent.
+      expect(
+        world.tx.query.mock.calls.filter(([sql]) =>
+          (sql as string).includes('user_skills'),
+        ),
+      ).toEqual([]);
     });
 
     it('AC4 — should return 422 when skillIds contains a non-UUID string', async () => {
@@ -349,10 +491,11 @@ describe('Member Invitation (e2e)', () => {
       expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
-    it('should return 403 when the database refuses the caller (PT403)', async () => {
-      mockCreateAdmin.mockReturnValue(
-        makeInviteMock({ rpcError: { code: 'PT403', message: 'not admin' } }),
-      );
+    it('should return 403 when the caller is not a company admin under the locks', async () => {
+      mockCreateAdmin.mockReturnValue(makeInviteMock({}));
+      // The JWT belongs to an owner, but the membership check inside the
+      // transaction disagrees (demoted/removed between auth and the write).
+      currentTx = makeInviteTx({ callerIsAdmin: false }).tx;
 
       const response = await app.inject({
         method: 'POST',
@@ -367,6 +510,7 @@ describe('Member Invitation (e2e)', () => {
       });
 
       expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error_code).toBe('FORBIDDEN');
     });
 
     it('should return 422 for invalid countryCode format', async () => {

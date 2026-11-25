@@ -13,6 +13,7 @@ import { InviteSmsService } from './invite-sms/invite-sms.service';
 import { InviteSmsResendService } from './invite-sms/invite-sms-resend.service';
 import { InviteSmsController } from './invite-sms.controller';
 import { SupabaseModule } from '../supabase/supabase.module';
+import { PgModule } from '../common/pg/pg.module';
 
 /**
  * Provider registry (PRD §11 AD-3): adding an SMS provider tomorrow = one
@@ -59,7 +60,7 @@ export function createSmsDeliveryProvider(
 }
 
 @Module({
-  imports: [SupabaseModule],
+  imports: [SupabaseModule, PgModule],
   controllers: [AuthController, InviteSmsController],
   providers: [
     AuthService,

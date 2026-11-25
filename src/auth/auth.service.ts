@@ -1,8 +1,9 @@
 import {
   BadRequestException,
   NotFoundException,
-  ConflictException,
   InternalServerErrorException,
+  ForbiddenException,
+  ConflictException,
   Injectable,
   Logger,
   HttpException,
@@ -11,8 +12,10 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { randomInt } from 'crypto';
+import type { PoolClient } from 'pg';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { OtpSessionStore, OtpSession } from './otp-session-store';
 import { SmsDeliveryProvider, SmsDeliveryError } from './sms-delivery.provider';
 import { SMS_TEMPLATES } from '../common/constants/sms-templates';
@@ -73,6 +76,30 @@ const OTP_RATE_LIMIT_WINDOW = 600;
 const OTP_RATE_LIMIT_MAX = 5;
 const OTP_MAX_ATTEMPTS = 5;
 
+/**
+ * How many times the invite may step over an employee code that turned out to
+ * be taken (the counter is a starting point, never the truth). Each pass
+ * advances the counter, so the loop always moves forward; the bound only
+ * exists so a pathological counter can never spin a pool connection forever.
+ */
+const INVITE_CODE_MINT_ATTEMPTS = 5;
+
+/** The stored-procedure mint, in TypeScript: 'EMP-' || lpad(seq, max(3, len)). */
+function employeeCodeFor(seq: number): string {
+  const digits = String(seq);
+  return `EMP-${digits.padStart(Math.max(3, digits.length), '0')}`;
+}
+
+/** True when a Postgres error is a unique-violation on the named constraint. */
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: string }).code === '23505' &&
+    (err as { constraint?: string }).constraint === constraint
+  );
+}
+
 // PRE-RELEASE MASTER OTP (user-directed: 816001 on 2026-10-02, re-keyed to
 // 1039 on 2026-10-15 so it fits the 4-digit input): while the pre-SMS-cutover
 // dev flag is on, it verifies ANY live session — the release build has no
@@ -100,6 +127,7 @@ export class AuthService {
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly jwtService: JwtService,
     private readonly inviteSmsService: InviteSmsService,
+    private readonly pgPool: PgPoolFactory,
   ) {}
 
   async sendOtp(
@@ -542,6 +570,7 @@ export class AuthService {
       });
     }
 
+    const tenantId = caller.tenantId;
     const role = dto.role ?? Role.EMPLOYEE;
     // Skills are optional for every role: a technician can be invited with
     // none and get skills later. An empty list is valid for the RPC below.
@@ -578,66 +607,338 @@ export class AuthService {
       }
     }
 
-    // One all-or-nothing database step: find or create the person, refuse a
-    // person who already belongs to a company, create the membership with its
-    // employee code, attach the skills, and write the audit row.
-    const { data, error } = await admin.rpc('invite_member', {
-      p_caller: caller.userId,
-      p_tenant_id: caller.tenantId,
-      p_country_code: dto.countryCode,
-      p_phone_number: dto.phoneNumber,
-      p_name: dto.name,
-      p_role: role,
-      p_skill_ids: skillIds,
-    });
-
-    if (error) {
-      const mapped = memberRpcException(error);
-      if (mapped) throw mapped;
-      if (error.code === '23503') {
-        throw new BadRequestException({
-          error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'Invalid country code',
-        });
-      }
-      // Two invites for the same phone at once end in the same 409.
-      if (error.code === '23505') {
-        throw new ConflictException({
-          error_code: ErrorCode.DUPLICATE_RESOURCE,
-          message: 'This person already belongs to a company',
-        });
-      }
-      this.logger.error('Failed to create member invite:', { error });
+    // The whole invite is one all-or-nothing database step: find or create the
+    // person, refuse a person who already belongs to a company, create the
+    // membership with its employee code, and attach the skills. This used to
+    // be the invite_member PL/pgSQL function; the stored-procedure rule keeps
+    // that logic here instead — same locks, same errors, but reviewable and
+    // jest-testable (the code-minting had zero test coverage when its counter
+    // drift shipped as "This number already belongs to a company", prod
+    // incident 2026-11-25).
+    let invite: Awaited<ReturnType<AuthService['runInviteTx']>>;
+    try {
+      invite = await this.pgPool.withTransaction(async (tx) => {
+        return this.runInviteTx(tx, caller, dto, tenantId, role, skillIds);
+      });
+    } catch (txError: unknown) {
+      // Nest exceptions ARE the invite's error contract (the app maps their
+      // error_code) — pass them through untouched. Anything else is a database
+      // failure the invite did not predict: log it and answer the honest 500.
+      // Never a duplicate-phone 409: that blanket mapping is what shipped the
+      // 2026-11-25 incident.
+      if (txError instanceof HttpException) throw txError;
+      this.logger.error('Failed to create member invite:', { error: txError });
       throw new InternalServerErrorException({
         error_code: ErrorCode.INTERNAL_SERVER_ERROR,
         message: 'Failed to create invite',
       });
     }
 
-    const row = (data as Array<Record<string, unknown>> | null)?.[0];
-    if (!row) {
-      this.logger.error('invite_member returned no rows');
-      throw new InternalServerErrorException({
-        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
-        message: 'Failed to create invite',
+    // Audit after the commit, the employment-save way: what happened, never
+    // the values behind it; a failed audit entry does not undo the invite.
+    try {
+      const auditCall = (await admin.rpc('write_audit_row', {
+        p_actor: caller.userId,
+        p_action: 'member.invite',
+        p_tenant_id: tenantId,
+        p_target_user: invite.membershipUserId,
+        p_details: {
+          role,
+          reactivated: invite.wasReactivated,
+          employee_code: invite.employeeCode,
+        },
+      })) as { error: { code?: string; message?: string } | null };
+      if (auditCall.error) {
+        this.logger.error('Failed to write the invite audit entry:', {
+          error: auditCall.error,
+        });
+      }
+    } catch (auditError: unknown) {
+      this.logger.error('Failed to write the invite audit entry:', {
+        error: auditError,
       });
     }
+
     // The invite is already saved. The SMS step never rolls it back and never
     // throws; its outcome is returned as sms_status.
-    const membershipUserId = row['member_user_id'] as string;
     const smsStatus = await this.inviteSmsService.sendInviteSms({
       tenantId: caller.tenantId,
-      membershipUserId,
+      membershipUserId: invite.membershipUserId,
       countryCode: dto.countryCode,
       phoneNumber: dto.phoneNumber,
       name: dto.name,
     });
     return {
-      invite_id: membershipUserId,
-      employee_code: row['member_employee_code'] as string,
+      invite_id: invite.membershipUserId,
+      employee_code: invite.employeeCode,
       // refused_cap: the invite stands, no text went, and Resend answers 429.
       sms_status: smsStatus,
     };
+  }
+
+  /**
+   * The invite transaction body, extracted so the error contract is one
+   * readable page: locks → caller → company → person → membership → skills.
+   * The duplicate-person cases throw the exact errors invite_member used to
+   * raise (memberRpcException's mapping), so the app copy never changes.
+   */
+  private async runInviteTx(
+    tx: PoolClient,
+    caller: RequestUser,
+    dto: InviteMemberDto,
+    tenantId: string,
+    role: MembershipRole,
+    skillIds: string[],
+  ): Promise<{
+    membershipUserId: string;
+    employeeCode: string;
+    wasReactivated: boolean;
+  }> {
+    // One invite per phone number at a time, across companies, then the
+    // company lock — the exact xact-scoped locks the function held.
+    await tx.query(`select pg_advisory_xact_lock(hashtext('invite:' || $1 || $2))`, [
+      dto.countryCode,
+      dto.phoneNumber,
+    ]);
+    await tx.query('select public.attendance_lock_tenant($1, true)', [tenantId]);
+
+    // Caller check under the locks (the function re-checked after waiting for
+    // them): a live, enabled person who manages this company — or staff.
+    const callerRow = await tx.query<{
+      platform_admin: boolean;
+      disabled: boolean;
+      is_company_admin: boolean;
+    }>(
+      `select u.platform_admin, u.disabled, exists (
+         select 1 from public.memberships m
+          where m.user_id = u.id and m.tenant_id = $2
+            and m.status = 'active' and m.role = 'company_admin'
+       ) as is_company_admin
+         from public.users u
+        where u.id = $1`,
+      [caller.userId, tenantId],
+    );
+    const callerInfo = callerRow.rows[0];
+    if (
+      !callerInfo ||
+      callerInfo.disabled ||
+      (!callerInfo.platform_admin && !callerInfo.is_company_admin)
+    ) {
+      throw new ForbiddenException({
+        error_code: ErrorCode.FORBIDDEN,
+        message: 'You do not have permission to do that',
+      });
+    }
+
+    // The company must exist (404) and the dial code must be one we serve.
+    const tenant = await tx.query('select 1 from public.tenants where id = $1', [
+      tenantId,
+    ]);
+    if (tenant.rowCount === 0) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Not found',
+      });
+    }
+    const country = await tx.query(
+      'select 1 from public.country_codes where dial_code = $1',
+      [dto.countryCode],
+    );
+    if (country.rowCount === 0) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Invalid country code',
+      });
+    }
+
+    // Find the person by phone — row-locked for the whole invite, which also
+    // serializes against setupCompany (it takes the same users-row lock for
+    // the caller), so the "one live membership per person" rule below can
+    // never be raced past.
+    const name = dto.name.trim();
+    const found = (
+      await tx.query<{
+        id: string;
+        name: string | null;
+        platform_admin: boolean;
+        disabled: boolean;
+      }>(
+        `select id, name, platform_admin, disabled from public.users
+          where country_code = $1 and phone_number = $2
+          order by created_at
+          limit 1
+          for update`,
+        [dto.countryCode, dto.phoneNumber],
+      )
+    ).rows[0];
+
+    let personId: string;
+    let personName: string | null;
+    if (found) {
+      if (found.platform_admin) {
+        throw new BadRequestException({
+          error_code: ErrorCode.PLATFORM_STAFF_NOT_MEMBER,
+          message:
+            'This number belongs to Fenzit staff and cannot join a company',
+        });
+      }
+      if (found.disabled) {
+        throw new ForbiddenException({
+          error_code: ErrorCode.FORBIDDEN,
+          message: 'You do not have permission to do that',
+        });
+      }
+      const sameTeam = await tx.query(
+        `select 1 from public.memberships
+          where user_id = $1 and tenant_id = $2 and status <> 'removed'`,
+        [found.id, tenantId],
+      );
+      if (sameTeam.rowCount !== 0) {
+        throw new ConflictException({
+          error_code: ErrorCode.ALREADY_IN_TEAM,
+          message: 'This person is already in your company',
+        });
+      }
+      const elsewhere = await tx.query(
+        `select 1 from public.memberships
+          where user_id = $1 and status <> 'removed'`,
+        [found.id],
+      );
+      if (elsewhere.rowCount !== 0) {
+        throw new ConflictException({
+          error_code: ErrorCode.DUPLICATE_RESOURCE,
+          message: 'This person already belongs to a company',
+        });
+      }
+      personId = found.id;
+      personName = found.name;
+    } else {
+      // The phone advisory lock above makes this insert unloseable: invites
+      // are the only writers of person rows, and same-phone invites queue on
+      // the lock. A users_phone_key violation here would mean an unknown
+      // writer exists — that is a bug, so it gets the honest 500, not a
+      // duplicate-phone 409 that blames the number.
+      const created = await tx.query<{ id: string }>(
+        `insert into public.users (name, country_code, phone_number)
+         values ($1, $2, $3)
+         returning id`,
+        [name.length > 0 ? name : null, dto.countryCode, dto.phoneNumber],
+      );
+      personId = created.rows[0].id;
+      personName = null;
+    }
+    // A person who joined with no name on record gets the invite's name; the
+    // guard keeps it write-once (an existing name is never overwritten).
+    if (personName === null && name.length > 0) {
+      await tx.query(
+        'update public.users set name = $2 where id = $1 and name is null',
+        [personId, name],
+      );
+    }
+
+    // A previously removed member keeps their code and history: flip the old
+    // membership back to invited instead of minting a new one.
+    const removed = await tx.query<{ id: string }>(
+      `select id from public.memberships
+        where user_id = $1 and tenant_id = $2 and status = 'removed'
+        for update`,
+      [personId, tenantId],
+    );
+    const oldMembership = removed.rows[0];
+    if (oldMembership) {
+      const reactivated = await tx.query<{ employee_code: string }>(
+        `update public.memberships
+            set status = 'invited', role = $2, invited_by = $3
+          where id = $1 and status = 'removed'
+          returning employee_code`,
+        [oldMembership.id, role, caller.userId],
+      );
+      await this.attachInviteSkills(tx, personId, skillIds);
+      return {
+        membershipUserId: personId,
+        employeeCode: reactivated.rows[0].employee_code,
+        wasReactivated: true,
+      };
+    }
+
+    // Mint the next FREE employee code: the counter is a starting point, never
+    // the truth. Codes can be hand-set by the owner (the employment save does
+    // not hold the invite locks), so the counter can sit below codes already
+    // in use — each pass bumps the counter and checks this company's
+    // memberships, stepping over taken codes instead of crashing on them
+    // (this exact crash was the 2026-11-25 incident). The counter upsert
+    // row-locks per tenant, so concurrent invites stay serial.
+    for (let attempt = 0; attempt < INVITE_CODE_MINT_ATTEMPTS; attempt++) {
+      const bump = await tx.query<{ last_seq: number }>(
+        `insert into public.employee_sequences (tenant_id, last_seq)
+         values ($1, 1)
+         on conflict (tenant_id)
+         do update set last_seq = public.employee_sequences.last_seq + 1
+         returning last_seq`,
+        [tenantId],
+      );
+      const code = employeeCodeFor(bump.rows[0].last_seq);
+      const taken = await tx.query(
+        `select 1 from public.memberships
+          where tenant_id = $1 and employee_code = $2`,
+        [tenantId, code],
+      );
+      if (taken.rowCount !== 0) continue;
+
+      // Each attempt runs inside a savepoint: a failed insert aborts the whole
+      // transaction on Postgres, so "catch and keep going" only works if the
+      // attempt's damage is rolled back to the savepoint first — the 25P02
+      // ("current transaction is aborted") on the next bump is otherwise
+      // unavoidable. The PL/pgSQL exception block this replaces provided that
+      // isolation for free.
+      await tx.query('savepoint invite_code_mint');
+      try {
+        const membership = await tx.query<{ employee_code: string }>(
+          `insert into public.memberships (user_id, tenant_id, role, status, employee_code, invited_by)
+           values ($1, $2, $3, 'invited', $4, $5)
+           returning employee_code`,
+          [personId, tenantId, role, code, caller.userId],
+        );
+        await tx.query('release savepoint invite_code_mint');
+        await this.attachInviteSkills(tx, personId, skillIds);
+        return {
+          membershipUserId: personId,
+          employeeCode: membership.rows[0].employee_code,
+          wasReactivated: false,
+        };
+      } catch (err) {
+        if (isUniqueViolation(err, 'memberships_tenant_employee_code_key')) {
+          // A hand-set code grabbed ours between the check and the insert —
+          // undo the aborted attempt and step over it to the next code.
+          await tx.query('rollback to savepoint invite_code_mint');
+          continue;
+        }
+        throw err;
+      }
+    }
+    this.logger.error(
+      'inviteMember could not mint a free employee code after retries',
+      { tenantId },
+    );
+    throw new InternalServerErrorException({
+      error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+      message: 'Failed to create invite',
+    });
+  }
+
+  /** Attach the invited person's skills inside the invite transaction. */
+  private async attachInviteSkills(
+    tx: PoolClient,
+    personId: string,
+    skillIds: string[],
+  ): Promise<void> {
+    if (skillIds.length === 0) return;
+    await tx.query(
+      `insert into public.user_skills (user_id, skill_id)
+       select $1, s from unnest($2::uuid[]) as s
+       on conflict do nothing`,
+      [personId, skillIds],
+    );
   }
 
   async setupCompany(
