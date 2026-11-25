@@ -531,6 +531,74 @@ describe('Member Invitation (e2e)', () => {
       expect(body.error_code).toBe('VALIDATION_ERROR');
     });
 
+    // The format contract for phoneNumber moved here from the deleted
+    // invite_member RPC suites (2026-11-25 drop): the service never
+    // re-checks it and the DB has no constraint, so the DTO regex is the
+    // only guard. Both sides of /^\d{6,15}$/ are pinned.
+    it.each(['12345', '1234567890123456', '98765abcde', '٩٨٧٦٥٤٣٢١٠', ''])(
+      'should return 422 for a malformed phoneNumber (%s)',
+      async (badPhone) => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/invite',
+          headers: { authorization: `Bearer ${ownerJwt()}` },
+          payload: {
+            countryCode: '+91',
+            phoneNumber: badPhone,
+            name: 'Ravi Kumar',
+            skillIds: [SKILL_ID],
+          },
+        });
+
+        expect(response.statusCode).toBe(422);
+        const body = JSON.parse(response.body) as { error_code: string };
+        expect(body.error_code).toBe('VALIDATION_ERROR');
+      },
+    );
+
+    it('should return 422 for an invalid role (outside MEMBERSHIP_ROLES)', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/invite',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          countryCode: '+91',
+          phoneNumber: '1111111111',
+          name: 'Ravi Kumar',
+          role: 'owner',
+          skillIds: [SKILL_ID],
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as { error_code: string };
+      expect(body.error_code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should accept the 6-digit phoneNumber boundary', async () => {
+      const admin = makeInviteMock({});
+      mockCreateAdmin.mockReturnValue(admin);
+      const world = makeInviteTx();
+      currentTx = world.tx;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/invite',
+        headers: { authorization: `Bearer ${ownerJwt()}` },
+        payload: {
+          countryCode: '+91',
+          phoneNumber: '999981',
+          name: 'Ravi Kumar',
+          skillIds: [SKILL_ID],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(world.membershipInserts).toEqual([
+        [NEW_USER_ID, TENANT_ID, 'employee', 'EMP-001', OWNER_ID],
+      ]);
+    });
+
     it('should return 401 when no JWT provided', async () => {
       const response = await app.inject({
         method: 'POST',

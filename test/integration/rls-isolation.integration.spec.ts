@@ -844,6 +844,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         await purgeCompany(serviceClient, tenantId, [ownerId, techId]);
       }
     },
+    30000,
   );
 
   maybeIt(
@@ -1215,15 +1216,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_target_user: null,
           p_details: {},
         },
-        invite_member: {
-          p_caller: PROBE_ID,
-          p_tenant_id: PROBE_ID,
-          p_country_code: '+91',
-          p_phone_number: '9999000299',
-          p_name: 'RLS Probe',
-          p_role: 'viewer',
-          p_skill_ids: [],
-        },
+        // invite_member is absent on purpose: migration 20261125000002 dropped
+        // it (the backend TypeScript owns invite minting now) — pinned after
+        // the sweep below.
         change_member_role: {
           p_caller: PROBE_ID,
           p_tenant_id: PROBE_ID,
@@ -1258,6 +1253,24 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect((error as { code: string }).code).toBe('42501');
       }
 
+      // And the dropped one stays dropped: invite_member must not come back
+      // without re-pinning its revoke pattern (it has no callers since the
+      // backend TypeScript took over invite minting — incident 2026-11-25).
+      // PGRST202 is PostgREST's function-not-found — the exact absence
+      // signature (a recreated function raising its old PT403 would surface
+      // P0001, and a recreated-but-revoked one P42501; neither passes).
+      const dropped = await anonRpcClient.rpc('invite_member', {
+        p_caller: PROBE_ID,
+        p_tenant_id: PROBE_ID,
+        p_country_code: '+91',
+        p_phone_number: '9999000299',
+        p_name: 'RLS Probe',
+        p_role: 'viewer',
+        p_skill_ids: [],
+      });
+      expect(dropped.error).not.toBeNull();
+      expect((dropped.error as { code?: string }).code).toBe('PGRST202');
+
       // Trigger functions: returns-trigger ⇒ never an RPC endpoint at all.
       const TRIGGER_FUNCTIONS = [
         'notifications_broadcast_changes',
@@ -1275,6 +1288,7 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect((error as { code: string }).code).toBe('PGRST202');
       }
     },
+    30000,
   );
 
   maybeIt(

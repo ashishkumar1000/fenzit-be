@@ -25,6 +25,22 @@ import {
   teardownSuite,
 } from '../helpers/member-functions-company';
 import { serviceRoleClient } from '../helpers/rls-seed';
+import {
+  DUPLICATE as INVITE_DUPLICATE,
+  createInviteService,
+  serviceInvite,
+} from '../helpers/invite-service-world';
+import { Role } from '../../src/common/enums/role.enum';
+
+/** The invite envelope's refusal reader (the remove() RPC calls below keep
+ *  using the fixture's `refusal`). */
+const inviteRefusal = (r: {
+  data: unknown;
+  error: { status: number; error_code: string } | null;
+}) => {
+  expect(r.data).toBeNull();
+  return r.error;
+};
 
 const PA = mid('e003', 1);
 
@@ -86,6 +102,7 @@ describe('remove_member (real DB)', () => {
         old_status: 'invited',
       });
     },
+    30000,
   );
 
   maybeIt(
@@ -101,6 +118,7 @@ describe('remove_member (real DB)', () => {
       expect(await statusOf(c.id.a1, c.tenantId)).toBe('active');
       expect(await auditFor(service, c.id.a1)).toEqual([]);
     },
+    30000,
   );
 
   maybeIt(
@@ -137,6 +155,7 @@ describe('remove_member (real DB)', () => {
       expect((await remove(PA, d.tenantId, d.id.admin)).error).toBeNull();
       expect(await liveAdminCount(service, d.tenantId)).toBe(1);
     },
+    30000,
   );
 
   maybeIt(
@@ -160,6 +179,7 @@ describe('remove_member (real DB)', () => {
       );
       expect(await statusOf(other.id.emp, other.tenantId)).toBe('active');
     },
+    30000,
   );
 
   maybeIt(
@@ -191,6 +211,7 @@ describe('remove_member (real DB)', () => {
       expect(await statusOf(c.id.target, c.tenantId)).toBe('active');
       expect(await auditFor(service, c.id.target)).toEqual([]);
     },
+    30000,
   );
 
   maybeIt(
@@ -210,6 +231,7 @@ describe('remove_member (real DB)', () => {
         NOT_FOUND,
       );
     },
+    30000,
   );
 
   maybeIt(
@@ -228,22 +250,29 @@ describe('remove_member (real DB)', () => {
         .eq('id', c.id.emp)
         .single();
       const phone = u as { country_code: string; phone_number: string };
+      // The invite side runs on the shipped TypeScript path (invite_member is
+      // dropped); the audit it writes is cleaned by teardownSuite below.
+      const { authService } = await createInviteService();
       const invite = () =>
-        call(service, 'invite_member', {
-          p_caller: other.id.admin,
-          p_tenant_id: other.tenantId,
-          p_country_code: phone.country_code,
-          p_phone_number: phone.phone_number,
-          p_name: null,
-          p_role: 'employee',
-          p_skill_ids: [],
-        });
-      expect(refusal(await invite())).toEqual({
-        code: 'PT409',
-        hint: 'DUPLICATE_RESOURCE',
-      });
+        serviceInvite(
+          authService,
+          {
+            userId: other.id.admin,
+            tenantId: other.tenantId,
+            role: Role.COMPANY_ADMIN,
+            platformAdmin: false,
+            rawJwt: 'probe',
+          },
+          {
+            countryCode: phone.country_code,
+            phoneNumber: phone.phone_number,
+            name: 'rm free invitee',
+          },
+        );
+      expect(inviteRefusal(await invite())).toEqual(INVITE_DUPLICATE);
       await remove(c.id.admin, c.tenantId, c.id.emp);
       expect((await invite()).error).toBeNull();
     },
+    30000,
   );
 });

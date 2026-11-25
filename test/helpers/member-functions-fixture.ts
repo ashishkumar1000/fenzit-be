@@ -1,11 +1,13 @@
 /**
  * Shared helpers for the member-function integration suites
- * (member-functions-invite / -roles / -setup). Real DEV database only.
+ * (member-functions-roles / -setup / -remove). Real DEV database only.
  *
- * Plain English: the five member functions (invite_member, change_member_role,
- * remove_member, set_user_disabled, setup_tenant_for_owner) are called as the
- * service role, exactly like the backend does, and each test then looks at the
- * memberships / audit_log rows with ordinary queries.
+ * Plain English: the member functions (change_member_role, remove_member,
+ * set_user_disabled, setup_tenant_for_owner) are called as the service role,
+ * exactly like the backend does, and each test then looks at the
+ * memberships / audit_log rows with ordinary queries. invite_member left this
+ * world on 2026-11-25 — its rules coverage lives on the TypeScript service
+ * path (invite-service-rules.integration.spec.ts).
  *
  * Teardown: audit_log is append-only, so its rows are removed by
  * deleteAuditRows (triggers off for one transaction, scoped to the probe's own
@@ -37,7 +39,6 @@ export function randomPhone(): string {
     }
   }
 }
-export const trackPhone = (p: string) => (usedPhones.add(p), p);
 export const trackedPhones = () => [...usedPhones];
 
 export interface RpcError {

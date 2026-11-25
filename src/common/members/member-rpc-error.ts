@@ -14,8 +14,9 @@ interface RpcError {
 
 /**
  * Turns an error raised by one of the membership database functions
- * (invite_member, change_member_role, remove_member, set_user_disabled,
- * setup_tenant_for_owner) into the API's error. The functions raise
+ * (change_member_role, remove_member, set_user_disabled,
+ * setup_tenant_for_owner — invite_member was dropped by migration
+ * 20261125000002; the invite is pure TypeScript now) into the API's error. The functions raise
  * `PT4xx` (the last digits are the HTTP status) with a `hint` naming the API
  * error code. Returns null for any other database error, which the caller
  * treats as a 500.
