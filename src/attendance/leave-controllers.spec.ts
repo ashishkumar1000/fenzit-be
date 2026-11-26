@@ -111,14 +111,18 @@ describe('LeaveController route pins (owner)', () => {
   });
 
   it('the summary read is WIRED as GET attendance/leave/summary — a rename or drop darkens the whole calendar tab while every direct-call test stays green', () => {
-    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe('attendance/leave');
+    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe(
+      'attendance/leave',
+    );
     const target = LeaveController.prototype['summary'] as object;
     expect(Reflect.getMetadata(PATH_METADATA, target)).toBe('summary');
     expect(Reflect.getMetadata(METHOD_METADATA, target)).toBe(0); // RequestMethod.GET
   });
 
   it('the coverage read is WIRED as GET attendance/leave/:id/coverage — a rename or drop blanks the details card\u2019s coverage line while every direct-call test stays green', () => {
-    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe('attendance/leave');
+    expect(Reflect.getMetadata(PATH_METADATA, LeaveController)).toBe(
+      'attendance/leave',
+    );
     const target = LeaveController.prototype['readCoverage'] as object;
     expect(Reflect.getMetadata(PATH_METADATA, target)).toBe(':id/coverage');
     expect(Reflect.getMetadata(METHOD_METADATA, target)).toBe(0); // RequestMethod.GET
@@ -131,7 +135,9 @@ describe('LeaveController route pins (owner)', () => {
 
 describe('ListLeaveQueryDto validation pins', () => {
   it('q bans NUL — the one character Postgres cannot carry in a text parameter — for an honest 422 instead of a 500, and nothing else', () => {
-    const bad = validateSync(plainToInstance(ListLeaveQueryDto, { q: 'a\u0000b' }));
+    const bad = validateSync(
+      plainToInstance(ListLeaveQueryDto, { q: 'a\u0000b' }),
+    );
     expect(bad.some((error) => error.property === 'q')).toBe(true);
     // The ban is NUL only: DEL, wildcards and whitespace stay searchable —
     // Postgres carries them fine and escapeLike handles the wildcards.
@@ -178,25 +184,28 @@ describe('role guard pins (spec §7)', () => {
 
   it('every admin leave handler needs an admin-side permission — an employee must never approve, revoke or apply on behalf', () => {
     // @Can sits on each LeaveController handler (the class carries none), so
-    // pin every handler: reads need leave.read_all, decisions leave.approve,
-    // apply-on-behalf leave.create_on_behalf.
-    const expected: Array<[string, Permission]> = [
-      ['list', 'leave.read_all'],
-      ['summary', 'leave.read_all'],
-      ['previewRevoke', 'leave.read_all'],
-      ['readCoverage', 'leave.read_all'],
-      ['approve', 'leave.approve'],
-      ['reject', 'leave.approve'],
-      ['revoke', 'leave.approve'],
-      ['applyOnBehalf', 'leave.create_on_behalf'],
-      ['previewApplyOnBehalf', 'leave.create_on_behalf'],
+    // pin every handler: the list and coverage are company-wide for an admin
+    // and subtree-scoped for a manager (24-2), decisions need leave.approve,
+    // apply-on-behalf needs leave.create_on_behalf.
+    const expected: Array<[string, Permission[]]> = [
+      ['list', ['leave.read_all', 'leave.read_team']],
+      ['summary', ['leave.read_all']],
+      ['previewRevoke', ['leave.read_all']],
+      ['readCoverage', ['leave.read_all', 'leave.read_team']],
+      ['approve', ['leave.approve']],
+      ['reject', ['leave.approve']],
+      ['revoke', ['leave.approve']],
+      ['applyOnBehalf', ['leave.create_on_behalf']],
+      ['previewApplyOnBehalf', ['leave.create_on_behalf']],
     ];
-    for (const [handler, permission] of expected) {
+    for (const [handler, permissions] of expected) {
       const needed = Reflect.getMetadata(
         CAN_KEY,
         LeaveController.prototype[handler] as object,
       );
-      expect(needed).toEqual([permission]);
+      // Set membership, not array order: the decorator's order never decides
+      // the outcome (permissions.guard.ts).
+      expect(new Set(needed)).toEqual(new Set(permissions));
     }
   });
 });

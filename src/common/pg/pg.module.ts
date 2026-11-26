@@ -10,7 +10,9 @@ import { PgPoolFactory } from './pg-pool.factory';
  * (common/day-status/grid-reader) through the same transaction discipline.
  * Since the 2026-10-26 web-admin spec, AdminModule too: the staff dossier
  * (admin/users/lookup) runs its read-only SELECT aggregation inside one
- * `withTransaction` for the same statement-timeout discipline.
+ * `withTransaction` for the same statement-timeout discipline. Since 24-2,
+ * JobsModule too: a manager-employee's job reads resolve their reporting
+ * subtree through the same walk the leave reads use.
  */
 @Module({
   providers: [PgPoolFactory, DbPoolMetricsBinder],

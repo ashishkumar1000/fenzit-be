@@ -7,6 +7,7 @@ import { JobsService } from './jobs.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { memberRow } from '../../test/helpers/member-rows-stub';
@@ -120,6 +121,13 @@ describe('employee-created jobs in JobsService (CAP-2, CAP-3, CAP-4)', () => {
         { provide: SupabaseClientFactory, useValue: factory },
         { provide: CustomersService, useValue: customersService },
         { provide: StorageService, useValue: { presignReadUrl: jest.fn() } },
+        {
+          provide: PgPoolFactory,
+          useValue: {
+            withTransaction: (work: (tx: unknown) => unknown) =>
+              work({ query: () => Promise.resolve({ rows: [] }) }),
+          },
+        },
       ],
     }).compile();
     service = module.get(JobsService);

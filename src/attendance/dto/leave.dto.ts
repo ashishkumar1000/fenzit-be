@@ -140,7 +140,8 @@ export class ListLeaveQueryDto {
   status?: 'pending' | 'approved' | 'revoked' | 'cancelled' | 'rejected';
 
   @ApiPropertyOptional({
-    description: 'Filter to one employee (owner list only)',
+    description:
+      'Filter to one employee. Admins may pick anyone; a manager may pick anyone in their subtree (outside it answers 404).',
   })
   @IsOptional()
   @IsUUID('loose') // never '4'/'all' — 83/173 real user ids fail 'all' (see OnBehalfLeaveDto)

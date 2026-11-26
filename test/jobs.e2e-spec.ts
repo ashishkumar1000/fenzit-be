@@ -11,6 +11,7 @@ import { SupabaseClientFactory } from '../src/common/factories/supabase-client.f
 import { Role } from '../src/common/enums/role.enum';
 import { accessToken, withPeople } from './helpers/auth-test-utils';
 import { StorageService } from '../src/storage/storage.service';
+import { PgPoolFactory } from '../src/common/pg/pg-pool.factory';
 import { getIstDayRange } from '../src/common/utils/ist-day-range.util';
 import { V1_TEMPLATE as SHARED_V1_TEMPLATE } from './fixtures/v1-template';
 
@@ -18,6 +19,9 @@ describe('Jobs (e2e)', () => {
   let app: NestFastifyApplication;
   let jwtService: JwtService;
   let mockCreateAdmin: jest.Mock;
+  // The reporting subtree an employee's read resolves (24-2). Empty = no
+  // reports, so the caller keeps today's self-scope.
+  let subtreeRows: unknown[] = [];
 
   const TENANT_ID = '33333333-3333-4333-8333-333333333333';
   const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -48,6 +52,14 @@ describe('Jobs (e2e)', () => {
           getPresignedReadUrl: jest
             .fn()
             .mockResolvedValue('https://r2.example.com/read'),
+        })
+        .overrideProvider(PgPoolFactory)
+        .useValue({
+          withTransaction: (work: (client: unknown) => Promise<unknown>) =>
+            work({
+              query: () => Promise.resolve({ rows: subtreeRows }),
+            }),
+          onModuleDestroy: async () => undefined,
         }),
       [
         { userId: OWNER_ID, tenantId: TENANT_ID, role: Role.COMPANY_ADMIN },
@@ -74,6 +86,10 @@ describe('Jobs (e2e)', () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  afterEach(() => {
+    subtreeRows = [];
   });
 
   function ownerJwt() {
@@ -774,6 +790,24 @@ describe('Jobs (e2e)', () => {
 
       expect(response.statusCode).toBe(200);
       expect(builder.eq).toHaveBeenCalledWith('technician_id', TECH_ID);
+    });
+
+    it('24-2 — a manager-employee is scoped to self plus their subtree', async () => {
+      // techJwt() is OTHER_TECH_ID; TECH_ID is the report in its subtree.
+      subtreeRows = [{ node_id: TECH_ID }];
+      const { builder } = mockList({ data: [], error: null });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/jobs',
+        headers: { authorization: `Bearer ${techJwt()}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(builder.in).toHaveBeenCalledWith(
+        'technician_id',
+        expect.arrayContaining([OTHER_TECH_ID, TECH_ID]),
+      );
     });
 
     it('AC5 — technician is self-scoped; query technicianId is ignored', async () => {

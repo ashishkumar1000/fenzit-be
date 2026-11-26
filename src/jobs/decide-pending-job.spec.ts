@@ -29,7 +29,15 @@ const JOB_ID = '11111111-1111-4111-8111-111111111111';
 function serviceWith(rpcResult: { data: unknown; error: unknown }) {
   const rpc = jest.fn().mockResolvedValue(rpcResult);
   const factory = { createAdmin: jest.fn(() => ({ rpc })) };
-  const service = new JobsService(factory as never, {} as never, {} as never);
+  const service = new JobsService(
+    factory as never,
+    {} as never,
+    {} as never,
+    {
+      withTransaction: (w: (t: unknown) => unknown) =>
+        w({ query: () => Promise.resolve({ rows: [] }) }),
+    } as never,
+  );
   const refetch = jest
     .spyOn(service as never, 'refetchWithEmbeds' as never)
     .mockResolvedValue({ id: JOB_ID } as never);

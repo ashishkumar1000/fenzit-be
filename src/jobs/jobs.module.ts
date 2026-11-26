@@ -7,10 +7,11 @@ import { JobsController } from './jobs.controller';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { CustomersModule } from '../customers/customers.module';
 import { StorageModule } from '../storage/storage.module';
+import { PgModule } from '../common/pg/pg.module';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 
 @Module({
-  imports: [SupabaseModule, CustomersModule, StorageModule],
+  imports: [SupabaseModule, CustomersModule, StorageModule, PgModule],
   controllers: [JobsController],
   providers: [
     JobsService,

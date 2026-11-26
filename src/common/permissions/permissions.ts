@@ -41,6 +41,7 @@ export type Permission =
   | 'attendance.manage'
   | 'attendance.own'
   | 'leave.read_all'
+  | 'leave.read_team' // a manager's own subtree (24-2/CAP-2); employees and viewers hold it, the service scopes the rows
   | 'leave.approve' // approve, reject, revoke
   | 'leave.create_on_behalf'
   | 'leave.types' // the paid/unpaid catalog config (CAP-12), company admin of this company only
@@ -118,6 +119,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'customer.read',
       'attendance.own',
       'leave.own',
+      'leave.read_team',
       'payroll.own',
     ]),
     [Role.VIEWER]: new Set<Permission>([
@@ -126,6 +128,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'report.read',
       'report.request',
       'attendance.read',
+      // A viewer ASSIGNED as a manager reads their subtree's leave — the
+      // deliberate D13 exception. Their job access is already company-wide.
+      'leave.read_team',
     ]),
   };
 
@@ -135,4 +140,21 @@ export const NO_MEMBERSHIP_PERMISSIONS: ReadonlySet<Permission> =
 
 export function permissionsFor(role: Role | null): ReadonlySet<Permission> {
   return role === null ? NO_MEMBERSHIP_PERMISSIONS : ROLE_PERMISSIONS[role];
+}
+
+/**
+ * The row scope a role's TEAM read gets (24-2/CAP-2). A role that already
+ * holds the resource's company-wide permission keeps it — subtree rights are
+ * additive to role rights, never a narrowing (D13), so a viewer keeps
+ * `job.read_all` while gaining team leave. Every other role is subtree-scoped,
+ * and the service enforces the rows because reads use the service-role client.
+ * Kept here so the grant and the read scope cannot drift.
+ */
+export type ReadScope = 'tenant' | 'subtree';
+
+export function readScopeFor(
+  role: Role | null,
+  companyWide: Permission,
+): ReadScope {
+  return permissionsFor(role).has(companyWide) ? 'tenant' : 'subtree';
 }

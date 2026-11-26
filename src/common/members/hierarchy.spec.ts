@@ -3,6 +3,7 @@ import {
   emptyHierarchy,
   probeManagerAssignment,
   readMemberHierarchy,
+  readSubtreeMemberIds,
 } from './hierarchy';
 
 /**
@@ -173,5 +174,39 @@ describe('probeManagerAssignment', () => {
       managerAncestors: 0,
       subtreeDepth: 0,
     });
+  });
+});
+
+describe('readSubtreeMemberIds (24-2/CAP-2)', () => {
+  it('answers the descendants once each, excluding the manager', async () => {
+    const tx = txReturning([
+      { node_id: 'a' },
+      { node_id: 'b' },
+      { node_id: 'a' },
+    ]);
+
+    await expect(readSubtreeMemberIds(tx, 'tenant-A', 'm')).resolves.toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('seeds at the manager, skips removed and disabled rows and caps the walk', async () => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    const tx = {
+      query: jest.fn((sql: string, params?: unknown[]) => {
+        calls.push({ sql, params });
+        return Promise.resolve({ rows: [] });
+      }),
+    };
+
+    await readSubtreeMemberIds(tx, 'tenant-A', 'm');
+
+    expect(calls[0].params).toEqual(['tenant-A', 'm']);
+    expect(calls[0].sql).toContain("m.status <> 'removed'");
+    expect(calls[0].sql).toContain('not u.disabled');
+    expect(calls[0].sql).toContain('m.user_id = $2::uuid');
+    expect(calls[0].sql).toContain(`d.depth < ${MAX_HIERARCHY_DEPTH + 1}`);
+    expect(calls[0].sql).toContain('where d.depth > 0');
   });
 });

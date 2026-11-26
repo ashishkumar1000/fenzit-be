@@ -157,6 +157,40 @@ export async function readMemberHierarchy(
 }
 
 /**
+ * Every live member below `managerId` (the reporting subtree), excluding the
+ * manager themself. One capped, deduplicated walk so a corrupt loop written by
+ * hand cannot spin; `removed` memberships are history and are not part of a
+ * team. Callers add `self` when the scope is "my rows plus my team".
+ */
+export async function readSubtreeMemberIds(
+  tx: Queryable,
+  tenantId: string,
+  managerId: string,
+): Promise<string[]> {
+  const result = await tx.query<{ node_id: string }>(
+    `with recursive down as (
+       select m.user_id as node_id, 0 as depth
+         from public.memberships m
+         join public.users u on u.id = m.user_id
+        where m.tenant_id = $1 and m.user_id = $2::uuid
+          and m.status <> 'removed' and not u.disabled
+       union
+       select c.user_id, d.depth + 1
+         from down d
+         join public.memberships c
+           on c.tenant_id = $1 and c.manager_id = d.node_id
+         join public.users cu on cu.id = c.user_id
+        where d.depth < ${MAX_HIERARCHY_DEPTH + 1}
+          and c.status <> 'removed' and not cu.disabled
+     )
+     select d.node_id from down d where d.depth > 0`,
+    [tenantId, managerId],
+  );
+  // A loop can reach the same person at several depths; ids are the contract.
+  return [...new Set(result.rows.map((row) => row.node_id))];
+}
+
+/**
  * The two tree facts a manager assignment needs, in one round trip:
  *
  * - `cycle` — the proposed manager's own upward chain reaches the member, so

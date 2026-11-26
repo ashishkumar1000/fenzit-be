@@ -108,7 +108,7 @@ export class ListJobsQueryDto {
   @ApiPropertyOptional({
     format: 'uuid',
     description:
-      'Owner only — filter to one technician. Ignored for technician callers.',
+      'Filter to one technician. A company admin may pick anyone; a manager-employee may pick anyone in their subtree (outside it answers 404); an employee without reports keeps the self-scope and the filter is ignored.',
   })
   @IsOptional()
   @IsUUID('loose') // never '4'/'all' — real user ids fail 'all' (see leave.dto.ts)

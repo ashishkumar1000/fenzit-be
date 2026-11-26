@@ -48,7 +48,15 @@ function serviceWith(
     return { select: jest.fn(() => ({ eq })) };
   });
   const factory = { createAdmin: jest.fn(() => ({ rpc, from })) };
-  const service = new JobsService(factory as never, {} as never, {} as never);
+  const service = new JobsService(
+    factory as never,
+    {} as never,
+    {} as never,
+    {
+      withTransaction: (w: (t: unknown) => unknown) =>
+        w({ query: () => Promise.resolve({ rows: [] }) }),
+    } as never,
+  );
   jest
     .spyOn(service as never, 'refetchWithEmbeds' as never)
     .mockResolvedValue({ id: JOB_ID } as never);
@@ -209,7 +217,15 @@ describe('JobsService.updateJob: a decided employee job takes no owner edit (CAP
       return { select: jest.fn(() => ({ eq })) };
     });
     const factory = { createAdmin: jest.fn(() => ({ rpc, from })) };
-    const service = new JobsService(factory as never, {} as never, {} as never);
+    const service = new JobsService(
+      factory as never,
+      {} as never,
+      {} as never,
+      {
+        withTransaction: (w: (t: unknown) => unknown) =>
+          w({ query: () => Promise.resolve({ rows: [] }) }),
+      } as never,
+    );
     jest
       .spyOn(service as never, 'refetchWithEmbeds' as never)
       .mockResolvedValue({ id: JOB_ID } as never);

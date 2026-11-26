@@ -11,6 +11,9 @@ import {
 } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
+import { readSubtreeMemberIds } from '../common/members/hierarchy';
+import { readScopeFor } from '../common/permissions/permissions';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { findCompanyMember } from '../common/members/company-members';
@@ -401,7 +404,27 @@ export class JobsService {
     private readonly supabaseClientFactory: SupabaseClientFactory,
     private readonly customersService: CustomersService,
     private readonly storageService: StorageService,
+    private readonly pg: PgPoolFactory,
   ) {}
+
+  /**
+   * A manager-employee's read scope: self plus their reporting subtree
+   * (24-2/CAP-2). Null for everyone else and for an employee without
+   * reports, so those callers keep today's behaviour exactly. Viewers are
+   * deliberately not scoped here: `job.read_all` already covers the company.
+   */
+  private async teamScope(user: RequestUser): Promise<Set<string> | null> {
+    // The shared scope decision: a role that already reads the whole company
+    // (admin, platform, viewer's job.read_all) is never narrowed (D13).
+    if (!user.tenantId) return null;
+    if (readScopeFor(user.role, 'job.read_all') === 'tenant') return null;
+    const tenantId = user.tenantId;
+    return this.pg.withTransaction(async (tx) => {
+      const ids = await readSubtreeMemberIds(tx, tenantId, user.userId);
+      if (ids.length === 0) return null;
+      return new Set([user.userId, ...ids]);
+    });
+  }
 
   async createJob(owner: RequestUser, dto: CreateJobDto): Promise<JobResponse> {
     // AC #9 — company must be set up (400, not 422).
@@ -1085,7 +1108,7 @@ export class JobsService {
       // was scheduled in — it must not vanish from the technician's list when
       // the slot crosses midnight IST. So for technicians on the default view,
       // today's window is ORed with their in_progress jobs (the technician_id
-      // self-scope below ANDs the OR branch down to their own jobs). An
+      // scope below ANDs the OR branch down to their own rows). An
       // explicit `date` re-anchor is a day-history view — keep the pure window
       // there. Company admins always keep the pure day-window view.
       if (user.role === Role.EMPLOYEE && !query.date) {
@@ -1131,11 +1154,30 @@ export class JobsService {
       qb = qb.in('status', query.status);
     }
 
-    // AC #4 / #5 — technician scoping. Technicians see ONLY their own jobs; the
-    // technicianId query param is silently ignored for them. Company admins may filter.
-    // Common to every scope.
-    if (user.role === Role.EMPLOYEE) {
-      qb = qb.eq('technician_id', user.userId);
+    // AC #4 / #5 + 24-2 — row scope. An employee without reports sees ONLY
+    // their own jobs (the technicianId param is ignored for them, as today);
+    // a manager-employee sees their subtree and may filter inside it; admins
+    // and viewers keep the whole company. Common to every scope.
+    if (readScopeFor(user.role, 'job.read_all') === 'subtree') {
+      const team = await this.teamScope(user);
+      if (team) {
+        if (query.technicianId && !team.has(query.technicianId)) {
+          // Another branch answers exactly like a missing job: no existence leak.
+          throw new NotFoundException({
+            error_code: ErrorCode.RESOURCE_NOT_FOUND,
+            message: 'Not found',
+          });
+        }
+        qb = query.technicianId
+          ? qb.eq('technician_id', query.technicianId)
+          : // The id list rides the PostgREST URL; real teams are small, but a
+            // team in the hundreds would approach the URL limit. If that ever
+            // happens, move the predicate into the jobs_overview view rather
+            // than chunking the read (chunking breaks the keyset page).
+            qb.in('technician_id', [...team]);
+      } else {
+        qb = qb.eq('technician_id', user.userId);
+      }
     } else if (query.technicianId) {
       qb = qb.eq('technician_id', query.technicianId);
     }
@@ -1520,11 +1562,20 @@ export class JobsService {
     // 2) Ownership gate — an employee may only view jobs assigned to them. A job
     //    that is someone else's answers exactly like a missing one (CAP-7): not
     //    found, never a hint that it exists.
-    if (user.role === Role.EMPLOYEE && row.technician_id !== user.userId) {
-      throw new NotFoundException({
-        error_code: ErrorCode.RESOURCE_NOT_FOUND,
-        message: 'Job not found',
-      });
+    // A manager-employee may open their subtree's jobs; anyone else's answers
+    // exactly like a missing one. The attachment URLs below are minted only
+    // after this gate, so the subtree check precedes signing (CAP-2).
+    if (readScopeFor(user.role, 'job.read_all') === 'subtree') {
+      const team = await this.teamScope(user);
+      const visible = team
+        ? team.has(row.technician_id)
+        : row.technician_id === user.userId;
+      if (!visible) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'Job not found',
+        });
+      }
     }
 
     // 3) Assemble related records in parallel — reads need no atomicity (AR-10

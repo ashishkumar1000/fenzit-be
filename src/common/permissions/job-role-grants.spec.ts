@@ -1,4 +1,4 @@
-import { permissionsFor } from './permissions';
+import { permissionsFor, readScopeFor } from './permissions';
 import { Role } from '../enums/role.enum';
 
 /**
@@ -50,6 +50,46 @@ describe('reporting-manager grant per role (24-1/CAP-1)', () => {
 
   it('a signed-in person with no company holds nothing of it', () => {
     expect(permissionsFor(null).has('member.manager')).toBe(false);
+  });
+});
+
+/**
+ * Pins the team-read grant and scope (24-2/CAP-2). The guard lets employees
+ * and viewers hold `leave.read_team`; the SERVICE narrows the rows. Admins
+ * keep `leave.read_all` and the tenant scope.
+ */
+describe('team-read grant and scope per role (24-2/CAP-2)', () => {
+  it('employees and viewers may open the team list, managers or not', () => {
+    expect(permissionsFor(Role.EMPLOYEE).has('leave.read_team')).toBe(true);
+    expect(permissionsFor(Role.VIEWER).has('leave.read_team')).toBe(true);
+  });
+
+  it('the whole-company grant stays admin-side', () => {
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('leave.read_all')).toBe(true);
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('leave.read_all')).toBe(
+      true,
+    );
+    expect(permissionsFor(Role.EMPLOYEE).has('leave.read_all')).toBe(false);
+    expect(permissionsFor(Role.VIEWER).has('leave.read_all')).toBe(false);
+  });
+
+  it('leave is tenant-wide for admins, subtree for employees and viewers', () => {
+    expect(readScopeFor(Role.COMPANY_ADMIN, 'leave.read_all')).toBe('tenant');
+    expect(readScopeFor(Role.PLATFORM_ADMIN, 'leave.read_all')).toBe('tenant');
+    expect(readScopeFor(Role.EMPLOYEE, 'leave.read_all')).toBe('subtree');
+    expect(readScopeFor(Role.VIEWER, 'leave.read_all')).toBe('subtree');
+    expect(readScopeFor(null, 'leave.read_all')).toBe('subtree');
+  });
+
+  it('jobs stay company-wide for a viewer — subtree rights never narrow a role (D13)', () => {
+    expect(readScopeFor(Role.COMPANY_ADMIN, 'job.read_all')).toBe('tenant');
+    expect(readScopeFor(Role.PLATFORM_ADMIN, 'job.read_all')).toBe('tenant');
+    expect(readScopeFor(Role.VIEWER, 'job.read_all')).toBe('tenant');
+    expect(readScopeFor(Role.EMPLOYEE, 'job.read_all')).toBe('subtree');
+    // And leave/jobs agree wherever the role lacks the company-wide grant.
+    expect(readScopeFor(Role.EMPLOYEE, 'leave.read_all')).toBe(
+      readScopeFor(Role.EMPLOYEE, 'job.read_all'),
+    );
   });
 });
 

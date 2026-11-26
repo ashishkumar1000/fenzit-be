@@ -155,11 +155,39 @@ describe('statement contracts', () => {
     expect(sql).toContain('where tenant_id = $1::uuid');
   });
 
+  it('listLeaveRequests scopes a manager\u2019s team list with one = any() predicate', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, {
+      tenantId: TENANT,
+      employeeIds: ['emp-1', 'emp-2'],
+      limit: 20,
+    });
+    const sql = tx.query.mock.calls[0][0] as string;
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    expect(sql).toContain('r.employee_id = any($2::uuid[])');
+    expect(params[1]).toEqual(['emp-1', 'emp-2']);
+    // The derived-status subquery pays only for the same employees.
+    expect(sql).toMatch(/employee_id = any\(\$\d+::uuid\[\]\)/);
+    // The page bound keeps its own placeholder; the scope is appended after it.
+    expect(sql).toContain('limit $3');
+    expect(params[params.length - 1]).toEqual(['emp-1', 'emp-2']);
+  });
+
+  it('listLeaveRequests leaves the derived-status subquery company-wide for an admin', async () => {
+    const tx = fakeTx();
+    await listLeaveRequests(tx, { tenantId: TENANT, limit: 20 });
+    const params = tx.query.mock.calls[0][1] as unknown[];
+    expect(tx.query.mock.calls[0][0]).toContain('limit $2');
+    expect(params[params.length - 1]).toBeNull();
+  });
+
   it('listLeaveRequests carries the type display columns off a LEFT join — a legacy row with no type still lists (the console calendar reads these)', async () => {
     const tx = fakeTx();
     await listLeaveRequests(tx, { tenantId: TENANT, limit: 20 });
     const sql = tx.query.mock.calls[0][0] as string;
-    expect(sql).toContain('left join public.leave_types lt on lt.id = r.leave_type_id');
+    expect(sql).toContain(
+      'left join public.leave_types lt on lt.id = r.leave_type_id',
+    );
     expect(sql).toContain('lt.code as leave_type_code');
     expect(sql).toContain('lt.name as leave_type_name');
   });

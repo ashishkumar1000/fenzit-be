@@ -134,6 +134,30 @@ function techUser(): RequestUser {
   };
 }
 
+const MANAGER = '77777777-7777-4777-8777-777777777777';
+
+/** A manager: an employee role that happens to have reports (24-2/CAP-2). */
+function managerUser(): RequestUser {
+  return {
+    userId: MANAGER,
+    tenantId: TENANT,
+    role: Role.EMPLOYEE,
+    platformAdmin: false,
+    rawJwt: 'jwt',
+  };
+}
+
+/** A transaction whose subtree walk answers `ids`, everything else empty. */
+function txWithSubtree(ids: string[]) {
+  return {
+    query: jest.fn((sql: string) =>
+      sql.includes('with recursive down')
+        ? Promise.resolve({ rows: ids.map((node_id) => ({ node_id })) })
+        : Promise.resolve({ rows: [] }),
+    ),
+  } as unknown as PoolClient & { query: jest.Mock };
+}
+
 /** Rows returned per query call, in call order (overrides, defaults, holidays). */
 function txWithRows(responses: unknown[][]) {
   let call = 0;
@@ -356,6 +380,87 @@ describe('LeaveReadService listTransact wiring', () => {
     );
   });
 
+  it('a manager\u2019s list scopes to self plus the subtree, not the company', async () => {
+    const tx = txWithSubtree(['emp-report']);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map());
+
+    await serviceOver(tx).listForOwner(managerUser(), { limit: 20 });
+
+    expect(mockListLeaveRequests).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: TENANT,
+        employeeIds: [MANAGER, 'emp-report'],
+        employeeId: undefined,
+      }),
+    );
+  });
+
+  it('a manager\u2019s employeeId filter inside the subtree passes through', async () => {
+    const tx = txWithSubtree(['emp-report']);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map());
+
+    await serviceOver(tx).listForOwner(managerUser(), {
+      employeeId: 'emp-report',
+      limit: 20,
+    });
+
+    expect(mockListLeaveRequests).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        employeeId: 'emp-report',
+        employeeIds: undefined,
+      }),
+    );
+  });
+
+  it('a manager\u2019s uppercase UUID filter is matched case-insensitively, like Postgres', async () => {
+    const tx = txWithSubtree(['emp-report']);
+    mockListLeaveRequests.mockResolvedValue([]);
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map());
+
+    await expect(
+      serviceOver(tx).listForOwner(managerUser(), {
+        employeeId: 'EMP-REPORT',
+        limit: 20,
+      }),
+    ).resolves.toMatchObject({ data: [] });
+  });
+
+  it('a manager\u2019s filter outside the subtree is 404 before the list runs', async () => {
+    const tx = txWithSubtree(['emp-report']);
+    mockListLeaveRequests.mockResolvedValue([]);
+
+    const thrown = await serviceOver(tx)
+      .listForOwner(managerUser(), { employeeId: 'other-branch', limit: 20 })
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(HttpStatus.NOT_FOUND);
+    expect(
+      (thrown as HttpException).getResponse() as { error_code: string },
+    ).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    expect(mockListLeaveRequests).not.toHaveBeenCalled();
+  });
+
+  it('an employee with no reports keeps the 403 it got from the guard before', async () => {
+    const tx = txWithSubtree([]);
+    mockListLeaveRequests.mockResolvedValue([]);
+
+    const thrown = await serviceOver(tx)
+      .listForOwner(techUser(), { limit: 20 })
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(HttpStatus.FORBIDDEN);
+    expect(mockListLeaveRequests).not.toHaveBeenCalled();
+  });
+
   it('listForOwner threads the 27-1 from/to overlap window through to the repository', async () => {
     const tx = txWithRows([[], [], []]);
     mockListLeaveRequests.mockResolvedValue([]);
@@ -446,9 +551,9 @@ describe('LeaveReadService listTransact wiring', () => {
       q: 'Asha',
       limit: 20,
     });
-    expect(
-      (mockListLeaveRequests.mock.calls[0][1] as { q?: string }).q,
-    ).toBe('Asha');
+    expect((mockListLeaveRequests.mock.calls[0][1] as { q?: string }).q).toBe(
+      'Asha',
+    );
 
     mockListLeaveRequests.mockClear();
     await serviceOver(txWithRows([[], [], []])).listMine(techUser(), {
@@ -653,7 +758,11 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
   it('a single-day span drops weekly-off/holiday colleagues — available reads actually working that day (batched span facts)', async () => {
     mockFindRequestWithDays.mockResolvedValue({
       ...REQUEST,
-      request: { ...REQUEST.request, start_date: '2026-11-27', end_date: '2026-11-27' },
+      request: {
+        ...REQUEST.request,
+        start_date: '2026-11-27',
+        end_date: '2026-11-27',
+      },
     });
     mockFindOfficeAssignment.mockResolvedValue(OFFICE);
     mockFindAvailableColleagues.mockResolvedValue([
@@ -664,13 +773,19 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
       [
         'c-1',
         new Map([
-          ['2026-11-27', { date: '2026-11-27', isWorkingDay: false, kind: 'weekly_off' }],
+          [
+            '2026-11-27',
+            { date: '2026-11-27', isWorkingDay: false, kind: 'weekly_off' },
+          ],
         ]),
       ],
       [
         'c-2',
         new Map([
-          ['2026-11-27', { date: '2026-11-27', isWorkingDay: true, kind: 'working' }],
+          [
+            '2026-11-27',
+            { date: '2026-11-27', isWorkingDay: true, kind: 'working' },
+          ],
         ]),
       ],
     ]);
@@ -702,10 +817,16 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
   it('a fact-less roster member stays IN — the filter only proves someone off, never invents an absence', async () => {
     mockFindRequestWithDays.mockResolvedValue({
       ...REQUEST,
-      request: { ...REQUEST.request, start_date: '2026-11-27', end_date: '2026-11-27' },
+      request: {
+        ...REQUEST.request,
+        start_date: '2026-11-27',
+        end_date: '2026-11-27',
+      },
     });
     mockFindOfficeAssignment.mockResolvedValue(OFFICE);
-    mockFindAvailableColleagues.mockResolvedValue([{ id: 'c-1', name: 'Solo' }]);
+    mockFindAvailableColleagues.mockResolvedValue([
+      { id: 'c-1', name: 'Solo' },
+    ]);
     mockReadPageSpanFacts.mockResolvedValue(new Map()); // the read missed entirely
 
     const result = await serviceOver({} as PoolClient).readCoverage(
@@ -715,6 +836,42 @@ describe('LeaveReadService readCoverage — the details card\u2019s coverage che
 
     expect(result.availableCount).toBe(1);
     expect(result.onDutyName).toBe('Solo');
+  });
+
+  it('a manager reads coverage for a report\u2019s request', async () => {
+    const tx = txWithSubtree([EMP]);
+    mockFindOfficeAssignment.mockResolvedValue(OFFICE);
+    mockFindAvailableColleagues.mockResolvedValue([]);
+
+    const result = await serviceOver(tx).readCoverage(managerUser(), ROW_ID);
+
+    expect(result.anchorDate).toBe('2026-11-27');
+  });
+
+  it('a manager\u2019s coverage read for another branch is 404, no roster read', async () => {
+    const tx = txWithSubtree(['someone-else']);
+    const thrown = await serviceOver(tx)
+      .readCoverage(managerUser(), ROW_ID)
+      .catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(HttpStatus.NOT_FOUND);
+    expect(
+      (thrown as HttpException).getResponse() as { error_code: string },
+    ).toMatchObject({ error_code: 'LEAVE_REQUEST_NOT_FOUND' });
+    expect(mockFindAvailableColleagues).not.toHaveBeenCalled();
+  });
+
+  it('a caller with no reports gets 403 even when the request does not exist — no existence oracle', async () => {
+    const tx = txWithSubtree([]);
+    mockFindRequestWithDays.mockResolvedValue(null);
+
+    const thrown = await serviceOver(tx)
+      .readCoverage(techUser(), ROW_ID)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(HttpStatus.FORBIDDEN);
+    expect(mockFindRequestWithDays).not.toHaveBeenCalled();
   });
 
   it('404s a request outside the tenant — no existence leak, no roster read', async () => {

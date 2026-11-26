@@ -303,12 +303,7 @@ export async function readSpanFacts(
        where tenant_id = $1::uuid and valid && $2::daterange`,
       [tenantId, `[${dates[0]},${dates[dates.length - 1]}]`],
     ),
-    readScopedHolidaysBetween(
-      tx,
-      tenantId,
-      dates[0],
-      dates[dates.length - 1],
-    ),
+    readScopedHolidaysBetween(tx, tenantId, dates[0], dates[dates.length - 1]),
     readAssignmentsOverlapping(
       tx,
       tenantId,
@@ -389,7 +384,10 @@ export async function readPageSpanFacts(
     list.push(rest);
     overridesByEmployee.set(employee_id, list);
   }
-  const assignmentsByEmployee = new Map<string, { officeId: string; valid: string }[]>();
+  const assignmentsByEmployee = new Map<
+    string,
+    { officeId: string; valid: string }[]
+  >();
   for (const a of assignments) {
     const list = assignmentsByEmployee.get(a.employeeId) ?? [];
     list.push({ officeId: a.officeId, valid: a.valid });
@@ -628,6 +626,9 @@ export async function listLeaveRequests(
      *  start_date <= to — so a span hanging over either edge matches. */
     from?: string;
     to?: string;
+    /** Row scope for a manager's team list: only these employees. Admins pass
+     *  nothing and read the whole company (24-2/CAP-2). */
+    employeeIds?: string[];
     /** Free-text needle over the person's name, their employee code and
      *  the request's reason — one case-insensitive contains, one param
      *  reused across all three columns (owner list only). */
@@ -643,6 +644,12 @@ export async function listLeaveRequests(
   if (input.employeeId) {
     params.push(input.employeeId);
     conditions.push(`r.employee_id = $${params.length}::uuid`);
+  }
+  // `[]` means "nobody", which only a caller bug produces; the service always
+  // sends self plus the subtree. Admins send nothing.
+  if (input.employeeIds?.length) {
+    params.push(input.employeeIds);
+    conditions.push(`r.employee_id = any($${params.length}::uuid[])`);
   }
   if (input.status) {
     params.push(input.status);
@@ -669,6 +676,12 @@ export async function listLeaveRequests(
     );
   }
   params.push(input.limit + 1);
+  const limitParam = params.length;
+  // The derived-status subquery aggregates the tenant's day rows; a manager's
+  // page pushes the same scope into it so the "narrow" read does not pay for
+  // the whole company. NULL (an admin) leaves it company-wide.
+  params.push(input.employeeIds?.length ? input.employeeIds : null);
+  const scopeParam = params.length;
   const result = await tx.query<LeaveListRow>(
     `select r.id, r.tenant_id, r.employee_id, r.request_id, r.start_date::text,
             r.end_date::text, r.part, r.reason, r.created_by, r.created_at,
@@ -680,6 +693,7 @@ export async function listLeaveRequests(
        select leave_request_id, ${statusCase} as derived_status
        from public.leave_request_days
        where tenant_id = $1::uuid
+         and ($${scopeParam}::uuid[] is null or employee_id = any($${scopeParam}::uuid[]))
        group by leave_request_id
      ) s on s.leave_request_id = r.id
      left join public.users u on u.id = r.employee_id
@@ -688,7 +702,7 @@ export async function listLeaveRequests(
      left join public.leave_types lt on lt.id = r.leave_type_id
      where ${conditions.join(' and ')}
      order by r.created_at desc, r.id desc
-     limit $${params.length}`,
+     limit $${limitParam}`,
     params,
   );
   return result.rows;

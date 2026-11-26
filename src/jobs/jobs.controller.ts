@@ -79,6 +79,11 @@ export class JobsController {
   @ApiResponse({ status: 200, description: 'Cursor-paginated job list' })
   @ApiResponse({ status: 400, description: 'Company not set up / bad cursor' })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'technicianId belongs to another branch — a manager sees only their subtree',
+  })
   @ApiResponse({ status: 422, description: 'Validation error' })
   listJobs(@CurrentUser() user: RequestUser, @Query() query: ListJobsQueryDto) {
     return this.jobsService.listJobs(user, query);
@@ -121,11 +126,12 @@ export class JobsController {
     description: 'Company not set up or malformed id',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — no job read grant' })
   @ApiResponse({
-    status: 403,
-    description: 'Forbidden — Technician viewing a job not assigned to them',
+    status: 404,
+    description:
+      'Job not found, in another tenant, or outside the caller’s subtree',
   })
-  @ApiResponse({ status: 404, description: 'Job not found (or other tenant)' })
   getJobDetail(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,

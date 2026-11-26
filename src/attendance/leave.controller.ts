@@ -112,11 +112,19 @@ export class LeaveController {
   }
 
   @Get()
-  @Can('leave.read_all')
+  @Can('leave.read_all', 'leave.read_team')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'FR-17: all leave requests (filters: status — pending is the queue — employeeId, and the 27-1 from/to overlap window), derived status per request',
+      'FR-17: leave requests — the whole company for an admin, the caller\u2019s own subtree for a manager (filters: status — pending is the queue — employeeId, and the 27-1 from/to overlap window), derived status per request',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not an admin, and the caller has no reports',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'employeeId belongs to another branch',
   })
   @ApiResponse({
     status: 200,
@@ -164,7 +172,7 @@ export class LeaveController {
   }
 
   @Get(':id/coverage')
-  @Can('leave.read_all')
+  @Can('leave.read_all', 'leave.read_team')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -176,7 +184,8 @@ export class LeaveController {
   })
   @ApiResponse({
     status: 404,
-    description: 'The request is not in this company',
+    description:
+      'The request is not in this company, or is outside the caller’s subtree',
   })
   readCoverage(
     @CurrentUser() user: RequestUser,

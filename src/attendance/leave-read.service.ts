@@ -1,11 +1,15 @@
 import {
   Injectable,
   HttpException,
+  ForbiddenException,
+  NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
+import { readSubtreeMemberIds } from '../common/members/hierarchy';
+import { readScopeFor } from '../common/permissions/permissions';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
 import type { CursorScope } from '../common/utils/cursor.util';
@@ -208,9 +212,18 @@ export class LeaveReadService {
         message: 'from must be on or before to',
       });
     }
-    return this.pg.withTransaction((tx) =>
-      this.listTransact(tx, tenantId, {
+    return this.pg.withTransaction(async (tx) => {
+      const employeeIds = await this.scopedEmployeeIds(
+        tx,
+        owner,
+        tenantId,
+        query.employeeId,
+      );
+      return this.listTransact(tx, tenantId, {
         employeeId: query.employeeId,
+        // A named id is already validated inside the scope, so the array
+        // predicate would be redundant (and adds nothing to the plan).
+        employeeIds: query.employeeId ? undefined : employeeIds,
         status: query.status,
         from: query.from,
         to: query.to,
@@ -218,8 +231,48 @@ export class LeaveReadService {
         cursor: query.cursor,
         limit: query.limit,
         scope: OWNER_LIST_SCOPE,
-      }),
-    );
+      });
+    });
+  }
+
+  /**
+   * The employees a team read may touch (24-2/CAP-2): `undefined` for a
+   * whole-company caller, otherwise self plus the manager's subtree. A member
+   * with no reports keeps today's refusal (403); an explicitly named employee
+   * outside the subtree answers the same 404 as a missing one.
+   */
+  private async scopedEmployeeIds(
+    tx: PoolClient,
+    user: RequestUser,
+    tenantId: string,
+    requestedEmployeeId?: string,
+  ): Promise<string[] | undefined> {
+    if (readScopeFor(user.role, 'leave.read_all') === 'tenant') {
+      return undefined;
+    }
+    const descendants = await readSubtreeMemberIds(tx, tenantId, user.userId);
+    if (descendants.length === 0) {
+      // Today's guard answer, verbatim: a member without reports must see no
+      // new surface for this route (CAP-2).
+      throw new ForbiddenException({
+        error_code: ErrorCode.FORBIDDEN,
+        message: 'Insufficient permissions',
+      });
+    }
+    const allowed = [user.userId, ...descendants];
+    if (
+      requestedEmployeeId &&
+      !allowed.some(
+        (id) => id.toLowerCase() === requestedEmployeeId.toLowerCase(),
+      )
+    ) {
+      // Postgres compares uuids case-insensitively; so does the scope check.
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Not found',
+      });
+    }
+    return allowed;
   }
 
   // ---------------------------------------------------------------- apply
@@ -492,8 +545,17 @@ export class LeaveReadService {
   }> {
     const tenantId = requireTenant(owner);
     return this.pg.withTransaction(async (tx) => {
+      // Resolve the scope BEFORE the request read: a caller with no reports
+      // must get the same 403 whether or not the id exists, so the refusal
+      // cannot become an existence oracle.
+      const employeeIds = await this.scopedEmployeeIds(tx, owner, tenantId);
       const found = await findRequestWithDays(tx, tenantId, leaveRequestId);
       if (!found) throw leaveNotFound();
+      // A manager reaches coverage only for their own team; another branch's
+      // request answers exactly like a missing one (CAP-2, no existence leak).
+      if (employeeIds && !employeeIds.includes(found.request.employee_id)) {
+        throw leaveNotFound();
+      }
       const anchor = found.request.start_date;
       const office = await findOfficeAssignment(
         tx,
@@ -562,6 +624,8 @@ export class LeaveReadService {
     tenantId: string,
     input: {
       employeeId?: string;
+      /** Manager team scope (self + subtree); admins leave it undefined. */
+      employeeIds?: string[];
       status?: DerivedLeaveStatus;
       from?: string;
       to?: string;
@@ -589,6 +653,7 @@ export class LeaveReadService {
     const rows: LeaveListRow[] = await listLeaveRequests(tx, {
       tenantId,
       employeeId: input.employeeId,
+      employeeIds: input.employeeIds,
       status: input.status,
       from: input.from,
       to: input.to,

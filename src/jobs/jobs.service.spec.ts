@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { JobsService } from './jobs.service';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { CustomersService } from '../customers/customers.service';
 import { StorageService } from '../storage/storage.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
@@ -153,7 +154,16 @@ describe('JobsService', () => {
   const technicianMissing = { data: [], error: null };
   const notFound = { data: null, error: { code: 'PGRST116' } };
 
+  const mockPgClient = { query: jest.fn() };
+  const mockPg = {
+    withTransaction: jest.fn((work: (tx: unknown) => unknown) =>
+      work(mockPgClient),
+    ),
+  };
+
   beforeEach(async () => {
+    mockPgClient.query.mockReset();
+    mockPgClient.query.mockResolvedValue({ rows: [] });
     const mockFactory = { create: jest.fn(), createAdmin: jest.fn() };
     customersService = { findOrCreateByPhone: jest.fn() };
     const mockStorage = {
@@ -174,6 +184,7 @@ describe('JobsService', () => {
         { provide: SupabaseClientFactory, useValue: mockFactory },
         { provide: CustomersService, useValue: customersService },
         { provide: StorageService, useValue: mockStorage },
+        { provide: PgPoolFactory, useValue: mockPg },
       ],
     }).compile();
 
@@ -449,14 +460,12 @@ describe('JobsService', () => {
     await expect(service.createJob(owner, dtoExisting)).rejects.toThrow(
       ConflictException,
     );
-    await service
-      .createJob(owner, dtoExisting)
-      .catch((e: HttpException) => {
-        expect(e.getStatus()).toBe(HttpStatus.CONFLICT);
-        expect((e.getResponse() as { error_code: string }).error_code).toBe(
-          'MEMBERSHIP_STATE',
-        );
-      });
+    await service.createJob(owner, dtoExisting).catch((e: HttpException) => {
+      expect(e.getStatus()).toBe(HttpStatus.CONFLICT);
+      expect((e.getResponse() as { error_code: string }).error_code).toBe(
+        'MEMBERSHIP_STATE',
+      );
+    });
     expect(rpc).not.toHaveBeenCalled();
   });
 
@@ -930,6 +939,50 @@ describe('JobsService', () => {
         'technician_id',
         'some-other-tech',
       );
+    });
+
+    it('widens a manager-employee to self plus their subtree', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ node_id: 'tech-team' }],
+      });
+      const { builder } = mockListAdmin({ data: [], error: null });
+
+      await service.listJobs(technician, {});
+
+      expect(builder.in).toHaveBeenCalledWith('technician_id', [
+        'tech-self',
+        'tech-team',
+      ]);
+      expect(builder.eq).not.toHaveBeenCalledWith(
+        'technician_id',
+        expect.anything(),
+      );
+    });
+
+    it('narrows to a technicianId inside the manager’s subtree', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ node_id: 'tech-team' }],
+      });
+      const { builder } = mockListAdmin({ data: [], error: null });
+
+      await service.listJobs(technician, { technicianId: 'tech-team' });
+
+      expect(builder.eq).toHaveBeenCalledWith('technician_id', 'tech-team');
+    });
+
+    it('refuses a technicianId outside the manager’s subtree with 404', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ node_id: 'tech-team' }],
+      });
+      mockListAdmin({ data: [], error: null });
+
+      const err = await service
+        .listJobs(technician, { technicianId: 'tech-other' })
+        .catch((error: unknown) => error);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).getResponse()).toMatchObject({
+        error_code: 'RESOURCE_NOT_FOUND',
+      });
     });
 
     it('applies the owner technicianId filter when provided', async () => {
@@ -1658,6 +1711,37 @@ describe('JobsService', () => {
       );
     });
 
+    it('lets a manager-employee read a report’s job (subtree gate precedes signing)', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ node_id: jobRow.technician_id }],
+      });
+      mockDetailAdmin({});
+
+      await expect(
+        service.getJobDetail(techOther, 'job-uuid'),
+      ).resolves.toMatchObject({ id: 'job-uuid' });
+    });
+
+    it('404s a manager-employee for a job outside their subtree', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ node_id: 'tech-team' }],
+      });
+      mockDetailAdmin({
+        job: {
+          data: { ...jobRow, technician_id: 'tech-other' },
+          error: null,
+        },
+      });
+
+      const err = await service
+        .getJobDetail(techOther, 'job-uuid')
+        .catch((error: unknown) => error);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).getResponse()).toMatchObject({
+        error_code: 'RESOURCE_NOT_FOUND',
+      });
+    });
+
     it('throws 404 when the job does not exist / is in another tenant', async () => {
       mockDetailAdmin({ job: { data: null, error: { code: 'PGRST116' } } });
 
@@ -1838,11 +1922,13 @@ describe('JobsService', () => {
     const from = jest.fn(() => {
       const b: any = { filters: [], orders: [] };
       builders.push(b);
-      b.select = jest.fn((columns: string, options?: Record<string, unknown>) => {
-        b.columns = columns;
-        b.selectOptions = options;
-        return b;
-      });
+      b.select = jest.fn(
+        (columns: string, options?: Record<string, unknown>) => {
+          b.columns = columns;
+          b.selectOptions = options;
+          return b;
+        },
+      );
       ['eq', 'gte'].forEach((kind) => {
         b[kind] = jest.fn((col: string, val: unknown) => {
           b.filters.push([kind, col, val]);
@@ -1915,18 +2001,14 @@ describe('JobsService', () => {
 
       const result = await service.getJobsPage(owner, {
         technicianId: PERSON_TECH,
-      } as JobsPageQueryDto);
+      });
 
       // 1 list query + 8 head-counts, all against the overview view.
       expect(from).toHaveBeenCalledTimes(9);
       expect(from).toHaveBeenCalledWith('jobs_overview');
       expect(builders).toHaveLength(9);
       for (const b of builders) {
-        expect(b.filters).toContainEqual([
-          'eq',
-          'technician_id',
-          PERSON_TECH,
-        ]);
+        expect(b.filters).toContainEqual(['eq', 'technician_id', PERSON_TECH]);
       }
       // The list builder keeps its exact-count select and its page window.
       const list = builders[0];
@@ -1975,7 +2057,7 @@ describe('JobsService', () => {
       });
       supabaseClientFactory.createAdmin.mockReturnValue({ from } as never);
 
-      const result = await service.getJobsPage(owner, {} as JobsPageQueryDto);
+      const result = await service.getJobsPage(owner, {});
 
       expect(from).toHaveBeenCalledTimes(9);
       for (const b of builders) {
@@ -1993,7 +2075,7 @@ describe('JobsService', () => {
 
       await service.getJobsPage(owner, {
         sort: 'soonest',
-      } as JobsPageQueryDto);
+      });
 
       expect(builders[0].orders).toEqual([
         ['scheduled_start', { ascending: true, nullsFirst: false }],
