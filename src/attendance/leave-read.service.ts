@@ -9,6 +9,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { readSubtreeMemberIds } from '../common/members/hierarchy';
+import { Role } from '../common/enums/role.enum';
 import { readScopeFor } from '../common/permissions/permissions';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { decodeCursor, encodeCursor } from '../common/utils/cursor.util';
@@ -125,9 +126,27 @@ export class LeaveReadService {
     dto: OnBehalfPreviewQueryDto,
   ): Promise<LeaveApplyPreview> {
     const tenantId = requireTenant(owner);
-    return this.pg.withTransaction((tx) =>
-      this.previewApplyTransact(tx, tenantId, dto.employeeId, dto),
-    );
+    const employeeId = dto.employeeId.toLowerCase();
+    return this.pg.withTransaction(async (tx) => {
+      // 24-3/D14: a manager previews only their own subtree (themself
+      // included); an admin keeps the company-wide right. A preview never
+      // 404s — the form renders the same inline refusal the POST would return.
+      if (
+        owner.role !== Role.COMPANY_ADMIN &&
+        !owner.platformAdmin &&
+        employeeId !== owner.userId.toLowerCase()
+      ) {
+        const subtree = await readSubtreeMemberIds(tx, tenantId, owner.userId);
+        if (!subtree.includes(employeeId)) {
+          return {
+            ok: false,
+            errorCode: ErrorCode.ATTENDANCE_EMPLOYEE_NOT_FOUND,
+            message: 'Employee not found in your company',
+          };
+        }
+      }
+      return this.previewApplyTransact(tx, tenantId, employeeId, dto);
+    });
   }
 
   /** 17-3: the employee's cancel split (17-7 renders from it). */

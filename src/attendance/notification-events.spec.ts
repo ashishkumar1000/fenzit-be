@@ -65,6 +65,8 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
       'leave.applied',
       'leave.applied_on_behalf',
       'leave.approved',
+      'leave.approver_added',
+      'leave.approver_removed',
       'leave.cancelled_by_disable',
       'leave.checkin_auto_cancel',
       'leave.employee_cancelled',
@@ -108,7 +110,7 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
       ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
         ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED_ON_BEHALF
       ].payloadFields,
-    ).toEqual(['startDate', 'endDate', 'workingDays']);
+    ).toEqual(['startDate', 'endDate', 'workingDays', 'status']);
     expect(
       ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
         ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVED
@@ -244,6 +246,8 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
       'leave.employee_cancelled',
       'leave.cancelled_by_disable',
       'leave.checkin_auto_cancel',
+      'leave.approver_added',
+      'leave.approver_removed',
       // 19-1's four reminder events (FR-23's closed vocabulary — the
       // reminder set can never grow past this four-row table, SM-C2).
       'attendance.reminder_checkin',

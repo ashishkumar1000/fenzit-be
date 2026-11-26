@@ -422,8 +422,31 @@ const PUSH_COPY: {
       channel: PUSH_CHANNEL.attendance,
       visibility: 'PRIVATE',
     },
+    ['leave.approver_added']: {
+      title: 'Leave awaiting your approval',
+      body: (p) =>
+        whoOf(p) === null
+          ? ''
+          : `${truncate(whoOf(p) as string, TITLE_NAME_CAP)} · ${spanOrEmpty(p)}`,
+      channel: PUSH_CHANNEL.attendance,
+      visibility: 'PRIVATE',
+    },
+    ['leave.approver_removed']: {
+      title: 'No longer yours to approve',
+      body: (p) =>
+        whoOf(p) === null
+          ? ''
+          : `${truncate(whoOf(p) as string, TITLE_NAME_CAP)} · ${spanOrEmpty(p)}`,
+      channel: PUSH_CHANNEL.attendance,
+      visibility: 'PRIVATE',
+    },
     ['leave.applied_on_behalf']: {
-      title: 'Leave applied for you',
+      // The payload carries `status` so a manager-filed request that is still
+      // waiting reads differently from one an admin booked at creation.
+      title: (p) =>
+        p['status'] === 'pending'
+          ? 'Leave filed for you'
+          : 'Leave applied for you',
       body: (p) => spanOrEmpty(p),
       channel: PUSH_CHANNEL.attendance,
       visibility: 'PRIVATE',

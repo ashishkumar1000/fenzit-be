@@ -5,6 +5,7 @@ import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { LeaveService } from './leave.service';
 import { ApplyLeaveDto, OnBehalfLeaveDto } from './dto/leave.dto';
+import { Role } from '../common/enums/role.enum';
 
 /**
  * Decision pins for the leave lifecycle writes (spec-17 D2/D6/D7/D8/D9/
@@ -23,6 +24,7 @@ const KNOWN_TYPE_ID = '33333333-3333-4333-8333-333333333333';
 const ADMIN = '33333333-3333-4333-8333-333333333333';
 // A second company admin — every admin gets the alert (decision 36).
 const ADMIN_2 = '44444444-4444-4444-8444-444444444444';
+const MANAGER = '66666666-6666-4666-8666-666666666666';
 const KEY = '44444444-4444-4444-8444-444444444444';
 const REQ_DB_ID = '55555555-5555-4555-8555-555555555555';
 
@@ -49,6 +51,15 @@ type Router = (
   sql: string,
   params?: unknown[],
 ) => { rows: unknown[] } | undefined;
+
+function adminUser(id: string): RequestUser {
+  return {
+    userId: id,
+    tenantId: TENANT,
+    role: Role.COMPANY_ADMIN,
+    platformAdmin: false,
+  } as unknown as RequestUser;
+}
 
 function user(id: string): RequestUser {
   return {
@@ -93,14 +104,56 @@ function baseRouter(
     joinDateRow?: { join_date: string | null; exit_date: string | null } | null;
     existingLeaveDays?: Array<Record<string, unknown>>;
     leaveCredits?: Array<Record<string, unknown>>;
+    /** The 24-3 approval tree (memberships the walk reads). */
+    approvalTree?: Array<Record<string, unknown>>;
+    /** The caller's subtree for a manager's on-behalf filing. */
+    subtree?: string[];
   } = {},
 ): Router {
   return (sql, params?: unknown[]): { rows: unknown[] } => {
     if (sql.includes('attendance_lock')) return { rows: [] };
+    if (sql.includes('with recursive down')) {
+      return {
+        rows: (overrides.subtree ?? [EMPLOYEE]).map((node_id) => ({ node_id })),
+      };
+    }
     if (sql.includes('attendance_today'))
       return { rows: [{ today: '2026-09-29' }] };
     if (sql.includes('select now() as now'))
       return { rows: [{ now: new Date('2026-09-29T03:30:00Z') }] };
+    // 24-3 routing walk: the full membership tree (before the narrower
+    // admin/status branches — its SQL carries both shapes).
+    if (
+      sql.includes('from public.memberships m') &&
+      sql.includes('m.manager_id') &&
+      sql.includes('join public.users u on u.id = m.user_id')
+    ) {
+      return {
+        rows: overrides.approvalTree ?? [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: ADMIN_2,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      };
+    }
     if (sql.includes("m.role = 'company_admin'"))
       return { rows: [{ user_id: ADMIN }, { user_id: ADMIN_2 }] };
     if (sql.includes('select timezone from public.tenants'))
@@ -172,7 +225,10 @@ function baseRouter(
     // readAssignmentsOverlapping (the per-office holiday scope) — the
     // covering assignment must carry a valid range, unlike the day-context
     // office join below.
-    if (sql.includes('from public.attendance_office_assignments') && sql.includes('valid && $3::daterange'))
+    if (
+      sql.includes('from public.attendance_office_assignments') &&
+      sql.includes('valid && $3::daterange')
+    )
       return {
         rows: [
           {
@@ -302,7 +358,7 @@ async function rejectionOf(
     if (!(err instanceof HttpException)) {
       throw new Error(`non-Http rejection: ${String(err)}`);
     }
-    const exception = err as HttpException;
+    const exception = err;
     return {
       status: exception.getStatus(),
       body: exception.getResponse() as Record<string, unknown>,
@@ -783,16 +839,620 @@ describe('LeaveService — apply (17-1)', () => {
     expect(body['error_code']).toBe(ErrorCode.LEAVE_INVALID_RANGE);
   });
 
+  it('24-3: notifies only the nearest manager, not the admins', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: ADMIN_2,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
+
+    const notifications = queries.filter((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(notifications.map((n) => n.params?.[1])).toEqual([MANAGER]);
+    expect(notifications[0].params?.[2]).toBe('leave.applied');
+  });
+
+  it('24-3: an admin filing their own leave notifies no one and keeps it pending', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+
+    await service.applyForSelf(adminUser(ADMIN), dto(), KEY);
+
+    expect(
+      queries.filter((q) => q.sql.includes('insert into public.notifications')),
+    ).toHaveLength(0);
+    const days = queries.find((q) =>
+      q.sql.includes('insert into public.leave_request_days'),
+    );
+    expect(days?.params?.[3]).toBe('pending');
+  });
+
+  it('24-3: a manager cannot file on behalf of someone outside their subtree — 404', async () => {
+    const { service } = fakeTx(baseRouter());
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: 'outsider',
+    });
+
+    const { status, body } = await rejectionOf(
+      service.applyOnBehalf(user(MANAGER), onBehalf, KEY),
+    );
+    expect(status).toBe(404);
+    expect(body['error_code']).toBe(ErrorCode.ATTENDANCE_EMPLOYEE_NOT_FOUND);
+  });
+
+  it('24-3: a manager on-behalf filing lands PENDING, informs the employee and the approver set — never the actor', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: EMPLOYEE,
+    });
+
+    await service.applyOnBehalf(user(MANAGER), onBehalf, KEY);
+
+    const days = queries.find((q) =>
+      q.sql.includes('insert into public.leave_request_days'),
+    );
+    expect(days?.params?.[3]).toBe('pending');
+    const notifications = queries.filter((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    const recipients = notifications.map((n) => n.params?.[1]);
+    expect(recipients).toContain(EMPLOYEE);
+    expect(recipients).not.toContain(MANAGER);
+    expect(notifications.some((n) => n.params?.[2] === 'leave.applied')).toBe(
+      true,
+    );
+    const toEmployee = notifications.find((n) => n.params?.[1] === EMPLOYEE);
+    expect(
+      (
+        JSON.parse(toEmployee?.params?.[3] as string) as Record<string, unknown>
+      )['status'],
+    ).toBe('pending');
+    // The audit snapshot records who was actually asked (24-3/CAP-4): the
+    // walk skips the actor (MANAGER) and steps up to the admin fallback.
+    const event = queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[7]).toEqual([ADMIN]);
+  });
+
+  it('24-3: a created-decided admin filing asks nobody — no walk, null approver snapshot', async () => {
+    const { queries, service } = fakeTx(baseRouter());
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: EMPLOYEE,
+    });
+
+    await service.applyOnBehalf(adminUser(ADMIN), onBehalf, KEY);
+
+    // The walk is skipped entirely: nobody should have been asked.
+    expect(queries.some((q) => q.sql.includes('m.role::text'))).toBe(false);
+    const event = queries.find((q) =>
+      q.sql.includes('insert into public.leave_events'),
+    );
+    expect(event?.params?.[7]).toBeNull();
+    const notification = queries.find((q) =>
+      q.sql.includes('insert into public.notifications'),
+    );
+    expect(
+      (
+        JSON.parse(notification?.params?.[3] as string) as Record<
+          string,
+          unknown
+        >
+      )['status'],
+    ).toBe('approved');
+  });
+
+  it('24-3: a member outside the resolved set cannot decide — 403 NOT_AN_APPROVER', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: 'outsider',
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    const { status, body } = await rejectionOf(
+      service.approve(user('outsider'), REQ_DB_ID, null),
+    );
+    expect(status).toBe(403);
+    expect(body['error_code']).toBe(ErrorCode.NOT_AN_APPROVER);
+  });
+
+  it('24-3: the resolved manager decides their report’s request', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.approve(user(MANAGER), REQ_DB_ID, null),
+    ).resolves.toBeDefined();
+  });
+
+  it('24-3: an ownerless company refuses a decision — 409 APPROVER_UNRESOLVED', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: EMPLOYEE,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    const { status, body } = await rejectionOf(
+      service.approve(user(EMPLOYEE), REQ_DB_ID, null),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.APPROVER_UNRESOLVED);
+  });
+
+  it('24-3: the admin override outranks an ownerless walk — a creator-admin can still revise their own on-behalf filing', async () => {
+    // approval-routing.md: any active admin may act "regardless of the walk's
+    // outcome". The actor exclusion empties this walk, but the admin must
+    // still be able to revoke what they created for someone else.
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: EMPLOYEE,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.approve(adminUser(ADMIN), REQ_DB_ID, null),
+    ).resolves.toBeDefined();
+  });
+
+  it('24-3: reject by a member outside the resolved set answers 403 NOT_AN_APPROVER', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: 'outsider',
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    const { status, body } = await rejectionOf(
+      service.reject(user('outsider'), REQ_DB_ID, 'no'),
+    );
+    expect(status).toBe(403);
+    expect(body['error_code']).toBe(ErrorCode.NOT_AN_APPROVER);
+  });
+
+  it('24-3: the resolved manager rejects their report’s request', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.reject(user(MANAGER), REQ_DB_ID, 'no'),
+    ).resolves.toBeDefined();
+  });
+
+  it('24-3: revoke by a member outside the resolved set answers 403 NOT_AN_APPROVER', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        sourceDays: [{ leave_date: '2026-09-30', state: 'approved' }],
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: 'outsider',
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    const { status, body } = await rejectionOf(
+      service.revoke(user('outsider'), REQ_DB_ID, 'no'),
+    );
+    expect(status).toBe(403);
+    expect(body['error_code']).toBe(ErrorCode.NOT_AN_APPROVER);
+  });
+
+  it('24-3: the resolved manager revokes their report’s approved request', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        sourceDays: [{ leave_date: '2026-09-30', state: 'approved' }],
+        updateCount: 1,
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.revoke(user(MANAGER), REQ_DB_ID, 'no'),
+    ).resolves.toBeDefined();
+  });
+
+  it('24-3: a corrupt tree suppresses submission notifications and leaves the days pending', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: EMPLOYEE,
+            role: 'employee',
+            status: 'deactivated',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    await service.applyForSelf(user(EMPLOYEE), dto(), KEY);
+
+    const days = queries.find((q) =>
+      q.sql.includes('insert into public.leave_request_days'),
+    );
+    expect(days?.params?.[3]).toBe('pending');
+    expect(
+      queries.filter((q) => q.sql.includes('insert into public.notifications')),
+    ).toHaveLength(0);
+  });
+
+  it('24-3: a decision under a corrupt tree answers 409 with tree-specific copy', async () => {
+    const { service } = fakeTx(
+      baseRouter({
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: EMPLOYEE,
+            role: 'employee',
+            status: 'deactivated',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: MANAGER,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    const { status, body } = await rejectionOf(
+      service.approve(user(EMPLOYEE), REQ_DB_ID, null),
+    );
+    expect(status).toBe(409);
+    expect(body['error_code']).toBe(ErrorCode.APPROVER_UNRESOLVED);
+    expect(String(body['message'])).toContain('reporting line');
+  });
+
+  it('24-3: an own retry answers 200 before the approver gate, even after the tree moved', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        sourceDays: [],
+        lastEvent: { cause: 'approve', actor_id: MANAGER },
+        approvalTree: [
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: 'mgr-2',
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: EMPLOYEE,
+            manager_id: 'mgr-2',
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+
+    // MANAGER won this approval before the re-parent; the retry must not read
+    // as 403 just because the current walk names mgr-2.
+    await expect(
+      service.approve(user(MANAGER), REQ_DB_ID, null),
+    ).resolves.toBeDefined();
+    expect(
+      queries.some((q) => q.sql.includes('update public.leave_request_days')),
+    ).toBe(false);
+  });
+
+  it('24-3: an on-behalf replay answers before the subtree gate, even after the subject moved away', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({ replay: REQUEST_ROW, subtree: [] }),
+    );
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: EMPLOYEE,
+    });
+
+    await expect(
+      service.applyOnBehalf(user(MANAGER), onBehalf, KEY),
+    ).resolves.toBeDefined();
+    expect(
+      queries.some((q) => q.sql.includes('insert into public.leave_requests')),
+    ).toBe(false);
+  });
+
+  it('24-3: a manager may file on-behalf for themself', async () => {
+    const { queries, service } = fakeTx(
+      baseRouter({
+        subtree: [],
+        approvalTree: [
+          {
+            user_id: ADMIN,
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+          {
+            user_id: MANAGER,
+            manager_id: null,
+            role: 'employee',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      }),
+    );
+    const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
+      employeeId: MANAGER,
+    });
+
+    await expect(
+      service.applyOnBehalf(user(MANAGER), onBehalf, KEY),
+    ).resolves.toBeDefined();
+    const requestInsert = queries.find((q) =>
+      q.sql.includes('insert into public.leave_requests'),
+    );
+    expect(requestInsert?.params?.[1]).toBe(MANAGER);
+  });
+
   it('on-behalf creates days APPROVED immediately and notifies the EMPLOYEE (FR-16)', async () => {
     const { queries, service } = fakeTx(baseRouter());
     const onBehalf = Object.assign(new OnBehalfLeaveDto(), dto(), {
       employeeId: EMPLOYEE,
     });
-    await service.applyOnBehalf(
-      { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
-      onBehalf,
-      KEY,
-    );
+    await service.applyOnBehalf(adminUser(ADMIN), onBehalf, KEY);
     const daysInsert = queries.find((q) =>
       q.sql.includes('insert into public.leave_request_days'),
     );
@@ -837,11 +1497,7 @@ describe('LeaveService — apply (17-1)', () => {
       employeeId: EMPLOYEE,
     });
     const { body } = await rejectionOf(
-      service.applyOnBehalf(
-        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
-        onBehalf,
-        KEY,
-      ),
+      service.applyOnBehalf(adminUser(ADMIN), onBehalf, KEY),
     );
     expect(body['error_code']).toBe(ErrorCode.PAYROLL_MONTH_LOCKED);
   });
@@ -854,19 +1510,13 @@ describe('LeaveService — apply (17-1)', () => {
       employeeId: EMPLOYEE,
     });
     const { status, body } = await rejectionOf(
-      service.applyOnBehalf(
-        { userId: ADMIN, tenantId: TENANT } as unknown as RequestUser,
-        onBehalf,
-        KEY,
-      ),
+      service.applyOnBehalf(adminUser(ADMIN), onBehalf, KEY),
     );
     expect(status).toBe(409);
     expect(body['error_code']).toBe(ErrorCode.MEMBERSHIP_STATE);
     // The copy says what to do — it never dresses the refusal up as a 404.
     expect(String(body['message'])).toContain('deactivated');
-    expect(String(body['message'])).toContain(
-      'filing leave on their behalf',
-    );
+    expect(String(body['message'])).toContain('filing leave on their behalf');
     expect(
       queries.some((q) => q.sql.includes('insert into public.leave_requests')),
     ).toBe(false);
@@ -933,7 +1583,9 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const silentInsert = silent.queries.find((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(JSON.parse(silentInsert?.params?.[3] as string)['reason']).toBeNull();
+    expect(
+      JSON.parse(silentInsert?.params?.[3] as string)['reason'],
+    ).toBeNull();
   });
 
   // ---- 23-7 follow-up: the freeze gate on the action paths ----
@@ -1068,7 +1720,9 @@ describe('LeaveService — approve / reject (17-2)', () => {
     const notification = queries.find((q) =>
       q.sql.includes('insert into public.notifications'),
     );
-    expect(JSON.parse(notification?.params?.[3] as string)['reason']).toBeNull();
+    expect(
+      JSON.parse(notification?.params?.[3] as string)['reason'],
+    ).toBeNull();
   });
 });
 

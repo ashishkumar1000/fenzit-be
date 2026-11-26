@@ -46,6 +46,21 @@ describe('pushCopyForEvent', () => {
       expect(copy.body).not.toContain('evil');
       expect(copy.body).not.toContain('[object Object]');
     });
+
+    it('leave.applied_on_behalf tells a pending filing apart from one booked at creation', () => {
+      const pending = pushCopyForEvent('leave.applied_on_behalf', {
+        startDate: '2026-12-01',
+        endDate: '2026-12-02',
+        status: 'pending',
+      });
+      expect(pending.title).toBe('Leave filed for you');
+      const approved = pushCopyForEvent('leave.applied_on_behalf', {
+        startDate: '2026-12-01',
+        endDate: '2026-12-02',
+        status: 'approved',
+      });
+      expect(approved.title).toBe('Leave applied for you');
+    });
   });
 
   describe('job step notice for the owner (plain sentences, no step numbers)', () => {

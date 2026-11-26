@@ -1,7 +1,14 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
+import { Role } from '../common/enums/role.enum';
+import { readSubtreeMemberIds } from '../common/members/hierarchy';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { internalError, requireTenant } from './attendance-rpc.helpers';
 import { dbNow } from './check-in-out.repository';
@@ -57,6 +64,11 @@ import {
   validateApplyShape,
 } from './leave-validation';
 import { ApplyLeaveDto, OnBehalfLeaveDto } from './dto/leave.dto';
+import {
+  approverRecipients,
+  mayDecide,
+  resolveLeaveApprovers,
+} from './approval-routing';
 
 /**
  * The leave lifecycle writes (17-1..17-4): one pg transaction per call
@@ -89,6 +101,7 @@ export class LeaveService {
         dto,
         requestId,
         onBehalf: false,
+        callerIsAdmin: user.role === Role.COMPANY_ADMIN || user.platformAdmin,
       }),
     );
   }
@@ -108,6 +121,7 @@ export class LeaveService {
         dto,
         requestId,
         onBehalf: true,
+        callerIsAdmin: owner.role === Role.COMPANY_ADMIN || owner.platformAdmin,
       }),
     );
   }
@@ -125,14 +139,21 @@ export class LeaveService {
     const tenantId = requireTenant(owner);
     const trimmedNote = note?.trim() ? note.trim() : null;
     return this.pg.withTransaction((tx) =>
-      this.actTransact(tx, tenantId, owner.userId, leaveRequestId, {
-        sourceStates: PENDING_SOURCE_STATES,
-        toState: 'approved',
-        cause: 'approve',
-        conflictCode: ErrorCode.LEAVE_NOT_PENDING,
-        conflictMessage: 'This request is no longer pending',
-        reason: trimmedNote,
-      }),
+      this.actTransact(
+        tx,
+        tenantId,
+        owner.userId,
+        owner.role === Role.COMPANY_ADMIN || owner.platformAdmin,
+        leaveRequestId,
+        {
+          sourceStates: PENDING_SOURCE_STATES,
+          toState: 'approved',
+          cause: 'approve',
+          conflictCode: ErrorCode.LEAVE_NOT_PENDING,
+          conflictMessage: 'This request is no longer pending',
+          reason: trimmedNote,
+        },
+      ),
     );
   }
 
@@ -144,14 +165,21 @@ export class LeaveService {
   ): Promise<LeaveRequestView> {
     const tenantId = requireTenant(owner);
     return this.pg.withTransaction((tx) =>
-      this.actTransact(tx, tenantId, owner.userId, leaveRequestId, {
-        sourceStates: PENDING_SOURCE_STATES,
-        toState: 'rejected',
-        cause: 'reject',
-        conflictCode: ErrorCode.LEAVE_NOT_PENDING,
-        conflictMessage: 'This request is no longer pending',
-        reason,
-      }),
+      this.actTransact(
+        tx,
+        tenantId,
+        owner.userId,
+        owner.role === Role.COMPANY_ADMIN || owner.platformAdmin,
+        leaveRequestId,
+        {
+          sourceStates: PENDING_SOURCE_STATES,
+          toState: 'rejected',
+          cause: 'reject',
+          conflictCode: ErrorCode.LEAVE_NOT_PENDING,
+          conflictMessage: 'This request is no longer pending',
+          reason,
+        },
+      ),
     );
   }
 
@@ -163,14 +191,21 @@ export class LeaveService {
   ): Promise<LeaveRequestView> {
     const tenantId = requireTenant(owner);
     return this.pg.withTransaction((tx) =>
-      this.actTransact(tx, tenantId, owner.userId, leaveRequestId, {
-        sourceStates: REVOKE_SOURCE_STATES,
-        toState: 'revoked',
-        cause: 'owner_revoke',
-        conflictCode: ErrorCode.LEAVE_NOT_REVOKABLE,
-        conflictMessage: 'No future dates left to revoke',
-        reason,
-      }),
+      this.actTransact(
+        tx,
+        tenantId,
+        owner.userId,
+        owner.role === Role.COMPANY_ADMIN || owner.platformAdmin,
+        leaveRequestId,
+        {
+          sourceStates: REVOKE_SOURCE_STATES,
+          toState: 'revoked',
+          cause: 'owner_revoke',
+          conflictCode: ErrorCode.LEAVE_NOT_REVOKABLE,
+          conflictMessage: 'No future dates left to revoke',
+          reason,
+        },
+      ),
     );
   }
 
@@ -193,9 +228,45 @@ export class LeaveService {
       dto: ApplyLeaveDto;
       requestId: string;
       onBehalf: boolean;
+      /** The filer is an admin: an on-behalf filing stays created-decided. */
+      callerIsAdmin: boolean;
     },
   ): Promise<LeaveRequestView> {
+    // UUID case is not significant but array/Map lookups are: normalise once.
+    const employeeId = input.employeeId.toLowerCase();
     await lockTenantShared(tx, input.tenantId);
+    await tx.query('select public.attendance_lock_employee($1)', [employeeId]);
+
+    // AD-6 replay — caller-scoped (spec D7): another caller presenting a
+    // burned key neither reads this request nor is blocked by it. Checked
+    // before the on-behalf gates so a retry answers with its own request even
+    // if the subject has since moved out of the caller's subtree.
+    const replay = await findRequestIdByKey(
+      tx,
+      input.tenantId,
+      input.requestId,
+      input.callerId,
+    );
+    if (replay) {
+      return this.buildView(tx, input.tenantId, replay);
+    }
+
+    // 24-3/D14: a manager files on behalf of their OWN subtree (including
+    // themself). Anyone else's employee answers the same not-found as a
+    // foreign id (no existence leak); an admin keeps the company-wide right.
+    if (input.onBehalf && !input.callerIsAdmin) {
+      const subtree = await readSubtreeMemberIds(
+        tx,
+        input.tenantId,
+        input.callerId,
+      );
+      if (
+        employeeId !== input.callerId.toLowerCase() &&
+        !subtree.includes(employeeId)
+      ) {
+        throw leaveEmployeeNotFound();
+      }
+    }
     // D10: a foreign on-behalf target answers 404 before the gate — no
     // existence leak, and never an ATTENDANCE_NOT_TRACKED for a person
     // who was never in this tenant. A deactivated member answers 409 with
@@ -205,7 +276,7 @@ export class LeaveService {
         `select m.status from public.memberships m
           where m.tenant_id = $1::uuid and m.user_id = $2::uuid
             and m.role = 'employee' and m.status <> 'removed'`,
-        [input.tenantId, input.employeeId],
+        [input.tenantId, employeeId],
       );
       const row = member.rows[0];
       if (!row) throw leaveEmployeeNotFound();
@@ -217,22 +288,7 @@ export class LeaveService {
         });
       }
     }
-    await tx.query('select public.attendance_lock_employee($1)', [
-      input.employeeId,
-    ]);
     const today = await tenantToday(tx, input.tenantId);
-
-    // AD-6 replay — caller-scoped (spec D7): another caller presenting a
-    // burned key neither reads this request nor is blocked by it.
-    const replay = await findRequestIdByKey(
-      tx,
-      input.tenantId,
-      input.requestId,
-      input.callerId,
-    );
-    if (replay) {
-      return this.buildView(tx, input.tenantId, replay);
-    }
 
     // CAP-12: a named catalog type must belong to this company; absent or
     // null keeps the request untyped, which reads as paid. 23-13: a
@@ -284,12 +340,12 @@ export class LeaveService {
       checkedIn,
       overrideDates,
     ] = await Promise.all([
-      readEnrolmentFloor(tx, input.employeeId, today),
+      readEnrolmentFloor(tx, employeeId, today),
       readSettingsGate(tx, input.tenantId),
       readSpanFacts(
         tx,
         input.tenantId,
-        input.employeeId,
+        employeeId,
         dates,
         pickWeeklyOffDays,
         isoWeekdayOf,
@@ -297,21 +353,21 @@ export class LeaveService {
       findOverlappingDays(
         tx,
         input.tenantId,
-        input.employeeId,
+        employeeId,
         dates[0],
         dates[dates.length - 1],
       ),
       findCheckedInDates(
         tx,
         input.tenantId,
-        input.employeeId,
+        employeeId,
         dates[0],
         dates[dates.length - 1],
         today,
       ),
       findActiveOverrideDates(tx, {
         tenantId: input.tenantId,
-        employeeId: input.employeeId,
+        employeeId: employeeId,
         start: dates[0],
         end: dates[dates.length - 1],
       }),
@@ -337,7 +393,7 @@ export class LeaveService {
       await assertBalanceForApply(
         tx,
         input.tenantId,
-        input.employeeId,
+        employeeId,
         balanceType,
         dates,
         input.dto.part,
@@ -348,7 +404,7 @@ export class LeaveService {
 
     const request = await insertLeaveRequest(tx, {
       tenantId: input.tenantId,
-      employeeId: input.employeeId,
+      employeeId: employeeId,
       requestId: input.requestId,
       startDate: input.dto.startDate,
       endDate: input.dto.endDate ?? input.dto.startDate,
@@ -366,36 +422,78 @@ export class LeaveService {
     const employeeName = await readEmployeeName(
       tx,
       input.tenantId,
-      input.employeeId,
+      employeeId,
     );
-    const notification = input.onBehalf
-      ? {
-          recipientIds: [input.employeeId],
-          payload: {
-            startDate: request.start_date,
-            endDate: request.end_date,
-            workingDays,
-          },
-        }
-      : await this.ownerNotification(tx, input.tenantId, {
-          payload: {
-            employeeName,
-            startDate: request.start_date,
-            endDate: request.end_date,
-            workingDays,
-          },
-        });
+    // 24-3/CAP-3: the resolved approver set, computed inside the same
+    // transaction that writes the request. Derived, never stored on the row.
+    // An ADMIN's on-behalf filing keeps its created-decided behaviour and
+    // asks nobody, so the walk is skipped entirely — it would otherwise record
+    // approvers who never had the request (and warn on a lone admin).
+    const createdDecided = input.onBehalf && input.callerIsAdmin;
+    const approvers = createdDecided
+      ? null
+      : await resolveLeaveApprovers(
+          tx,
+          input.tenantId,
+          employeeId,
+          input.callerId,
+        );
+    const recipients =
+      approvers === null ? [] : approverRecipients(approvers);
+    if (approvers?.kind === 'unresolved') {
+      // Ownerless company or a corrupt tree: the request stays pending and
+      // nobody is notified (CAP-4); a decision attempt is refused later.
+      this.logger.warn('Leave routing could not resolve an approver', {
+        tenantId: input.tenantId,
+        requestId: input.requestId,
+        reason: approvers.reason,
+      });
+    }
+    // A manager's on-behalf filing lands pending and routes to the nearest
+    // eligible manager ABOVE the subject, never to the actor (D14).
+    const approverPayload = {
+      employeeName,
+      startDate: request.start_date,
+      endDate: request.end_date,
+      workingDays,
+    };
+    const employeeNotification = {
+      recipientIds: [employeeId],
+      payload: {
+        startDate: request.start_date,
+        endDate: request.end_date,
+        workingDays,
+        // The employee must be able to tell "filed and booked" from "filed,
+        // waiting for approval" — same event, different state.
+        status: createdDecided ? 'approved' : 'pending',
+      },
+    };
+    const notification =
+      createdDecided || input.onBehalf
+        ? employeeNotification
+        : recipients.length > 0
+          ? { recipientIds: recipients, payload: approverPayload }
+          : null;
+    const approverNotification =
+      input.onBehalf && !createdDecided && recipients.length > 0
+        ? { recipientIds: recipients, payload: approverPayload }
+        : null;
     await insertInitialLeaveDays(tx, {
       tenantId: input.tenantId,
-      employeeId: input.employeeId,
+      employeeId: employeeId,
       requestId: input.requestId,
       leaveRequestDbId: request.id,
       cause: input.onBehalf ? 'apply_on_behalf' : 'apply',
       actorId: input.callerId,
       reason: input.dto.reason.trim(),
       dates,
-      initialState: input.onBehalf ? 'approved' : 'pending',
+      initialState: createdDecided ? 'approved' : 'pending',
       notification,
+      approverNotification,
+      // null when nobody was asked (self-decided, ownerless or corrupt walk):
+      // the column answers "who should have decided this?", not "what did the
+      // walk return?".
+      resolvedApprovers: recipients.length > 0 ? recipients : null,
     });
     return this.buildView(tx, input.tenantId, request);
   }
@@ -406,6 +504,7 @@ export class LeaveService {
     tx: PoolClient,
     tenantId: string,
     actorId: string,
+    callerIsAdmin: boolean,
     leaveRequestId: string,
     config: {
       sourceStates: LeaveDayState[];
@@ -444,11 +543,49 @@ export class LeaveService {
       );
       actionDates = split.actionDates;
     }
-    if (sourceDays.length === 0 || actionDates.length === 0) {
+    const noActionableDays =
+      sourceDays.length === 0 || actionDates.length === 0;
+    // AD-6 own retry: this actor already won this exact action. Answer the
+    // request itself BEFORE the approver gate — a mid-flight reorg may have
+    // moved the walk since, and a lost response must not read as a refusal.
+    if (noActionableDays) {
       const last = await findLastEvent(tx, request.id);
       if (last?.cause === config.cause && last.actorId === actorId) {
-        return this.buildView(tx, tenantId, request); // AD-6 own retry
+        return this.buildView(tx, tenantId, request);
       }
+    }
+
+    // 24-3/CAP-3: the decision right, under the same locks as the write. The
+    // actor of the filing is the requester for a self-filing and the manager
+    // for an on-behalf one, so an on-behalf filer never decides their own.
+    const approvers = await resolveLeaveApprovers(
+      tx,
+      tenantId,
+      request.employee_id,
+      request.created_by,
+    );
+    // The admin override is checked FIRST: approval-routing.md says any active
+    // admin may act "regardless of the walk's outcome". That matters for an
+    // admin's own on-behalf filing — the creator is the actor, so the walk can
+    // resolve to nothing, yet the admin must still be able to revoke it.
+    if (!callerIsAdmin) {
+      if (approvers.kind === 'unresolved') {
+        throw new ConflictException({
+          error_code: ErrorCode.APPROVER_UNRESOLVED,
+          message:
+            approvers.reason === 'corrupt'
+              ? 'The reporting tree has a loop, so this request cannot be routed — fix the reporting line first'
+              : 'No active admin can decide this request — add an admin first',
+        });
+      }
+      if (!mayDecide(approvers, actorId, false)) {
+        throw new ForbiddenException({
+          error_code: ErrorCode.NOT_AN_APPROVER,
+          message: 'This request is waiting for someone else to decide',
+        });
+      }
+    }
+    if (noActionableDays) {
       throw leaveRejectionToException({
         errorCode: config.conflictCode,
         message: config.conflictMessage,

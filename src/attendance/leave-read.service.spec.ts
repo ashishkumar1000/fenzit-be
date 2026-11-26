@@ -1079,6 +1079,39 @@ describe('LeaveReadService apply preview — the write path\u2019s validation (2
     });
   });
 
+  it('24-3: a manager previews on-behalf only inside their subtree — outside is an inline refusal, never a 404', async () => {
+    const service = serviceOver(txWithSubtree([]));
+    const dto = new OnBehalfPreviewQueryDto();
+    dto.employeeId = EMP;
+    dto.startDate = '2026-11-23';
+    dto.endDate = '2026-11-24';
+    dto.part = 'full_day';
+
+    const result = await service.previewApplyOnBehalf(managerUser(), dto);
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+      message: 'Employee not found in your company',
+    });
+    expect(mockReadEnrolmentFloor).not.toHaveBeenCalled();
+  });
+
+  it('24-3: a manager previews on-behalf inside their subtree', async () => {
+    previewOk(txWithSubtree([EMP]), SICK_TYPE);
+    const service = serviceOver(txWithSubtree([EMP]));
+    const dto = new OnBehalfPreviewQueryDto();
+    dto.employeeId = EMP;
+    dto.startDate = '2026-11-23';
+    dto.endDate = '2026-11-24';
+    dto.part = 'full_day';
+    dto.leaveTypeId = SICK_TYPE.id;
+
+    await expect(
+      service.previewApplyOnBehalf(managerUser(), dto),
+    ).resolves.toMatchObject({ ok: true, workingDays: 2 });
+  });
+
   it('the on-behalf preview validates the TARGET employee — never the owner', async () => {
     previewOk({} as PoolClient, SICK_TYPE);
     const service = serviceOver({} as PoolClient);

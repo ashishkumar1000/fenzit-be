@@ -22,8 +22,15 @@ import {
   MemberHierarchy,
   emptyHierarchy,
   readMemberHierarchy,
+  readSubtreeMemberIds,
 } from '../common/members/hierarchy';
 import { assertManagerAssignable } from '../common/members/manager-assignment';
+import {
+  affectedApprovalRequesters,
+  emitApproverSetChanges,
+  readPendingApprovalSnapshots,
+  type PendingApprovalSnapshot,
+} from '../attendance/approval-reassignment';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import {
@@ -34,6 +41,12 @@ import { StorageService } from '../storage/storage.service';
 import { MembersPageQueryDto } from './dto/members-page-query.dto';
 import { UpdateEmploymentDto } from './dto/update-employment.dto';
 import { EmploymentView } from './dto/employment-view.dto';
+
+/**
+ * Membership roles arrive from Postgres as plain text; pin the enum value as a
+ * string once so text comparisons stay type-clean.
+ */
+const ADMIN_ROLE: string = Role.COMPANY_ADMIN;
 
 /** A person of the company as the members list serves them: no raw storage key. */
 export type MemberView = Omit<CompanyMember, 'avatarKey'> &
@@ -497,7 +510,7 @@ export class MembersService {
             : 'Only an active member can be deactivated',
         });
       }
-      if (!active && row.role === Role.COMPANY_ADMIN) {
+      if (!active && row.role === ADMIN_ROLE) {
         const others = await tx.query<{ n: number }>(
           `select count(*)::int as n from public.memberships m
              join public.users u on u.id = m.user_id
@@ -512,6 +525,19 @@ export class MembersService {
           });
         }
       }
+      // Capture the requesters BEFORE the write: a removal re-parents the
+      // reports, so the post-write subtree no longer contains them.
+      const requesterIds = await this.approvalRequesters(
+        tx,
+        tenantId,
+        memberUserId,
+        row.role === ADMIN_ROLE,
+      );
+      const approvalBefore = await readPendingApprovalSnapshots(
+        tx,
+        tenantId,
+        requesterIds,
+      );
       const updated = await tx.query<{ status: string }>(
         `update public.memberships set status = $1, updated_at = now()
           where user_id = $2 and tenant_id = $3 and status = $4
@@ -526,6 +552,12 @@ export class MembersService {
           message: 'The member changed since it was read — reload and retry',
         });
       }
+      await this.emitApprovalChanges(
+        tx,
+        tenantId,
+        requesterIds,
+        approvalBefore,
+      );
       return { employeeCode: row.employee_code };
     });
 
@@ -618,6 +650,20 @@ export class MembersService {
         await this.assertAnotherActiveAdmin(tx, tenantId, member.id);
       }
 
+      // Capture the requesters BEFORE the write: a removal re-parents the
+      // reports, so the post-write subtree no longer contains them.
+      const requesterIds = await this.approvalRequesters(
+        tx,
+        tenantId,
+        memberUserId,
+        member.role === ADMIN_ROLE || nextRole === ADMIN_ROLE,
+      );
+      const approvalBefore = await readPendingApprovalSnapshots(
+        tx,
+        tenantId,
+        requesterIds,
+      );
+
       // D1: an admin sits at the top of the tree, so a promotion clears the
       // member's own pointer in the same write. Their reports stay under them.
       const clearsManager =
@@ -642,6 +688,12 @@ export class MembersService {
         targetUserIds: [memberUserId],
         details,
       });
+      await this.emitApprovalChanges(
+        tx,
+        tenantId,
+        requesterIds,
+        approvalBefore,
+      );
 
       return { userId: memberUserId, oldRole: member.role, newRole };
     });
@@ -755,6 +807,20 @@ export class MembersService {
         await this.assertAnotherActiveAdmin(tx, tenantId, member.id);
       }
 
+      // Capture the requesters BEFORE the write: a removal re-parents the
+      // reports, so the post-write subtree no longer contains them.
+      const requesterIds = await this.approvalRequesters(
+        tx,
+        tenantId,
+        memberUserId,
+        member.role === ADMIN_ROLE,
+      );
+      const approvalBefore = await readPendingApprovalSnapshots(
+        tx,
+        tenantId,
+        requesterIds,
+      );
+
       // Only a manager who can still serve keeps the reports; otherwise they
       // become unassigned rather than inheriting a dead pointer.
       let nextManager: string | null = null;
@@ -810,6 +876,12 @@ export class MembersService {
           },
         });
       }
+      await this.emitApprovalChanges(
+        tx,
+        tenantId,
+        requesterIds,
+        approvalBefore,
+      );
     });
   }
 
@@ -888,6 +960,18 @@ export class MembersService {
       // A no-op assignment writes nothing and audits nothing.
       if (member.manager_id === managerId) return;
 
+      // Capture the requesters BEFORE the write so the before/after diff
+      // walks the same set (the walk itself re-derives the current tree).
+      const requesterIds = await this.approvalRequesters(
+        tx,
+        tenantId,
+        memberUserId,
+      );
+      const approvalBefore = await readPendingApprovalSnapshots(
+        tx,
+        tenantId,
+        requesterIds,
+      );
       await tx.query(
         `update public.memberships set manager_id = $2 where id = $1`,
         [member.id, managerId],
@@ -902,9 +986,59 @@ export class MembersService {
           new_manager_id: managerId,
         },
       });
+      await this.emitApprovalChanges(
+        tx,
+        tenantId,
+        requesterIds,
+        approvalBefore,
+      );
     });
 
     return this.getMember(caller, memberUserId);
+  }
+
+  /**
+   * The pending-request requesters whose walk can move when `memberUserId`'s
+   * position changes: the member themself plus their subtree, captured
+   * BEFORE the write (24-3/CAP-4). A removal re-parents the reports, so this
+   * list is the only way the after-read can still see their requests.
+   *
+   * `adminAffected` widens it to every live member: an admin is the fallback
+   * approver for every request whose walk ends without a manager, and those
+   * requesters are not in the admin's subtree. The diff drops the ones whose
+   * set did not actually move.
+   */
+  private async approvalRequesters(
+    tx: PoolClient,
+    tenantId: string,
+    memberUserId: string,
+    adminAffected = false,
+  ): Promise<string[]> {
+    const subtree = await readSubtreeMemberIds(tx, tenantId, memberUserId);
+    const ids = affectedApprovalRequesters(memberUserId, subtree);
+    if (!adminAffected) return ids;
+    const active = await tx.query<{ user_id: string }>(
+      `select m.user_id from public.memberships m
+         join public.users u on u.id = m.user_id
+        where m.tenant_id = $1 and m.status = 'active' and not u.disabled`,
+      [tenantId],
+    );
+    return [...new Set([...ids, ...active.rows.map((row) => row.user_id)])];
+  }
+
+  /** The set-difference notices for the SAME requesters, re-read after the write. */
+  private async emitApprovalChanges(
+    tx: PoolClient,
+    tenantId: string,
+    requesterIds: string[],
+    before: Map<string, PendingApprovalSnapshot>,
+  ): Promise<void> {
+    const after = await readPendingApprovalSnapshots(
+      tx,
+      tenantId,
+      requesterIds,
+    );
+    await emitApproverSetChanges(tx, tenantId, before, after);
   }
 
   /** The company's hierarchy fields for the named members, in one query. */

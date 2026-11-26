@@ -37,6 +37,12 @@ export const ATTENDANCE_NOTIFICATION_EVENT = {
   LEAVE_CANCELLED_BY_DISABLE: 'leave.cancelled_by_disable',
   /** A confirmed check-in auto-cancelled today's full-day leave (17-4, FR-9). */
   LEAVE_CHECKIN_AUTO_CANCEL: 'leave.checkin_auto_cancel',
+  /** A tree change put a member into a pending request's resolved approver
+   *  set — "now awaiting your approval" (24-3/CAP-4). */
+  LEAVE_APPROVER_ADDED: 'leave.approver_added',
+  /** A tree change removed a member from a pending request's resolved set —
+   *  "no longer yours to approve" (24-3/CAP-4). */
+  LEAVE_APPROVER_REMOVED: 'leave.approver_removed',
   /**
    * FR-23 (19-1): "You haven't checked in" — the tracked employee, at most
    * once per work date (pg_cron's attendance_run_reminders writes the
@@ -110,15 +116,15 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
   [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED]: {
     eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED,
     recipients:
-      'The tenant owner, once per request, when an employee submits leave (FR-12).',
+      'The resolved approver set — the nearest eligible manager, or all active admins on fallback — once per request, when an employee submits leave (24-3/CAP-4). The actor of the filing is never a recipient.',
     payloadFields: ['employeeName', 'startDate', 'endDate', 'workingDays'],
     dedupeKeyShape: '<tenantId>:leave.applied:<recipientId>:<requestId>',
   },
   [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED_ON_BEHALF]: {
     eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED_ON_BEHALF,
     recipients:
-      'The employee, once per request, when the owner creates approved leave for them (FR-16).',
-    payloadFields: ['startDate', 'endDate', 'workingDays'],
+      'The employee, once per request. An admin’s on-behalf filing is created decided (today’s FR-16); a manager’s lands pending and notifies the resolved approver set through leave.applied as well (24-3/D14).',
+    payloadFields: ['startDate', 'endDate', 'workingDays', 'status'],
     dedupeKeyShape:
       '<tenantId>:leave.applied_on_behalf:<recipientId>:<requestId>',
   },
@@ -198,6 +204,21 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
     payloadFields: ['officeName', 'notCheckedInCount', 'workDate'],
     dedupeKeyShape:
       '<tenantId>:attendance.reminder_not_checked_in:<recipientId>:<workDate>:<officeId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVER_ADDED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVER_ADDED,
+    recipients:
+      'A member newly in a pending request’s resolved approver set after a tree change — once per request per recipient (24-3/CAP-4).',
+    payloadFields: ['employeeName', 'startDate', 'endDate'],
+    dedupeKeyShape: '<tenantId>:leave.approver_added:<recipientId>:<requestId>',
+  },
+  [ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVER_REMOVED]: {
+    eventType: ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPROVER_REMOVED,
+    recipients:
+      'A member who left a pending request’s resolved approver set after a tree change — once per request per recipient, skipped when they are no longer active (24-3/CAP-4).',
+    payloadFields: ['employeeName', 'startDate', 'endDate'],
+    dedupeKeyShape:
+      '<tenantId>:leave.approver_removed:<recipientId>:<requestId>',
   },
   [ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER]: {
     eventType: ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER,

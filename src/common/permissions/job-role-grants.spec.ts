@@ -64,6 +64,27 @@ describe('team-read grant and scope per role (24-2/CAP-2)', () => {
     expect(permissionsFor(Role.VIEWER).has('leave.read_team')).toBe(true);
   });
 
+  it('an employee may file on behalf — the service limits it to their subtree', () => {
+    expect(permissionsFor(Role.EMPLOYEE).has('leave.create_on_behalf')).toBe(
+      true,
+    );
+    expect(permissionsFor(Role.VIEWER).has('leave.create_on_behalf')).toBe(
+      false,
+    );
+  });
+
+  it('approval rights are tree-derived: employees and viewers reach the service, which decides', () => {
+    // 24-3: the guard must not be the approver filter — a manager is an
+    // employee. The resolved-approver walk (and the admin override) decides.
+    expect(permissionsFor(Role.EMPLOYEE).has('leave.approve')).toBe(true);
+    expect(permissionsFor(Role.VIEWER).has('leave.approve')).toBe(true);
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('leave.approve')).toBe(true);
+    // Filing on behalf stays narrower than deciding.
+    expect(permissionsFor(Role.VIEWER).has('leave.create_on_behalf')).toBe(
+      false,
+    );
+  });
+
   it('the whole-company grant stays admin-side', () => {
     expect(permissionsFor(Role.COMPANY_ADMIN).has('leave.read_all')).toBe(true);
     expect(permissionsFor(Role.PLATFORM_ADMIN).has('leave.read_all')).toBe(

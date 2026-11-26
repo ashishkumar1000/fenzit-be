@@ -85,6 +85,12 @@ export enum ErrorCode {
   LEAVE_NOT_REVOKABLE = 'LEAVE_NOT_REVOKABLE',
   LEAVE_NOT_CANCELLABLE = 'LEAVE_NOT_CANCELLABLE',
   LEAVE_INVALID_TRANSITION = 'LEAVE_INVALID_TRANSITION',
+  /** The caller is an active member but is not in the request's resolved
+   *  approver set, and is not an admin (403, story 24-3). */
+  NOT_AN_APPROVER = 'NOT_AN_APPROVER',
+  /** The walk cannot resolve an approver — an ownerless company or a corrupt
+   *  tree (409). Nothing is auto-approved (story 24-3). */
+  APPROVER_UNRESOLVED = 'APPROVER_UNRESOLVED',
   // Day-statuses & corrections (Epic 18)
   ATTENDANCE_FUTURE_DATE = 'ATTENDANCE_FUTURE_DATE',
   ATTENDANCE_DATE_NOT_TRACKED = 'ATTENDANCE_DATE_NOT_TRACKED',

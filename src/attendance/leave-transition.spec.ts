@@ -108,6 +108,7 @@ describe('transitionLeaveDays (AD-23 update path)', () => {
       RECIPIENT,
       'Approved by owner',
       ['2026-10-01'],
+      null,
     ]);
   });
 

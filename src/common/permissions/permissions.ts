@@ -120,6 +120,12 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'attendance.own',
       'leave.own',
       'leave.read_team',
+      'leave.create_on_behalf',
+      // 24-3: approval rights are TREE-derived, not role-derived (D13). The
+      // guard only lets the request reach the service; the resolved-approver
+      // walk decides, and a member outside the set answers 403
+      // NOT_AN_APPROVER. Without this grant a manager could never decide.
+      'leave.approve',
       'payroll.own',
     ]),
     [Role.VIEWER]: new Set<Permission>([
@@ -131,6 +137,10 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       // A viewer ASSIGNED as a manager reads their subtree's leave — the
       // deliberate D13 exception. Their job access is already company-wide.
       'leave.read_team',
+      // ...and a viewer who is a manager keeps the tree-derived decision
+      // right (D13: role changes never strip manager rights). The service
+      // still refuses anyone outside the resolved set.
+      'leave.approve',
     ]),
   };
 

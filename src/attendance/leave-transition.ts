@@ -76,6 +76,17 @@ interface TransitionCore {
     /** Extra key segment (e.g. the date) after the request id. */
     dedupeSuffix?: string;
   } | null;
+  /**
+   * The second stream of a manager's on-behalf filing: the resolved approver
+   * set hears `leave.applied` while the employee keeps the on-behalf note
+   * (24-3/CAP-4).
+   */
+  approverNotification?: {
+    recipientIds: string[];
+    payload: Record<string, unknown>;
+  } | null;
+  /** The resolved approver set at submission (24-3 audit snapshot). */
+  resolvedApprovers?: string[] | null;
 }
 
 /**
@@ -248,8 +259,10 @@ export async function cancelLeaveOnDisable(
 ): Promise<void> {
   await tx.query(
     `insert into public.leave_events
-       (tenant_id, leave_request_id, employee_id, cause, actor_id, reason, affected_dates)
-     values ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::text, $7::date[])`,
+       (tenant_id, leave_request_id, employee_id, cause, actor_id, reason,
+        affected_dates, resolved_approvers)
+     values ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::text,
+             $7::date[], $8::uuid[])`,
     [
       input.tenantId,
       input.leaveRequestDbId,
@@ -258,20 +271,45 @@ export async function cancelLeaveOnDisable(
       input.actorId,
       input.reason ?? null,
       dates,
+      input.resolvedApprovers ?? null,
     ],
   );
 
   const eventType = CAUSE_EVENT[input.cause];
-  if (!eventType || !input.notification) {
-    return;
+  if (eventType && input.notification) {
+    await insertNotificationRows(
+      tx,
+      input,
+      eventType,
+      input.notification,
+      input.notification.dedupeSuffix,
+    );
   }
-  for (const recipientId of input.notification.recipientIds) {
+  if (input.approverNotification) {
+    await insertNotificationRows(
+      tx,
+      input,
+      ATTENDANCE_NOTIFICATION_EVENT.LEAVE_APPLIED,
+      input.approverNotification,
+    );
+  }
+}
+
+/** (d): one row per recipient, recipient-aware dedupe key, first insert wins. */
+async function insertNotificationRows(
+  tx: PoolClient,
+  input: TransitionCore,
+  eventType: RegistryEvent,
+  notification: { recipientIds: string[]; payload: Record<string, unknown> },
+  dedupeSuffix?: string,
+): Promise<void> {
+  for (const recipientId of notification.recipientIds) {
     const dedupeKey = [
       input.tenantId,
       eventType,
       recipientId,
       input.requestId,
-      input.notification.dedupeSuffix ?? '',
+      dedupeSuffix ?? '',
     ]
       .filter((part) => part !== '')
       .join(':');
@@ -284,7 +322,7 @@ export async function cancelLeaveOnDisable(
         input.tenantId,
         recipientId,
         eventType,
-        JSON.stringify(input.notification.payload),
+        JSON.stringify(notification.payload),
         LEAVE_ENTITY_TYPE,
         // entity_id = the leave request row id (AD-13); the payload is self-contained.
         input.leaveRequestDbId,

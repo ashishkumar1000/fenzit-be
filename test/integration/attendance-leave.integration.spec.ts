@@ -51,6 +51,10 @@ const TECH_FUTURE = randomUUID(); // upcoming — enrolment starts in 5 days
 const TECH_OFF = randomUUID(); // the half-day check-through probe (18)
 const TECH_DISABLE = randomUUID(); // the D12 disable sweep
 const TECH_OFFDAY = randomUUID(); // the D11 off-day-inside-a-span probe
+// 24-3 approval routing: a report with a real manager. The manager is an
+// active employee, not enrolled (the walk needs a membership, not enrolment).
+const TECH_ROUTE = randomUUID();
+const TECH_ROUTE_MGR = randomUUID();
 const ALL_TECHS = [
   TECH_MAIN,
   TECH_CROSS,
@@ -64,6 +68,9 @@ const ALL_TECHS = [
 
 const PROBE_PHONES = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) =>
   `8${Date.now()}2${i}`.slice(-10),
+);
+const ROUTING_PHONES = [0, 1].map((i) =>
+  `8${Date.now()}3${i}`.slice(-10),
 );
 
 function isoWeekdayOf(date: string): number {
@@ -232,6 +239,18 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
           phone_number: PROBE_PHONES[i + 1],
           name: `17-4 probe tech ${i}`,
         })),
+        {
+          id: TECH_ROUTE,
+          country_code: '+91',
+          phone_number: ROUTING_PHONES[0],
+          name: '17-4 routed report',
+        },
+        {
+          id: TECH_ROUTE_MGR,
+          country_code: '+91',
+          phone_number: ROUTING_PHONES[1],
+          name: '17-4 routed manager',
+        },
       ]),
     );
     must(
@@ -257,6 +276,19 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
           role: 'employee',
           status: 'active',
         })),
+        {
+          user_id: TECH_ROUTE,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+          manager_id: TECH_ROUTE_MGR,
+        },
+        {
+          user_id: TECH_ROUTE_MGR,
+          tenant_id: TENANT,
+          role: 'employee',
+          status: 'active',
+        },
       ]),
     );
     must(
@@ -362,6 +394,9 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     await enroll(TECH_CROSS, OFFICE_ID, 30);
     await enroll(TECH_LATE, OFFICE_ID, 30);
     await enroll(TECH_EARLY, officeEarly.id, 30);
+    // 24-3: the routed report is tracked at the other office, so the HQ
+    // coverage roster in probe 29 keeps its exact membership.
+    await enroll(TECH_ROUTE, officeEarly.id, 30);
     await enroll(TECH_OFF, OFFICE_ID, 30);
     await enroll(TECH_DISABLE, OFFICE_ID, 30);
     await enroll(TECH_OFFDAY, OFFICE_ID, 30);
@@ -1199,8 +1234,9 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
   it('probe 27: readSummary counts this tenant only — every status counter registers at least one request the probes themselves created', async () => {
     const summary = await leaveRead.readSummary(ownerUser() as never);
     // countActiveEmployees reads MEMBERSHIP status: all eight techs are
-    // active employees; the owner (company_admin) never counts.
-    expect(summary.activeEmployees).toBe(ALL_TECHS.length);
+    // active employees; the owner (company_admin) never counts. 24-3 adds
+    // the routed report AND its manager — both active employees.
+    expect(summary.activeEmployees).toBe(ALL_TECHS.length + 2);
     for (const status of [
       'pending',
       'approved',
@@ -1275,9 +1311,19 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
       [TENANT, start],
     );
     expect(covering.rows.map((r) => r.employee_id).sort()).toEqual(
-      [TECH_MAIN, TECH_CROSS, TECH_LATE, TECH_OFF, TECH_OFFDAY, TECH_FUTURE].sort(),
+      [
+        TECH_MAIN,
+        TECH_CROSS,
+        TECH_LATE,
+        TECH_OFF,
+        TECH_OFFDAY,
+        TECH_FUTURE,
+      ].sort(),
     );
-    const coverage = await leaveRead.readCoverage(ownerUser() as never, request.id);
+    const coverage = await leaveRead.readCoverage(
+      ownerUser() as never,
+      request.id,
+    );
     // TECH_MAIN's HQ assignment ([today-30,)) covers the span start.
     expect(coverage.officeName).toBe('HQ');
     expect(coverage.anchorDate).toBe(start);
@@ -1312,7 +1358,10 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
   it('probe 30: the approval note rides the real notification payload beside workingDays', async () => {
     const request = await leave.applyForSelf(
       techUser(TECH_MAIN) as never,
-      applyDto({ startDate: addDays(today, 130), endDate: addDays(today, 131) }),
+      applyDto({
+        startDate: addDays(today, 130),
+        endDate: addDays(today, 131),
+      }),
       KEY(),
     );
     const approved = await leave.approve(
@@ -1328,5 +1377,134 @@ describe('Leave journey (17-1..17-4, real DB)', () => {
     expect(payload.rows[0].payload['reason']).toBe('Probe approval note');
     expect(payload.rows[0].payload['workingDays']).toBe(2);
     expect(payload.rows[0].payload['startDate']).toBe(addDays(today, 130));
+  });
+
+  // ==================== 24-3: approval routing, notifications, re-parenting
+
+  it('probe 32: a report’s filing notifies only their manager; an outsider is refused; the manager decides', async () => {
+    const request = await leave.applyForSelf(
+      techUser(TECH_ROUTE) as never,
+      applyDto({
+        startDate: addDays(today, 220),
+        endDate: addDays(today, 220),
+      }),
+      KEY(),
+    );
+    expect(request.status).toBe('pending');
+
+    const notices = await pool.query(
+      `select user_id, event_type from public.notifications
+        where entity_id = $1 order by event_type, user_id`,
+      [request.id],
+    );
+    expect(notices.rows).toEqual([
+      { user_id: TECH_ROUTE_MGR, event_type: 'leave.applied' },
+    ]);
+
+    const snapshot = await pool.query(
+      `select resolved_approvers::text[] as resolved
+         from public.leave_events
+        where leave_request_id = $1 and cause = 'apply'`,
+      [request.id],
+    );
+    expect(snapshot.rows[0].resolved).toEqual([TECH_ROUTE_MGR]);
+
+    await expectRejection(
+      leave.approve(techUser(TECH_MAIN) as never, request.id, null),
+      403,
+      'NOT_AN_APPROVER',
+    );
+
+    const approved = await leave.approve(
+      techUser(TECH_ROUTE_MGR) as never,
+      request.id,
+      'Routed approval',
+    );
+    expect(approved.status).toBe('approved');
+    expect(
+      await count(
+        `select count(*)::int as n from public.notifications
+          where event_type = 'leave.approved' and entity_id = $1 and user_id = $2`,
+        [request.id, TECH_ROUTE],
+      ),
+    ).toBe(1);
+  });
+
+  it('probe 33: a manager’s on-behalf filing routes above the actor — the employee and the admin are told, the manager is not', async () => {
+    const request = await leave.applyOnBehalf(
+      techUser(TECH_ROUTE_MGR) as never,
+      Object.assign(
+        applyDto({
+          startDate: addDays(today, 230),
+          endDate: addDays(today, 230),
+        }),
+        { employeeId: TECH_ROUTE },
+      ),
+      KEY(),
+    );
+    expect(request.status).toBe('pending');
+
+    const notices = await pool.query(
+      `select user_id, event_type from public.notifications
+        where entity_id = $1 order by user_id, event_type`,
+      [request.id],
+    );
+    const byUser = new Map<string, string[]>();
+    for (const row of notices.rows) {
+      byUser.set(row.user_id, [
+        ...(byUser.get(row.user_id) ?? []),
+        row.event_type,
+      ]);
+    }
+    expect(byUser.get(TECH_ROUTE)).toEqual(['leave.applied_on_behalf']);
+    expect(byUser.get(OWNER)).toEqual(['leave.applied']);
+    expect(byUser.has(TECH_ROUTE_MGR)).toBe(false);
+
+    await expectRejection(
+      leave.applyOnBehalf(
+        techUser(TECH_ROUTE_MGR) as never,
+        Object.assign(
+          applyDto({
+            startDate: addDays(today, 231),
+            endDate: addDays(today, 231),
+          }),
+          { employeeId: TECH_MAIN },
+        ),
+        KEY(),
+      ),
+      404,
+      'ATTENDANCE_EMPLOYEE_NOT_FOUND',
+    );
+  });
+
+  it('probe 34: an admin’s on-behalf filing is created decided, and the creator-admin can still revoke it', async () => {
+    const request = await leave.applyOnBehalf(
+      ownerUser() as never,
+      Object.assign(
+        applyDto({
+          startDate: addDays(today, 240),
+          endDate: addDays(today, 240),
+        }),
+        { employeeId: TECH_ROUTE },
+      ),
+      KEY(),
+    );
+    expect(request.status).toBe('approved');
+    expect(
+      await count(
+        `select count(*)::int as n from public.notifications
+          where event_type = 'leave.applied_on_behalf' and entity_id = $1 and user_id = $2`,
+        [request.id, TECH_ROUTE],
+      ),
+    ).toBe(1);
+
+    const revoked = await leave.revoke(
+      ownerUser() as never,
+      request.id,
+      '24-3 revoke probe',
+    );
+    // Every date was still in the future, so the whole request is revoked.
+    expect(revoked.status).toBe('revoked');
+    expect(revoked.dates.every((d) => d.state === 'revoked')).toBe(true);
   });
 });
