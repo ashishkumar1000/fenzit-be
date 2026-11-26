@@ -1167,10 +1167,11 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         },
         // Story 15-5 weekly-off/holiday RPCs (migration 20260927000002, the
         // dead p_actor_id dropped by 20260927000005) — same SECURITY DEFINER
-        // + revoke pattern, same 42501 pin. The probe ids mutate nothing: the
-        // privilege check fires before any body runs, and the notification
-        // fan-out branches are lazy-compiled against the 15-7 enrolments
-        // table (unreachable pre-15-7 even with a grant).
+        // + revoke pattern, same 42501 pin. attendance_add_holiday and
+        // attendance_remove_holiday are DROPPED outright (20261126000002 —
+        // the TypeScript service path owns the lifecycle) and moved to the
+        // stays-dropped pin below; update/impact remain live RPCs. The probe
+        // ids mutate nothing: the privilege check fires before any body runs.
         attendance_set_weekly_off_default: {
           p_tenant_id: PROBE_ID,
           p_days: [6, 7],
@@ -1187,23 +1188,19 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_employee_id: PROBE_ID,
           p_effective_from: null,
         },
-        attendance_add_holiday: {
-          p_tenant_id: PROBE_ID,
-          p_holiday_date: '2030-01-01',
-          p_name: 'RLS probe holiday',
-        },
         attendance_update_holiday: {
           p_tenant_id: PROBE_ID,
           p_holiday_id: PROBE_ID,
           p_name: 'RLS probe rename',
         },
-        attendance_remove_holiday: {
-          p_tenant_id: PROBE_ID,
-          p_holiday_id: PROBE_ID,
-        },
         attendance_holiday_impact: {
           p_tenant_id: PROBE_ID,
           p_date: '2030-01-01',
+        },
+        set_user_disabled: {
+          p_caller: PROBE_ID,
+          p_user_id: PROBE_ID,
+          p_disabled: true,
         },
         // Roles work (migration 20261020000002): the five all-or-nothing
         // member functions. Same SECURITY DEFINER + revoke pattern — a client
@@ -1230,10 +1227,28 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_member_user_id: PROBE_ID,
         },
-        set_user_disabled: {
+      };
+
+      // The dropped RPCs (probe ids mutate nothing — the absence check
+      // fires before any body could run).
+      const DROPPED_RPC_FUNCTIONS: Record<string, Record<string, unknown>> = {
+        invite_member: {
           p_caller: PROBE_ID,
-          p_user_id: PROBE_ID,
-          p_disabled: true,
+          p_tenant_id: PROBE_ID,
+          p_country_code: '+91',
+          p_phone_number: '9999000299',
+          p_name: 'RLS Probe',
+          p_role: 'viewer',
+          p_skill_ids: [],
+        },
+        attendance_add_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_date: '2030-01-01',
+          p_name: 'RLS probe holiday',
+        },
+        attendance_remove_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_id: PROBE_ID,
         },
       };
 
@@ -1253,23 +1268,24 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect((error as { code: string }).code).toBe('42501');
       }
 
-      // And the dropped one stays dropped: invite_member must not come back
+      // And the dropped ones stay dropped: invite_member must not come back
       // without re-pinning its revoke pattern (it has no callers since the
-      // backend TypeScript took over invite minting — incident 2026-11-25).
-      // PGRST202 is PostgREST's function-not-found — the exact absence
-      // signature (a recreated function raising its old PT403 would surface
-      // P0001, and a recreated-but-revoked one P42501; neither passes).
-      const dropped = await anonRpcClient.rpc('invite_member', {
-        p_caller: PROBE_ID,
-        p_tenant_id: PROBE_ID,
-        p_country_code: '+91',
-        p_phone_number: '9999000299',
-        p_name: 'RLS Probe',
-        p_role: 'viewer',
-        p_skill_ids: [],
-      });
-      expect(dropped.error).not.toBeNull();
-      expect((dropped.error as { code?: string }).code).toBe('PGRST202');
+      // backend TypeScript took over invite minting — incident 2026-11-25);
+      // the holiday add/remove RPCs joined them (20261126000002 — the
+      // service's insertHolidayInTx + fanoutHolidayNotification pair owns
+      // that lifecycle; the old RPC dedupe key never carried the holiday
+      // date). PGRST202 is PostgREST's function-not-found — the exact
+      // absence signature (a recreated function raising its old PT403 would
+      // surface P0001, and a recreated-but-revoked one P42501; neither
+      // passes).
+      for (const [name, args] of Object.entries(DROPPED_RPC_FUNCTIONS)) {
+        const dropped = await anonRpcClient.rpc(name, args);
+        // Name and code ride inside the compared value — jest's expect takes
+        // no message argument, and the loop needs the failing RPC visible.
+        const code =
+          (dropped.error as { code?: string } | null)?.code ?? 'no-error';
+        expect(`${name}: ${code}`).toBe(`${name}: PGRST202`);
+      }
 
       // Trigger functions: returns-trigger ⇒ never an RPC endpoint at all.
       const TRIGGER_FUNCTIONS = [
@@ -2665,16 +2681,26 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           '23503',
         );
 
-        // --- (e) holidays. Future add: row saved, ZERO notifications
-        // pre-15-7 — the enrolments guard branch is unreached.
+        // --- (e) holidays. The add/remove RPCs are DROPPED (20261126000002 —
+        // the TypeScript service owns the lifecycle), so the write half of
+        // this probe drives the holidays TABLE directly as the service role
+        // (the row-level facts: saves, visibility, the unique date). The
+        // update/impact RPCs stay live and keep their PT404/PT409-style
+        // pins. Future add: row saved, ZERO notifications — the fan-out is
+        // service CODE, not a trigger, so raw table writes never fan out.
         const futureDate = addDays(todayStr, 30);
-        const { data: holidayId, error: addFutureError } =
-          await serviceClient.rpc('attendance_add_holiday', {
-            p_tenant_id: probeTenantId,
-            p_holiday_date: futureDate,
-            p_name: 'Probe Future Holiday',
-          });
+        const { data: insertedHoliday, error: addFutureError } =
+          await serviceClient
+            .from('holidays')
+            .insert({
+              tenant_id: probeTenantId,
+              holiday_date: futureDate,
+              name: 'Probe Future Holiday',
+            })
+            .select('id')
+            .single();
         expect(addFutureError).toBeNull();
+        const holidayId = (insertedHoliday as { id: string }).id;
         expect(holidayId).toBeTruthy();
         const { data: holidayRows } = await serviceClient
           .from('holidays')
@@ -2687,37 +2713,34 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         ).toBe(futureDate);
 
         // Past add: saved silently (statuses recompute on read).
-        const { error: addPastError } = await serviceClient.rpc(
-          'attendance_add_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_date: '2020-01-01',
-            p_name: 'Probe Past Holiday',
-          },
-        );
+        const { error: addPastError } = await serviceClient
+          .from('holidays')
+          .insert({
+            tenant_id: probeTenantId,
+            holiday_date: '2020-01-01',
+            name: 'Probe Past Holiday',
+          });
         expect(addPastError).toBeNull();
 
-        // Duplicate date → PT409 with the ErrorCode hint.
-        const { error: duplicateError } = await serviceClient.rpc(
-          'attendance_add_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_date: futureDate,
-            p_name: 'Probe Duplicate',
-          },
-        );
+        // Duplicate date → the (tenant_id, holiday_date) UNIQUE fires as
+        // 23505 at the DB; the service maps that to PT409 +
+        // ATTENDANCE_HOLIDAY_TAKEN (pinned in holidays.service.spec.ts).
+        const { error: duplicateError } = await serviceClient
+          .from('holidays')
+          .insert({
+            tenant_id: probeTenantId,
+            holiday_date: futureDate,
+            name: 'Probe Duplicate',
+          });
         expect(duplicateError).not.toBeNull();
-        expect((duplicateError as { code: string }).code).toBe('PT409');
-        expect((duplicateError as { hint?: string }).hint).toBe(
-          'ATTENDANCE_HOLIDAY_TAKEN',
-        );
+        expect((duplicateError as { code: string }).code).toBe('23505');
 
         // Rename works; the date is immutable (name-only UPDATE).
         const { error: renameError } = await serviceClient.rpc(
           'attendance_update_holiday',
           {
             p_tenant_id: probeTenantId,
-            p_holiday_id: holidayId as string,
+            p_holiday_id: holidayId,
             p_name: 'Probe Holiday Renamed',
           },
         );
@@ -2725,14 +2748,14 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         const { data: renamedRow } = await serviceClient
           .from('holidays')
           .select('holiday_date, name')
-          .eq('id', holidayId as string)
+          .eq('id', holidayId)
           .single();
         expect(renamedRow as { holiday_date: string; name: string }).toEqual({
           holiday_date: futureDate,
           name: 'Probe Holiday Renamed',
         });
 
-        // Unknown id → PT404 on update AND remove.
+        // Unknown id → PT404 on the surviving update RPC.
         const UNKNOWN_HOLIDAY_ID = '00000000-0000-0000-0000-0000000000ff';
         const { error: updateUnknownError } = await serviceClient.rpc(
           'attendance_update_holiday',
@@ -2748,32 +2771,30 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           'ATTENDANCE_HOLIDAY_NOT_FOUND',
         );
 
-        // Hard remove: the row goes; the guard branch emits nothing pre-15-7.
-        const { error: removeHolidayError } = await serviceClient.rpc(
-          'attendance_remove_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_id: holidayId as string,
-          },
-        );
+        // Hard remove: the row goes (a direct delete — the PT404-on-unknown
+        // mapping lived in the dropped RPC and is pinned in
+        // holidays.service.spec.ts).
+        const { error: removeHolidayError } = await serviceClient
+          .from('holidays')
+          .delete()
+          .eq('id', holidayId);
         expect(removeHolidayError).toBeNull();
         const { data: afterRemoveHoliday } = await serviceClient
           .from('holidays')
           .select('id')
           .eq('tenant_id', probeTenantId);
         expect(afterRemoveHoliday).toHaveLength(1); // the past one only
-        const { error: removeUnknownError } = await serviceClient.rpc(
-          'attendance_remove_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_id: holidayId as string,
-          },
-        );
-        expect(removeUnknownError).not.toBeNull();
-        expect((removeUnknownError as { code: string }).code).toBe('PT404');
+        const { data: removeUnknownRows, error: removeUnknownError } =
+          await serviceClient
+            .from('holidays')
+            .delete()
+            .eq('id', UNKNOWN_HOLIDAY_ID)
+            .select('id');
+        expect(removeUnknownError).toBeNull();
+        expect(removeUnknownRows).toEqual([]); // nothing matched, nothing died
 
-        // The whole lifecycle inserted ZERO notification rows — the
-        // to_regclass guard branch was never reached pre-15-7.
+        // The whole lifecycle inserted ZERO notification rows — raw table
+        // writes bypass the service's fan-out (it is code, not a trigger).
         const { data: notificationRows } = await serviceClient
           .from('notifications')
           .select('id')

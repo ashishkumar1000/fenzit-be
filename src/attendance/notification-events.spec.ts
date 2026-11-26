@@ -80,8 +80,8 @@ describe('notification-events registry (AD-13, stories 15-5 + 16-1 + 17-1..4)', 
   });
 
   it('carries the self-contained camelCase payload each writer builds', () => {
-    // jsonb_build_object('holidayName', …, 'holidayDate', …) in
-    // attendance_add_holiday / attendance_remove_holiday.
+    // holidayName/holidayDate is what the TS writers build (the
+    // holidays.service.ts fan-out — the old RPC builders are dropped).
     expect(
       ATTENDANCE_NOTIFICATION_EVENT_REGISTRY[
         ATTENDANCE_NOTIFICATION_EVENT.HOLIDAY_ADDED

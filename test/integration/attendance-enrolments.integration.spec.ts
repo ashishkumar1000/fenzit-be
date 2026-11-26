@@ -31,6 +31,7 @@ import {
   readAssignments,
   readAccessState,
 } from '../../src/attendance/enrolments.repository';
+import { fanoutHolidayNotification } from '../../src/attendance/holiday-notify';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
 const SUPABASE_URL = process.env['SUPABASE_URL'] ?? '';
@@ -62,6 +63,7 @@ const PROBE_PHONES = [
 /** A start date far enough out to stay in the future for the whole run. */
 const FUTURE_START = '2027-03-01';
 const FUTURE_HOLIDAY = '2027-12-25';
+const MOVED_HOLIDAY = '2027-12-26';
 
 type RangeRow = { id: string; valid: string };
 
@@ -499,16 +501,36 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
   maybeIt(
     'the holiday fan-out executes and its rows match the notification registry (Spec-15-5 deferred item)',
     async () => {
-      // Both technicians cover the holiday date (active + upcoming periods).
-      const { data: holidayId, error } = await admin.rpc(
-        'attendance_add_holiday',
-        {
-          p_tenant_id: TENANT,
-          p_holiday_date: FUTURE_HOLIDAY,
-          p_name: 'Probe Christmas',
-        },
-      );
-      expect(error).toBeNull();
+      // The legacy attendance_add/remove_holiday RPCs are DROPPED
+      // (20261126000002) — the lifecycle is service code now. The probe
+      // drives the service's exact fan-out pair against the real DB: a
+      // direct holidays row write (same columns insertHolidayInTx touches,
+      // minus its optional description) plus the exported
+      // fanoutHolidayNotification in the SAME transaction. insertHolidayInTx
+      // itself is private — these are its primitives. The settings gate is
+      // already open (the setup-completion step above). Both technicians
+      // cover the holiday date (active + upcoming periods).
+      const holidayId = await inTx(async (tx) => {
+        const inserted = await tx.query<{ id: string }>(
+          `insert into public.holidays (tenant_id, holiday_date, name, description, scope)
+           values ($1::uuid, $2::date, $3, $4, 'all') returning id`,
+          [TENANT, FUTURE_HOLIDAY, 'Probe Christmas', null],
+        );
+        const id = inserted.rows[0]!.id;
+        await fanoutHolidayNotification(
+          tx,
+          ATTENDANCE_NOTIFICATION_EVENT.HOLIDAY_ADDED,
+          {
+            tenantId: TENANT,
+            holidayId: id,
+            holidayName: 'Probe Christmas',
+            holidayDate: FUTURE_HOLIDAY,
+            holiday: { scope: 'all', officeIds: [] },
+          },
+          today,
+        );
+        return id;
+      });
 
       const { data: rows } = await admin
         .from('notifications')
@@ -530,21 +552,74 @@ describe('Attendance enrolments journey (15-7, real DB)', () => {
           holidayName: 'Probe Christmas',
           holidayDate: FUTURE_HOLIDAY,
         });
+        // The TS fan-out's key ends with the HOLIDAY DATE — a moved holiday
+        // re-notifies (the RPC's key never carried it; pinned by the move
+        // leg below).
         expect(row.dedupe_key).toBe(
-          `${TENANT}:attendance.holiday_added:${row.user_id}:${holidayId}`,
+          `${TENANT}:attendance.holiday_added:${row.user_id}:${holidayId}:${FUTURE_HOLIDAY}`,
         );
         expect(row.job_id).toBeNull();
       }
 
-      // Removal fans holiday_removed for the same recipients.
-      const { error: removeError } = await admin.rpc(
-        'attendance_remove_holiday',
-        {
-          p_tenant_id: TENANT,
-          p_holiday_id: holidayId as string,
-        },
+      // Move the holiday to a new date and fan out again: the date-carrying
+      // key means the SAME holiday notifies a fresh pair — the headline
+      // behaviour the TS cutover added over the dropped RPC.
+      await inTx(async (tx) => {
+        await tx.query(
+          'update public.holidays set holiday_date = $2::date where id = $1::uuid',
+          [holidayId, MOVED_HOLIDAY],
+        );
+        await fanoutHolidayNotification(
+          tx,
+          ATTENDANCE_NOTIFICATION_EVENT.HOLIDAY_ADDED,
+          {
+            tenantId: TENANT,
+            holidayId,
+            holidayName: 'Probe Christmas',
+            holidayDate: MOVED_HOLIDAY,
+            holiday: { scope: 'all', officeIds: [] },
+          },
+          today,
+        );
+      });
+      const { data: movedRows } = await admin
+        .from('notifications')
+        .select('*')
+        .eq('tenant_id', TENANT)
+        .eq('event_type', ATTENDANCE_NOTIFICATION_EVENT.HOLIDAY_ADDED);
+      expect(movedRows).toHaveLength(4); // original pair + moved pair
+      const movedKeys = (movedRows ?? []).filter(
+        (row) => row.payload.holidayDate === MOVED_HOLIDAY,
       );
-      expect(removeError).toBeNull();
+      expect(movedKeys).toHaveLength(2);
+      for (const row of movedKeys) {
+        expect(row.dedupe_key).toBe(
+          `${TENANT}:attendance.holiday_added:${row.user_id}:${holidayId}:${MOVED_HOLIDAY}`,
+        );
+      }
+
+      // Removal fans holiday_removed for the same recipients — and the delete
+      // PROVES it removed: returning-id rowcount 1, so the fan-out can't be
+      // lauding a no-op.
+      await inTx(async (tx) => {
+        const deleted = await tx.query<{ id: string }>(
+          'delete from public.holidays where id = $1::uuid and tenant_id = $2::uuid returning id',
+          [holidayId, TENANT],
+        );
+        expect(deleted.rows).toHaveLength(1);
+        await fanoutHolidayNotification(
+          tx,
+          ATTENDANCE_NOTIFICATION_EVENT.HOLIDAY_REMOVED,
+          {
+            tenantId: TENANT,
+            holidayId,
+            holidayName: 'Probe Christmas',
+            holidayDate: MOVED_HOLIDAY,
+            holiday: { scope: 'all', officeIds: [] },
+          },
+          today,
+        );
+      });
       const { data: removed } = await admin
         .from('notifications')
         .select('*')
