@@ -61,6 +61,23 @@ describe('pushCopyForEvent', () => {
       });
       expect(approved.title).toBe('Leave applied for you');
     });
+
+    it('job approver notices use the job family copy and payload', () => {
+      const added = pushCopyForEvent('job.approver_added', {
+        job_number: 'JB-2026-0007',
+        customer_name: 'Asha Traders',
+        employee_name: 'Ravi',
+      });
+      expect(added.title).toBe('Job awaiting your approval');
+      expect(added.body).toContain('JB-2026-0007');
+      expect(added.body).toContain('Asha Traders');
+      expect(added.channel).toBe(PUSH_CHANNEL.jobs);
+      const removed = pushCopyForEvent('job.approver_removed', {
+        job_number: 'JB-2026-0007',
+        customer_name: 'Asha Traders',
+      });
+      expect(removed.title).toBe('No longer yours to approve');
+    });
   });
 
   describe('job step notice for the owner (plain sentences, no step numbers)', () => {

@@ -24,6 +24,16 @@ import {
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
+  ADMIN_ROLE,
+  approverRecipients,
+  loadApprovalTree,
+  mayDecide,
+  resolveApprovers,
+  resolveApproversWithTree,
+  type ApproverSet,
+} from '../attendance/approval-routing';
+import { lockTenantShared } from '../attendance/enrolments.repository';
+import {
   encodeCursor,
   decodeCursor,
   CursorScope,
@@ -43,7 +53,7 @@ import {
   alertCreatorOfCancel,
   alertCreatorOfDecision,
   alertCreatorOfEdit,
-  alertOwnersOfSubmission,
+  alertApproversOfSubmission,
   changedEditFields,
   type JobBeforeUpdate,
 } from './pending-job-notifications';
@@ -56,7 +66,6 @@ import {
   stepToResponse,
   currentStepIndexForRead,
   normalizeSkillEmbed,
-  WorkflowStepResponse,
   WorkflowTemplateResponse,
 } from './workflow-template.model';
 
@@ -426,6 +435,52 @@ export class JobsService {
     });
   }
 
+  /**
+   * 24-4: the resolved submission set and the `job_submitted` audit snapshot.
+   * Read under the shared tenant lock so a concurrent tree write cannot land
+   * between the walk and the snapshot write.
+   */
+  private routeJobSubmission(
+    tenantId: string,
+    jobId: string,
+    creatorId: string,
+  ): Promise<{ set: ApproverSet; recipients: string[] }> {
+    return this.pg.withTransaction(async (tx) => {
+      await lockTenantShared(tx, tenantId);
+      const set = await resolveApprovers(tx, tenantId, creatorId, creatorId);
+      const recipients = approverRecipients(set);
+      let alertRecipients = recipients;
+      if (recipients.length > 0) {
+        // The create RPC wrote this row moments ago in the same request.
+        // Tenant-scoped and counted: a missing row must not leave the audit
+        // answer silently blank.
+        const updated = await tx.query(
+          `update public.activity_logs set resolved_approvers = $2::uuid[]
+            where job_id = $1::uuid and tenant_id = $3::uuid
+              and event_type = 'job_submitted'`,
+          [jobId, recipients, tenantId],
+        );
+        if (updated.rowCount === 0) {
+          this.logger.warn('Approver snapshot found no job_submitted row', {
+            tenantId,
+            jobId,
+          });
+        }
+        // A tree write can commit between the create RPC and this lock. That
+        // write already announced the new approver; do not ring the same bell
+        // twice for one submission.
+        const announced = await tx.query<{ user_id: string }>(
+          `select distinct user_id from public.notifications
+            where job_id = $1::uuid and event_type = 'job.approver_added'`,
+          [jobId],
+        );
+        const alreadyTold = new Set(announced.rows.map((row) => row.user_id));
+        alertRecipients = recipients.filter((id) => !alreadyTold.has(id));
+      }
+      return { set, recipients: alertRecipients };
+    });
+  }
+
   async createJob(owner: RequestUser, dto: CreateJobDto): Promise<JobResponse> {
     // AC #9 — company must be set up (400, not 422).
     if (!owner.tenantId) {
@@ -628,10 +683,48 @@ export class JobsService {
       });
     }
 
-    // Pending-approval submission (story 5): the owners hear about it. Written
-    // after the RPC commits; log-and-drop, so it never fails the create.
+    // Pending-approval submission (24-4/CAP-4): the resolved approver set
+    // hears about it, not all admins. Written after the RPC commits;
+    // log-and-drop, so it never fails the create.
     if (rows[0].status === JobStatus.PENDING_APPROVAL) {
-      void alertOwnersOfSubmission(admin, rows[0], owner.userId);
+      const creatorId = rows[0].created_by ?? owner.userId;
+      // The create RPC has already committed. A failure in this best-effort
+      // routing pass must never turn a successful create into a 500 — the
+      // client would retry and submit a duplicate while the first job sits
+      // invisibly in the approval queue.
+      let routing: { set: ApproverSet; recipients: string[] } | null = null;
+      // One retry: a lock timeout behind a bulk re-parent is transient, and the
+      // walk + snapshot write are idempotent. A second failure only logs.
+      for (let attempt = 0; attempt < 2 && routing === null; attempt += 1) {
+        try {
+          routing = await this.routeJobSubmission(
+            owner.tenantId,
+            rows[0].id,
+            creatorId,
+          );
+        } catch (error: unknown) {
+          if (attempt === 1) {
+            this.logger.error(
+              'Job routing lost after create; the job stays pending with no submission alert',
+              { tenantId: owner.tenantId, jobId: rows[0].id, error },
+            );
+          }
+        }
+      }
+      if (routing?.set.kind === 'unresolved') {
+        this.logger.warn('Job routing could not resolve an approver', {
+          tenantId: owner.tenantId,
+          jobId: rows[0].id,
+          reason: routing.set.reason,
+        });
+      } else if (routing && routing.recipients.length > 0) {
+        void alertApproversOfSubmission(
+          admin,
+          rows[0],
+          routing.recipients,
+          creatorId,
+        );
+      }
     }
 
     // Job assignment is a notification (user decision 2026-11-07): the new
@@ -656,9 +749,10 @@ export class JobsService {
   }
 
   /**
-   * CAP-5 — the owner approves or rejects a pending employee job. The database
-   * does the check, the change and the activity row in one locked step; a second
-   * decision comes back as JOB_NOT_PENDING (409).
+   * 24-4 — the resolved approver (or any active admin) approves or rejects a
+   * pending employee job. The walk and the write share one transaction under
+   * the shared tenant lock; the guarded UPDATE makes exactly one decision win
+   * a race. The endpoint contract is unchanged from the retired RPC path.
    */
   async decidePendingJob(
     owner: RequestUser,
@@ -671,72 +765,129 @@ export class JobsService {
         message: 'Company setup required before deciding jobs',
       });
     }
+    const tenantId = owner.tenantId;
     const admin = this.supabaseClientFactory.createAdmin();
-    // One trim, shared by the database write and the alert below: the RPC
-    // stores btrim(reason), so the notification must quote the same text. A
-    // reason that is all whitespace is no reason at all.
+    // One trim, shared by the write and the alert below. A reason that is all
+    // whitespace is no reason at all (the RPC's btrim semantics).
     const reason = dto.reason?.trim() || null;
-    const { data, error } = await admin.rpc('decide_pending_job', {
-      p_caller: owner.userId,
-      p_tenant_id: owner.tenantId,
-      p_job_id: jobId,
-      p_decision: dto.decision,
-      p_reason: reason,
-    });
 
-    if (error) {
-      const e = error as { code?: string; hint?: string | null };
-      if (e.code === 'PT409' && e.hint === ErrorCode.JOB_NOT_PENDING) {
-        throw new ConflictException({
-          error_code: ErrorCode.JOB_NOT_PENDING,
-          message: 'This job has already been approved or rejected',
-        });
-      }
-      if (e.code === 'PT403') {
-        throw new ForbiddenException({
-          error_code: ErrorCode.FORBIDDEN,
-          message: 'You do not have permission to do that',
-        });
-      }
-      if (e.code === 'PT404') {
+    const decided = await this.pg.withTransaction(async (tx) => {
+      await lockTenantShared(tx, tenantId);
+      const found = await tx.query<JobRow>(
+        `select * from public.jobs
+          where id = $1 and tenant_id = $2
+          for update`,
+        [jobId, tenantId],
+      );
+      const job = found.rows[0];
+      if (!job) {
         throw new NotFoundException({
           error_code: ErrorCode.RESOURCE_NOT_FOUND,
           message: 'Job not found',
         });
       }
-      if (e.code === 'PT400') {
-        throw new BadRequestException({
-          error_code: ErrorCode.VALIDATION_ERROR,
-          message: 'The request is not valid',
+      if (job.status !== JobStatus.PENDING_APPROVAL) {
+        throw new ConflictException({
+          error_code: ErrorCode.JOB_NOT_PENDING,
+          message: 'This job has already been approved or rejected',
         });
       }
-      this.logger.error('decide_pending_job RPC failed:', { error });
-      throw new InternalServerErrorException({
-        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
-        message: 'Failed to decide the job',
-      });
-    }
 
-    const rows = data as JobRow[] | null;
-    if (!rows || rows.length === 0) {
-      this.logger.error('decide_pending_job returned no rows');
-      throw new InternalServerErrorException({
-        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
-        message: 'Failed to decide the job',
-      });
-    }
-    // Creator hears about the decision (story 5). After the RPC commits, with
-    // the same trimmed reason the RPC stored.
+      // The override right is decided from the LIVE tree read inside this
+      // transaction, never from the role on the token: the guard read the
+      // caller's membership before the tenant lock, so a demotion/deactivation
+      // that committed while we waited must not leave a stale admin deciding
+      // one more job.
+      const tree = await loadApprovalTree(tx, tenantId);
+      const caller = tree.get(owner.userId.toLowerCase());
+      const callerIsAdmin =
+        caller !== undefined &&
+        caller.status === 'active' &&
+        !caller.disabled &&
+        caller.role === ADMIN_ROLE;
+
+      if (!callerIsAdmin) {
+        if (!job.created_by) {
+          throw new ConflictException({
+            error_code: ErrorCode.APPROVER_UNRESOLVED,
+            message:
+              'This job has no creator on file, so it cannot be routed — an admin must decide it',
+          });
+        }
+        // 24-4/CAP-3: the creator is both requester and actor — an
+        // owner-created job is never pending, and job on-behalf does not exist
+        // in this epic.
+        const approvers = resolveApproversWithTree(
+          tree,
+          job.created_by,
+          job.created_by,
+        );
+        if (approvers.kind === 'unresolved') {
+          throw new ConflictException({
+            error_code: ErrorCode.APPROVER_UNRESOLVED,
+            message:
+              approvers.reason === 'corrupt'
+                ? 'The reporting tree has a loop, so this job cannot be routed — fix the reporting line first'
+                : 'No active admin can decide this job — add an admin first',
+          });
+        }
+        if (!mayDecide(approvers, owner.userId, false)) {
+          throw new ForbiddenException({
+            error_code: ErrorCode.FORBIDDEN,
+            message: 'This job is waiting for someone else to decide',
+          });
+        }
+      }
+
+      const nextStatus =
+        dto.decision === 'approve' ? JobStatus.SCHEDULED : JobStatus.REJECTED;
+      const updated = await tx.query<JobRow>(
+        `update public.jobs
+            set status = $1, decided_by = $2, decided_at = now(),
+                rejection_reason = $3, updated_at = now()
+          where id = $4 and tenant_id = $5 and status = 'pending_approval'
+          returning *`,
+        [
+          nextStatus,
+          owner.userId,
+          dto.decision === 'reject' ? reason : null,
+          jobId,
+          tenantId,
+        ],
+      );
+      const row = updated.rows[0];
+      if (updated.rowCount !== 1 || !row) {
+        // The row lock serialised us; a miss means another decision won
+        // between the check and the write.
+        throw new ConflictException({
+          error_code: ErrorCode.JOB_NOT_PENDING,
+          message: 'This job has already been approved or rejected',
+        });
+      }
+      await tx.query(
+        `insert into public.activity_logs (job_id, tenant_id, event_type, actor_id)
+         values ($1::uuid, $2::uuid, $3::text, $4::uuid)`,
+        [
+          jobId,
+          tenantId,
+          dto.decision === 'approve' ? 'job_approved' : 'job_rejected',
+          owner.userId,
+        ],
+      );
+      return row;
+    });
+
+    // Creator hears about the decision (story 5), after the commit.
     void alertCreatorOfDecision(
       admin,
-      rows[0],
+      decided,
       owner.userId,
       dto.decision,
       reason,
     );
 
     return this.toResponse(
-      await this.refetchWithEmbeds(admin, jobId, owner.tenantId, rows[0]),
+      await this.refetchWithEmbeds(admin, jobId, tenantId, decided),
     );
   }
 

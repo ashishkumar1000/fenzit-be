@@ -93,7 +93,7 @@ export async function loadApprovalTree(
  * The membership role arrives from `role::text` as a plain string; pin the
  * enum's value as a string so the comparisons stay type-clean.
  */
-const ADMIN_ROLE: string = Role.COMPANY_ADMIN;
+export const ADMIN_ROLE: string = Role.COMPANY_ADMIN;
 
 function isActive(member: RoutingMember | undefined): boolean {
   return member !== undefined && member.status === 'active' && !member.disabled;
@@ -162,7 +162,7 @@ export function resolveApproversWithTree(
   return fallback();
 }
 
-export async function resolveLeaveApprovers(
+export async function resolveApprovers(
   tx: PoolClient,
   tenantId: string,
   requesterId: string,

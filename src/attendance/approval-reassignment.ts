@@ -4,11 +4,13 @@ import {
   approverRecipients,
   loadApprovalTree,
   resolveApproversWithTree,
+  type ApprovalTree,
 } from './approval-routing';
 import {
   ATTENDANCE_NOTIFICATION_EVENT,
   LEAVE_ENTITY_TYPE,
 } from './notification-events';
+import { PENDING_JOB_EVENT } from '../jobs/pending-job-notifications';
 
 /** One pending request as the reassignment diff needs it. */
 export interface PendingApprovalSnapshot {
@@ -30,6 +32,7 @@ export async function readPendingApprovalSnapshots(
   tx: PoolClient,
   tenantId: string,
   requesterIds: string[],
+  preloadedTree?: ApprovalTree,
 ): Promise<Map<string, PendingApprovalSnapshot>> {
   const result = new Map<string, PendingApprovalSnapshot>();
   if (requesterIds.length === 0) return result;
@@ -55,7 +58,7 @@ export async function readPendingApprovalSnapshots(
         )`,
     [tenantId, requesterIds],
   );
-  const tree = await loadApprovalTree(tx, tenantId);
+  const tree = preloadedTree ?? (await loadApprovalTree(tx, tenantId));
   for (const row of rows.rows) {
     // A non-live requester has no routing left to change: their own pending
     // request belongs to the removal/disable flow, not to reassignment. The
@@ -129,17 +132,13 @@ export async function emitApproverSetChanges(
   tenantId: string,
   before: Map<string, PendingApprovalSnapshot>,
   after: Map<string, PendingApprovalSnapshot>,
+  preloadedTree?: ApprovalTree,
 ): Promise<void> {
   if (before.size === 0) return;
 
   const writeId = randomUUID();
-  const tree = await loadApprovalTree(tx, tenantId);
-  const isActive = (userId: string): boolean => {
-    const member = tree.get(userId);
-    return (
-      member !== undefined && member.status === 'active' && !member.disabled
-    );
-  };
+  const tree = preloadedTree ?? (await loadApprovalTree(tx, tenantId));
+  const isActive = (userId: string): boolean => isLiveMember(tree, userId);
 
   for (const [requestDbId, previous] of before) {
     const next = after.get(requestDbId);
@@ -179,4 +178,143 @@ export function affectedApprovalRequesters(
   subtreeIds: string[],
 ): string[] {
   return [memberId, ...subtreeIds];
+}
+
+/** One pending job as the reassignment diff needs it. */
+export interface PendingJobSnapshot {
+  jobDbId: string;
+  jobNumber: string;
+  employeeName: string | null;
+  customerName: string | null;
+  approvers: string[];
+}
+
+function isLiveMember(tree: ApprovalTree, userId: string): boolean {
+  const member = tree.get(userId);
+  return member !== undefined && member.status === 'active' && !member.disabled;
+}
+
+/**
+ * The resolved approver set of every pending job created by one of
+ * `requesterIds`, read against the CURRENT tree. The job equivalent of
+ * `readPendingApprovalSnapshots`, for the tree-write diff.
+ */
+export async function readPendingJobSnapshots(
+  tx: PoolClient,
+  tenantId: string,
+  requesterIds: string[],
+  preloadedTree?: ApprovalTree,
+): Promise<Map<string, PendingJobSnapshot>> {
+  const result = new Map<string, PendingJobSnapshot>();
+  if (requesterIds.length === 0) return result;
+
+  const rows = await tx.query<{
+    id: string;
+    job_number: string;
+    created_by: string;
+    employee_name: string | null;
+    customer_name: string | null;
+  }>(
+    `select j.id, j.job_number, j.created_by,
+            u.name as employee_name, c.name as customer_name
+       from public.jobs j
+       join public.users u on u.id = j.created_by
+       left join public.customers c on c.id = j.customer_id
+      where j.tenant_id = $1
+        and j.created_by = any($2::uuid[])
+        and j.status = 'pending_approval'`,
+    [tenantId, requesterIds],
+  );
+  const tree = preloadedTree ?? (await loadApprovalTree(tx, tenantId));
+  for (const row of rows.rows) {
+    // Same rule as leave: a non-live creator's job belongs to the removal /
+    // disable flow, not to reassignment.
+    if (!isLiveMember(tree, row.created_by)) continue;
+    const set = resolveApproversWithTree(tree, row.created_by, row.created_by);
+    result.set(row.id, {
+      jobDbId: row.id,
+      jobNumber: row.job_number,
+      employeeName: row.employee_name,
+      customerName: row.customer_name,
+      approvers: approverRecipients(set),
+    });
+  }
+  return result;
+}
+
+async function notifyJob(
+  tx: PoolClient,
+  tenantId: string,
+  eventType: string,
+  snapshot: PendingJobSnapshot,
+  recipientIds: string[],
+  writeId: string,
+): Promise<void> {
+  for (const recipientId of recipientIds) {
+    await tx.query(
+      `insert into public.notifications
+         (tenant_id, user_id, job_id, event_type, payload, dedupe_key)
+       values ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::jsonb, $6::text)
+       on conflict (dedupe_key) where dedupe_key is not null do nothing`,
+      [
+        tenantId,
+        recipientId,
+        snapshot.jobDbId,
+        eventType,
+        // Snake_case is the notifications payload contract every job notice
+        // uses (job.submitted, approval decision) and the key shape
+        // `pushCopyForEvent` reads. CamelCase here silently produced an empty
+        // push body.
+        JSON.stringify({
+          job_number: snapshot.jobNumber,
+          customer_name: snapshot.customerName,
+          employee_name: snapshot.employeeName,
+        }),
+        `${tenantId}:${eventType}:${recipientId}:${snapshot.jobDbId}:${writeId}`,
+      ],
+    );
+  }
+}
+
+/** The job-side set-difference notices (24-4), same rules as leave. */
+export async function emitJobApproverSetChanges(
+  tx: PoolClient,
+  tenantId: string,
+  before: Map<string, PendingJobSnapshot>,
+  after: Map<string, PendingJobSnapshot>,
+  preloadedTree?: ApprovalTree,
+  actorId?: string,
+): Promise<void> {
+  if (before.size === 0) return;
+
+  const writeId = randomUUID();
+  const tree = preloadedTree ?? (await loadApprovalTree(tx, tenantId));
+  for (const [jobDbId, previous] of before) {
+    const next = after.get(jobDbId);
+    if (!next) continue;
+    const added = next.approvers.filter(
+      // The actor never rings their own bell: an admin who makes themself the
+      // report's manager already knows they took the job over (24-4 contract).
+      (id) => !previous.approvers.includes(id) && id !== actorId,
+    );
+    const removed = previous.approvers.filter(
+      (id) => !next.approvers.includes(id) && isLiveMember(tree, id),
+    );
+    await notifyJob(
+      tx,
+      tenantId,
+      PENDING_JOB_EVENT.APPROVER_ADDED,
+      next,
+      added,
+      writeId,
+    );
+    await notifyJob(
+      tx,
+      tenantId,
+      PENDING_JOB_EVENT.APPROVER_REMOVED,
+      next,
+      removed,
+      writeId,
+    );
+  }
 }

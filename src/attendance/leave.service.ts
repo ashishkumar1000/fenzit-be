@@ -67,7 +67,7 @@ import { ApplyLeaveDto, OnBehalfLeaveDto } from './dto/leave.dto';
 import {
   approverRecipients,
   mayDecide,
-  resolveLeaveApprovers,
+  resolveApprovers,
 } from './approval-routing';
 
 /**
@@ -432,7 +432,7 @@ export class LeaveService {
     const createdDecided = input.onBehalf && input.callerIsAdmin;
     const approvers = createdDecided
       ? null
-      : await resolveLeaveApprovers(
+      : await resolveApprovers(
           tx,
           input.tenantId,
           employeeId,
@@ -558,7 +558,7 @@ export class LeaveService {
     // 24-3/CAP-3: the decision right, under the same locks as the write. The
     // actor of the filing is the requester for a self-filing and the manager
     // for an on-behalf one, so an on-behalf filer never decides their own.
-    const approvers = await resolveLeaveApprovers(
+    const approvers = await resolveApprovers(
       tx,
       tenantId,
       request.employee_id,

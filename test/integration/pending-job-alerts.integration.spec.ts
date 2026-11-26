@@ -27,7 +27,7 @@ import {
   alertCreatorOfCancel,
   alertCreatorOfDecision,
   alertCreatorOfEdit,
-  alertOwnersOfSubmission,
+  alertApproversOfSubmission,
   changedEditFields,
   PENDING_JOB_EVENT,
   type JobBeforeUpdate,
@@ -148,11 +148,11 @@ describe('pending-job alerts: who hears about each step (real DB)', () => {
   // ---- Submission -----------------------------------------------------------
 
   maybeIt(
-    'submit: every active owner gets one job.submitted, the viewer and employee get none',
+    'submit: every resolved approver gets one job.submitted, the viewer and employee get none',
     async () => {
       const c = await makeCompany(service, 'pja submit', roster());
       const job = await submitPending(c);
-      await alertOwnersOfSubmission(service, job, c.id.emp);
+      await alertApproversOfSubmission(service, job, [c.id.admin, c.id.admin2], c.id.emp);
 
       const notes = await notesFor(job.id);
       expect(notes.map((n) => n.user_id).sort()).toEqual(

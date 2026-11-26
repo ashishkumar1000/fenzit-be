@@ -144,18 +144,20 @@ export class JobsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Owner approves or rejects a pending employee job (reject may give a reason)',
+      'The resolved approver (or any admin) approves or rejects a pending employee job (reject may give a reason)',
   })
   @ApiResponse({ status: 200, description: 'The job after the decision' })
   @ApiResponse({ status: 400, description: 'Decision or reason not valid' })
   @ApiResponse({
     status: 403,
-    description: 'Not a company admin of this company',
+    description:
+      'This job is waiting for someone else to decide (FORBIDDEN) — the resolved approver set does not contain the caller',
   })
   @ApiResponse({ status: 404, description: 'Job not found in this company' })
   @ApiResponse({
     status: 409,
-    description: 'JOB_NOT_PENDING — already approved or rejected',
+    description:
+      'JOB_NOT_PENDING — already approved or rejected; APPROVER_UNRESOLVED — the walk cannot route it (ownerless or corrupt tree)',
   })
   decidePendingJob(
     @CurrentUser() user: RequestUser,

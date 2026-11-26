@@ -29,7 +29,7 @@ jest.mock('./pending-job-notifications', () => {
   >('./pending-job-notifications');
   return {
     ...actual,
-    alertOwnersOfSubmission: jest.fn(),
+    alertApproversOfSubmission: jest.fn(),
     alertCreatorOfDecision: jest.fn(),
     alertCreatorOfCancel: jest.fn(),
     alertCreatorOfEdit: jest.fn(),
@@ -124,10 +124,15 @@ function chain(terminal: {
 describe('pending-job alerts wired into JobsService (story 5)', () => {
   let service: JobsService;
   let factory: { createAdmin: jest.Mock };
+  let txHandler: (
+    sql: string,
+    params?: unknown[],
+  ) => { rows: unknown[]; rowCount?: number };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     factory = { createAdmin: jest.fn() };
+    txHandler = () => ({ rows: [] });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         JobsService,
@@ -141,7 +146,10 @@ describe('pending-job alerts wired into JobsService (story 5)', () => {
           provide: PgPoolFactory,
           useValue: {
             withTransaction: (work: (tx: unknown) => unknown) =>
-              work({ query: () => Promise.resolve({ rows: [] }) }),
+              work({
+                query: (sql: string, params?: unknown[]) =>
+                  Promise.resolve(txHandler(sql, params)),
+              }),
           },
         },
       ],
@@ -217,30 +225,142 @@ describe('pending-job alerts wired into JobsService (story 5)', () => {
 
   // ---- Submission (createJob) ------------------------------------------------
 
-  it('employee submits a pending job: the owners are alerted once, with the new job', async () => {
+  it('employee submits a pending job: the resolved manager is alerted once, with the new job', async () => {
     createAdminWith([jobRow('pending_approval')]);
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    txHandler = (sql, params) => {
+      queries.push({ sql, params });
+      if (sql.includes('m.role::text')) {
+        return {
+          rows: [
+            {
+              user_id: 'tech-1',
+              manager_id: 'mgr-1',
+              role: 'employee',
+              status: 'active',
+              disabled: false,
+            },
+            {
+              user_id: 'mgr-1',
+              manager_id: null,
+              role: 'employee',
+              status: 'active',
+              disabled: false,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
 
     await service.createJob(employee, ownDto);
 
-    expect(alerts.alertOwnersOfSubmission).toHaveBeenCalledTimes(1);
-    expect(alerts.alertOwnersOfSubmission).toHaveBeenCalledWith(
+    expect(alerts.alertApproversOfSubmission).toHaveBeenCalledTimes(1);
+    expect(alerts.alertApproversOfSubmission).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ id: JOB_ID, status: 'pending_approval' }),
+      ['mgr-1'],
       'tech-1',
     );
+
+    // The CAP-4 audit snapshot is written on the RPC's job_submitted row (the
+    // create RPC does not emit job_created for a pending job), tenant-scoped.
+    const snapshot = queries.find((q) =>
+      q.sql.includes('update public.activity_logs'),
+    );
+    expect(snapshot?.sql).toContain("event_type = 'job_submitted'");
+    expect(snapshot?.sql).toContain('tenant_id = $3');
+    expect(snapshot?.params).toEqual([JOB_ID, ['mgr-1'], 'tenant-uuid']);
   });
 
-  it('employee creates a job that goes straight to scheduled: no owner alert', async () => {
+  it('a routing failure after the create commits does not fail the submission', async () => {
+    createAdminWith([jobRow('pending_approval')]);
+    txHandler = (sql) => {
+      if (sql.includes('m.role::text')) throw new Error('lock timeout');
+      return { rows: [] };
+    };
+
+    await expect(service.createJob(employee, ownDto)).resolves.toBeDefined();
+
+    // No recipient list was resolved, so nobody is told — but the client got
+    // its job, so a retry cannot duplicate the submission.
+    expect(alerts.alertApproversOfSubmission).not.toHaveBeenCalled();
+  });
+
+  it('a tree write that already announced the new approver suppresses the duplicate submission bell', async () => {
+    createAdminWith([jobRow('pending_approval')]);
+    txHandler = (sql) => {
+      if (sql.includes('m.role::text')) {
+        return {
+          rows: [
+            {
+              user_id: 'tech-1',
+              manager_id: 'mgr-1',
+              role: 'employee',
+              status: 'active',
+              disabled: false,
+            },
+            {
+              user_id: 'mgr-1',
+              manager_id: null,
+              role: 'employee',
+              status: 'active',
+              disabled: false,
+            },
+          ],
+        };
+      }
+      if (sql.includes('select distinct user_id from public.notifications')) {
+        return { rows: [{ user_id: 'mgr-1' }] };
+      }
+      return { rows: [] };
+    };
+
+    await service.createJob(employee, ownDto);
+
+    // The re-parent already told the manager; one submission, one bell.
+    expect(alerts.alertApproversOfSubmission).not.toHaveBeenCalled();
+  });
+
+  it('employee creates a job that goes straight to scheduled: no approver alert', async () => {
     createAdminWith([jobRow('scheduled')]);
 
     await service.createJob(employee, ownDto);
 
-    expect(alerts.alertOwnersOfSubmission).not.toHaveBeenCalled();
+    expect(alerts.alertApproversOfSubmission).not.toHaveBeenCalled();
   });
 
   // ---- Decision (decidePendingJob) ------------------------------------------
 
+  const LIVE_TREE = [
+    {
+      user_id: 'owner-uuid',
+      manager_id: null,
+      role: 'company_admin',
+      status: 'active',
+      disabled: false,
+    },
+    {
+      user_id: 'tech-1',
+      manager_id: null,
+      role: 'employee',
+      status: 'active',
+      disabled: false,
+    },
+  ];
+
   it('owner approves: the creator is alerted with the decision', async () => {
+    txHandler = (sql) => {
+      // The override right is checked against the live tree inside the tx.
+      if (sql.includes('m.role::text')) return { rows: LIVE_TREE };
+      if (sql.includes('from public.jobs') && sql.includes('for update')) {
+        return { rows: [jobRow('pending_approval')] };
+      }
+      if (sql.includes('update public.jobs')) {
+        return { rowCount: 1, rows: [jobRow('scheduled')] };
+      }
+      return { rows: [] };
+    };
     updateAdminWith({ rpcRows: [jobRow('scheduled')] });
 
     await service.decidePendingJob(owner, JOB_ID, {
@@ -257,6 +377,16 @@ describe('pending-job alerts wired into JobsService (story 5)', () => {
   });
 
   it('owner rejects with a reason: the reason is passed through to the alert', async () => {
+    txHandler = (sql) => {
+      if (sql.includes('m.role::text')) return { rows: LIVE_TREE };
+      if (sql.includes('from public.jobs') && sql.includes('for update')) {
+        return { rows: [jobRow('pending_approval')] };
+      }
+      if (sql.includes('update public.jobs')) {
+        return { rowCount: 1, rows: [jobRow('rejected')] };
+      }
+      return { rows: [] };
+    };
     updateAdminWith({ rpcRows: [jobRow('rejected')] });
 
     await service.decidePendingJob(owner, JOB_ID, {

@@ -20,9 +20,10 @@ import { OwnPendingQueryDto } from './dto/own-pending-query.dto';
 export class JobReportsController {
   constructor(private readonly jobReportsService: JobReportsService) {}
 
-  // Owner only: job.approve is granted to company admins alone.
+  // Owner only: job.reports is granted to company admins alone. (job.approve
+  // is tree-derived since 24-4, so it can no longer gate a tenant-wide read.)
   @Get('owner')
-  @Can('job.approve')
+  @Can('job.reports')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -85,8 +86,10 @@ export class ApprovalQueueController {
     return this.approvalQueueService.listOwn(user, query);
   }
 
+  // Owner only: the tenant-wide queue is not the tree-derived decision right
+  // (24-5 adds the manager-scoped "your team" queue).
   @Get()
-  @Can('job.approve')
+  @Can('job.reports')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -7,7 +7,7 @@ import {
   alertCreatorOfCancel,
   alertCreatorOfDecision,
   alertCreatorOfEdit,
-  alertOwnersOfSubmission,
+  alertApproversOfSubmission,
   changedEditFields,
   type JobBeforeUpdate,
 } from './pending-job-notifications';
@@ -58,7 +58,6 @@ function fakeAdmin(
   return { from: (table: string) => node(table) } as never;
 }
 
-const owners = [{ user_id: OWNER_A }, { user_id: OWNER_B }];
 const job = {
   id: JOB_ID,
   tenant_id: TENANT,
@@ -159,22 +158,21 @@ describe('changedEditFields: what a save really changes', () => {
   });
 });
 
-describe('alertOwnersOfSubmission (job.submitted)', () => {
-  it('one alert per active owner, never to the employee who submitted', async () => {
+describe('alertApproversOfSubmission (job.submitted)', () => {
+  it('one alert per resolved approver, with the submission payload', async () => {
     const inserts: Array<{
       table: string;
       rows: Array<Record<string, unknown>>;
     }> = [];
     const admin = fakeAdmin(
       {
-        memberships: { data: owners },
         customers: { data: { name: 'Asha Traders' } },
         users: { data: { name: 'Ravi' } },
       },
       inserts,
     );
 
-    await alertOwnersOfSubmission(admin, job, EMPLOYEE);
+    await alertApproversOfSubmission(admin, job, [OWNER_A, OWNER_B], EMPLOYEE);
 
     expect(inserts).toHaveLength(1);
     expect(inserts[0].table).toBe('notifications');
@@ -191,28 +189,25 @@ describe('alertOwnersOfSubmission (job.submitted)', () => {
     });
   });
 
-  it('a company with no active owner writes nothing', async () => {
+  it('an empty resolved set writes nothing (ownerless / creator-admin)', async () => {
     const inserts: Array<{
       table: string;
       rows: Array<Record<string, unknown>>;
     }> = [];
-    await alertOwnersOfSubmission(
-      fakeAdmin({ memberships: { data: [] } }, inserts),
-      job,
-      EMPLOYEE,
-    );
+    await alertApproversOfSubmission(fakeAdmin({}, inserts), job, [], EMPLOYEE);
     expect(inserts).toHaveLength(0);
   });
 
-  it('a failed owner read is dropped, never thrown to the caller', async () => {
+  it('a failed name read is dropped, never thrown to the caller', async () => {
     const inserts: Array<{
       table: string;
       rows: Array<Record<string, unknown>>;
     }> = [];
     await expect(
-      alertOwnersOfSubmission(
-        fakeAdmin({ memberships: { error: { message: 'boom' } } }, inserts),
+      alertApproversOfSubmission(
+        fakeAdmin({ customers: { error: { message: 'boom' } } }, inserts),
         job,
+        [OWNER_A],
         EMPLOYEE,
       ),
     ).resolves.toBeUndefined();
@@ -225,16 +220,17 @@ describe('alertOwnersOfSubmission (job.submitted)', () => {
       rows: Array<Record<string, unknown>>;
     }> = [];
     await expect(
-      alertOwnersOfSubmission(
+      alertApproversOfSubmission(
         fakeAdmin(
           {
-            memberships: { data: owners, insertError: { message: 'boom' } },
             customers: { data: null },
             users: { data: null },
+            insertError: { message: 'boom' },
           },
           inserts,
         ),
         job,
+        [OWNER_A],
         EMPLOYEE,
       ),
     ).resolves.toBeUndefined();

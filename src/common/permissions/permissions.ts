@@ -27,7 +27,8 @@ export type Permission =
   | 'job.read_own'
   | 'job.write'
   | 'job.create_own' // an employee's own job, when the owner allows it (CAP-2)
-  | 'job.approve' // company admin of this company only: approve or reject (CAP-5)
+  | 'job.approve' // tree-derived like leave.approve: guard lets it through, the resolved-approver walk decides (24-4)
+  | 'job.reports' // company-wide owner surfaces (owner report + tenant approval queue) — admin only, NOT tree-derived; split out of job.approve in 24-4 when that grant widened
   | 'job.advance' // own workflow steps and attachments
   | 'job.sync' // own jobs to the app
   // customers and reports
@@ -110,6 +111,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'leave.types',
       'payroll.config',
       'job.approve',
+      // 24-4: the tenant-wide owner surfaces; outside ADMIN_PERMISSIONS so
+      // staff (platform admins) do not inherit a company's queue/report.
+      'job.reports',
     ]),
     [Role.EMPLOYEE]: new Set<Permission>([
       'job.read_own',
@@ -126,6 +130,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       // walk decides, and a member outside the set answers 403
       // NOT_AN_APPROVER. Without this grant a manager could never decide.
       'leave.approve',
+      // 24-4: same tree-derived reading for jobs — a manager is an employee,
+      // and the service refuses anyone outside the resolved set.
+      'job.approve',
       'payroll.own',
     ]),
     [Role.VIEWER]: new Set<Permission>([
@@ -141,6 +148,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       // right (D13: role changes never strip manager rights). The service
       // still refuses anyone outside the resolved set.
       'leave.approve',
+      'job.approve',
     ]),
   };
 

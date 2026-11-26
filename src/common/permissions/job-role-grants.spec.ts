@@ -12,11 +12,24 @@ describe('job grants per role (employee-created jobs)', () => {
     expect(permissionsFor(Role.EMPLOYEE).has('job.read_own')).toBe(true);
   });
 
-  it('only a company admin may approve or reject (CAP-5)', () => {
+  it('job approval is tree-derived: employees and viewers reach the service, which decides (24-4)', () => {
     expect(permissionsFor(Role.COMPANY_ADMIN).has('job.approve')).toBe(true);
-    expect(permissionsFor(Role.EMPLOYEE).has('job.approve')).toBe(false);
-    expect(permissionsFor(Role.VIEWER).has('job.approve')).toBe(false);
+    expect(permissionsFor(Role.EMPLOYEE).has('job.approve')).toBe(true);
+    expect(permissionsFor(Role.VIEWER).has('job.approve')).toBe(true);
+    // Staff (no company membership) still hold nothing.
     expect(permissionsFor(Role.PLATFORM_ADMIN).has('job.approve')).toBe(false);
+  });
+
+  it('the tenant-wide owner surfaces stay admin-only after job.approve widened (24-4)', () => {
+    // job.approve is tree-derived now, so the owner report and the tenant-wide
+    // approval queue moved to their own admin-only grant. Without this an
+    // employee would read every colleague's pending jobs and the owner report.
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('job.reports')).toBe(true);
+    expect(permissionsFor(Role.EMPLOYEE).has('job.reports')).toBe(false);
+    expect(permissionsFor(Role.VIEWER).has('job.reports')).toBe(false);
+    // Staff must not inherit it: the grant lives outside ADMIN_PERMISSIONS.
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('job.reports')).toBe(false);
+    expect(permissionsFor(null).has('job.reports')).toBe(false);
   });
 
   it('a viewer cannot create jobs, and an admin does not get the employee self-create grant', () => {

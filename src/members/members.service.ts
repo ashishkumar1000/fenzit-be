@@ -28,9 +28,13 @@ import { assertManagerAssignable } from '../common/members/manager-assignment';
 import {
   affectedApprovalRequesters,
   emitApproverSetChanges,
+  emitJobApproverSetChanges,
   readPendingApprovalSnapshots,
+  readPendingJobSnapshots,
   type PendingApprovalSnapshot,
+  type PendingJobSnapshot,
 } from '../attendance/approval-reassignment';
+import { loadApprovalTree } from '../attendance/approval-routing';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import {
@@ -533,11 +537,8 @@ export class MembersService {
         memberUserId,
         row.role === ADMIN_ROLE,
       );
-      const approvalBefore = await readPendingApprovalSnapshots(
-        tx,
-        tenantId,
-        requesterIds,
-      );
+      const { approval: approvalBefore, jobs: jobBefore } =
+        await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
       const updated = await tx.query<{ status: string }>(
         `update public.memberships set status = $1, updated_at = now()
           where user_id = $2 and tenant_id = $3 and status = $4
@@ -557,6 +558,8 @@ export class MembersService {
         tenantId,
         requesterIds,
         approvalBefore,
+        jobBefore,
+        caller.userId,
       );
       return { employeeCode: row.employee_code };
     });
@@ -658,11 +661,8 @@ export class MembersService {
         memberUserId,
         member.role === ADMIN_ROLE || nextRole === ADMIN_ROLE,
       );
-      const approvalBefore = await readPendingApprovalSnapshots(
-        tx,
-        tenantId,
-        requesterIds,
-      );
+      const { approval: approvalBefore, jobs: jobBefore } =
+        await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
 
       // D1: an admin sits at the top of the tree, so a promotion clears the
       // member's own pointer in the same write. Their reports stay under them.
@@ -693,6 +693,8 @@ export class MembersService {
         tenantId,
         requesterIds,
         approvalBefore,
+        jobBefore,
+        caller.userId,
       );
 
       return { userId: memberUserId, oldRole: member.role, newRole };
@@ -815,11 +817,8 @@ export class MembersService {
         memberUserId,
         member.role === ADMIN_ROLE,
       );
-      const approvalBefore = await readPendingApprovalSnapshots(
-        tx,
-        tenantId,
-        requesterIds,
-      );
+      const { approval: approvalBefore, jobs: jobBefore } =
+        await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
 
       // Only a manager who can still serve keeps the reports; otherwise they
       // become unassigned rather than inheriting a dead pointer.
@@ -881,6 +880,8 @@ export class MembersService {
         tenantId,
         requesterIds,
         approvalBefore,
+        jobBefore,
+        caller.userId,
       );
     });
   }
@@ -967,11 +968,8 @@ export class MembersService {
         tenantId,
         memberUserId,
       );
-      const approvalBefore = await readPendingApprovalSnapshots(
-        tx,
-        tenantId,
-        requesterIds,
-      );
+      const { approval: approvalBefore, jobs: jobBefore } =
+        await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
       await tx.query(
         `update public.memberships set manager_id = $2 where id = $1`,
         [member.id, managerId],
@@ -991,6 +989,8 @@ export class MembersService {
         tenantId,
         requesterIds,
         approvalBefore,
+        jobBefore,
+        caller.userId,
       );
     });
 
@@ -1026,19 +1026,66 @@ export class MembersService {
     return [...new Set([...ids, ...active.rows.map((row) => row.user_id)])];
   }
 
-  /** The set-difference notices for the SAME requesters, re-read after the write. */
+  /** One tree read, both entity snapshots (24-3 + 24-4). */
+  private async captureApprovalSnapshots(
+    tx: PoolClient,
+    tenantId: string,
+    requesterIds: string[],
+  ): Promise<{
+    approval: Map<string, PendingApprovalSnapshot>;
+    jobs: Map<string, PendingJobSnapshot>;
+  }> {
+    const tree = await loadApprovalTree(tx, tenantId);
+    const approval = await readPendingApprovalSnapshots(
+      tx,
+      tenantId,
+      requesterIds,
+      tree,
+    );
+    const jobs = await readPendingJobSnapshots(
+      tx,
+      tenantId,
+      requesterIds,
+      tree,
+    );
+    return { approval, jobs };
+  }
+
+  /**
+   * The set-difference notices for the SAME requesters, re-read after the
+   * write — leave and jobs both, so one tree write tells every affected
+   * approver about every pending request that moved.
+   */
   private async emitApprovalChanges(
     tx: PoolClient,
     tenantId: string,
     requesterIds: string[],
     before: Map<string, PendingApprovalSnapshot>,
+    jobBefore: Map<string, PendingJobSnapshot>,
+    actorId: string,
   ): Promise<void> {
+    const tree = await loadApprovalTree(tx, tenantId);
     const after = await readPendingApprovalSnapshots(
       tx,
       tenantId,
       requesterIds,
+      tree,
     );
-    await emitApproverSetChanges(tx, tenantId, before, after);
+    const jobAfter = await readPendingJobSnapshots(
+      tx,
+      tenantId,
+      requesterIds,
+      tree,
+    );
+    await emitApproverSetChanges(tx, tenantId, before, after, tree);
+    await emitJobApproverSetChanges(
+      tx,
+      tenantId,
+      jobBefore,
+      jobAfter,
+      tree,
+      actorId,
+    );
   }
 
   /** The company's hierarchy fields for the named members, in one query. */

@@ -13,6 +13,7 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { UpdateEmploymentDto } from './dto/update-employment.dto';
+import { pushCopyForEvent } from '../push/push-copy';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
@@ -143,6 +144,7 @@ function buildMembershipWrite(
     liveMemberIds?: string[];
     subtreeIds?: string[];
     pendingApprovals?: Array<Record<string, unknown>>;
+    pendingJobs?: Array<Record<string, unknown>>;
     approvalTrees?: unknown[][];
   } = {},
 ) {
@@ -179,6 +181,12 @@ function buildMembershipWrite(
       }
       if (sql.includes('select r.id, r.request_id, r.employee_id')) {
         return { rows: opts.pendingApprovals ?? [] };
+      }
+      if (
+        sql.includes('from public.jobs j') &&
+        sql.includes("status = 'pending_approval'")
+      ) {
+        return { rows: opts.pendingJobs ?? [] };
       }
       if (sql.includes('m.role::text')) {
         return { rows: opts.approvalTrees?.shift() ?? [] };
@@ -655,6 +663,63 @@ describe('MembersService', () => {
       ]);
     });
 
+    it('24-4: a demotion removes the demoted admin from a fallback-routed pending job too', async () => {
+      const before = [
+        {
+          user_id: 'member-1',
+          manager_id: null,
+          role: 'company_admin',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'admin-2',
+          manager_id: null,
+          role: 'company_admin',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'top-1',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+      ];
+      const after = before.map((row) =>
+        row.user_id === 'member-1' ? { ...row, role: 'employee' } : row,
+      );
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ role: 'company_admin', status: 'active' }),
+        otherAdmins: 1,
+        liveMemberIds: ['member-1', 'admin-2', 'top-1'],
+        pendingJobs: [
+          {
+            id: 'job-1',
+            job_number: 'JB-2026-0001',
+            created_by: 'top-1',
+            employee_name: 'Ravi',
+            customer_name: 'Asha',
+          },
+        ],
+        approvalTrees: [
+          before.map((row) => ({ ...row })),
+          after.map((row) => ({ ...row })),
+        ],
+      });
+      const { service } = build({ tx });
+
+      await service.changeRole(companyAdmin, 'member-1', 'employee' as never);
+
+      const notices = queries.filter((q) =>
+        q.sql.includes('insert into public.notifications'),
+      );
+      expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
+        ['job.approver_removed', 'member-1'],
+      ]);
+    });
+
     it('a same-role call writes nothing and audits nothing', async () => {
       const { tx, queries } = buildMembershipWrite({
         member: membershipRow({ role: 'viewer' }),
@@ -878,6 +943,78 @@ describe('MembersService', () => {
       // notice is suppressed; the re-parented request's new approver is told.
       expect(notices.map((q) => [q.params?.[2], q.params?.[1]])).toEqual([
         ['leave.approver_added', 'mgr-1'],
+      ]);
+    });
+
+    it("24-4: removing a manager moves a report's pending job to the new manager", async () => {
+      const base = [
+        {
+          user_id: 'admin-1',
+          manager_id: null,
+          role: 'company_admin',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'mgr-1',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'member-1',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'report-1',
+          manager_id: 'member-1',
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+      ];
+      const after = base.map((row) => {
+        if (row.user_id === 'member-1') {
+          return { ...row, status: 'removed', manager_id: null };
+        }
+        return row.user_id === 'report-1'
+          ? { ...row, manager_id: 'mgr-1' }
+          : row;
+      });
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'mgr-1' }),
+        managerServes: true,
+        reportIds: ['report-1'],
+        subtreeIds: ['report-1'],
+        pendingJobs: [
+          {
+            id: 'job-1',
+            job_number: 'JB-2026-0001',
+            created_by: 'report-1',
+            employee_name: 'Ravi',
+            customer_name: 'Asha',
+          },
+        ],
+        approvalTrees: [
+          base.map((row) => ({ ...row })),
+          after.map((row) => ({ ...row })),
+        ],
+      });
+      const { service } = build({ tx });
+
+      await service.remove(companyAdmin, 'member-1');
+
+      const notices = queries.filter((q) =>
+        q.sql.includes('insert into public.notifications'),
+      );
+      // The removed member is no longer live, so their "no longer yours" notice
+      // is suppressed; the report's new approver is told the job is theirs.
+      expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
+        ['job.approver_added', 'mgr-1'],
       ]);
     });
 
@@ -1412,6 +1549,150 @@ describe('MembersService', () => {
       );
       expect(byEvent.get('leave.approver_added')).toBe('mgr-1');
       expect(byEvent.get('leave.approver_removed')).toBe('old-manager');
+    });
+
+    it('24-4: a re-parent emits the set-difference notices for a pending job too', async () => {
+      const admin = {
+        user_id: 'admin-1',
+        manager_id: null,
+        role: 'company_admin',
+        status: 'active',
+        disabled: false,
+      };
+      const before = [
+        admin,
+        {
+          user_id: 'old-manager',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'mgr-1',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'member-1',
+          manager_id: 'old-manager',
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+      ];
+      const after = before.map((row) =>
+        row.user_id === 'member-1' ? { ...row, manager_id: 'mgr-1' } : row,
+      );
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'old-manager' }),
+        manager: managerRow(),
+        subtreeIds: [],
+        pendingJobs: [
+          {
+            id: 'job-1',
+            job_number: 'JB-2026-0001',
+            created_by: 'member-1',
+            employee_name: 'Ravi',
+            customer_name: 'Asha',
+          },
+        ],
+        approvalTrees: [
+          before.map((row) => ({ ...row })),
+          after.map((row) => ({ ...row })),
+        ],
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', 'mgr-1');
+
+      const notices = queries.filter((q) =>
+        q.sql.includes('insert into public.notifications'),
+      );
+      expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
+        ['job.approver_added', 'mgr-1'],
+        ['job.approver_removed', 'old-manager'],
+      ]);
+      expect(JSON.parse(notices[0].params?.[4] as string)).toMatchObject({
+        job_number: 'JB-2026-0001',
+        customer_name: 'Asha',
+        employee_name: 'Ravi',
+      });
+      // Producer → consumer: the same payload the bell row carries must give
+      // the push sweep a real body (snake_case keys, not camelCase).
+      const push = pushCopyForEvent(
+        'job.approver_added',
+        JSON.parse(notices[0].params?.[4] as string) as Record<string, unknown>,
+      );
+      expect(push.body).toContain('JB-2026-0001');
+      expect(push.body).toContain('Asha');
+      expect(push.body).toContain('Ravi');
+    });
+
+    it('24-4: an admin who makes themself the manager is not notified about the job they took over', async () => {
+      const before = [
+        {
+          user_id: 'admin-1',
+          manager_id: null,
+          role: 'company_admin',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'old-manager',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'member-1',
+          manager_id: 'old-manager',
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+      ];
+      const after = before.map((row) =>
+        row.user_id === 'member-1' ? { ...row, manager_id: 'admin-1' } : row,
+      );
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'old-manager' }),
+        manager: managerRow(),
+        pendingJobs: [
+          {
+            id: 'job-1',
+            job_number: 'JB-2026-0001',
+            created_by: 'member-1',
+            employee_name: 'Ravi',
+            customer_name: 'Asha',
+          },
+        ],
+        approvalTrees: [
+          before.map((row) => ({ ...row })),
+          after.map((row) => ({ ...row })),
+        ],
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', 'admin-1');
+
+      const notices = queries.filter((q) =>
+        q.sql.includes('insert into public.notifications'),
+      );
+      // The old manager hears it moved; the admin who performed the write does
+      // not ring their own bell for the job they just took over.
+      expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
+        ['job.approver_removed', 'old-manager'],
+      ]);
     });
 
     it('a same-manager call writes nothing and audits nothing', async () => {
@@ -2104,6 +2385,7 @@ describe('MembersService', () => {
         liveMemberIds?: string[];
         subtreeIds?: string[];
         pendingApprovals?: Array<Record<string, unknown>>;
+        pendingJobs?: Array<Record<string, unknown>>;
         approvalTrees?: unknown[][];
       } = {},
     ) {
@@ -2119,6 +2401,12 @@ describe('MembersService', () => {
           }
           if (sql.includes('select r.id, r.request_id, r.employee_id')) {
             return { rows: opts.pendingApprovals ?? [] };
+          }
+          if (
+            sql.includes('from public.jobs j') &&
+            sql.includes("status = 'pending_approval'")
+          ) {
+            return { rows: opts.pendingJobs ?? [] };
           }
           if (sql.includes('m.role::text')) {
             return { rows: opts.approvalTrees?.shift() ?? [] };
@@ -2312,6 +2600,68 @@ describe('MembersService', () => {
       );
       expect(notices.map((q) => [q.params?.[2], q.params?.[1]])).toEqual([
         ['leave.approver_added', 'mgr-1'],
+      ]);
+    });
+
+    it("24-4: deactivating a manager hands their report's pending job to the manager above", async () => {
+      const before = [
+        {
+          user_id: 'admin-1',
+          manager_id: null,
+          role: 'company_admin',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'mgr-1',
+          manager_id: null,
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'mgr-2',
+          manager_id: 'mgr-1',
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+        {
+          user_id: 'report-1',
+          manager_id: 'mgr-2',
+          role: 'employee',
+          status: 'active',
+          disabled: false,
+        },
+      ];
+      const after = before.map((row) =>
+        row.user_id === 'mgr-2' ? { ...row, status: 'deactivated' } : row,
+      );
+      const { service, queries } = buildSetActive({
+        memberRow: membershipRow({ role: 'employee' }),
+        subtreeIds: ['report-1'],
+        pendingJobs: [
+          {
+            id: 'job-1',
+            job_number: 'JB-2026-0001',
+            created_by: 'report-1',
+            employee_name: 'Ravi',
+            customer_name: 'Asha',
+          },
+        ],
+        approvalTrees: [
+          before.map((row) => ({ ...row })),
+          after.map((row) => ({ ...row })),
+        ],
+      });
+
+      await service.setActive(companyAdmin, 'mgr-2', false);
+
+      const notices = queries.filter((q) =>
+        q.sql.includes('insert into public.notifications'),
+      );
+      expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
+        ['job.approver_added', 'mgr-1'],
       ]);
     });
 

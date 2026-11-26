@@ -558,6 +558,38 @@ const PUSH_COPY: {
       channel: PUSH_CHANNEL.jobs,
       visibility: 'PUBLIC',
     },
+    // 24-4: the tree changed while a job was pending. Same shape as the
+    // leave notices, in the job family's own event names.
+    [PENDING_JOB_EVENT.APPROVER_ADDED]: {
+      title: 'Job awaiting your approval',
+      body: (p) =>
+        joinMiddleDot(
+          isText(p['job_number']) ? p['job_number'] : null,
+          isText(p['customer_name'])
+            ? truncate(p['customer_name'], BODY_NAME_CAP)
+            : null,
+          isText(p['employee_name'])
+            ? truncate(p['employee_name'], BODY_NAME_CAP)
+            : null,
+        ),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
+    [PENDING_JOB_EVENT.APPROVER_REMOVED]: {
+      title: 'No longer yours to approve',
+      body: (p) =>
+        joinMiddleDot(
+          isText(p['job_number']) ? p['job_number'] : null,
+          isText(p['customer_name'])
+            ? truncate(p['customer_name'], BODY_NAME_CAP)
+            : null,
+          isText(p['employee_name'])
+            ? truncate(p['employee_name'], BODY_NAME_CAP)
+            : null,
+        ),
+      channel: PUSH_CHANNEL.jobs,
+      visibility: 'PUBLIC',
+    },
     [PENDING_JOB_EVENT.APPROVED]: {
       title: 'Job approved',
       body: (p) => pendingJobLine(p),

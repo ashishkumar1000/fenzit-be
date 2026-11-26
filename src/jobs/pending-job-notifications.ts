@@ -5,15 +5,14 @@ import type { JobPriority } from './enums/job-priority.enum';
 
 /**
  * Event types for the pending-job approval notifications (epic
- * employee-created-jobs, stories 4-5). The database RPCs make the change
- * itself (create_job_with_log, decide_pending_job, update_job_with_log);
- * these alert rows are written from TypeScript AFTER the RPC has committed,
- * best-effort and log-and-drop — a missed alert is a lost bell, not a lost
- * change. The in-app bell/notifications table is the durable record; this
+ * employee-created-jobs, stories 4-5). The job change now commits in the
+ * NestJS transaction (create / update RPCs and the 24-4 decision transaction);
+ * these alert rows are written from TypeScript AFTER that commit, best-effort
+ * and log-and-drop — a missed alert is a lost bell, not a lost change. The in-app bell/notifications table is the durable record; this
  * file names the event types for the push copy and tests.
  */
 export const PENDING_JOB_EVENT = {
-  /** To each active owner, once per submission. */
+  /** To the resolved approver set, once per submission (24-4). */
   SUBMITTED: 'job.submitted',
   /** To the creator, once per approval. */
   APPROVED: 'job.approved',
@@ -23,6 +22,10 @@ export const PENDING_JOB_EVENT = {
   CANCELLED: 'job.cancelled',
   /** To the creator, once per owner save that changed a pending job. */
   EDITED: 'job.edited',
+  /** A tree change put a member into a pending job's resolved set (24-4). */
+  APPROVER_ADDED: 'job.approver_added',
+  /** A tree change removed a member from a pending job's resolved set. */
+  APPROVER_REMOVED: 'job.approver_removed',
 } as const;
 
 const logger = new Logger('PendingJobNotifications');
@@ -108,35 +111,26 @@ async function alertSafely(
   }
 }
 
-/** Every active owner, except the employee who submitted the job. */
-export async function alertOwnersOfSubmission(
+/** The resolved approver set, except the employee who submitted the job. */
+export async function alertApproversOfSubmission(
   admin: SupabaseClient,
   job: PendingJobAlertRow,
+  approverIds: string[],
   employeeId: string,
 ): Promise<void> {
+  // Self-notification guard belongs here, not only in the walk: future callers
+  // (manager job creation, on-behalf) pass an actor that may differ from the
+  // creator, and the alert helper is the shared entry point.
+  const recipients = approverIds.filter((id) => id !== employeeId);
+  if (recipients.length === 0) return;
   await alertSafely(PENDING_JOB_EVENT.SUBMITTED, job, async () => {
-    const { data, error } = await admin
-      .from('memberships')
-      .select('user_id')
-      .eq('tenant_id', job.tenant_id)
-      .eq('role', 'company_admin')
-      .eq('status', 'active')
-      .neq('user_id', employeeId)
-      .returns<{ user_id: string }[]>();
-    if (error) {
-      throw error;
-    }
-    const owners = data ?? [];
-    if (owners.length === 0) {
-      return;
-    }
     const customerName = await customerNameOf(admin, job);
     const employeeName = await userNameOf(admin, employeeId);
     await insertAlerts(
       admin,
-      owners.map((o) => ({
+      recipients.map((userId) => ({
         tenant_id: job.tenant_id,
-        user_id: o.user_id,
+        user_id: userId,
         job_id: job.id,
         event_type: PENDING_JOB_EVENT.SUBMITTED,
         payload: {
