@@ -12,6 +12,11 @@ import {
   type DayGridRow,
 } from '../common/day-status/grid-reader';
 import { pickWeeklyOffDays, type WeeklyOffRow } from './me-summary.model';
+import {
+  readAssignmentsOverlapping,
+  readScopedHolidaysBetween,
+} from './holiday-scope.read';
+import { observedHolidaysByDate } from '../common/day-status/holiday-scope';
 import { summariseEmployeeMonth } from '../common/day-status/monthly-summary.model';
 import {
   avatarUrlFor,
@@ -203,6 +208,7 @@ export class MonthlyService {
       const upcomingHolidays = await this.readUpcomingHolidays(
         tx,
         tenantId,
+        user.userId,
         today,
       );
       return { from, to, today, summary, weeklyOffs, upcomingHolidays };
@@ -281,26 +287,38 @@ export class MonthlyService {
     return pickWeeklyOffDays(overrides, defaults, today);
   }
 
-  /** Tenant holidays from today, next 10 (the self card's list). */
+  /**
+   * This employee's holidays from today, next 10 (the self card's list) —
+   * scoped: an 'offices' holiday only lists when an assignment covering the
+   * holiday's date sits in one of its offices (the day-status verdict).
+   */
   private async readUpcomingHolidays(
     tx: PoolClient,
     tenantId: string,
+    employeeId: string,
     today: string,
   ): Promise<HolidayRow[]> {
-    const { rows } = await tx.query<{
-      holiday_date: string;
-      holiday_name: string;
-    }>(
-      `select holiday_date::text, name as holiday_name
-       from public.holidays
-       where tenant_id = $1::uuid and holiday_date >= $2::date
-       order by holiday_date asc
-       limit 10`,
-      [tenantId, today],
+    // Two years out is plenty for a "next 10" list — an unbounded window
+    // makes the read (and the assignment join over its last date) grow with
+    // the tenant's whole calendar forever.
+    const windowEnd = `${Number(today.slice(0, 4)) + 2}${today.slice(4)}`;
+    const holidays = await readScopedHolidaysBetween(
+      tx,
+      tenantId,
+      today,
+      windowEnd,
     );
-    return rows.map((r) => ({
-      holidayDate: r.holiday_date,
-      holidayName: r.holiday_name,
-    }));
+    if (holidays.length === 0) return [];
+    const assignments = await readAssignmentsOverlapping(
+      tx,
+      tenantId,
+      [employeeId],
+      today,
+      holidays[holidays.length - 1].holidayDate,
+    );
+    const observed = observedHolidaysByDate(holidays, assignments);
+    return [...observed.values()]
+      .slice(0, 10)
+      .map((h) => ({ holidayDate: h.holidayDate, holidayName: h.name }));
   }
 }

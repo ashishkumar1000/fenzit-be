@@ -156,8 +156,32 @@ function baseRouter(
       return { rows: [{ setup_completed_at: new Date(), enabled: true }] };
     if (sql.includes('weekly_off_overrides')) return { rows: [] };
     if (sql.includes('weekly_off_defaults')) return { rows: [] };
+    // The SCOPED holiday read (2026-11-26): rows carry scope + officeIds —
+    // staged {holiday_date} rows are normalised to always-applicable 'all'.
     if (sql.includes('from public.holidays'))
-      return { rows: overrides.holidays ?? [] };
+      return {
+        rows: (overrides.holidays ?? []).map((h: { holiday_date: string }) => ({
+          id: 'holiday-1',
+          name: 'Holiday',
+          scope: 'all',
+          description: null,
+          holiday_date: h.holiday_date,
+          officeIds: [],
+        })),
+      };
+    // readAssignmentsOverlapping (the per-office holiday scope) — the
+    // covering assignment must carry a valid range, unlike the day-context
+    // office join below.
+    if (sql.includes('from public.attendance_office_assignments') && sql.includes('valid && $3::daterange'))
+      return {
+        rows: [
+          {
+            employee_id: EMPLOYEE,
+            office_id: 'office-1',
+            valid: '[2026-01-01,)',
+          },
+        ],
+      };
     // The 23-7 payroll-lock gate (the leave write paths' freeze check).
     if (sql.includes('payroll_month_locks')) {
       const asked = params?.[1];
@@ -275,7 +299,9 @@ async function rejectionOf(
     await promise;
     throw new Error('expected the promise to reject');
   } catch (err) {
-    expect(err).toBeInstanceOf(HttpException);
+    if (!(err instanceof HttpException)) {
+      throw new Error(`non-Http rejection: ${String(err)}`);
+    }
     const exception = err as HttpException;
     return {
       status: exception.getStatus(),
@@ -693,14 +719,21 @@ describe('LeaveService — apply (17-1)', () => {
             { holiday_date: '2026-10-03' },
           ],
         });
+        // The scoped read (2026-11-26) carries scope + officeIds; 'all'
+        // closes every office, so the span stays fully off.
         return (sql, params) => {
           if (sql.includes('from public.holidays')) {
             return {
-              rows: [
-                { holiday_date: '2026-10-01' },
-                { holiday_date: '2026-10-02' },
-                { holiday_date: '2026-10-03' },
-              ],
+              rows: ['2026-10-01', '2026-10-02', '2026-10-03'].map(
+                (holiday_date) => ({
+                  id: 'holiday-1',
+                  name: 'Holiday',
+                  scope: 'all',
+                  description: null,
+                  holiday_date,
+                  officeIds: [],
+                }),
+              ),
             };
           }
           return inner(sql, params);

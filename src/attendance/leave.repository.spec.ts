@@ -367,6 +367,18 @@ describe('derivedStatusSql (D5 parity)', () => {
   });
 });
 
+/** A scoped-holiday read row: always-applicable 'all'. */
+function holidayOnRow(holiday_date: string) {
+  return {
+    id: '00000000-0000-4000-8000-0000000000e1',
+    name: 'Diwali',
+    scope: 'all',
+    description: null,
+    holiday_date,
+    officeIds: [],
+  };
+}
+
 describe('readPageSpanFacts (the list page batch)', () => {
   /** Rows returned per query call, in call order (overrides, defaults, holidays). */
   function txWithRows(responses: unknown[][]) {
@@ -378,7 +390,7 @@ describe('readPageSpanFacts (the list page batch)', () => {
     } as unknown as PoolClient & { query: jest.Mock };
   }
 
-  it('fetches the whole page in exactly 3 statements: overrides by any-array, tenant defaults, tenant holidays — union range, fully parameterised', async () => {
+  it('fetches the whole page in exactly 4 statements: overrides by any-array, tenant defaults, scoped tenant holidays, the page assignments — union range, fully parameterised', async () => {
     const tx = fakeTx();
     const emp2 = '33333333-3333-4333-8333-333333333333';
     await readPageSpanFacts(
@@ -392,7 +404,7 @@ describe('readPageSpanFacts (the list page batch)', () => {
       pickWeeklyOffDays,
       isoWeekdayOf,
     );
-    expect(tx.query.mock.calls).toHaveLength(3);
+    expect(tx.query.mock.calls).toHaveLength(4);
 
     const [ovSql, ovParams] = tx.query.mock.calls[0];
     expect(ovSql).toContain('attendance_weekly_off_overrides');
@@ -416,6 +428,14 @@ describe('readPageSpanFacts (the list page batch)', () => {
     expect(holParams[1]).toBe('2026-10-01');
     expect(holParams[2]).toBe('2026-10-04');
 
+    const [asgSql, asgParams] = tx.query.mock.calls[3];
+    expect(asgSql).toContain('from public.attendance_office_assignments');
+    expect(asgSql).toContain('employee_id = any($2::uuid[])');
+    expect(asgSql).toContain('valid && $3::daterange');
+    expect(asgParams[0]).toBe(TENANT);
+    expect(asgParams[1]).toEqual([EMPLOYEE, emp2].sort());
+    expect(asgParams[2]).toBe('[2026-10-01,2026-10-04]');
+
     for (const [sql, params] of tx.query.mock.calls) {
       expect(String(sql)).not.toContain(TENANT);
       expect(String(sql)).not.toContain(EMPLOYEE);
@@ -432,7 +452,8 @@ describe('readPageSpanFacts (the list page batch)', () => {
     const tx = txWithRows([
       [{ employee_id: EMPLOYEE, valid: '[2026-01-01,)', days: [7] }],
       [{ valid: '[2026-01-01,)', days: [6, 7] }],
-      [{ holiday_date: '2026-10-04' }],
+      [holidayOnRow('2026-10-04')],
+      [], // the employee's overlapping assignments — none, so 'all' applies
     ]);
     const facts = await readPageSpanFacts(
       tx,
@@ -468,7 +489,14 @@ describe('readPageSpanFacts (the list page batch)', () => {
     const responses = [
       [{ employee_id: EMPLOYEE, valid: '[2026-01-01,)', days: [7] }],
       [{ valid: '[2026-01-01,)', days: [6, 7] }],
-      [{ holiday_date: '2026-10-04' }],
+      [holidayOnRow('2026-10-04')],
+      [
+        {
+          employee_id: EMPLOYEE,
+          office_id: 'office-1',
+          valid: '[2026-01-01,)',
+        },
+      ],
     ];
     const dates = ['2026-10-02', '2026-10-03', '2026-10-04'];
     const single = await readSpanFacts(
@@ -579,7 +607,7 @@ describe('readPageSpanFacts (the list page batch)', () => {
     );
     expect(facts.size).toBe(1); // only the dated employee
     expect(facts.has(EMPLOYEE)).toBe(false);
-    expect(tx.query.mock.calls).toHaveLength(3); // still one batched page
+    expect(tx.query.mock.calls).toHaveLength(4); // still one batched page
     const [, ovParams] = tx.query.mock.calls[0];
     expect(ovParams[0]).toEqual(['45444444-4444-4444-8444-444444444444']);
   });

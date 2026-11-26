@@ -12,6 +12,11 @@ import {
 import { leaveTypeNotFound } from './leave.model';
 import type { LeaveDayRow, LeaveRequestRow } from './leave.model';
 import { WeeklyOffRow } from './me-summary.model';
+import {
+  readAssignmentsOverlapping,
+  readScopedHolidaysBetween,
+} from './holiday-scope.read';
+import { observedHolidaysByDate } from '../common/day-status/holiday-scope';
 
 /**
  * Every SQL statement for the leave lifecycle (17-1..17-4) — parameterised,
@@ -287,7 +292,7 @@ export async function readSpanFacts(
   ) => number[],
   isoWeekdayOf: (date: string) => number,
 ): Promise<Map<string, SpanDayFacts>> {
-  const [overrides, defaults, holidays] = await Promise.all([
+  const [overrides, defaults, holidays, assignments] = await Promise.all([
     tx.query<WeeklyOffRow>(
       `select valid::text, days from public.attendance_weekly_off_overrides
        where employee_id = $1::uuid and valid && $2::daterange`,
@@ -298,17 +303,28 @@ export async function readSpanFacts(
        where tenant_id = $1::uuid and valid && $2::daterange`,
       [tenantId, `[${dates[0]},${dates[dates.length - 1]}]`],
     ),
-    tx.query<{ holiday_date: string }>(
-      `select holiday_date::text from public.holidays
-       where tenant_id = $1::uuid and holiday_date between $2::date and $3::date`,
-      [tenantId, dates[0], dates[dates.length - 1]],
+    readScopedHolidaysBetween(
+      tx,
+      tenantId,
+      dates[0],
+      dates[dates.length - 1],
+    ),
+    readAssignmentsOverlapping(
+      tx,
+      tenantId,
+      [employeeId],
+      dates[0],
+      dates[dates.length - 1],
     ),
   ]);
+  // Per-office applicability: leave on a date only DEBITS as a holiday when
+  // this employee's covering assignment's office is closed by it.
+  const observed = observedHolidaysByDate(holidays, assignments);
   return computeSpanFacts(
     dates,
     overrides.rows,
     defaults.rows,
-    holidays.rows.map((r) => r.holiday_date),
+    [...observed.keys()],
     pickWeeklyOffDays,
     isoWeekdayOf,
   );
@@ -321,9 +337,10 @@ export interface PageSpan {
 }
 
 /**
- * The whole LIST PAGE's span facts in 3 statements (overrides for every
- * page employee, tenant defaults, tenant holidays — union date range).
- * The list loop once awaited readSpanFacts per row: 3 round trips × rows,
+ * The whole LIST PAGE's span facts in 4 statements (overrides for every
+ * page employee, tenant defaults, scoped tenant holidays, the page's office
+ * assignments — union date range; the 4th feeds the per-office holiday
+ * scope). The list loop once awaited readSpanFacts per row: 3 round trips × rows,
  * strictly sequential (one tx connection cannot pipeline) ≈ 17s for a
  * 20-row page on the pooler — past the client's 15s timeout. Batching
  * bounds the page at 3 round trips regardless of row count; the facts are
@@ -352,7 +369,7 @@ export async function readPageSpanFacts(
   const rangeStart = allDates[0];
   const rangeEnd = allDates[allDates.length - 1];
   const range = `[${rangeStart},${rangeEnd}]`;
-  const [overrides, defaults, holidays] = await Promise.all([
+  const [overrides, defaults, holidays, assignments] = await Promise.all([
     tx.query<WeeklyOffRow & { employee_id: string }>(
       `select employee_id, valid::text, days from public.attendance_weekly_off_overrides
        where employee_id = any($1::uuid[]) and valid && $2::daterange`,
@@ -363,17 +380,20 @@ export async function readPageSpanFacts(
        where tenant_id = $1::uuid and valid && $2::daterange`,
       [tenantId, range],
     ),
-    tx.query<{ holiday_date: string }>(
-      `select holiday_date::text from public.holidays
-       where tenant_id = $1::uuid and holiday_date between $2::date and $3::date`,
-      [tenantId, rangeStart, rangeEnd],
-    ),
+    readScopedHolidaysBetween(tx, tenantId, rangeStart, rangeEnd),
+    readAssignmentsOverlapping(tx, tenantId, employeeIds, rangeStart, rangeEnd),
   ]);
   const overridesByEmployee = new Map<string, WeeklyOffRow[]>();
   for (const { employee_id, ...rest } of overrides.rows) {
     const list = overridesByEmployee.get(employee_id) ?? [];
     list.push(rest);
     overridesByEmployee.set(employee_id, list);
+  }
+  const assignmentsByEmployee = new Map<string, { officeId: string; valid: string }[]>();
+  for (const a of assignments) {
+    const list = assignmentsByEmployee.get(a.employeeId) ?? [];
+    list.push({ officeId: a.officeId, valid: a.valid });
+    assignmentsByEmployee.set(a.employeeId, list);
   }
   // Several requests of one employee merge into one ascending date list.
   const datesByEmployee = new Map<string, string[]>();
@@ -387,17 +407,22 @@ export async function readPageSpanFacts(
       datesByEmployee.set(span.employeeId, [...span.dates]);
     }
   }
-  const holidayDates = holidays.rows.map((r) => r.holiday_date);
   const factsByEmployee = new Map<string, Map<string, SpanDayFacts>>();
   for (const [employeeId, dates] of datesByEmployee) {
     dates.sort();
+    // Per-office applicability, per employee: their own covering
+    // assignments pick which scoped holidays close their span dates.
+    const observed = observedHolidaysByDate(
+      holidays,
+      assignmentsByEmployee.get(employeeId) ?? [],
+    );
     factsByEmployee.set(
       employeeId,
       computeSpanFacts(
         dates,
         overridesByEmployee.get(employeeId) ?? [],
         defaults.rows,
-        holidayDates,
+        [...observed.keys()],
         pickWeeklyOffDays,
         isoWeekdayOf,
       ),

@@ -11,6 +11,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { FASTIFY_ROUTER_OPTIONS } from './common/fastify-adapter-options';
 import { allowBodilessDelete } from './common/allow-bodiless-delete';
+import { acceptXlsxBody } from './common/xlsx-body-parser';
 import { addRequestMetricsHooks, initTelemetry } from './telemetry';
 import fastifyCors from '@fastify/cors';
 import { buildCorsOptions } from './common/cors/cors-options';
@@ -60,6 +61,10 @@ async function bootstrap(): Promise<void> {
 
   // R-15: a body-less DELETE with a JSON content-type must reach the guards.
   allowBodilessDelete(app.getHttpAdapter().getInstance());
+
+  // The bulk-holiday upload posts the filled .xlsx as a raw body — Fastify
+  // has no parser for that MIME and would 415 before the guards.
+  acceptXlsxBody(app.getHttpAdapter().getInstance());
 
   // Route every Logger.log/... call (framework + `new Logger(...)` instances)
   // through the correlation-aware logger — see story 13.1.

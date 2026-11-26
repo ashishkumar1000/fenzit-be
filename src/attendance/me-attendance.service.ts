@@ -26,6 +26,7 @@ import {
   openRecordView,
   pickTodayFacts,
 } from './me-summary-today.model';
+import { holidayAppliesToOffice } from '../common/day-status/holiday-scope';
 
 /**
  * Technician-facing attendance reads (15-7): the AD-17 access state from
@@ -132,7 +133,7 @@ export class MeAttendanceService {
       row.office_id
         ? this.readOfficePin(admin, row.tenant_id, row.office_id)
         : Promise.resolve(null),
-      this.readHolidayName(admin, row.tenant_id, anchor),
+      this.readHolidayName(admin, row.tenant_id, anchor, row.office_id ?? null),
       this.readTodayRecord(admin, row.tenant_id, row.user_id, anchor),
       this.readTodayLeave(admin, row.user_id, anchor),
       this.readTimezone(admin, row.tenant_id),
@@ -246,23 +247,37 @@ export class MeAttendanceService {
     return { state: data.state, part };
   }
 
-  /** Today's holiday name (null when today is not a holiday). */
+  /**
+   * The anchor date's holiday name (null on a plain date), scoped to the
+   * anchor office: an 'offices' holiday only names itself when the view's
+   * anchored office is one it closes (the day-status rule, one verdict).
+   */
   private async readHolidayName(
     admin: ReturnType<SupabaseClientFactory['createAdmin']>,
     tenantId: string,
     anchor: string,
+    officeId: string | null,
   ): Promise<string | null> {
     const { data, error } = await admin
       .from('holidays')
-      .select('name')
+      .select('name, scope, holiday_offices(office_id)')
       .eq('tenant_id', tenantId)
       .eq('holiday_date', anchor)
-      .maybeSingle<{ name: string }>();
+      .maybeSingle<{
+        name: string;
+        scope: string;
+        holiday_offices: { office_id: string }[] | null;
+      }>();
     if (error) {
       this.logger.error('Failed to read holiday:', { error });
       throw internalError('Failed to read attendance summary');
     }
-    return data?.name ?? null;
+    if (!data) return null;
+    const scoped = {
+      scope: data.scope,
+      officeIds: (data.holiday_offices ?? []).map((h) => h.office_id),
+    };
+    return holidayAppliesToOffice(scoped, officeId) ? data.name : null;
   }
 
   /** Today's attendance record (null when none yet). */

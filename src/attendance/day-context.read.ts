@@ -8,6 +8,8 @@ import {
   pickWeeklyOffDays,
 } from './me-summary.model';
 import { findActiveLeaveForDate } from './leave.repository';
+import { readScopedHolidayOn } from './holiday-scope.read';
+import { holidayAppliesToOffice } from '../common/day-status/holiday-scope';
 import {
   assembleDayContext,
   DayContext,
@@ -86,11 +88,7 @@ export async function buildDayContext(
          where tenant_id = $1 and valid @> $2::date`,
         [tenantId, workDate],
       ),
-      tx.query<{ id: string; name: string }>(
-        `select id, name from public.holidays
-         where tenant_id = $1 and holiday_date = $2::date`,
-        [tenantId, workDate],
-      ),
+      readScopedHolidayOn(tx, tenantId, workDate),
     ]);
   // The rule depends on the covering assignment's office, so it reads after.
   // NULL (not '') when no assignment covers — an untyped '' fails uuid
@@ -102,6 +100,16 @@ export async function buildDayContext(
      where office_id = $1::uuid and valid @> $2::date limit 1`,
     [assignment.rows[0]?.office_id ?? null, workDate],
   );
+
+  // Per-office applicability: the holiday closes THIS employee's day only
+  // when its scope covers the covering assignment's office ('all' covers
+  // office-less employees too).
+  const holidayRow = holidayAppliesToOffice(
+    holiday,
+    assignment.rows[0]?.office_id ?? null,
+  )
+    ? holiday
+    : null;
 
   // The AD-22 leave seam (spec-17 D3): today's active leave row — at most
   // one exists (the partial unique index admits no second pending/approved).
@@ -117,8 +125,8 @@ export async function buildDayContext(
     enrolmentStart: enrolmentRow ? parseRangeStart(enrolmentRow.valid) : null,
     rule: pickRuleForDate(rules.rows, workDate),
     weeklyOffDays: pickWeeklyOffDays(overrides.rows, defaults.rows, workDate),
-    holidayId: holiday.rows[0]?.id ?? null,
-    holidayName: holiday.rows[0]?.name ?? null,
+    holidayId: holidayRow?.id ?? null,
+    holidayName: holidayRow?.name ?? null,
   };
   return assembleDayContext(
     tenantId,

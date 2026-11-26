@@ -1,12 +1,11 @@
 import 'reflect-metadata';
-import { BadRequestException, HttpException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { HolidaysController } from './holidays.controller';
 import { HolidaysService } from './holidays.service';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import { CAN_KEY } from '../common/decorators/can.decorator';
 import { Permission } from '../common/permissions/permissions';
-import { ErrorCode } from '../common/enums/error-code.enum';
 
 // Nest route metadata keys (mirror of @nestjs/common/constants values).
 const PATH_METADATA = 'path';
@@ -17,7 +16,7 @@ const HOLIDAY_ID = '00000000-0000-4000-8000-0000000000e6';
 
 const holiday = { id: HOLIDAY_ID, date: '2026-10-02', name: 'Gandhi Jayanti' };
 
-describe('HolidaysController (story 15-5)', () => {
+describe('HolidaysController (story 15-5; console redesign 2026-11-26)', () => {
   const user: RequestUser = {
     userId: 'owner-uuid',
     tenantId: 'tenant-uuid',
@@ -37,6 +36,21 @@ describe('HolidaysController (story 15-5)', () => {
 
       await expect(controller.listHolidays(user)).resolves.toEqual([holiday]);
       expect(listHolidays).toHaveBeenCalledWith(user);
+    });
+
+    it('getOverview passes the user and the parsed year query', async () => {
+      const getOverview = jest
+        .fn()
+        .mockResolvedValue({ year: '2026', holidays: [], offices: [] });
+      const controller = controllerWith({ getOverview });
+      const query = { year: '2026' };
+
+      await expect(controller.getOverview(user, query)).resolves.toEqual({
+        year: '2026',
+        holidays: [],
+        offices: [],
+      });
+      expect(getOverview).toHaveBeenCalledWith(user, query);
     });
 
     it('getImpact passes the user and the parsed query', async () => {
@@ -64,16 +78,16 @@ describe('HolidaysController (story 15-5)', () => {
       expect(createHoliday).toHaveBeenCalledWith(user, dto);
     });
 
-    it('updateHoliday passes the user, the param and the parsed dto', async () => {
+    it('updateHoliday passes the user, the param and the parsed dto — the date key flows through (editable since 2026-11-26)', async () => {
       const updateHoliday = jest
         .fn()
-        .mockResolvedValue({ ...holiday, name: 'Diwali' });
+        .mockResolvedValue({ ...holiday, date: '2030-01-01' });
       const controller = controllerWith({ updateHoliday });
-      const dto = { name: 'Diwali' };
+      const dto = { name: 'Diwali', date: '2030-01-01' };
 
       await expect(
-        controller.updateHoliday(user, HOLIDAY_ID, { body: {} }, dto),
-      ).resolves.toEqual({ ...holiday, name: 'Diwali' });
+        controller.updateHoliday(user, HOLIDAY_ID, dto),
+      ).resolves.toEqual({ ...holiday, date: '2030-01-01' });
       expect(updateHoliday).toHaveBeenCalledWith(user, HOLIDAY_ID, dto);
     });
 
@@ -88,60 +102,6 @@ describe('HolidaysController (story 15-5)', () => {
     });
   });
 
-  describe('date-immutability guard (raw-body check)', () => {
-    it('a `date` key in the patch body is 422 VALIDATION_ERROR before the service runs', () => {
-      const updateHoliday = jest.fn();
-      const controller = controllerWith({ updateHoliday });
-      const req = { body: { date: '2030-01-01', name: 'Diwali' } };
-
-      // The raw-body guard throws synchronously (before any promise exists).
-      let err: unknown;
-      try {
-        controller.updateHoliday(user, HOLIDAY_ID, req, {
-          name: 'Diwali',
-        });
-      } catch (e) {
-        err = e;
-      }
-
-      expect(err).toBeInstanceOf(HttpException);
-      expect((err as HttpException).getStatus()).toBe(422);
-      expect((err as HttpException).getResponse()).toMatchObject({
-        error_code: ErrorCode.VALIDATION_ERROR,
-      });
-      // The guard short-circuits — the update RPC never fires.
-      expect(updateHoliday).not.toHaveBeenCalled();
-    });
-
-    it('a `date` key wins over a malformed id (checked first)', () => {
-      const updateHoliday = jest.fn();
-      const controller = controllerWith({ updateHoliday });
-
-      expect(() =>
-        controller.updateHoliday(
-          user,
-          'not-a-uuid',
-          { body: { date: '2030-01-01' } },
-          { name: 'X' },
-        ),
-      ).toThrow(HttpException);
-      expect(updateHoliday).not.toHaveBeenCalled();
-    });
-
-    it('a body without a date key delegates normally', async () => {
-      const updateHoliday = jest.fn().mockResolvedValue(holiday);
-      const controller = controllerWith({ updateHoliday });
-
-      await controller.updateHoliday(
-        user,
-        HOLIDAY_ID,
-        { body: { name: 'Diwali' } },
-        { name: 'Diwali' },
-      );
-      expect(updateHoliday).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('malformed holiday id guard', () => {
     it('updateHoliday rejects a non-uuid :id with 400 before the service', () => {
       const updateHoliday = jest.fn();
@@ -149,14 +109,7 @@ describe('HolidaysController (story 15-5)', () => {
 
       // The id guard throws synchronously (before any promise exists).
       expect(() =>
-        controller.updateHoliday(
-          user,
-          'not-a-uuid',
-          { body: {} },
-          {
-            name: 'X',
-          },
-        ),
+        controller.updateHoliday(user, 'not-a-uuid', { name: 'X' }),
       ).toThrow(BadRequestException);
       expect(updateHoliday).not.toHaveBeenCalled();
     });
@@ -182,10 +135,13 @@ describe('HolidaysController (story 15-5)', () => {
     it.each([
       // 0 = GET, 1 = POST, 3 = DELETE, 4 = PATCH
       ['listHolidays', '/', 0],
+      ['getOverview', 'overview', 0],
       ['getImpact', 'impact', 0],
       ['createHoliday', '/', 1],
       ['updateHoliday', ':id', 4],
       ['removeHoliday', ':id', 3],
+      ['downloadBulkTemplate', 'bulk-template', 0],
+      ['bulkCreateHolidays', 'bulk', 1],
     ])(
       '%s is wired as %s',
       (handler: keyof HolidaysController, path: string, method: number) => {
@@ -197,10 +153,13 @@ describe('HolidaysController (story 15-5)', () => {
 
     it.each([
       ['listHolidays', 'attendance.read'],
+      ['getOverview', 'attendance.read'],
       ['getImpact', 'attendance.read'],
       ['createHoliday', 'attendance.manage'],
       ['updateHoliday', 'attendance.manage'],
       ['removeHoliday', 'attendance.manage'],
+      ['downloadBulkTemplate', 'attendance.manage'],
+      ['bulkCreateHolidays', 'attendance.manage'],
     ])(
       '%s needs an admin-side permission — holiday management never opens to an employee',
       (handler: keyof HolidaysController, permission: Permission) => {
@@ -215,10 +174,13 @@ describe('HolidaysController (story 15-5)', () => {
 
     it.each([
       ['listHolidays', 200],
+      ['getOverview', 200],
       ['getImpact', 200],
       ['createHoliday', 201],
       ['updateHoliday', 200],
       ['removeHoliday', 204],
+      ['downloadBulkTemplate', 200],
+      ['bulkCreateHolidays', 200],
     ])(
       '%s carries a fixed @HttpCode(%i)',
       (handler: keyof HolidaysController, code: number) => {

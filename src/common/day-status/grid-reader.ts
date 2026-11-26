@@ -9,6 +9,8 @@ import {
 } from './office-rules';
 import type { DayContext, DayFacts, OfficeJoinRow } from './day-context';
 import { assembleDayContext } from './day-context';
+import { observedHolidaysByDate } from './holiday-scope';
+import { readScopedHolidaysBetween } from '../../attendance/holiday-scope.read';
 
 /**
  * The day-status grid reader (18-1; extracted 21-1 to common/ so the
@@ -222,21 +224,12 @@ export async function readDayStatusGrid(
         [tenantId, `[${from},${to}]`],
       )
       .then((r) => r.rows),
-    tx
-      .query<{ id: string; name: string; holiday_date: string }>(
-        `select id, name, holiday_date::text from public.holidays
-           where tenant_id = $1::uuid and holiday_date between $2::date and $3::date`,
-        [tenantId, from, to],
-      )
-      .then((r) => r.rows),
+    readScopedHolidaysBetween(tx, tenantId, from, to),
   ]);
   if (!timezone) {
     logger.error('Tenant timezone missing', { tenantId });
     throw internalError('Failed to resolve day-status facts');
   }
-  const holidayMap = new Map(
-    holidays.map((h) => [h.holiday_date, { id: h.id, name: h.name }]),
-  );
 
   // The rules hang off the covering assignment's office — dedupe the IDs.
   const officeIds = [...new Set(assignments.map((row) => row.office_id))];
@@ -341,6 +334,15 @@ export async function readDayStatusGrid(
   const grid: DayGridRow[] = [];
   const rulelessRows: string[] = [];
   for (const employeeId of employeeIds) {
+    // Per-office applicability (2026-11-26): this employee's observed
+    // holidays — one verdict per holiday-date via the assignment covering
+    // that date, the same rule the single-date day context lands.
+    const holidayMap = observedHolidaysByDate(
+      holidays,
+      assignments
+        .filter((a) => a.employee_id === employeeId)
+        .map((a) => ({ officeId: a.office_id, valid: a.valid })),
+    );
     for (const date of dates) {
       const assignment = assignments.find(
         (a) => a.employee_id === employeeId && rangeCoversRow(a.valid, date),

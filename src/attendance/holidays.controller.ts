@@ -5,13 +5,13 @@ import {
   Delete,
   Get,
   HttpCode,
-  HttpException,
   HttpStatus,
   Param,
   Patch,
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -19,10 +19,16 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { HolidaysService } from './holidays.service';
+import {
+  HOLIDAY_TEMPLATE_FILENAME,
+  HOLIDAY_TEMPLATE_MIME,
+} from './holidays-bulk';
 import {
   CreateHolidayDto,
   HolidayDateQueryDto,
+  HolidayOverviewQueryDto,
   UpdateHolidayDto,
 } from './dto/holiday.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -31,16 +37,12 @@ import { UUID_PATTERN } from '../common/utils/uuid-pattern.util';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { Can } from '../common/decorators/can.decorator';
 
-/** Raw request — the patch-route date-immutability check reads the body. */
-interface RawRequest {
-  body?: Record<string, unknown>;
-}
-
 /**
- * FR-20 holiday routes (Epic 15, Story 15-5). Company-admin only; day statuses that
- * consume holidays recompute on read (AD-10) in Epic 16. No idempotency
- * interceptor (AD-6 excludes attendance): the (tenant, date) unique makes a
- * retried add a 409, and the dedupe keys bound the notification fan-out.
+ * FR-20 holiday routes (Epic 15, Story 15-5; console redesign 2026-11-26).
+ * Company-admin only; day statuses that consume holidays recompute on read
+ * (AD-10). No idempotency interceptor (AD-6 excludes attendance): the
+ * (tenant, date) unique makes a retried add a 409, and the notification
+ * dedupe keys bound the fan-out.
  */
 @ApiTags('Attendance')
 @ApiBearerAuth()
@@ -59,35 +61,16 @@ export class HolidaysController {
     return id;
   }
 
-  /**
-   * The global pipe strips unknown keys silently (forbidNonWhitelisted:
-   * false), so UpdateHolidayDto — name-only — cannot itself reject a `date`
-   * key. This check reads the raw body before the DTO survives: a date
-   * change is remove + add (scope decision 2026-09-27), never a patch.
-   */
-  private rejectDateKey(req: RawRequest): void {
-    if (req.body !== undefined && 'date' in req.body) {
-      // 422, matching the global ValidationPipe's validation-failure status
-      // (VALIDATION_PIPE_OPTIONS) — this is a validation failure by another
-      // door: the update DTO simply does not accept `date`.
-      throw new HttpException(
-        {
-          error_code: ErrorCode.VALIDATION_ERROR,
-          message:
-            'A holiday date cannot be changed — remove the holiday and add it on the new date',
-        },
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
-  }
-
   @Get()
   @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List holidays, ascending by date (FE groups upcoming/past)',
   })
-  @ApiResponse({ status: 200, description: 'Holidays (possibly empty list)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Holidays (possibly empty list), each with scope + officeIds',
+  })
   @ApiResponse({
     status: 400,
     description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
@@ -102,16 +85,44 @@ export class HolidaysController {
     return this.holidaysService.listHolidays(user);
   }
 
+  @Get('overview')
+  @Can('attendance.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Year view for the console — holidays with offices + current staff per office',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ year, holidays, offices: [{ officeId, name, staffCount }], unassignedCount }',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'VALIDATION_ERROR — owner without a company (no tenantId), or a year before 0001',
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({ status: 404, description: 'ATTENDANCE_TENANT_NOT_FOUND' })
+  getOverview(
+    @CurrentUser() user: RequestUser,
+    @Query() query: HolidayOverviewQueryDto,
+  ) {
+    return this.holidaysService.getOverview(user, query);
+  }
+
   @Get('impact')
   @Can('attendance.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Preview holiday impact for a date — tracked employees (empty pre-15-7; leave impact arrives with Epic 17)',
+      'Holiday + impact facts for a date — approved-leave overlap (the shipped affectedEmployees list) + per-office staff counts',
   })
   @ApiResponse({
     status: 200,
-    description: '{ date, affectedEmployees: [{ employeeId, employeeName }] }',
+    description:
+      '{ date, affectedEmployees, holiday (null on a plain date), approvedLeaveCount, trackedCount, perOffice, unassignedCount }',
   })
   @ApiResponse({
     status: 400,
@@ -132,9 +143,9 @@ export class HolidaysController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
-      'Add a holiday (past or future); future dates notify tracked employees',
+      'Add a holiday (all offices or named offices); future dates notify the covered offices',
   })
-  @ApiResponse({ status: 201, description: '{ id, date, name }' })
+  @ApiResponse({ status: 201, description: '{ id, date, name, description, scope, officeIds }' })
   @ApiResponse({
     status: 400,
     description: 'VALIDATION_ERROR — owner without a company (no tenantId)',
@@ -143,7 +154,10 @@ export class HolidaysController {
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
   @ApiResponse({ status: 404, description: 'ATTENDANCE_TENANT_NOT_FOUND' })
   @ApiResponse({ status: 409, description: 'ATTENDANCE_HOLIDAY_TAKEN' })
-  @ApiResponse({ status: 422, description: 'Malformed date (ValidationPipe)' })
+  @ApiResponse({
+    status: 422,
+    description: 'Malformed date / scope-office mismatch (ValidationPipe)',
+  })
   createHoliday(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateHolidayDto,
@@ -151,15 +165,83 @@ export class HolidaysController {
     return this.holidaysService.createHoliday(user, dto);
   }
 
-  @Patch(':id')
+  @Get('bulk-template')
   @Can('attendance.manage')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Rename a holiday (the date is immutable)' })
-  @ApiResponse({ status: 200, description: '{ id, date, name }' })
+  @ApiOperation({
+    summary:
+      "Download the bulk-upload .xlsx sheet — a Holidays sheet plus a Reference sheet listing the tenant's office names",
+  })
+  @ApiResponse({ status: 200, description: 'The .xlsx file (binary)' })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({ status: 404, description: 'ATTENDANCE_TENANT_NOT_FOUND' })
+  async downloadBulkTemplate(
+    @CurrentUser() user: RequestUser,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const file = await this.holidaysService.buildBulkTemplate(user);
+    reply
+      .type(HOLIDAY_TEMPLATE_MIME)
+      .header(
+        'content-disposition',
+        `attachment; filename="${HOLIDAY_TEMPLATE_FILENAME}"`,
+      )
+      .send(file);
+  }
+
+  @Post('bulk')
+  @Can('attendance.manage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Upload the filled .xlsx sheet — every row is checked first, ONE bad row creates nothing (422 names the rows); a clean sheet creates new dates and updates known ones in place, one transaction. Bulk stays silent (no notifications).',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ created, updated, skipped, holidays, updates } — new rows created, known dates updated in place, unchanged rows skipped',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_ERROR — no/empty file body',
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
+  @ApiResponse({
+    status: 413,
+    description: 'Sheet over the body size limit',
+  })
   @ApiResponse({
     status: 422,
     description:
-      'VALIDATION_ERROR — a `date` key in the body (date is immutable; remove + add)',
+      'ATTENDANCE_HOLIDAY_BULK_INVALID — { errors: [{ row, date, name, message }] }, nothing created',
+  })
+  bulkCreateHolidays(
+    @CurrentUser() user: RequestUser,
+    @Req() request: FastifyRequest,
+  ) {
+    // The raw body rides the scoped xlsx content-type parser (main.ts).
+    const file = request.body;
+    if (!(file instanceof Buffer) || file.length === 0) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Upload the filled .xlsx sheet to add holidays.',
+      });
+    }
+    return this.holidaysService.bulkCreateHolidays(user, file);
+  }
+
+  @Patch(':id')
+  @Can('attendance.manage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Edit any holiday field incl. the date (taken target date → 409); omitted fields keep their values',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '{ id, date, name, description, scope, officeIds }',
   })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
   @ApiResponse({ status: 403, description: 'Forbidden — Technician JWT' })
@@ -168,13 +250,16 @@ export class HolidaysController {
     description:
       'ATTENDANCE_HOLIDAY_NOT_FOUND (unknown holiday) or ATTENDANCE_TENANT_NOT_FOUND (stale/unknown tenant)',
   })
+  @ApiResponse({ status: 409, description: 'ATTENDANCE_HOLIDAY_TAKEN' })
+  @ApiResponse({
+    status: 422,
+    description: 'Malformed date / scope-office mismatch (ValidationPipe)',
+  })
   updateHoliday(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
-    @Req() req: RawRequest,
     @Body() dto: UpdateHolidayDto,
   ) {
-    this.rejectDateKey(req);
     return this.holidaysService.updateHoliday(
       user,
       this.requireHolidayId(id),
@@ -186,7 +271,8 @@ export class HolidaysController {
   @Can('attendance.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
-    summary: 'Remove a holiday; removed future dates notify tracked employees',
+    summary:
+      'Remove a holiday; removed future dates notify the offices it covered',
   })
   @ApiResponse({ status: 204, description: 'Removed' })
   @ApiResponse({
