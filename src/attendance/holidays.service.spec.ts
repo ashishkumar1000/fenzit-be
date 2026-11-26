@@ -725,6 +725,19 @@ describe('HolidaysService (pg rewrite, console redesign 2026-11-26)', () => {
         ErrorCode.VALIDATION_ERROR,
       );
     });
+
+    it('an unknown tenant maps the PT404 hint to 404 ATTENDANCE_TENANT_NOT_FOUND — the dropped RPC contract lives on', async () => {
+      const { service, rpc } = build();
+      rpc.mockResolvedValueOnce({
+        data: null,
+        error: { code: 'PT404', hint: 'ATTENDANCE_TENANT_NOT_FOUND' },
+      } as unknown as { data: string; error: null });
+      await expectErrorCode(
+        service.getImpact(ownerUser, { date: '2026-10-02' }),
+        404,
+        ErrorCode.ATTENDANCE_TENANT_NOT_FOUND,
+      );
+    });
   });
 
   it('is injectable with the supabase factory, storage and the pg pool', () => {

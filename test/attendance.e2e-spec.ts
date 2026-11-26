@@ -163,8 +163,10 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
   // the enrolment writes' SQL shapes answer like the real DB would (locks,
   // today, member/office lookups, empty range reads, view row). Per-test
   // tweaks go through txBehaviour.
+  type TxAnswer = { rows: unknown[]; rowCount?: number };
   let txBehaviour:
-    ((sql: string, params?: unknown[]) => { rows: unknown[] }) | null = null;
+    ((sql: string, params?: unknown[]) => TxAnswer | Promise<TxAnswer>) | null =
+    null;
 
   function pgTxOverride() {
     return {
@@ -984,20 +986,114 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
     });
   });
 
-  describe('holiday routes (story 15-5)', () => {
+  describe('holiday routes (story 15-5, no-RPC pg writes)', () => {
     const HOLIDAY_ID = 'f2e0a5c7-1b9d-4c8e-a0f3-0000000000e6';
-    const holidayRow = {
+
+    /** readScopedById's aliased row (camelCase, join-read officeIds). */
+    const byIdRow = {
       id: HOLIDAY_ID,
-      tenant_id: TENANT_ID,
-      holiday_date: '2026-10-02',
       name: 'Gandhi Jayanti',
-      created_at: '2026-09-26T00:00:00Z',
-      updated_at: '2026-09-26T00:00:00Z',
+      description: null,
+      scope: 'all',
+      holidayDate: '2026-10-02',
+      officeIds: [],
     };
+
+    /** Write RETURNING scalars (officeIds is overridden from JS). */
+    const returnedRow = (over: Record<string, unknown> = {}) => ({
+      id: HOLIDAY_ID,
+      name: 'Gandhi Jayanti',
+      description: null,
+      scope: 'all',
+      holidayDate: '2026-10-02',
+      ...over,
+    });
+
+    /**
+     * The fake tx answering like the real DB for the holiday lifecycle —
+     * the RPC-era queueRpc('attendance_add_holiday') mocks are gone with the
+     * dropped RPCs (20261126000002/3); the only live rpc left on these
+     * routes is attendance_today via resolveTenantToday.
+     */
+    function holidayTx(
+      opts: {
+        byId?: Array<Record<string, unknown>>;
+        holidayRows?: Array<Record<string, unknown>>;
+        insertRows?: Array<Record<string, unknown>>;
+        insertError?: { code: string };
+        updateRows?: Array<Record<string, unknown>>;
+        deleteRowCount?: number;
+        fanoutAllowed?: boolean;
+        approvedLeave?: Array<Record<string, unknown>>;
+        tracked?: number;
+        unassigned?: number;
+        officeCounts?: Array<Record<string, unknown>>;
+      } = {},
+    ) {
+      txBehaviour = (sql: string) => {
+        // Every answer is a Promise: the service .catch()es the insert and
+        // update results (SQLSTATE → 409/500 mapping) and awaits the rest.
+        if (sql.includes('insert into public.holidays')) {
+          if (opts.insertError) {
+            return Promise.reject(
+              Object.assign(new Error('dup'), { code: opts.insertError.code }),
+            ) as unknown as Promise<TxAnswer>;
+          }
+          return Promise.resolve({ rows: opts.insertRows ?? [] });
+        }
+        if (sql.includes('update public.holidays')) {
+          return Promise.resolve({ rows: opts.updateRows ?? [] });
+        }
+        if (sql.includes('delete from public.holidays')) {
+          return Promise.resolve({
+            rows: [],
+            rowCount: opts.deleteRowCount ?? 0,
+          });
+        }
+        if (sql.includes('attendance_settings')) {
+          return Promise.resolve({
+            rows: [{ allowed: opts.fanoutAllowed ?? false }],
+          });
+        }
+        if (sql.includes('leave_request_days')) {
+          return Promise.resolve({ rows: opts.approvedLeave ?? [] });
+        }
+        if (sql.includes('as tracked')) {
+          return Promise.resolve({ rows: [{ tracked: opts.tracked ?? 0 }] });
+        }
+        if (sql.includes('as unassigned')) {
+          return Promise.resolve({
+            rows: [{ unassigned: opts.unassigned ?? 0 }],
+          });
+        }
+        if (sql.includes('from public.attendance_offices o')) {
+          return Promise.resolve({ rows: opts.officeCounts ?? [] });
+        }
+        if (sql.includes('where h.id = $1::uuid and h.tenant_id = $2::uuid')) {
+          return Promise.resolve({ rows: opts.byId ?? [byIdRow] });
+        }
+        if (sql.includes('from public.holidays h')) {
+          return Promise.resolve({ rows: opts.holidayRows ?? [] });
+        }
+        return Promise.resolve({ rows: [] }); // locks, BEGIN/COMMIT, join-row rewrites
+      };
+    }
+
+    beforeEach(() => {
+      // The subscription expiry guard reads tenants.validity_until before
+      // every owner write — guards run before pipes, so even a 422'd payload
+      // and a malformed id cross it first. The empty queue falls through to
+      // { data: null } ("no row, nothing to enforce"), which the guard passes.
+      tableQueues.set('tenants', []);
+    });
+
+    afterEach(() => {
+      txBehaviour = null;
+    });
 
     it('GET /attendance/holidays is mounted and returns [] when none exist', async () => {
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
-      tableQueues.set('holidays', []);
+      holidayTx();
 
       const res = await app.inject({
         method: 'GET',
@@ -1009,8 +1105,12 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       expect(JSON.parse(res.body)).toEqual([]);
     });
 
-    it('POST /attendance/holidays adds through the RPC and returns 201 { id, date, name }', async () => {
-      queueRpc('attendance_add_holiday', { data: HOLIDAY_ID, error: null });
+    it('POST /attendance/holidays adds through one pg transaction and returns the full row', async () => {
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({
+        insertRows: [returnedRow()],
+        fanoutAllowed: false,
+      });
 
       const res = await app.inject({
         method: 'POST',
@@ -1024,17 +1124,17 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         id: HOLIDAY_ID,
         date: '2026-10-02',
         name: 'Gandhi Jayanti',
-      });
-      const call = rpcCalls.find((c) => c.name === 'attendance_add_holiday');
-      expect(call?.args).toEqual({
-        p_tenant_id: TENANT_ID,
-        p_holiday_date: '2026-10-02',
-        p_name: 'Gandhi Jayanti',
+        description: null,
+        scope: 'all',
+        officeIds: [],
       });
     });
 
     it('POST /attendance/holidays allows a past date (statuses recompute on read)', async () => {
-      queueRpc('attendance_add_holiday', { data: HOLIDAY_ID, error: null });
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({
+        insertRows: [returnedRow({ holidayDate: '2026-01-26' })],
+      });
 
       const res = await app.inject({
         method: 'POST',
@@ -1046,15 +1146,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       expect(res.statusCode).toBe(201);
     });
 
-    it('POST /attendance/holidays maps the duplicate-date PT409 to 409 ATTENDANCE_HOLIDAY_TAKEN', async () => {
-      queueRpc('attendance_add_holiday', {
-        data: null,
-        error: {
-          code: 'PT409',
-          hint: 'ATTENDANCE_HOLIDAY_TAKEN',
-          message: 'taken',
-        },
-      });
+    it('POST /attendance/holidays maps the duplicate-date 23505 to 409 ATTENDANCE_HOLIDAY_TAKEN', async () => {
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({ insertError: { code: '23505' } });
 
       const res = await app.inject({
         method: 'POST',
@@ -1088,11 +1182,12 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       },
     );
 
-    it('PATCH /attendance/holidays/:id renames through the RPC and returns the re-read row', async () => {
-      queueRpc('attendance_update_holiday', { data: null, error: null });
-      tableQueues.set('holidays', [
-        { data: { ...holidayRow, name: 'Diwali' }, error: null },
-      ]);
+    it('PATCH /attendance/holidays/:id renames through the guarded UPDATE and returns the row', async () => {
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({
+        byId: [byIdRow],
+        updateRows: [returnedRow({ name: 'Diwali' })],
+      });
 
       const res = await app.inject({
         method: 'PATCH',
@@ -1106,53 +1201,20 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         id: HOLIDAY_ID,
         date: '2026-10-02',
         name: 'Diwali',
-      });
-      const call = rpcCalls.find((c) => c.name === 'attendance_update_holiday');
-      expect(call?.args).toMatchObject({
-        p_holiday_id: HOLIDAY_ID,
-        p_name: 'Diwali',
+        description: null,
+        scope: 'all',
+        officeIds: [],
       });
     });
 
-    it('PATCH /attendance/holidays/:id with a `date` key (and nothing else) is 422 from the ValidationPipe', async () => {
-      // The global pipe strips the unknown `date` key first (whitelist,
-      // forbidNonWhitelisted: false); with no name left to validate it fails
-      // on the name rule — 422 VALIDATION_ERROR before the controller runs.
-      // This exercises the PIPE path; the raw-body guard has its own test
-      // below (a `date` key alongside a valid `name` is the only payload
-      // that reaches it through the pipe).
-      const patchRes = await app.inject({
-        method: 'PATCH',
-        url: `/api/v1/attendance/holidays/${HOLIDAY_ID}`,
-        headers: { authorization: `Bearer ${ownerJwt()}` },
-        payload: { date: '2030-01-01' },
-      });
-
-      expect(patchRes.statusCode).toBe(422);
-      expect(JSON.parse(patchRes.body).error_code).toBe('VALIDATION_ERROR');
-      expect(rpcCalls).toHaveLength(0);
-
-      // The rejected patch mutated nothing — the holiday keeps its date.
+    it('PATCH /attendance/holidays/:id edits the date (the console redesign made every field editable)', async () => {
       queueRpc('attendance_today', { data: '2026-09-26', error: null });
-      tableQueues.set('holidays', [{ data: [holidayRow], error: null }]);
-      const getRes = await app.inject({
-        method: 'GET',
-        url: '/api/v1/attendance/holidays',
-        headers: { authorization: `Bearer ${ownerJwt()}` },
+      holidayTx({
+        byId: [byIdRow],
+        updateRows: [returnedRow({ holidayDate: '2030-01-01' })],
+        fanoutAllowed: false,
       });
-      expect(getRes.statusCode).toBe(200);
-      expect(JSON.parse(getRes.body)[0]).toEqual({
-        id: HOLIDAY_ID,
-        date: '2026-10-02',
-        name: 'Gandhi Jayanti',
-      });
-    });
 
-    it('PATCH /attendance/holidays/:id with both `date` and `name` is 422 from the raw-body date guard', async () => {
-      // The only payload shape that reaches rejectDateKey through the pipe:
-      // `name` satisfies the DTO, so validation passes — then the raw-body
-      // check rejects the `date` key with its own message (a date change is
-      // remove + add; the date is immutable).
       const res = await app.inject({
         method: 'PATCH',
         url: `/api/v1/attendance/holidays/${HOLIDAY_ID}`,
@@ -1160,13 +1222,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
         payload: { date: '2030-01-01', name: 'Diwali' },
       });
 
-      expect(res.statusCode).toBe(422);
-      const body = JSON.parse(res.body);
-      expect(body.error_code).toBe('VALIDATION_ERROR');
-      expect(body.message).toBe(
-        'A holiday date cannot be changed — remove the holiday and add it on the new date',
-      );
-      expect(rpcCalls).toHaveLength(0);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).date).toBe('2030-01-01');
     });
 
     it('PATCH /attendance/holidays/:id rejects a malformed id with 400 and an unknown id with 404', async () => {
@@ -1179,14 +1236,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       expect(malformed.statusCode).toBe(400);
       expect(JSON.parse(malformed.body).error_code).toBe('VALIDATION_ERROR');
 
-      queueRpc('attendance_update_holiday', {
-        data: null,
-        error: {
-          code: 'PT404',
-          hint: 'ATTENDANCE_HOLIDAY_NOT_FOUND',
-          message: 'missing',
-        },
-      });
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({ byId: [] }); // the scoped re-read finds nothing → 404
       const unknown = await app.inject({
         method: 'PATCH',
         url: `/api/v1/attendance/holidays/${HOLIDAY_ID}`,
@@ -1199,8 +1250,13 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       );
     });
 
-    it('DELETE /attendance/holidays/:id removes through the RPC (204)', async () => {
-      queueRpc('attendance_remove_holiday', { data: null, error: null });
+    it('DELETE /attendance/holidays/:id hard-deletes through one pg transaction (204)', async () => {
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({
+        byId: [byIdRow],
+        deleteRowCount: 1,
+        fanoutAllowed: false,
+      });
 
       const res = await app.inject({
         method: 'DELETE',
@@ -1210,8 +1266,6 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
 
       expect(res.statusCode).toBe(204);
       expect(res.body).toBe('');
-      const call = rpcCalls.find((c) => c.name === 'attendance_remove_holiday');
-      expect(call?.args).toMatchObject({ p_holiday_id: HOLIDAY_ID });
     });
 
     it('DELETE /attendance/holidays/:id rejects a malformed id with 400 and an unknown id with 404', async () => {
@@ -1222,14 +1276,8 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       });
       expect(malformed.statusCode).toBe(400);
 
-      queueRpc('attendance_remove_holiday', {
-        data: null,
-        error: {
-          code: 'PT404',
-          hint: 'ATTENDANCE_HOLIDAY_NOT_FOUND',
-          message: 'missing',
-        },
-      });
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx({ byId: [] }); // the scoped re-read finds nothing → 404
       const unknown = await app.inject({
         method: 'DELETE',
         url: `/api/v1/attendance/holidays/${HOLIDAY_ID}`,
@@ -1241,8 +1289,9 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       );
     });
 
-    it('GET /attendance/holidays/impact returns the empty preview pre-15-7', async () => {
-      queueRpc('attendance_holiday_impact', { data: [], error: null });
+    it('GET /attendance/holidays/impact serves the console panel facts on a plain date', async () => {
+      queueRpc('attendance_today', { data: '2026-09-26', error: null });
+      holidayTx();
 
       const res = await app.inject({
         method: 'GET',
@@ -1254,30 +1303,12 @@ describe('Attendance HTTP boundary (e2e, stories 15-2/15-3/15-5/15-7)', () => {
       expect(JSON.parse(res.body)).toEqual({
         date: '2026-10-02',
         affectedEmployees: [],
+        holiday: null,
+        approvedLeaveCount: 0,
+        trackedCount: 0,
+        perOffice: [],
+        unassignedCount: 0,
       });
-      const call = rpcCalls.find((c) => c.name === 'attendance_holiday_impact');
-      expect(call?.args).toEqual({
-        p_tenant_id: TENANT_ID,
-        p_date: '2026-10-02',
-      });
-    });
-
-    it('GET /attendance/holidays/impact maps preview rows to camelCase', async () => {
-      queueRpc('attendance_holiday_impact', {
-        data: [{ employee_id: 'emp-1', employee_name: 'Ravi Kumar' }],
-        error: null,
-      });
-
-      const res = await app.inject({
-        method: 'GET',
-        url: '/api/v1/attendance/holidays/impact?date=2026-10-02',
-        headers: { authorization: `Bearer ${ownerJwt()}` },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body).affectedEmployees).toEqual([
-        { employeeId: 'emp-1', employeeName: 'Ravi Kumar' },
-      ]);
     });
 
     it('GET /attendance/holidays/impact rejects an impossible date with 422', async () => {

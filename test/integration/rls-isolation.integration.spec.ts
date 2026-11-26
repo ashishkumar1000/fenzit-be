@@ -1165,13 +1165,13 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_office_id: PROBE_ID,
         },
-        // Story 15-5 weekly-off/holiday RPCs (migration 20260927000002, the
-        // dead p_actor_id dropped by 20260927000005) — same SECURITY DEFINER
-        // + revoke pattern, same 42501 pin. attendance_add_holiday and
-        // attendance_remove_holiday are DROPPED outright (20261126000002 —
-        // the TypeScript service path owns the lifecycle) and moved to the
-        // stays-dropped pin below; update/impact remain live RPCs. The probe
-        // ids mutate nothing: the privilege check fires before any body runs.
+        // Story 15-5 weekly-off RPCs (migration 20260927000002, the dead
+        // p_actor_id dropped by 20260927000005) — same SECURITY DEFINER +
+        // revoke pattern, same 42501 pin. ALL FOUR holiday RPCs (add/remove
+        // 20261126000002, update/impact 20261126000003) are DROPPED outright
+        // — the TypeScript service owns the whole holiday lifecycle — and
+        // moved to the stays-dropped pin below. The probe ids mutate
+        // nothing: the privilege check fires before any body runs.
         attendance_set_weekly_off_default: {
           p_tenant_id: PROBE_ID,
           p_days: [6, 7],
@@ -1187,15 +1187,6 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_employee_id: PROBE_ID,
           p_effective_from: null,
-        },
-        attendance_update_holiday: {
-          p_tenant_id: PROBE_ID,
-          p_holiday_id: PROBE_ID,
-          p_name: 'RLS probe rename',
-        },
-        attendance_holiday_impact: {
-          p_tenant_id: PROBE_ID,
-          p_date: '2030-01-01',
         },
         set_user_disabled: {
           p_caller: PROBE_ID,
@@ -1250,6 +1241,15 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           p_tenant_id: PROBE_ID,
           p_holiday_id: PROBE_ID,
         },
+        attendance_update_holiday: {
+          p_tenant_id: PROBE_ID,
+          p_holiday_id: PROBE_ID,
+          p_name: 'RLS probe rename',
+        },
+        attendance_holiday_impact: {
+          p_tenant_id: PROBE_ID,
+          p_date: '2030-01-01',
+        },
       };
 
       for (const [name, args] of Object.entries(RPC_FUNCTIONS)) {
@@ -1271,13 +1271,14 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       // And the dropped ones stay dropped: invite_member must not come back
       // without re-pinning its revoke pattern (it has no callers since the
       // backend TypeScript took over invite minting — incident 2026-11-25);
-      // the holiday add/remove RPCs joined them (20261126000002 — the
+      // all four holiday RPCs joined them (add/remove 20261126000002 — the
       // service's insertHolidayInTx + fanoutHolidayNotification pair owns
-      // that lifecycle; the old RPC dedupe key never carried the holiday
-      // date). PGRST202 is PostgREST's function-not-found — the exact
-      // absence signature (a recreated function raising its old PT403 would
-      // surface P0001, and a recreated-but-revoked one P42501; neither
-      // passes).
+      // that lifecycle and its dedupe key carries the holiday date; the
+      // name-only update and the impact read followed in 20261126000003 —
+      // updateHoliday and getImpact do the work in TypeScript).
+      // PGRST202 is PostgREST's function-not-found — the exact absence
+      // signature (a recreated function raising its old PT403 would surface
+      // P0001, and a recreated-but-revoked one P42501; neither passes).
       for (const [name, args] of Object.entries(DROPPED_RPC_FUNCTIONS)) {
         const dropped = await anonRpcClient.rpc(name, args);
         // Name and code ride inside the compared value — jest's expect takes
@@ -2238,8 +2239,9 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
       //       insert + idempotency, empty days (works all 7), composite FK
       //       23503 cross-tenant.
       //   (e) holidays — future add returns the id with ZERO notifications
-      //       pre-15-7 (guard branch unreached), duplicate PT409, rename,
-      //       unknown PT404, hard remove silent, impact empty (never 42P01).
+      //       (the fan-out is service code), duplicate 23505, guarded rename,
+      //       unknown-id UPDATE → empty row set, hard remove silent; the
+      //       dropped holiday RPCs stay pinned PGRST202.
       const SERVICE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
       expect(SERVICE_KEY).not.toBe('');
       const serviceClient = createClient(SUPABASE_URL, SERVICE_KEY, {
@@ -2681,13 +2683,13 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           '23503',
         );
 
-        // --- (e) holidays. The add/remove RPCs are DROPPED (20261126000002 —
-        // the TypeScript service owns the lifecycle), so the write half of
-        // this probe drives the holidays TABLE directly as the service role
-        // (the row-level facts: saves, visibility, the unique date). The
-        // update/impact RPCs stay live and keep their PT404/PT409-style
-        // pins. Future add: row saved, ZERO notifications — the fan-out is
-        // service CODE, not a trigger, so raw table writes never fan out.
+        // --- (e) holidays. ALL FOUR holiday RPCs are DROPPED (add/remove
+        // 20261126000002, update/impact 20261126000003 — the TypeScript
+        // service owns the lifecycle and the impact read), so this probe
+        // drives the holidays TABLE directly as the service role (the
+        // row-level facts: saves, visibility, the unique date, the guarded
+        // rename). Future add: row saved, ZERO notifications — the fan-out
+        // is service CODE, not a trigger, so raw table writes never fan out.
         const futureDate = addDays(todayStr, 30);
         const { data: insertedHoliday, error: addFutureError } =
           await serviceClient
@@ -2735,15 +2737,15 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
         expect(duplicateError).not.toBeNull();
         expect((duplicateError as { code: string }).code).toBe('23505');
 
-        // Rename works; the date is immutable (name-only UPDATE).
-        const { error: renameError } = await serviceClient.rpc(
-          'attendance_update_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_id: holidayId,
-            p_name: 'Probe Holiday Renamed',
-          },
-        );
+        // Rename works (a direct guarded UPDATE — the update RPC is dropped;
+        // the service's updateHoliday runs the same tenant-scoped UPDATE,
+        // rowCount 0 → its 404, across the full editable field set).
+        const { error: renameError } = await serviceClient
+          .from('holidays')
+          .update({ name: 'Probe Holiday Renamed' })
+          .eq('id', holidayId)
+          .eq('tenant_id', probeTenantId)
+          .select('id');
         expect(renameError).toBeNull();
         const { data: renamedRow } = await serviceClient
           .from('holidays')
@@ -2755,21 +2757,20 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           name: 'Probe Holiday Renamed',
         });
 
-        // Unknown id → PT404 on the surviving update RPC.
+        // Unknown id: the guarded UPDATE matches nothing → an empty row set,
+        // no error — exactly the rowCount-0 signal the service turns into
+        // 404 ATTENDANCE_HOLIDAY_NOT_FOUND (pinned in
+        // holidays.service.spec.ts).
         const UNKNOWN_HOLIDAY_ID = '00000000-0000-0000-0000-0000000000ff';
-        const { error: updateUnknownError } = await serviceClient.rpc(
-          'attendance_update_holiday',
-          {
-            p_tenant_id: probeTenantId,
-            p_holiday_id: UNKNOWN_HOLIDAY_ID,
-            p_name: 'Ghost',
-          },
-        );
-        expect(updateUnknownError).not.toBeNull();
-        expect((updateUnknownError as { code: string }).code).toBe('PT404');
-        expect((updateUnknownError as { hint?: string }).hint).toBe(
-          'ATTENDANCE_HOLIDAY_NOT_FOUND',
-        );
+        const { data: updateUnknownRows, error: updateUnknownError } =
+          await serviceClient
+            .from('holidays')
+            .update({ name: 'Ghost' })
+            .eq('id', UNKNOWN_HOLIDAY_ID)
+            .eq('tenant_id', probeTenantId)
+            .select('id');
+        expect(updateUnknownError).toBeNull();
+        expect(updateUnknownRows).toEqual([]);
 
         // Hard remove: the row goes (a direct delete — the PT404-on-unknown
         // mapping lived in the dropped RPC and is pinned in
@@ -2801,24 +2802,10 @@ describe('RLS Cross-Tenant Isolation (AR-20)', () => {
           .eq('tenant_id', probeTenantId);
         expect(notificationRows).toEqual([]);
 
-        // Impact preview: empty pre-15-7 (never a 42P01 — the Amendment-2
-        // guard holds), and fail-loud on an unknown tenant.
-        const { data: impactRows, error: impactError } =
-          await serviceClient.rpc('attendance_holiday_impact', {
-            p_tenant_id: probeTenantId,
-            p_date: futureDate,
-          });
-        expect(impactError).toBeNull();
-        expect(impactRows).toEqual([]);
-        const { error: impactForeignError } = await serviceClient.rpc(
-          'attendance_holiday_impact',
-          { p_tenant_id: FOREIGN_TENANT_ID, p_date: futureDate },
-        );
-        expect(impactForeignError).not.toBeNull();
-        expect((impactForeignError as { code: string }).code).toBe('PT404');
-        expect((impactForeignError as { hint?: string }).hint).toBe(
-          'ATTENDANCE_TENANT_NOT_FOUND',
-        );
+        // The impact read is service code now (getImpact; the impact RPC is
+        // dropped): its fail-loud unknown-tenant 404 is pinned unit-side in
+        // holidays.service.spec.ts, and this probe's table facts above are
+        // exactly what that read joins over. No RPC legs to drive here.
       } finally {
         // Cleanup in FK order, so the probe never leaks into the shared DB.
         await purgeCompany(serviceClient, probeTenantId, [

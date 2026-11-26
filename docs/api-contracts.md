@@ -1123,20 +1123,23 @@ enrolments covering the date the recipient branch is a guarded no-op
 
 #### `PATCH /api/v1/attendance/holidays/:id` `[Bearer JWT, Role: owner]`
 
-Renames a holiday through the TypeScript service (guarded UPDATE — the
-`attendance_update_holiday` RPC still exists but nothing calls it). The
-**date is immutable** — impact and notifications differ per date; a date
-change is remove + add. A `date` key in the body is rejected 422 even
-though the global pipe silently strips unknown keys (explicit raw-body
-check).
+Edits a holiday through the TypeScript service (guarded UPDATE; the legacy
+`attendance_update_holiday` RPC was dropped 2026-11-26 — the console
+redesign made every field editable where the old RPC was name-only).
+Omitted fields keep their values. A **date change** on a future holiday
+fires `holiday_removed` for the old date then `holiday_added` for the new;
+a scope/officeIds change on an unmoved future holiday fires
+`holiday_added` alone (the audience changed); name/description edits stay
+silent.
 
-**Body:** `{ name: string }`
+**Body (all optional):** `{ name?, description? (null clears), date? (YYYY-MM-DD — 409 when the target date is taken), scope?, officeIds? }`
 
 **Responses:**
-- `200` — `{ id, date, name }`
-- `400` — `VALIDATION_ERROR` (malformed id / no tenant)
+- `200` — `{ id, date, name, description, scope, officeIds }`
+- `400` — `VALIDATION_ERROR` (malformed id / no tenant / `officeIds` with scope 'all' / empty `officeIds` with scope 'offices')
 - `404` — `ATTENDANCE_HOLIDAY_NOT_FOUND` (unknown holiday) or `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the service resolves `attendance_today` first, so these are distinct codes)
-- `422` — `VALIDATION_ERROR` (`date` key present in the body)
+- `409` — `ATTENDANCE_HOLIDAY_TAKEN` (the target date is taken)
+- `422` — malformed `date` (ValidationPipe)
 
 #### `DELETE /api/v1/attendance/holidays/:id` `[Bearer JWT, Role: owner]`
 
@@ -1154,18 +1157,20 @@ a guarded no-op.
 
 #### `GET /api/v1/attendance/holidays/impact?date=` `[Bearer JWT, Role: owner]`
 
-AD-24 preview: employees the holiday would affect. **Returns an empty
-list until 15-7 lands** (the tracked-employee query is behind the same
-`to_regclass` guard — never a 42P01). **Employees on approved leave
-overlapping the date arrive with Epic 17** (this route's extension point;
-the holiday-inside-leave notification ACs are re-tested there).
+AD-24 preview, served by the TypeScript service (`getImpact`; the legacy
+`attendance_holiday_impact` RPC was dropped 2026-11-26 — it never grew the
+per-office staff counts or the tracked/unassigned tallies; its
+approved-leave overlap, added 2026-10-23, lives on verbatim).
+`affectedEmployees` = employees with APPROVED leave covering the date;
+`trackedCount`/`perOffice`/`unassignedCount` carry the tracked∧assigned
+population as counts.
 
-**Response 200:** `{ date, affectedEmployees: [{ employeeId, employeeName, avatarUrl }] }`
+**Response 200:** `{ date, affectedEmployees: [{ employeeId, employeeName, avatarUrl }], holiday: {…} | null, approvedLeaveCount, trackedCount, perOffice: [{ officeId, name, staffCount, closed }], unassignedCount }`
 
 **Responses:**
-- `200` — empty list pre-15-7 (never a 42P01)
+- `200` — the facts above (empty lists when nothing covers the date)
 - `400` — `VALIDATION_ERROR` (no tenant)
-- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the RPC fails loud on `attendance_today`)
+- `404` — `ATTENDANCE_TENANT_NOT_FOUND` (stale/unknown tenant — the service's `resolveTenantToday` fails loud, the dropped RPC's contract kept)
 - `422` — malformed `date` (ValidationPipe)
 
 **DB foundation (this story, additive):** `attendance_weekly_off_defaults`
@@ -1178,10 +1183,11 @@ holiday_date)`); RPCs `attendance_set_weekly_off_default`,
 `attendance_remove_weekly_off_override`, `attendance_add_holiday`,
 `attendance_update_holiday`, `attendance_remove_holiday`, and the read
 function `attendance_holiday_impact` — every one SECURITY DEFINER,
-executable by service_role only (AD-3). The holiday add/remove pair was
-**dropped 2026-11-26** (the TypeScript service owns that lifecycle; the
-rls-isolation `DROPPED_RPC_FUNCTIONS` probe expects PGRST202). All three
-tables: RLS enabled, no
+executable by service_role only (AD-3). ALL FOUR holiday RPCs were
+**dropped 2026-11-26** (add/remove 20261126000002, update/impact
+20261126000003 — the TypeScript service owns the whole holiday lifecycle;
+the rls-isolation `DROPPED_RPC_FUNCTIONS` probe expects PGRST202). All
+three tables: RLS enabled, no
 policies (deny-by-default, admin-client only). Holiday notification dedupe
 keys are recipient-prefixed and end with the holiday **date**:
 `<tenantId>:<eventType>:<recipientId>:<holidayId>:<holidayDate>` (the
