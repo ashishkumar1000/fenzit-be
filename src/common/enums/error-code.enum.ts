@@ -120,6 +120,17 @@ export enum ErrorCode {
   /** Deactivating yourself is refused (403) — the owner cannot park their own
    *  access (mirrors the role-change and remove refusals). */
   MEMBERSHIP_SELF = 'MEMBERSHIP_SELF',
+  /** The member is a company admin and admins sit at the top of the reporting
+   *  tree (409): they may serve as someone's manager, never be assigned one. */
+  MEMBER_IS_ADMIN = 'MEMBER_IS_ADMIN',
+  /** The chosen manager is not an active, enabled member of this company (422)
+   *  — an invited, deactivated or removed membership, or a disabled account. */
+  MANAGER_NOT_ACTIVE = 'MANAGER_NOT_ACTIVE',
+  /** The assignment would close a loop in the reporting tree (409). */
+  HIERARCHY_CYCLE = 'HIERARCHY_CYCLE',
+  /** The assignment would put part of the branch deeper than the 20-level cap
+   *  (409) — refused, never silently truncated. */
+  HIERARCHY_DEPTH = 'HIERARCHY_DEPTH',
   /** The chosen leave type vanished while this typing was in flight (409) —
    *  the foreign-key RESTRICT backstop caught the race; reload and retry. */
   LEAVE_TYPE_CHANGED = 'LEAVE_TYPE_CHANGED',

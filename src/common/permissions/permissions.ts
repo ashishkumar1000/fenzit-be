@@ -16,6 +16,7 @@ export type Permission =
   | 'member.job_settings' // company admin of this company only (CAP-1)
   | 'member.employment' // company admin of this company only (CAP-13)
   | 'member.deactivate' // company admin of this company only: park/reinstate a member (2026-11-21)
+  | 'member.manager' // company admin of this company only: set "Reports to" (24-1)
   | 'member.remove'
   | 'invite_sms.resend' // company admin of this company only (story 21-2)
   | 'user.disable' // platform only
@@ -97,13 +98,14 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, ReadonlySet<Permission>>> =
       'tenant.validity.manage',
     ]),
     // invite_sms.resend sits outside ADMIN_PERMISSIONS, so a platform admin (not a company member) does not get it.
-    // member.job_settings, member.employment, member.deactivate, leave.types, payroll.config, job.approve and payroll.own sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
+    // member.job_settings, member.employment, member.deactivate, member.manager, leave.types, payroll.config, job.approve and payroll.own sit outside ADMIN_PERMISSIONS too, so a platform admin does not get them.
     [Role.COMPANY_ADMIN]: new Set<Permission>([
       ...ADMIN_PERMISSIONS,
       'invite_sms.resend',
       'member.job_settings',
       'member.employment',
       'member.deactivate',
+      'member.manager',
       'leave.types',
       'payroll.config',
       'job.approve',

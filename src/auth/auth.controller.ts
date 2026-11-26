@@ -208,12 +208,19 @@ export class AuthController {
   })
   @ApiResponse({ status: 403, description: 'Forbidden — not a company admin' })
   @ApiResponse({
+    status: 404,
+    description:
+      'RESOURCE_NOT_FOUND — managerId is not a member of this company',
+  })
+  @ApiResponse({
     status: 409,
-    description: 'The person already belongs to a company',
+    description:
+      'The person already belongs to a company, or MEMBER_IS_ADMIN (an admin invite cannot carry a manager), HIERARCHY_CYCLE or HIERARCHY_DEPTH',
   })
   @ApiResponse({
     status: 422,
-    description: 'Validation error — invalid skillIds or phone format',
+    description:
+      'Validation error — invalid skillIds, phone format or managerId, MANAGER_NOT_ACTIVE (the chosen manager is not active), or VALIDATION_ERROR (self)',
   })
   async inviteMember(
     @CurrentUser() user: RequestUser,

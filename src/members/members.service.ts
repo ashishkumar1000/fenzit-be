@@ -8,6 +8,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { PoolClient } from 'pg';
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import { MembershipRole, Role } from '../common/enums/role.enum';
@@ -17,6 +18,12 @@ import {
   findCompanyMember,
   listCompanyMembers,
 } from '../common/members/company-members';
+import {
+  MemberHierarchy,
+  emptyHierarchy,
+  readMemberHierarchy,
+} from '../common/members/hierarchy';
+import { assertManagerAssignable } from '../common/members/manager-assignment';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import {
@@ -29,10 +36,11 @@ import { UpdateEmploymentDto } from './dto/update-employment.dto';
 import { EmploymentView } from './dto/employment-view.dto';
 
 /** A person of the company as the members list serves them: no raw storage key. */
-export type MemberView = Omit<CompanyMember, 'avatarKey'> & {
-  /** Short-lived link to the person's photo, or null when none is set. */
-  avatarUrl: string | null;
-};
+export type MemberView = Omit<CompanyMember, 'avatarKey'> &
+  MemberHierarchy & {
+    /** Short-lived link to the person's photo, or null when none is set. */
+    avatarUrl: string | null;
+  };
 
 /** The whole-company counters the console's stat tiles show. They count the
  *  team before any filter, so tiles stay stable while the table narrows. */
@@ -230,10 +238,15 @@ export class MembersService {
 
   async list(caller: RequestUser): Promise<MemberView[]> {
     try {
+      const tenantId = caller.tenantId as string;
       const members = await listCompanyMembers(
         this.supabaseFactory.createAdmin(),
-        caller.tenantId as string,
+        tenantId,
         { includeRemoved: false },
+      );
+      const hierarchy = await this.readHierarchy(
+        tenantId,
+        members.map((m) => m.userId),
       );
       const avatarUrls = await presignAvatarUrls(
         this.storageService,
@@ -241,6 +254,7 @@ export class MembersService {
       );
       return members.map(({ avatarKey, ...member }) => ({
         ...member,
+        ...(hierarchy.get(member.userId) ?? emptyHierarchy()),
         avatarUrl: avatarUrlFor(avatarUrls, avatarKey),
       }));
     } catch (error) {
@@ -347,13 +361,18 @@ export class MembersService {
       const safePage = Math.min(page, pages);
       const slice = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-      // Only the returned page needs a signed photo link.
+      // Only the returned page needs a signed photo link and its hierarchy.
+      const hierarchy = await this.readHierarchy(
+        caller.tenantId as string,
+        slice.map((m) => m.userId),
+      );
       const avatarUrls = await presignAvatarUrls(
         this.storageService,
         slice.map((m) => m.avatarKey),
       );
       const data: MemberView[] = slice.map(({ avatarKey, ...member }) => ({
         ...member,
+        ...(hierarchy.get(member.userId) ?? emptyHierarchy()),
         avatarUrl: avatarUrlFor(avatarUrls, avatarKey),
       }));
 
@@ -374,7 +393,10 @@ export class MembersService {
    * member surface. A removed member answers 404: the lists hide them, and
    * the profile is a list sibling.
    */
-  async getMember(caller: RequestUser, memberUserId: string): Promise<MemberView> {
+  async getMember(
+    caller: RequestUser,
+    memberUserId: string,
+  ): Promise<MemberView> {
     if (!caller.tenantId) {
       throw new BadRequestException({
         error_code: ErrorCode.VALIDATION_ERROR,
@@ -394,12 +416,18 @@ export class MembersService {
           message: 'The person is not a member of this company',
         });
       }
-      const avatarUrls = await presignAvatarUrls(
-        this.storageService,
-        [member.avatarKey],
-      );
+      const avatarUrls = await presignAvatarUrls(this.storageService, [
+        member.avatarKey,
+      ]);
+      const hierarchy = await this.readHierarchy(caller.tenantId, [
+        member.userId,
+      ]);
       const { avatarKey, ...rest } = member;
-      return { ...rest, avatarUrl: avatarUrlFor(avatarUrls, avatarKey) };
+      return {
+        ...rest,
+        ...(hierarchy.get(member.userId) ?? emptyHierarchy()),
+        avatarUrl: avatarUrlFor(avatarUrls, avatarKey),
+      };
     } catch (error) {
       if (error instanceof NotFoundException) throw error;
       this.logger.error('Failed to read the member:', { error });
@@ -464,10 +492,9 @@ export class MembersService {
       if (row.status !== expectedFrom) {
         throw new ConflictException({
           error_code: ErrorCode.MEMBERSHIP_STATE,
-          message:
-            active
-              ? 'Only a deactivated member can be reinstated'
-              : 'Only an active member can be deactivated',
+          message: active
+            ? 'Only a deactivated member can be reinstated'
+            : 'Only an active member can be deactivated',
         });
       }
       if (!active && row.role === Role.COMPANY_ADMIN) {
@@ -525,7 +552,11 @@ export class MembersService {
       });
     }
 
-    return { userId: memberUserId, status: newStatus, employeeCode: outcome.employeeCode };
+    return {
+      userId: memberUserId,
+      status: newStatus,
+      employeeCode: outcome.employeeCode,
+    };
   }
 
   async changeRole(
@@ -533,32 +564,87 @@ export class MembersService {
     memberUserId: string,
     newRole: MembershipRole,
   ): Promise<{ userId: string; oldRole: string; newRole: string }> {
-    const { data, error } = await this.supabaseFactory
-      .createAdmin()
-      .rpc('change_member_role', {
-        p_caller: caller.userId,
-        p_tenant_id: caller.tenantId,
-        p_member_user_id: memberUserId,
-        p_new_role: newRole,
-      });
-    if (error) {
-      throw this.mapError(error, 'Failed to change the role');
-    }
-    // The database always returns the old and new role on success. A missing row
-    // is a broken contract, so fail loudly rather than report a made-up change.
-    const row = (data as Array<Record<string, string>> | null)?.[0];
-    if (!row?.['old_role'] || !row?.['new_role']) {
-      this.logger.error('change_member_role returned no role change');
-      throw new InternalServerErrorException({
-        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
-        message: 'Failed to change the role',
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
       });
     }
-    return {
-      userId: memberUserId,
-      oldRole: row['old_role'],
-      newRole: row['new_role'],
-    };
+    if (caller.userId === memberUserId) {
+      throw new ForbiddenException({
+        error_code: ErrorCode.FORBIDDEN,
+        message: 'You cannot change your own role',
+      });
+    }
+    const tenantId = caller.tenantId;
+    const nextRole: string = newRole;
+
+    return this.pgPool.withTransaction(async (tx) => {
+      // The former change_member_role function, now a transaction: the caller
+      // is checked before the wait and again after it, under the same
+      // exclusive tenant lock as every other membership mutation.
+      await this.assertMayManageCompany(tx, caller, tenantId);
+      await this.assertCompanyExists(tx, tenantId);
+      await tx.query('select public.attendance_lock_tenant($1, true)', [
+        tenantId,
+      ]);
+      await this.assertMayManageCompany(tx, caller, tenantId);
+
+      const memberRes = await tx.query<{
+        id: string;
+        role: string;
+        status: string;
+        manager_id: string | null;
+      }>(
+        `select id, role, status, manager_id from public.memberships
+          where user_id = $1 and tenant_id = $2 and status <> 'removed'
+          for update`,
+        [memberUserId, tenantId],
+      );
+      const member = memberRes.rows[0];
+      if (!member) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+
+      // A same-role call is a no-op: no write, no audit row.
+      if (member.role === nextRole) {
+        return { userId: memberUserId, oldRole: member.role, newRole };
+      }
+
+      if (member.role === 'company_admin' && member.status === 'active') {
+        await this.assertAnotherActiveAdmin(tx, tenantId, member.id);
+      }
+
+      // D1: an admin sits at the top of the tree, so a promotion clears the
+      // member's own pointer in the same write. Their reports stay under them.
+      const clearsManager =
+        newRole === Role.COMPANY_ADMIN && member.manager_id !== null;
+      await tx.query(
+        `update public.memberships
+            set role = $2,
+                manager_id = case when $3 then null else manager_id end
+          where id = $1`,
+        [member.id, newRole, clearsManager],
+      );
+
+      const details: Record<string, unknown> = {
+        old_role: member.role,
+        new_role: newRole,
+      };
+      if (clearsManager) details['cleared_manager_id'] = member.manager_id;
+      await this.insertAuditRows(tx, {
+        actorUserId: caller.userId,
+        tenantId,
+        action: 'member.role_change',
+        targetUserIds: [memberUserId],
+        details,
+      });
+
+      return { userId: memberUserId, oldRole: member.role, newRole };
+    });
   }
 
   /**
@@ -616,16 +702,359 @@ export class MembersService {
     };
   }
 
+  /**
+   * The former remove_member function, now a transaction: the caller is
+   * checked before and after the tenant lock, the last active admin cannot be
+   * removed, direct reports move to the removed member's manager (or become
+   * unassigned when that manager is no longer active), and the removed row
+   * stops pointing at anyone. One audit row per changed membership.
+   */
   async remove(caller: RequestUser, memberUserId: string): Promise<void> {
-    const { error } = await this.supabaseFactory
-      .createAdmin()
-      .rpc('remove_member', {
-        p_caller: caller.userId,
-        p_tenant_id: caller.tenantId,
-        p_member_user_id: memberUserId,
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
       });
-    if (error) {
-      throw this.mapError(error, 'Failed to remove the member');
+    }
+    if (caller.userId === memberUserId) {
+      throw new ForbiddenException({
+        error_code: ErrorCode.FORBIDDEN,
+        message: 'You cannot remove yourself',
+      });
+    }
+    const tenantId = caller.tenantId;
+
+    await this.pgPool.withTransaction(async (tx) => {
+      await this.assertMayManageCompany(tx, caller, tenantId);
+      await this.assertCompanyExists(tx, tenantId);
+      await tx.query('select public.attendance_lock_tenant($1, true)', [
+        tenantId,
+      ]);
+      await this.assertMayManageCompany(tx, caller, tenantId);
+
+      const memberRes = await tx.query<{
+        id: string;
+        role: string;
+        status: string;
+        manager_id: string | null;
+      }>(
+        `select id, role, status, manager_id from public.memberships
+          where user_id = $1 and tenant_id = $2 and status <> 'removed'
+          for update`,
+        [memberUserId, tenantId],
+      );
+      const member = memberRes.rows[0];
+      if (!member) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+
+      if (member.role === 'company_admin' && member.status === 'active') {
+        await this.assertAnotherActiveAdmin(tx, tenantId, member.id);
+      }
+
+      // Only a manager who can still serve keeps the reports; otherwise they
+      // become unassigned rather than inheriting a dead pointer.
+      let nextManager: string | null = null;
+      if (member.manager_id) {
+        const managerRes = await tx.query<{ serves: boolean }>(
+          `select (m.status = 'active' and not u.disabled) as serves
+             from public.memberships m
+             join public.users u on u.id = m.user_id
+            where m.user_id = $1 and m.tenant_id = $2`,
+          [member.manager_id, tenantId],
+        );
+        if (managerRes.rows[0]?.serves) nextManager = member.manager_id;
+      }
+
+      const reports = await tx.query<{ user_id: string }>(
+        `update public.memberships
+            set manager_id = $3
+          where tenant_id = $1 and manager_id = $2 and status <> 'removed'
+          returning user_id`,
+        [tenantId, memberUserId, nextManager],
+      );
+
+      await tx.query(
+        `update public.memberships
+            set status = 'removed', manager_id = null
+          where id = $1`,
+        [member.id],
+      );
+
+      await this.insertAuditRows(tx, {
+        actorUserId: caller.userId,
+        tenantId,
+        action: 'member.remove',
+        targetUserIds: [memberUserId],
+        details: {
+          old_role: member.role,
+          old_status: member.status,
+          old_manager_id: member.manager_id,
+        },
+      });
+
+      const reportIds = reports.rows.map((row) => row.user_id);
+      if (reportIds.length > 0) {
+        await this.insertAuditRows(tx, {
+          actorUserId: caller.userId,
+          tenantId,
+          action: 'member.reparent',
+          targetUserIds: reportIds,
+          details: {
+            old_manager_id: memberUserId,
+            new_manager_id: nextManager,
+            removed_manager_id: memberUserId,
+          },
+        });
+      }
+    });
+  }
+
+  /**
+   * The owner sets (or clears) a member's "Reports to". Everything the DDL
+   * cannot express happens here, in one transaction under the tenant lock:
+   * the target is not an admin, the manager is an active enabled member of
+   * this company, the assignment closes no loop, and the branch stays within
+   * the 20-level cap. Returns the updated member, so the client sees the new
+   * chain and headcount immediately.
+   */
+  async setManager(
+    caller: RequestUser,
+    memberUserId: string,
+    managerId: string | null,
+  ): Promise<MemberView> {
+    if (!caller.tenantId) {
+      throw new BadRequestException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'Company setup required before managing members',
+      });
+    }
+    if (managerId !== null && managerId === memberUserId) {
+      throw new UnprocessableEntityException({
+        error_code: ErrorCode.VALIDATION_ERROR,
+        message: 'A person cannot report to themselves',
+      });
+    }
+    const tenantId = caller.tenantId;
+
+    await this.pgPool.withTransaction(async (tx) => {
+      await this.assertMayManageCompany(tx, caller, tenantId);
+      await this.assertCompanyExists(tx, tenantId);
+      await tx.query('select public.attendance_lock_tenant($1, true)', [
+        tenantId,
+      ]);
+      await this.assertMayManageCompany(tx, caller, tenantId);
+
+      const memberRes = await tx.query<{
+        id: string;
+        role: string;
+        manager_id: string | null;
+        disabled: boolean;
+      }>(
+        `select m.id, m.role, m.manager_id, u.disabled
+           from public.memberships m
+           join public.users u on u.id = m.user_id
+          where m.user_id = $1 and m.tenant_id = $2 and m.status <> 'removed'
+          for update`,
+        [memberUserId, tenantId],
+      );
+      const member = memberRes.rows[0];
+      // A disabled account is hidden from every member read (getMember
+      // included), so writing a pointer for one would change the tree and then
+      // answer not-found. Refuse before the write.
+      if (!member || member.disabled) {
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'The person is not a member of this company',
+        });
+      }
+      // Admins sit at the top of the tree and can never hold a pointer.
+      // Clearing one is pointless but harmless, so only assignment refuses.
+      if (managerId !== null && member.role === 'company_admin') {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBER_IS_ADMIN,
+          message:
+            'An admin sits at the top of the team and cannot report to anyone',
+        });
+      }
+
+      if (managerId !== null) {
+        await assertManagerAssignable(tx, tenantId, memberUserId, managerId);
+      }
+
+      // A no-op assignment writes nothing and audits nothing.
+      if (member.manager_id === managerId) return;
+
+      await tx.query(
+        `update public.memberships set manager_id = $2 where id = $1`,
+        [member.id, managerId],
+      );
+      await this.insertAuditRows(tx, {
+        actorUserId: caller.userId,
+        tenantId,
+        action: 'member.manager_change',
+        targetUserIds: [memberUserId],
+        details: {
+          old_manager_id: member.manager_id,
+          new_manager_id: managerId,
+        },
+      });
+    });
+
+    return this.getMember(caller, memberUserId);
+  }
+
+  /** The company's hierarchy fields for the named members, in one query. */
+  private readHierarchy(
+    tenantId: string,
+    userIds: string[],
+  ): Promise<Map<string, MemberHierarchy>> {
+    return this.pgPool.withTransaction((tx) =>
+      readMemberHierarchy(tx, tenantId, userIds),
+    );
+  }
+
+  /**
+   * The caller check the former member functions ran: a live, enabled person
+   * who either is fenzit staff or manages THIS company. Repeated after the
+   * tenant lock, because the caller may have been demoted or removed while
+   * the transaction waited.
+   */
+  private async assertMayManageCompany(
+    tx: PoolClient,
+    caller: RequestUser,
+    tenantId: string,
+  ): Promise<void> {
+    const res = await tx.query<{
+      platform_admin: boolean;
+      disabled: boolean;
+      is_company_admin: boolean;
+    }>(
+      `select u.platform_admin, u.disabled, exists (
+         select 1 from public.memberships m
+          where m.user_id = u.id and m.tenant_id = $2
+            and m.status = 'active' and m.role = 'company_admin'
+       ) as is_company_admin
+         from public.users u
+        where u.id = $1`,
+      [caller.userId, tenantId],
+    );
+    const row = res.rows[0];
+    if (
+      !row ||
+      row.disabled ||
+      (!row.platform_admin && !row.is_company_admin)
+    ) {
+      throw new ForbiddenException({
+        error_code: ErrorCode.FORBIDDEN,
+        message: 'You do not have permission to do that',
+      });
+    }
+  }
+
+  private async assertCompanyExists(
+    tx: PoolClient,
+    tenantId: string,
+  ): Promise<void> {
+    const tenant = await tx.query(
+      'select 1 from public.tenants where id = $1',
+      [tenantId],
+    );
+    if (tenant.rowCount === 0) {
+      throw new NotFoundException({
+        error_code: ErrorCode.RESOURCE_NOT_FOUND,
+        message: 'Not found',
+      });
+    }
+  }
+
+  /** Another admin who can actually sign in must remain. */
+  private async assertAnotherActiveAdmin(
+    tx: PoolClient,
+    tenantId: string,
+    memberRowId: string,
+  ): Promise<void> {
+    const others = await tx.query<{ n: number }>(
+      `select count(*)::int as n from public.memberships m
+         join public.users u on u.id = m.user_id
+        where m.tenant_id = $1 and m.role = 'company_admin'
+          and m.status = 'active' and m.id <> $2 and not u.disabled`,
+      [tenantId, memberRowId],
+    );
+    if ((others.rows[0]?.n ?? 0) === 0) {
+      throw new ConflictException({
+        error_code: ErrorCode.LAST_ADMIN,
+        message: 'The company must keep at least one active admin',
+      });
+    }
+  }
+
+  /**
+   * A direct audit insert, reproducing write_audit_row's column contract AND
+   * its guards (the actor exists and is enabled and holds this company, the
+   * target user exists) — the epic calls no function. One statement covers a
+   * whole re-parent fan-out, so a large team cannot blow the 10 s timeout.
+   */
+  private async insertAuditRows(
+    tx: PoolClient,
+    entry: {
+      actorUserId: string;
+      tenantId: string;
+      action: string;
+      targetUserIds: string[];
+      details: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    if (entry.targetUserIds.length === 0) return;
+    // Reproduces write_audit_row's guards: a non-blank action of at most 80
+    // characters, a known un-disabled actor, live targets, and — for a company
+    // action — an actor who is platform staff or active in that company. The
+    // platform flag is read from the users row, never from the caller's JWT.
+    const action = entry.action.trim();
+    if (action.length === 0 || action.length > 80) {
+      this.logger.error('Refusing a blank or oversized audit action', {
+        action: entry.action,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to record the change',
+      });
+    }
+    const inserted = await tx.query(
+      `insert into public.audit_log
+         (actor_user_id, actor_is_platform_admin, tenant_id, action,
+          target_user_id, details)
+       select a.id, a.platform_admin, $2, $3, t.user_id, $5::jsonb
+         from public.users a
+         cross join unnest($4::uuid[]) as t(user_id)
+         join public.users tu on tu.id = t.user_id
+        where a.id = $1 and not a.disabled
+          and (a.platform_admin or exists (
+            select 1 from public.memberships m
+             where m.user_id = a.id and m.tenant_id = $2
+               and m.status = 'active'
+          ))`,
+      [
+        entry.actorUserId,
+        entry.tenantId,
+        action,
+        entry.targetUserIds,
+        JSON.stringify(entry.details),
+      ],
+    );
+    if (inserted.rowCount !== entry.targetUserIds.length) {
+      this.logger.error('Failed to write the membership audit rows', {
+        action: entry.action,
+        expected: entry.targetUserIds.length,
+        written: inserted.rowCount,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to record the change',
+      });
     }
   }
 

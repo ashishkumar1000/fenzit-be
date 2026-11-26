@@ -27,6 +27,7 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { MembershipRole, Role } from '../common/enums/role.enum';
 import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
 import { memberRpcException } from '../common/members/member-rpc-error';
+import { assertManagerAssignable } from '../common/members/manager-assignment';
 import { seedLeaveCatalog } from '../attendance/leave-catalog.seed';
 import { startCompanyValidity } from './tenant-validity';
 import {
@@ -646,6 +647,7 @@ export class AuthService {
           role,
           reactivated: invite.wasReactivated,
           employee_code: invite.employeeCode,
+          manager_id: dto.managerId ?? null,
         },
       })) as { error: { code?: string; message?: string } | null };
       if (auditCall.error) {
@@ -696,11 +698,13 @@ export class AuthService {
   }> {
     // One invite per phone number at a time, across companies, then the
     // company lock — the exact xact-scoped locks the function held.
-    await tx.query(`select pg_advisory_xact_lock(hashtext('invite:' || $1 || $2))`, [
-      dto.countryCode,
-      dto.phoneNumber,
+    await tx.query(
+      `select pg_advisory_xact_lock(hashtext('invite:' || $1 || $2))`,
+      [dto.countryCode, dto.phoneNumber],
+    );
+    await tx.query('select public.attendance_lock_tenant($1, true)', [
+      tenantId,
     ]);
-    await tx.query('select public.attendance_lock_tenant($1, true)', [tenantId]);
 
     // Caller check under the locks (the function re-checked after waiting for
     // them): a live, enabled person who manages this company — or staff.
@@ -731,9 +735,10 @@ export class AuthService {
     }
 
     // The company must exist (404) and the dial code must be one we serve.
-    const tenant = await tx.query('select 1 from public.tenants where id = $1', [
-      tenantId,
-    ]);
+    const tenant = await tx.query(
+      'select 1 from public.tenants where id = $1',
+      [tenantId],
+    );
     if (tenant.rowCount === 0) {
       throw new NotFoundException({
         error_code: ErrorCode.RESOURCE_NOT_FOUND,
@@ -836,6 +841,21 @@ export class AuthService {
       );
     }
 
+    // "Reports to" is validated inside the invite transaction, under the same
+    // company and phone locks, so a manager cannot change underneath it. The
+    // guards are PATCH's — an admin invitee can never carry a pointer.
+    if (dto.managerId !== undefined) {
+      if (role === Role.COMPANY_ADMIN) {
+        throw new ConflictException({
+          error_code: ErrorCode.MEMBER_IS_ADMIN,
+          message:
+            'An admin sits at the top of the team and cannot report to anyone',
+        });
+      }
+      await assertManagerAssignable(tx, tenantId, personId, dto.managerId);
+    }
+    const managerId = dto.managerId ?? null;
+
     // A previously removed member keeps their code and history: flip the old
     // membership back to invited instead of minting a new one.
     const removed = await tx.query<{ id: string }>(
@@ -848,10 +868,10 @@ export class AuthService {
     if (oldMembership) {
       const reactivated = await tx.query<{ employee_code: string }>(
         `update public.memberships
-            set status = 'invited', role = $2, invited_by = $3
+            set status = 'invited', role = $2, invited_by = $3, manager_id = $4
           where id = $1 and status = 'removed'
           returning employee_code`,
-        [oldMembership.id, role, caller.userId],
+        [oldMembership.id, role, caller.userId, managerId],
       );
       await this.attachInviteSkills(tx, personId, skillIds);
       return {
@@ -894,10 +914,10 @@ export class AuthService {
       await tx.query('savepoint invite_code_mint');
       try {
         const membership = await tx.query<{ employee_code: string }>(
-          `insert into public.memberships (user_id, tenant_id, role, status, employee_code, invited_by)
-           values ($1, $2, $3, 'invited', $4, $5)
+          `insert into public.memberships (user_id, tenant_id, role, status, employee_code, invited_by, manager_id)
+           values ($1, $2, $3, 'invited', $4, $5, $6)
            returning employee_code`,
-          [personId, tenantId, role, code, caller.userId],
+          [personId, tenantId, role, code, caller.userId, managerId],
         );
         await tx.query('release savepoint invite_code_mint');
         await this.attachInviteSkills(tx, personId, skillIds);

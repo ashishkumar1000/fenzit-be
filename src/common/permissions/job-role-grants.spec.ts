@@ -33,6 +33,27 @@ describe('job grants per role (employee-created jobs)', () => {
 });
 
 /**
+ * Pins the reporting-manager grant (24-1/CAP-1): the "Reports to" endpoint
+ * sits behind `member.manager`, so a dropped grant switches the whole
+ * hierarchy surface off without any service test failing. Outside
+ * ADMIN_PERMISSIONS — staff do not edit a company's tree.
+ */
+describe('reporting-manager grant per role (24-1/CAP-1)', () => {
+  it('only the company admin holds it', () => {
+    expect(permissionsFor(Role.COMPANY_ADMIN).has('member.manager')).toBe(true);
+    expect(permissionsFor(Role.EMPLOYEE).has('member.manager')).toBe(false);
+    expect(permissionsFor(Role.VIEWER).has('member.manager')).toBe(false);
+    expect(permissionsFor(Role.PLATFORM_ADMIN).has('member.manager')).toBe(
+      false,
+    );
+  });
+
+  it('a signed-in person with no company holds nothing of it', () => {
+    expect(permissionsFor(null).has('member.manager')).toBe(false);
+  });
+});
+
+/**
  * Pins the employment-data grant (CAP-13, story 23-1) the same way: the
  * employment endpoints sit behind `member.employment`, so a dropped grant
  * switches the whole Form V surface off without any service test failing.

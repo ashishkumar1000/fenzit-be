@@ -18,6 +18,7 @@ const REQUIRED: Record<string, string[]> = {
   getEmployment: ['member.employment'],
   updateEmployment: ['member.employment'],
   setActive: ['member.deactivate'],
+  setManager: ['member.manager'],
   remove: ['member.remove'],
   disable: ['user.disable'],
   enable: ['user.disable'],

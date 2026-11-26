@@ -129,8 +129,8 @@ describe('AuthService', () => {
       sendInviteSms: jest.fn().mockResolvedValue('not_configured'),
     };
 
-    withTransaction = jest.fn(
-      (work: (tx: unknown) => Promise<unknown>) => work(currentTx),
+    withTransaction = jest.fn((work: (tx: unknown) => Promise<unknown>) =>
+      work(currentTx),
     );
     const mockPgPoolFactory = { withTransaction };
 
@@ -882,12 +882,14 @@ describe('AuthService', () => {
 
     /** Admin client for the post-transaction steps: the skills-catalog check
      *  (pre-tx) and the write_audit_row call (post-commit). */
-    function makeInviteAdmin(opts: {
-      validSkills?: { id: string }[];
-      validSkillsError?: { code?: string; message?: string } | null;
-      auditError?: { code?: string; message?: string } | null;
-      auditReject?: unknown;
-    } = {}) {
+    function makeInviteAdmin(
+      opts: {
+        validSkills?: { id: string }[];
+        validSkillsError?: { code?: string; message?: string } | null;
+        auditError?: { code?: string; message?: string } | null;
+        auditReject?: unknown;
+      } = {},
+    ) {
       const validSkillsData =
         opts.validSkills !== undefined ? opts.validSkills : [{ id: SKILL_ID }];
 
@@ -901,9 +903,10 @@ describe('AuthService', () => {
       const rpc =
         opts.auditReject !== undefined
           ? jest.fn().mockRejectedValue(opts.auditReject)
-          : jest
-              .fn()
-              .mockResolvedValue({ data: null, error: opts.auditError ?? null });
+          : jest.fn().mockResolvedValue({
+              data: null,
+              error: opts.auditError ?? null,
+            });
 
       return {
         skillCheckEq,
@@ -945,6 +948,12 @@ describe('AuthService', () => {
       membershipErrorOnce?: boolean;
       /** The person insert rejects with this pg error (an unknown writer won the phone race). */
       userInsertError?: { code: string; constraint?: string };
+      /** The chosen "Reports to" manager, as the membership read answers it. */
+      manager?: { status: string; disabled: boolean } | null;
+      /** The manager's branch would close a loop. */
+      managerCycle?: boolean;
+      /** How many managers stand above the chosen manager. */
+      managerAncestors?: number;
     }
 
     /**
@@ -1040,14 +1049,40 @@ describe('AuthService', () => {
             if (opts.userInsertError) {
               aborted = true;
               return Promise.reject(
-                Object.assign(new Error('unique violation'), opts.userInsertError),
+                Object.assign(
+                  new Error('unique violation'),
+                  opts.userInsertError,
+                ),
               );
             }
-            return Promise.resolve({ rows: [{ id: 'new-person-uuid' }], rowCount: 1 });
+            return Promise.resolve({
+              rows: [{ id: 'new-person-uuid' }],
+              rowCount: 1,
+            });
           }
           if (sql.includes('update public.users set name')) {
             nameFills.push(params as string[]);
             return Promise.resolve({ rows: [], rowCount: 1 });
+          }
+          // "Reports to": the manager read and the cycle/depth probe.
+          if (sql.includes('select m.status, u.disabled')) {
+            return Promise.resolve(
+              opts.manager
+                ? { rows: [opts.manager], rowCount: 1 }
+                : { rows: [], rowCount: 0 },
+            );
+          }
+          if (sql.includes('with recursive live')) {
+            return Promise.resolve({
+              rows: [
+                {
+                  cycle: opts.managerCycle ?? false,
+                  manager_ancestors: opts.managerAncestors ?? 0,
+                  subtree_depth: 0,
+                },
+              ],
+              rowCount: 1,
+            });
           }
           // Live-membership checks: same team vs. any company.
           if (sql.includes("status <> 'removed'")) {
@@ -1079,7 +1114,10 @@ describe('AuthService', () => {
             });
           if (sql.includes('employee_sequences')) {
             bumps.push(seq);
-            return Promise.resolve({ rows: [{ last_seq: seq++ }], rowCount: 1 });
+            return Promise.resolve({
+              rows: [{ last_seq: seq++ }],
+              rowCount: 1,
+            });
           }
           // Employee-code existence check.
           if (sql.includes('tenant_id = $1 and employee_code = $2')) {
@@ -1095,7 +1133,10 @@ describe('AuthService', () => {
               if (!opts.membershipErrorOnce || firstPass) {
                 aborted = true;
                 return Promise.reject(
-                  Object.assign(new Error('unique violation'), opts.membershipError),
+                  Object.assign(
+                    new Error('unique violation'),
+                    opts.membershipError,
+                  ),
                 );
               }
             }
@@ -1166,6 +1207,7 @@ describe('AuthService', () => {
           'employee',
           'EMP-004',
           adminUser.userId,
+          null,
         ],
       ]);
       // Skills attach inside the same transaction.
@@ -1181,9 +1223,165 @@ describe('AuthService', () => {
             role: 'employee',
             reactivated: false,
             employee_code: 'EMP-004',
+            manager_id: null,
           },
         }),
       );
+    });
+
+    it('stores the "Reports to" manager named on the invite', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        manager: { status: 'active', disabled: false },
+      });
+      currentTx = world.tx;
+
+      await service.inviteMember(adminUser, {
+        ...dto,
+        managerId: '550e8400-e29b-41d4-a716-446655440002',
+      });
+
+      expect(world.membershipInserts[0][5]).toBe(
+        '550e8400-e29b-41d4-a716-446655440002',
+      );
+    });
+
+    it('refuses an admin invite that also names a manager — 409 MEMBER_IS_ADMIN', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        manager: { status: 'active', disabled: false },
+      });
+      currentTx = world.tx;
+
+      await expect(
+        service.inviteMember(adminUser, {
+          ...dto,
+          role: 'company_admin',
+          managerId: '550e8400-e29b-41d4-a716-446655440002',
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error_code: 'MEMBER_IS_ADMIN' },
+      });
+    });
+
+    it('refuses a manager who is not an active member — 422 MANAGER_NOT_ACTIVE', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        manager: { status: 'invited', disabled: false },
+      });
+      currentTx = world.tx;
+
+      await expect(
+        service.inviteMember(adminUser, {
+          ...dto,
+          managerId: '550e8400-e29b-41d4-a716-446655440002',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        response: { error_code: 'MANAGER_NOT_ACTIVE' },
+      });
+    });
+
+    it('answers not found for a manager who is not in this company', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({ manager: null });
+      currentTx = world.tx;
+
+      await expect(
+        service.inviteMember(adminUser, {
+          ...dto,
+          managerId: '550e8400-e29b-41d4-a716-446655440002',
+        }),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { error_code: 'RESOURCE_NOT_FOUND' },
+      });
+    });
+
+    it('refuses a removed manager the same way as any other inactive one — 422', async () => {
+      for (const manager of [
+        { status: 'removed', disabled: false },
+        { status: 'active', disabled: true },
+      ]) {
+        supabaseClientFactory.createAdmin.mockReturnValue(
+          makeInviteAdmin() as never,
+        );
+        const world = makeInviteTx({ manager });
+        currentTx = world.tx;
+
+        await expect(
+          service.inviteMember(adminUser, {
+            ...dto,
+            managerId: '550e8400-e29b-41d4-a716-446655440002',
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          response: { error_code: 'MANAGER_NOT_ACTIVE' },
+        });
+      }
+    });
+
+    it('refuses an invite that would make the person report to themselves — 422', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        manager: { status: 'active', disabled: false },
+      });
+      currentTx = world.tx;
+
+      await expect(
+        service.inviteMember(adminUser, {
+          ...dto,
+          managerId: 'new-person-uuid',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        response: { error_code: 'VALIDATION_ERROR' },
+      });
+    });
+
+    it('refuses an invite whose manager would close a loop or pass the depth cap', async () => {
+      for (const [world, errorCode] of [
+        [
+          makeInviteTx({
+            manager: { status: 'active', disabled: false },
+            managerCycle: true,
+          }),
+          'HIERARCHY_CYCLE',
+        ],
+        [
+          makeInviteTx({
+            manager: { status: 'active', disabled: false },
+            managerAncestors: 19,
+          }),
+          'HIERARCHY_DEPTH',
+        ],
+      ] as const) {
+        supabaseClientFactory.createAdmin.mockReturnValue(
+          makeInviteAdmin() as never,
+        );
+        currentTx = world.tx;
+
+        await expect(
+          service.inviteMember(adminUser, {
+            ...dto,
+            managerId: '550e8400-e29b-41d4-a716-446655440002',
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          response: { error_code: errorCode },
+        });
+      }
     });
 
     it('defaults the role to employee when none is sent, and passes an explicit role through', async () => {
@@ -1382,7 +1580,10 @@ describe('AuthService', () => {
       supabaseClientFactory.createAdmin.mockReturnValue(
         makeInviteAdmin() as never,
       );
-      currentTx = makeInviteTx({ personFound: true, personPlatformAdmin: true }).tx;
+      currentTx = makeInviteTx({
+        personFound: true,
+        personPlatformAdmin: true,
+      }).tx;
       await expect(service.inviteMember(adminUser, dto)).rejects.toMatchObject({
         status: 400,
         response: expect.objectContaining({
@@ -1576,6 +1777,33 @@ describe('AuthService', () => {
           p_details: expect.objectContaining({ reactivated: true }),
         }),
       );
+    });
+
+    it('stores the manager on the reactivation update, not only on a fresh insert', async () => {
+      supabaseClientFactory.createAdmin.mockReturnValue(
+        makeInviteAdmin() as never,
+      );
+      const world = makeInviteTx({
+        personFound: true,
+        removedMembershipId: 'membership-uuid-9',
+        manager: { status: 'active', disabled: false },
+      });
+      currentTx = world.tx;
+
+      await service.inviteMember(adminUser, {
+        ...dto,
+        managerId: '550e8400-e29b-41d4-a716-446655440002',
+      });
+
+      const update = world.tx.query.mock.calls.find(([sql]: string[]) =>
+        sql.includes('update public.memberships'),
+      );
+      expect(update?.[1]).toEqual([
+        'membership-uuid-9',
+        'employee',
+        adminUser.userId,
+        '550e8400-e29b-41d4-a716-446655440002',
+      ]);
     });
 
     it('fills a person with no name from the invite, write-once', async () => {
@@ -1814,16 +2042,19 @@ describe('AuthService', () => {
      * the row returns only when its status is inside the filter list. This is
      * what makes a deactivated member provably invisible to the live read.
      */
-    function statusAwareMembershipRead(row: {
-      tenant_id: string;
-      role: string;
-      status: string;
-    } | null) {
+    function statusAwareMembershipRead(
+      row: {
+        tenant_id: string;
+        role: string;
+        status: string;
+      } | null,
+    ) {
       const inCalls: Array<[string, string[]]> = [];
       const matches = () =>
         row !== null &&
         inCalls.some(
-          ([column, values]) => column === 'status' && values.includes(row.status),
+          ([column, values]) =>
+            column === 'status' && values.includes(row.status),
         );
       const chain: Record<string, jest.Mock> = {};
       for (const m of ['select', 'eq', 'neq']) {
@@ -1869,7 +2100,10 @@ describe('AuthService', () => {
 
       // The live read only ever invites/activates — a deactivated status can
       // never match it, so the person lands in the parked no-company state.
-      expect(liveRead.inCalls).toContainEqual(['status', ['invited', 'active']]);
+      expect(liveRead.inCalls).toContainEqual([
+        'status',
+        ['invited', 'active'],
+      ]);
       expect(parkedRead.inCalls).toContainEqual([
         'status',
         ['removed', 'deactivated'],

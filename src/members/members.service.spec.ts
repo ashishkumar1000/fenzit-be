@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   InternalServerErrorException,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { StorageService } from '../storage/storage.service';
@@ -40,7 +41,15 @@ function queryStub(result: DbResult) {
   return { builder, calls };
 }
 
-function build(opts: { query?: DbResult; rpc?: DbResult } = {}) {
+function build(
+  opts: {
+    query?: DbResult;
+    rpc?: DbResult;
+    tx?: { query: jest.Mock };
+    hierarchyUp?: unknown[];
+    hierarchyDown?: unknown[];
+  } = {},
+) {
   const query = queryStub(opts.query ?? { data: [], error: null });
   const rpc = jest
     .fn()
@@ -54,11 +63,29 @@ function build(opts: { query?: DbResult; rpc?: DbResult } = {}) {
       Promise.resolve(`https://signed.example/${key}`),
     ),
   };
+  // Member reads now merge one hierarchy query. A stub that answers the
+  // recursive walk with no rows gives every member the empty hierarchy;
+  // anything else throws, so a stray call is not silently ignored.
+  const dispatch = (sql: string) => {
+    if (sql.includes('d.root_id')) return { rows: opts.hierarchyDown ?? [] };
+    if (sql.includes('select u.node_id, u.ancestor_id')) {
+      return { rows: opts.hierarchyUp ?? [] };
+    }
+    if (sql.includes('with recursive live')) return { rows: [] };
+    throw new Error(`unclassified query: ${sql}`);
+  };
+  const tx = opts.tx ?? {
+    query: jest.fn((sql: string) => Promise.resolve(dispatch(sql))),
+  };
+  const pg = {
+    withTransaction: (work: (client: unknown) => Promise<unknown>) => work(tx),
+  } as unknown as PgPoolFactory;
   const service = new MembersService(
     factory,
     storage as unknown as StorageService,
+    pg,
   );
-  return { service, rpc, from: admin.from, query, storage };
+  return { service, rpc, from: admin.from, query, storage, tx };
 }
 
 const companyAdmin: RequestUser = {
@@ -76,6 +103,131 @@ const platformAdmin: RequestUser = {
   platformAdmin: true,
   rawJwt: 'jwt',
 };
+
+/** Fenzit staff acting on a named company (X-Company-Id). */
+const staffOnCompany: RequestUser = {
+  ...platformAdmin,
+  tenantId: 'tenant-A',
+  role: Role.PLATFORM_ADMIN,
+};
+
+/**
+ * A pg transaction stand-in for the ported membership writes. It dispatches
+ * on the SQL shape (never on call order) and records every query, so a test
+ * can assert both the refusals and the writes that did or did not happen.
+ */
+function buildMembershipWrite(
+  opts: {
+    caller?: {
+      platform_admin: boolean;
+      disabled: boolean;
+      is_company_admin: boolean;
+    } | null;
+    tenantExists?: boolean;
+    member?: Record<string, unknown> | null;
+    otherAdmins?: number;
+    manager?: Record<string, unknown> | null;
+    managerServes?: boolean;
+    probe?: {
+      cycle: boolean;
+      manager_ancestors: number;
+      subtree_depth: number;
+    };
+    reportIds?: string[];
+    auditWritten?: number;
+    hierarchyUp?: unknown[];
+    hierarchyDown?: unknown[];
+  } = {},
+) {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const tx = {
+    query: jest.fn((sql: string, params?: unknown[]) => {
+      queries.push({ sql, params });
+      if (sql.includes('attendance_lock_tenant')) return { rows: [] };
+      if (sql.includes('as is_company_admin')) {
+        return {
+          rows:
+            opts.caller === undefined
+              ? [
+                  {
+                    platform_admin: false,
+                    disabled: false,
+                    is_company_admin: true,
+                  },
+                ]
+              : opts.caller
+                ? [opts.caller]
+                : [],
+        };
+      }
+      if (sql.includes('from public.tenants')) {
+        return { rowCount: opts.tenantExists === false ? 0 : 1, rows: [] };
+      }
+      if (sql.includes('count(*)::int as n')) {
+        return { rows: [{ n: opts.otherAdmins ?? 0 }] };
+      }
+      if (sql.includes('as serves')) {
+        return { rows: [{ serves: opts.managerServes ?? true }] };
+      }
+      if (
+        sql.includes('with recursive live') &&
+        sql.includes('subtree_depth')
+      ) {
+        return {
+          rows: [
+            opts.probe ?? {
+              cycle: false,
+              manager_ancestors: 0,
+              subtree_depth: 0,
+            },
+          ],
+        };
+      }
+      if (sql.includes('d.root_id')) {
+        return { rows: opts.hierarchyDown ?? [] };
+      }
+      if (sql.includes('select u.node_id, u.ancestor_id')) {
+        return { rows: opts.hierarchyUp ?? [] };
+      }
+      if (sql.includes('with recursive live')) return { rows: [] };
+      if (
+        sql.includes('update public.memberships') &&
+        sql.includes('returning user_id')
+      ) {
+        const ids = opts.reportIds ?? [];
+        return {
+          rowCount: ids.length,
+          rows: ids.map((id) => ({ user_id: id })),
+        };
+      }
+      if (sql.includes('insert into public.audit_log')) {
+        const targets = (params?.[3] as string[]) ?? [];
+        return {
+          rowCount: opts.auditWritten ?? targets.length,
+          rows: [],
+        };
+      }
+      if (
+        sql.includes('select id, role, status, manager_id') ||
+        sql.includes('select id, role, manager_id') ||
+        sql.includes('select m.id, m.role, m.manager_id')
+      ) {
+        return { rows: opts.member ? [opts.member] : [] };
+      }
+      if (
+        sql.includes('select m.status, u.disabled') ||
+        sql.includes('select m.user_id, m.status, u.disabled')
+      ) {
+        return { rows: opts.manager ? [opts.manager] : [] };
+      }
+      if (sql.includes('update public.memberships')) {
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`unclassified query: ${sql}`);
+    }),
+  };
+  return { tx, queries };
+}
 
 /** The message of the error, without the status: what a client reads. */
 const bodyOf = (e: unknown) => (e as { getResponse(): unknown }).getResponse();
@@ -193,6 +345,76 @@ describe('MembersService', () => {
         'https://signed.example/avatars/u-2/ok.jpg',
       );
     });
+
+    it('merges each member’s chain and headcount into the list payload', async () => {
+      const { service } = build({
+        query: {
+          data: [
+            memberRowWithPhoto('u-1', null),
+            memberRowWithPhoto('u-2', null),
+          ],
+          error: null,
+        },
+        hierarchyUp: [
+          { node_id: 'u-1', ancestor_id: 'u-2', depth: 1, name: 'Boss' },
+        ],
+        hierarchyDown: [
+          { root_id: 'u-1', node_id: 'u-9', depth: 1, disabled: false },
+          { root_id: 'u-1', node_id: 'u-10', depth: 2, disabled: false },
+        ],
+      });
+
+      const members = await service.list(companyAdmin);
+
+      expect(members[0]).toMatchObject({
+        managerId: 'u-2',
+        managerName: 'Boss',
+        chain: [{ userId: 'u-2', name: 'Boss' }],
+        headcount: 2,
+        directReports: 1,
+      });
+      expect(members[1]).toMatchObject({ managerId: null, headcount: 0 });
+    });
+  });
+
+  describe('listPaged — the console team table', () => {
+    it('merges the hierarchy into the page rows it returns', async () => {
+      const row = (userId: string) => ({
+        user_id: userId,
+        role: 'employee',
+        status: 'active',
+        employee_code: `EMP-${userId}`,
+        created_at: '2026-06-20T00:00:00Z',
+        can_create_jobs: false,
+        job_approval_required: false,
+        users: {
+          name: `Name ${userId}`,
+          email: null,
+          country_code: '+91',
+          phone_number: '9000000000',
+          disabled: false,
+          avatar_key: null,
+        },
+      });
+      const { service } = build({
+        query: { data: [row('u-1'), row('u-2')], error: null },
+        hierarchyUp: [
+          { node_id: 'u-2', ancestor_id: 'u-1', depth: 1, name: 'Owner' },
+        ],
+        hierarchyDown: [
+          { root_id: 'u-1', node_id: 'u-2', depth: 1, disabled: false },
+        ],
+      });
+
+      const page = await service.listPaged(companyAdmin, {});
+
+      expect(page.data[1]).toMatchObject({
+        managerId: 'u-1',
+        managerName: 'Owner',
+        headcount: 0,
+      });
+      expect(page.data[0]).toMatchObject({ headcount: 1, directReports: 1 });
+    });
   });
 
   describe('getMember', () => {
@@ -245,11 +467,16 @@ describe('MembersService', () => {
         [
           'avatarUrl',
           'canCreateJobs',
+          'chain',
           'countryCode',
           'createdAt',
+          'directReports',
           'employeeCode',
           'email',
+          'headcount',
           'jobApprovalRequired',
+          'managerId',
+          'managerName',
           'name',
           'phoneNumber',
           'role',
@@ -283,41 +510,158 @@ describe('MembersService', () => {
     });
   });
 
-  describe('changeRole', () => {
-    it('sends the caller, company, member and new role to the database function', async () => {
-      const { service, rpc } = build({
-        rpc: {
-          data: [{ old_role: 'employee', new_role: 'viewer' }],
-          error: null,
-        },
-      });
-      await service.changeRole(companyAdmin, 'member-1', 'viewer' as never);
-      expect(rpc).toHaveBeenCalledWith('change_member_role', {
-        p_caller: 'admin-1',
-        p_tenant_id: 'tenant-A',
-        p_member_user_id: 'member-1',
-        p_new_role: 'viewer',
-      });
+  describe('changeRole — ported out of PL/pgSQL', () => {
+    const membershipRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 'membership-1',
+      role: 'employee',
+      status: 'active',
+      manager_id: null,
+      ...overrides,
     });
 
-    it('reports the real old and new roles from the database', async () => {
-      const { service } = build({
-        rpc: {
-          data: [{ old_role: 'employee', new_role: 'company_admin' }],
-          error: null,
-        },
-      });
+    it('writes the new role, audits it, and reports the real old and new roles', async () => {
+      const { tx, queries } = buildMembershipWrite({ member: membershipRow() });
+      const { service } = build({ tx });
+
       await expect(
-        service.changeRole(companyAdmin, 'member-1', 'company_admin' as never),
+        service.changeRole(companyAdmin, 'member-1', 'viewer' as never),
       ).resolves.toEqual({
         userId: 'member-1',
         oldRole: 'employee',
-        newRole: 'company_admin',
+        newRole: 'viewer',
       });
+
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.params).toEqual(['membership-1', 'viewer', false]);
+      const audit = queries.find((q) =>
+        q.sql.includes('insert into public.audit_log'),
+      );
+      expect(audit?.params?.slice(1, 4)).toEqual([
+        'tenant-A',
+        'member.role_change',
+        ['member-1'],
+      ]);
     });
 
-    it('fails loudly, never a made-up change, when the database returns no role row', async () => {
-      const { service } = build({ rpc: { data: [], error: null } });
+    it('promotion to admin clears the member’s own pointer in the same write (D1)', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ role: 'viewer', manager_id: 'boss-1' }),
+      });
+      const { service } = build({ tx });
+
+      await service.changeRole(
+        companyAdmin,
+        'member-1',
+        'company_admin' as never,
+      );
+
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.params).toEqual(['membership-1', 'company_admin', true]);
+      const audit = queries.find((q) =>
+        q.sql.includes('insert into public.audit_log'),
+      );
+      expect(String(audit?.params?.[4])).toContain('cleared_manager_id');
+    });
+
+    it('a same-role call writes nothing and audits nothing', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ role: 'viewer' }),
+      });
+      const { service } = build({ tx });
+
+      await expect(
+        service.changeRole(companyAdmin, 'member-1', 'viewer' as never),
+      ).resolves.toEqual({
+        userId: 'member-1',
+        oldRole: 'viewer',
+        newRole: 'viewer',
+      });
+      expect(
+        queries.some((q) => q.sql.includes('update public.memberships')),
+      ).toBe(false);
+      expect(
+        queries.some((q) => q.sql.includes('insert into public.audit_log')),
+      ).toBe(false);
+    });
+
+    it('refuses to demote the only active admin — a disabled co-admin does not count', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow({ role: 'company_admin', status: 'active' }),
+        otherAdmins: 0,
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .changeRole(companyAdmin, 'member-1', 'viewer' as never)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'LAST_ADMIN' });
+    });
+
+    it('lets a platform admin change a role of the named company', async () => {
+      const { tx } = buildMembershipWrite({
+        caller: {
+          platform_admin: true,
+          disabled: false,
+          is_company_admin: false,
+        },
+        member: membershipRow(),
+      });
+      const { service } = build({ tx });
+
+      await expect(
+        service.changeRole(staffOnCompany, 'member-1', 'viewer' as never),
+      ).resolves.toMatchObject({ newRole: 'viewer' });
+    });
+
+    it('refuses a disabled caller, and one who does not manage this company', async () => {
+      for (const caller of [
+        { platform_admin: false, disabled: true, is_company_admin: true },
+        { platform_admin: false, disabled: false, is_company_admin: false },
+      ]) {
+        const { tx } = buildMembershipWrite({ caller });
+        const { service } = build({ tx });
+
+        const err = await service
+          .changeRole(companyAdmin, 'member-1', 'viewer' as never)
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ForbiddenException);
+        expect(bodyOf(err)).toMatchObject({ error_code: 'FORBIDDEN' });
+      }
+    });
+
+    it('answers 404 for a member who is not in this company', async () => {
+      const { tx } = buildMembershipWrite({ member: null });
+      const { service } = build({ tx });
+
+      await expect(
+        service.changeRole(companyAdmin, 'ghost', 'viewer' as never),
+      ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('refuses to change your own role with 403 FORBIDDEN, before any read', async () => {
+      const { tx } = buildMembershipWrite();
+      const { service } = build({ tx });
+
+      const err = await service
+        .changeRole(companyAdmin, 'admin-1', 'viewer' as never)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'FORBIDDEN' });
+      expect(tx.query).not.toHaveBeenCalled();
+    });
+
+    it('fails the whole change when the audit row cannot be written', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        auditWritten: 0,
+      });
+      const { service } = build({ tx });
+
       const err = await service
         .changeRole(companyAdmin, 'member-1', 'viewer' as never)
         .catch((e: unknown) => e);
@@ -326,59 +670,493 @@ describe('MembersService', () => {
         error_code: 'INTERNAL_SERVER_ERROR',
       });
     });
+  });
 
-    it('turns the last-admin refusal into a 409 with its own code', async () => {
-      const { service } = build({
-        rpc: {
-          data: null,
-          error: { code: 'PT409', hint: 'LAST_ADMIN', message: 'x' },
-        },
+  describe('remove — ported out of PL/pgSQL', () => {
+    const membershipRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 'membership-1',
+      role: 'employee',
+      status: 'active',
+      manager_id: null,
+      ...overrides,
+    });
+
+    it('re-parents direct reports, clears the removed pointer and audits each change', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'mgr-1' }),
+        managerServes: true,
+        reportIds: ['report-1', 'report-2'],
       });
+      const { service } = build({ tx });
+
+      await service.remove(companyAdmin, 'member-1');
+
+      const reparent = queries.find((q) => q.sql.includes('returning user_id'));
+      expect(reparent?.params).toEqual(['tenant-A', 'member-1', 'mgr-1']);
+      const removed = queries.find((q) =>
+        q.sql.includes("set status = 'removed'"),
+      );
+      expect(removed?.params).toEqual(['membership-1']);
+
+      const audits = queries.filter((q) =>
+        q.sql.includes('insert into public.audit_log'),
+      );
+      expect(audits).toHaveLength(2);
+      expect(audits[0].params?.slice(1, 4)).toEqual([
+        'tenant-A',
+        'member.remove',
+        ['member-1'],
+      ]);
+      expect(audits[1].params?.slice(1, 4)).toEqual([
+        'tenant-A',
+        'member.reparent',
+        ['report-1', 'report-2'],
+      ]);
+    });
+
+    it('leaves the reports unassigned when the removed member’s own manager no longer serves', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'mgr-1' }),
+        managerServes: false,
+      });
+      const { service } = build({ tx });
+
+      await service.remove(companyAdmin, 'member-1');
+
+      const reparent = queries.find((q) => q.sql.includes('returning user_id'));
+      expect(reparent?.params).toEqual(['tenant-A', 'member-1', null]);
+    });
+
+    it('writes one audit row when the member has no reports', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow(),
+        reportIds: [],
+      });
+      const { service } = build({ tx });
+
+      await service.remove(companyAdmin, 'member-1');
+
+      expect(
+        queries.filter((q) => q.sql.includes('insert into public.audit_log')),
+      ).toHaveLength(1);
+    });
+
+    it('refuses to remove the only active admin', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow({ role: 'company_admin', status: 'active' }),
+        otherAdmins: 0,
+      });
+      const { service } = build({ tx });
+
       const err = await service
-        .changeRole(companyAdmin, 'member-1', 'viewer' as never)
+        .remove(companyAdmin, 'member-1')
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ConflictException);
       expect(bodyOf(err)).toMatchObject({ error_code: 'LAST_ADMIN' });
     });
 
-    it('hides an unknown database error behind a generic 500, with no database text', async () => {
-      const { service } = build({
-        rpc: {
-          data: null,
-          error: { code: '42501', message: 'permission denied for table x' },
-        },
-      });
+    it('maps a not-found member to 404', async () => {
+      const { tx } = buildMembershipWrite({ member: null });
+      const { service } = build({ tx });
+
+      await expect(service.remove(companyAdmin, 'ghost')).rejects.toMatchObject(
+        { status: 404 },
+      );
+    });
+
+    it('refuses to remove yourself with 403 FORBIDDEN, before any read', async () => {
+      const { tx } = buildMembershipWrite();
+      const { service } = build({ tx });
+
       const err = await service
-        .changeRole(companyAdmin, 'member-1', 'viewer' as never)
+        .remove(companyAdmin, 'admin-1')
         .catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(InternalServerErrorException);
-      expect(JSON.stringify(bodyOf(err))).not.toContain('permission denied');
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'FORBIDDEN' });
+      expect(tx.query).not.toHaveBeenCalled();
     });
   });
 
-  describe('remove', () => {
-    it('removes the named member inside the caller company only', async () => {
-      const { service, rpc } = build({ rpc: { data: null, error: null } });
-      await service.remove(companyAdmin, 'member-1');
-      expect(rpc).toHaveBeenCalledWith('remove_member', {
-        p_caller: 'admin-1',
-        p_tenant_id: 'tenant-A',
-        p_member_user_id: 'member-1',
+  describe('setManager — "Reports to"', () => {
+    const detailRow = {
+      user_id: 'member-1',
+      role: 'employee',
+      status: 'active',
+      employee_code: 'EMP-001',
+      created_at: '2026-06-20T00:00:00Z',
+      can_create_jobs: false,
+      job_approval_required: false,
+      users: {
+        name: 'Ravi Kumar',
+        email: null,
+        country_code: '+91',
+        phone_number: '9000000000',
+        disabled: false,
+        avatar_key: null,
+      },
+    };
+    const membershipRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 'membership-1',
+      role: 'employee',
+      manager_id: null,
+      ...overrides,
+    });
+    const managerRow = (overrides: Record<string, unknown> = {}) => ({
+      user_id: 'mgr-1',
+      status: 'active',
+      disabled: false,
+      ...overrides,
+    });
+
+    it('stores the pointer, audits it and answers the updated member', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      const view = await service.setManager(companyAdmin, 'member-1', 'mgr-1');
+
+      expect(view.userId).toBe('member-1');
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.params).toEqual(['membership-1', 'mgr-1']);
+      const audit = queries.find((q) =>
+        q.sql.includes('insert into public.audit_log'),
+      );
+      expect(audit?.params?.slice(1, 4)).toEqual([
+        'tenant-A',
+        'member.manager_change',
+        ['member-1'],
+      ]);
+    });
+
+    it('clears the pointer when managerId is null', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'mgr-1' }),
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', null);
+
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.params).toEqual(['membership-1', null]);
+    });
+
+    it('refuses to assign a manager to an admin — 409 MEMBER_IS_ADMIN', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow({ role: 'company_admin' }),
+        manager: managerRow(),
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'MEMBER_IS_ADMIN' });
+    });
+
+    it('refuses a person reporting to themselves — 422', async () => {
+      const { tx } = buildMembershipWrite();
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'member-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'VALIDATION_ERROR' });
+      expect(tx.query).not.toHaveBeenCalled();
+    });
+
+    it('refuses an invited, deactivated or disabled manager — 422 MANAGER_NOT_ACTIVE', async () => {
+      for (const manager of [
+        managerRow({ status: 'invited' }),
+        managerRow({ status: 'deactivated' }),
+        managerRow({ disabled: true }),
+      ]) {
+        const { tx } = buildMembershipWrite({
+          member: membershipRow(),
+          manager,
+        });
+        const { service } = build({ tx });
+
+        const err = await service
+          .setManager(companyAdmin, 'member-1', 'mgr-1')
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(UnprocessableEntityException);
+        expect(bodyOf(err)).toMatchObject({ error_code: 'MANAGER_NOT_ACTIVE' });
+      }
+    });
+
+    it('answers not found for a manager who is not in this company', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: null,
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'RESOURCE_NOT_FOUND' });
+    });
+
+    it('refuses a removed manager — 422 MANAGER_NOT_ACTIVE, same as the other inactive states', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow({ status: 'removed' }),
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'MANAGER_NOT_ACTIVE' });
+    });
+
+    it('accepts an active admin as the manager — anyone may serve (CAP-1)', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow({ role: 'company_admin' }),
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await expect(
+        service.setManager(companyAdmin, 'member-1', 'mgr-1'),
+      ).resolves.toMatchObject({ userId: 'member-1' });
+    });
+
+    it('assigns a manager to an invited or deactivated member — only removed is 404', async () => {
+      for (const status of ['invited', 'deactivated']) {
+        const { tx } = buildMembershipWrite({
+          member: membershipRow({ status }),
+          manager: managerRow(),
+        });
+        const { service } = build({
+          tx,
+          query: { data: [detailRow], error: null },
+        });
+
+        await expect(
+          service.setManager(companyAdmin, 'member-1', 'mgr-1'),
+        ).resolves.toMatchObject({ userId: 'member-1' });
+      }
+    });
+
+    it('lets an admin clear a stray pointer, but never assign one', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ role: 'company_admin', manager_id: 'mgr-1' }),
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', null);
+
+      const update = queries.find((q) =>
+        q.sql.includes('update public.memberships'),
+      );
+      expect(update?.params).toEqual(['membership-1', null]);
+    });
+
+    it('a clear when the pointer is already null writes nothing and audits nothing', async () => {
+      const { tx, queries } = buildMembershipWrite({ member: membershipRow() });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', null);
+
+      expect(
+        queries.some((q) => q.sql.includes('update public.memberships')),
+      ).toBe(false);
+      expect(
+        queries.some((q) => q.sql.includes('insert into public.audit_log')),
+      ).toBe(false);
+    });
+
+    it('answers the chain and the headcount from the same write', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+        hierarchyUp: [
+          { node_id: 'member-1', ancestor_id: 'mgr-1', depth: 1, name: 'Mira' },
+          {
+            node_id: 'member-1',
+            ancestor_id: 'owner-1',
+            depth: 2,
+            name: 'Ovi',
+          },
+        ],
+        hierarchyDown: [
+          { root_id: 'member-1', node_id: 'r-1', depth: 1, disabled: false },
+          { root_id: 'member-1', node_id: 'r-2', depth: 2, disabled: false },
+        ],
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      const view = await service.setManager(companyAdmin, 'member-1', 'mgr-1');
+
+      expect(view).toMatchObject({
+        managerId: 'mgr-1',
+        managerName: 'Mira',
+        chain: [
+          { userId: 'mgr-1', name: 'Mira' },
+          { userId: 'owner-1', name: 'Ovi' },
+        ],
+        headcount: 2,
+        directReports: 1,
       });
     });
 
-    it('maps a not-found member to 404', async () => {
+    it('re-checks the caller after the company lock, so a mid-wait demotion cannot write', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+      });
       const { service } = build({
-        rpc: {
-          data: null,
-          error: { code: 'PT404', hint: 'RESOURCE_NOT_FOUND', message: 'x' },
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', 'mgr-1');
+
+      const lockAt = queries.findIndex((q) =>
+        q.sql.includes('attendance_lock_tenant'),
+      );
+      const probes = queries
+        .map((q, index) => ({ index, sql: q.sql }))
+        .filter((q) => q.sql.includes('as is_company_admin'));
+      expect(lockAt).toBeGreaterThanOrEqual(0);
+      expect(probes).toHaveLength(2);
+      expect(probes[0].index).toBeLessThan(lockAt);
+      expect(probes[1].index).toBeGreaterThan(lockAt);
+    });
+
+    it('answers 404 for a disabled target instead of writing and then hiding them', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ disabled: true }),
+      });
+      const { service } = build({ tx });
+
+      await expect(
+        service.setManager(companyAdmin, 'member-1', 'mgr-1'),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(
+        queries.some((q) => q.sql.includes('update public.memberships')),
+      ).toBe(false);
+    });
+
+    it('refuses a loop — 409 HIERARCHY_CYCLE', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+        probe: { cycle: true, manager_ancestors: 0, subtree_depth: 0 },
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'HIERARCHY_CYCLE' });
+    });
+
+    it('refuses a branch that would pass 20 levels — 409 HIERARCHY_DEPTH', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+        probe: { cycle: false, manager_ancestors: 15, subtree_depth: 4 },
+      });
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'HIERARCHY_DEPTH' });
+    });
+
+    it('allows a branch that lands exactly on level 20', async () => {
+      const { tx } = buildMembershipWrite({
+        member: membershipRow(),
+        manager: managerRow(),
+        probe: { cycle: false, manager_ancestors: 14, subtree_depth: 4 },
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await expect(
+        service.setManager(companyAdmin, 'member-1', 'mgr-1'),
+      ).resolves.toMatchObject({ userId: 'member-1' });
+    });
+
+    it('a same-manager call writes nothing and audits nothing', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'mgr-1' }),
+        manager: managerRow(),
+      });
+      const { service } = build({
+        tx,
+        query: { data: [detailRow], error: null },
+      });
+
+      await service.setManager(companyAdmin, 'member-1', 'mgr-1');
+
+      expect(
+        queries.some((q) => q.sql.includes('update public.memberships')),
+      ).toBe(false);
+      expect(
+        queries.some((q) => q.sql.includes('insert into public.audit_log')),
+      ).toBe(false);
+    });
+
+    it('answers 404 for a removed target member', async () => {
+      const { tx } = buildMembershipWrite({ member: null });
+      const { service } = build({ tx });
+
+      await expect(
+        service.setManager(companyAdmin, 'member-1', 'mgr-1'),
+      ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('refuses a caller who does not manage this company', async () => {
+      const { tx } = buildMembershipWrite({
+        caller: {
+          platform_admin: false,
+          disabled: false,
+          is_company_admin: false,
         },
       });
-      await expect(service.remove(companyAdmin, 'ghost')).rejects.toMatchObject(
-        {
-          status: 404,
-        },
-      );
+      const { service } = build({ tx });
+
+      const err = await service
+        .setManager(companyAdmin, 'member-1', 'mgr-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(bodyOf(err)).toMatchObject({ error_code: 'FORBIDDEN' });
     });
   });
 
@@ -1149,7 +1927,9 @@ describe('MembersService', () => {
     });
 
     it('runs under the exclusive tenant lock and writes a guarded UPDATE (state re-checked in the WHERE)', async () => {
-      const { service, queries } = buildSetActive({ memberRow: membershipRow() });
+      const { service, queries } = buildSetActive({
+        memberRow: membershipRow(),
+      });
 
       await service.setActive(companyAdmin, 'member-1', false);
 

@@ -27,6 +27,7 @@ import { EmploymentView } from './dto/employment-view.dto';
 import { JobSettingsDto } from './dto/job-settings.dto';
 import { MembersPageQueryDto } from './dto/members-page-query.dto';
 import { SetMemberActiveDto } from './dto/set-member-active.dto';
+import { SetManagerDto } from './dto/set-manager.dto';
 import { UpdateEmploymentDto } from './dto/update-employment.dto';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { MembersService } from './members.service';
@@ -67,7 +68,14 @@ export class MembersController {
   @ApiQuery({
     name: 'sort',
     required: false,
-    enum: ['joined_new', 'joined_old', 'name_az', 'name_za', 'code_az', 'code_za'],
+    enum: [
+      'joined_new',
+      'joined_old',
+      'name_az',
+      'name_za',
+      'code_az',
+      'code_za',
+    ],
   })
   @ApiOperation({
     summary:
@@ -84,7 +92,7 @@ export class MembersController {
   @Can('member.read')
   @ApiOperation({
     summary:
-      "One member of the company: identity, employee code, role, status, flags and skills. The statutory fields (PAN, DOB, bank) are only on the employment endpoint.",
+      'One member of the company: identity, employee code, role, status, flags and skills. The statutory fields (PAN, DOB, bank) are only on the employment endpoint.',
   })
   @ApiOkResponse({
     description: 'The member as the list serves them (plus skills)',
@@ -104,11 +112,12 @@ export class MembersController {
   @Can('member.deactivate')
   @ApiOperation({
     summary:
-      "Park or reinstate a member: false deactivates an active member (they keep every record but lose access), true reinstates a deactivated one",
+      'Park or reinstate a member: false deactivates an active member (they keep every record but lose access), true reinstates a deactivated one',
   })
   @ApiResponse({
     status: 403,
-    description: 'Deactivating yourself, or not a company admin of this company',
+    description:
+      'Deactivating yourself, or not a company admin of this company',
   })
   @ApiResponse({
     status: 404,
@@ -148,6 +157,47 @@ export class MembersController {
     @Body() dto: ChangeRoleDto,
   ) {
     return this.membersService.changeRole(user, userId, dto.role);
+  }
+
+  @Patch('members/:userId/manager')
+  @Can('member.manager')
+  @ApiOperation({
+    summary:
+      'Set who a member reports to (null clears it). Admins cannot be assigned a manager; the assignment cannot loop or go deeper than 20 levels.',
+  })
+  @ApiOkResponse({
+    description: 'The updated member, with their chain and headcount',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'VALIDATION_ERROR — the body is missing managerId or it is not a UUID',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not a company admin of this company',
+  })
+  @ApiResponse({
+    status: 404,
+    description:
+      'RESOURCE_NOT_FOUND — the person or the chosen manager is not a member of this company',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'MEMBER_IS_ADMIN, HIERARCHY_CYCLE or HIERARCHY_DEPTH — the assignment is refused',
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      'MANAGER_NOT_ACTIVE (the chosen manager is invited, deactivated, removed or disabled), or VALIDATION_ERROR (self)',
+  })
+  setManager(
+    @CurrentUser() user: RequestUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetManagerDto,
+  ) {
+    return this.membersService.setManager(user, userId, dto.managerId);
   }
 
   @Patch('members/:userId/job-settings')

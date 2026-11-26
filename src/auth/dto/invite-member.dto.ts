@@ -58,6 +58,18 @@ export class InviteMemberDto {
   @IsArray()
   @ArrayMaxSize(20, { message: 'At most 20 skill IDs are allowed' })
   @ArrayUnique({ message: 'Skill IDs must be unique' })
-  @IsUUID('loose', { each: true, message: 'Each skill ID must be a valid UUID' }) // never '4'/'all' (Story 1 trap; see leave.dto.ts)
+  @IsUUID('loose', {
+    each: true,
+    message: 'Each skill ID must be a valid UUID',
+  }) // never '4'/'all' (Story 1 trap; see leave.dto.ts)
   skillIds?: string[];
+
+  @ApiPropertyOptional({
+    example: '550e8400-e29b-41d4-a716-446655440002',
+    description:
+      'The company member this person reports to ("Reports to"). Must be an active member; a company admin cannot be given a manager. Omit for no reporting manager.',
+  })
+  @IsOptional()
+  @IsUUID('loose', { message: 'managerId must be a valid UUID' })
+  managerId?: string;
 }
