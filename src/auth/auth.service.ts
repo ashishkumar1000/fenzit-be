@@ -28,6 +28,7 @@ import { MembershipRole, Role } from '../common/enums/role.enum';
 import { ACCESS_TOKEN_TYPE } from '../common/guards/jwt-auth.guard';
 import { memberRpcException } from '../common/members/member-rpc-error';
 import { assertManagerAssignable } from '../common/members/manager-assignment';
+import { resolveDefaultManager } from '../common/members/default-manager';
 import { seedLeaveCatalog } from '../attendance/leave-catalog.seed';
 import { startCompanyValidity } from './tenant-validity';
 import {
@@ -854,7 +855,13 @@ export class AuthService {
       }
       await assertManagerAssignable(tx, tenantId, personId, dto.managerId);
     }
-    const managerId = dto.managerId ?? null;
+    // No manager chosen is not "unassigned" (story 24-8): the invitee lands on
+    // the company's default manager, which the lookup already proved active in
+    // this transaction. An admin invitee still sits at the top.
+    const managerId =
+      role === Role.COMPANY_ADMIN
+        ? null
+        : (dto.managerId ?? (await resolveDefaultManager(tx, tenantId)));
 
     // A previously removed member keeps their code and history: flip the old
     // membership back to invited instead of minting a new one.

@@ -146,6 +146,7 @@ function buildMembershipWrite(
     pendingApprovals?: Array<Record<string, unknown>>;
     pendingJobs?: Array<Record<string, unknown>>;
     approvalTrees?: unknown[][];
+    defaultManager?: string;
   } = {},
 ) {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
@@ -167,6 +168,14 @@ function buildMembershipWrite(
               : opts.caller
                 ? [opts.caller]
                 : [],
+        };
+      }
+      if (sql.includes('order by (m.user_id = t.owner_id) desc')) {
+        // Story 24-8: the company's default manager.
+        return {
+          rows: [opts.defaultManager ?? 'u-owner'].map((user_id) => ({
+            user_id,
+          })),
         };
       }
       if (sql.includes('from public.tenants')) {
@@ -1080,17 +1089,19 @@ describe('MembersService', () => {
       ).toHaveLength(0);
     });
 
-    it('leaves the reports unassigned when the removed member’s own manager no longer serves', async () => {
+    it('hands the reports to the default manager when the removed member’s own manager no longer serves', async () => {
       const { tx, queries } = buildMembershipWrite({
         member: membershipRow({ manager_id: 'mgr-1' }),
         managerServes: false,
+        defaultManager: 'owner-1',
       });
       const { service } = build({ tx });
 
       await service.remove(companyAdmin, 'member-1');
 
+      // Story 24-8: never unassigned — the company's default manager takes them.
       const reparent = queries.find((q) => q.sql.includes('returning user_id'));
-      expect(reparent?.params).toEqual(['tenant-A', 'member-1', null]);
+      expect(reparent?.params).toEqual(['tenant-A', 'member-1', 'owner-1']);
     });
 
     it('writes one audit row when the member has no reports', async () => {
@@ -1201,9 +1212,11 @@ describe('MembersService', () => {
       ]);
     });
 
-    it('clears the pointer when managerId is null', async () => {
+    it('hands a cleared pointer to the default manager, not to null', async () => {
       const { tx, queries } = buildMembershipWrite({
         member: membershipRow({ manager_id: 'mgr-1' }),
+        manager: managerRow(),
+        defaultManager: 'owner-1',
       });
       const { service } = build({
         tx,
@@ -1215,7 +1228,7 @@ describe('MembersService', () => {
       const update = queries.find((q) =>
         q.sql.includes('update public.memberships'),
       );
-      expect(update?.params).toEqual(['membership-1', null]);
+      expect(update?.params).toEqual(['membership-1', 'owner-1']);
     });
 
     it('refuses to assign a manager to an admin — 409 MEMBER_IS_ADMIN', async () => {
@@ -1341,8 +1354,12 @@ describe('MembersService', () => {
       expect(update?.params).toEqual(['membership-1', null]);
     });
 
-    it('a clear when the pointer is already null writes nothing and audits nothing', async () => {
-      const { tx, queries } = buildMembershipWrite({ member: membershipRow() });
+    it('matches the default manager when a clear lands on the person already in place', async () => {
+      const { tx, queries } = buildMembershipWrite({
+        member: membershipRow({ manager_id: 'owner-1' }),
+        manager: managerRow(),
+        defaultManager: 'owner-1',
+      });
       const { service } = build({
         tx,
         query: { data: [detailRow], error: null },
@@ -1350,6 +1367,7 @@ describe('MembersService', () => {
 
       await service.setManager(companyAdmin, 'member-1', null);
 
+      // The clear resolved to the stored manager: nothing to write.
       expect(
         queries.some((q) => q.sql.includes('update public.memberships')),
       ).toBe(false);
@@ -2387,6 +2405,7 @@ describe('MembersService', () => {
         pendingApprovals?: Array<Record<string, unknown>>;
         pendingJobs?: Array<Record<string, unknown>>;
         approvalTrees?: unknown[][];
+        defaultManager?: string;
       } = {},
     ) {
       const queries: { sql: string; params?: unknown[] }[] = [];
@@ -2418,11 +2437,16 @@ describe('MembersService', () => {
           }
           if (sql.includes('for update'))
             return { rows: opts.memberRow ? [opts.memberRow] : [] };
+          if (sql.includes('as serves')) return { rows: [{ serves: true }] };
+          if (sql.includes('order by (m.user_id = t.owner_id) desc'))
+            return { rows: [{ user_id: opts.defaultManager ?? 'u-owner' }] };
           if (sql.includes('count(*)::int'))
             return { rows: [{ n: opts.otherAdmins ?? 0 }] };
           if (sql.includes('insert into public.notifications')) {
             return { rowCount: 1, rows: [] };
           }
+          if (sql.includes('insert into public.audit_log'))
+            return { rowCount: 1, rows: [] };
           if (sql.includes('update public.memberships'))
             return {
               rowCount: opts.updateRowCount ?? 1,
@@ -2457,6 +2481,7 @@ describe('MembersService', () => {
       status: 'active',
       role: 'employee',
       employee_code: 'EMP-001',
+      manager_id: null,
       ...overrides,
     });
 
@@ -2663,6 +2688,32 @@ describe('MembersService', () => {
       expect(notices.map((q) => [q.params?.[3], q.params?.[1]])).toEqual([
         ['job.approver_added', 'mgr-1'],
       ]);
+    });
+
+    it('hands the leaver’s reports to the leaver’s manager while that person still serves', async () => {
+      const { service, queries } = buildSetActive({
+        memberRow: membershipRow({ manager_id: 'mgr-1' }),
+        reportIds: ['report-1', 'report-2'],
+      });
+
+      await service.setActive(companyAdmin, 'member-1', false);
+
+      const reparent = queries.find((q) => q.sql.includes('returning user_id'));
+      expect(reparent?.params).toEqual(['tenant-A', 'member-1', 'mgr-1']);
+    });
+
+    it('hands them to the default manager when the leaver has no manager of their own', async () => {
+      const { service, queries } = buildSetActive({
+        memberRow: membershipRow({ manager_id: null }),
+        defaultManager: 'owner-1',
+        reportIds: ['report-1'],
+      });
+
+      await service.setActive(companyAdmin, 'member-1', false);
+
+      // Story 24-8: nobody is left unassigned by a resignation.
+      const reparent = queries.find((q) => q.sql.includes('returning user_id'));
+      expect(reparent?.params).toEqual(['tenant-A', 'member-1', 'owner-1']);
     });
 
     it('runs under the exclusive tenant lock and writes a guarded UPDATE (state re-checked in the WHERE)', async () => {

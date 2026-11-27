@@ -25,6 +25,7 @@ import {
   readSubtreeMemberIds,
 } from '../common/members/hierarchy';
 import { assertManagerAssignable } from '../common/members/manager-assignment';
+import { resolveDefaultManager } from '../common/members/default-manager';
 import {
   affectedApprovalRequesters,
   emitApproverSetChanges,
@@ -494,8 +495,9 @@ export class MembersService {
         status: string;
         role: string;
         employee_code: string;
+        manager_id: string | null;
       }>(
-        `select status, role, employee_code from public.memberships
+        `select status, role, employee_code, manager_id from public.memberships
           where user_id = $1 and tenant_id = $2 for update`,
         [memberUserId, tenantId],
       );
@@ -552,6 +554,38 @@ export class MembersService {
           error_code: ErrorCode.MEMBERSHIP_STATE,
           message: 'The member changed since it was read — reload and retry',
         });
+      }
+      // A manager who leaves leaves nobody behind (story 24-8): their direct
+      // reports move to the leaver's own manager while that person still
+      // serves, otherwise to the company's default manager. The subtree's
+      // pending requests were captured above, so the re-resolve covers them.
+      if (!active) {
+        const nextManager = await nextManagerForReports(
+          tx,
+          tenantId,
+          memberUserId,
+          row.manager_id,
+        );
+        const reports = await tx.query<{ user_id: string }>(
+          `update public.memberships
+              set manager_id = $3, updated_at = now()
+            where tenant_id = $1 and manager_id = $2 and status <> 'removed'
+            returning user_id`,
+          [tenantId, memberUserId, nextManager],
+        );
+        if (reports.rowCount !== null && reports.rowCount > 0) {
+          await this.insertAuditRows(tx, {
+            actorUserId: caller.userId,
+            tenantId,
+            action: 'member.reparent',
+            targetUserIds: reports.rows.map((report) => report.user_id),
+            details: {
+              old_manager_id: memberUserId,
+              new_manager_id: nextManager,
+              deactivated_manager_id: memberUserId,
+            },
+          });
+        }
       }
       await this.emitApprovalChanges(
         tx,
@@ -821,18 +855,14 @@ export class MembersService {
         await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
 
       // Only a manager who can still serve keeps the reports; otherwise they
-      // become unassigned rather than inheriting a dead pointer.
-      let nextManager: string | null = null;
-      if (member.manager_id) {
-        const managerRes = await tx.query<{ serves: boolean }>(
-          `select (m.status = 'active' and not u.disabled) as serves
-             from public.memberships m
-             join public.users u on u.id = m.user_id
-            where m.user_id = $1 and m.tenant_id = $2`,
-          [member.manager_id, tenantId],
-        );
-        if (managerRes.rows[0]?.serves) nextManager = member.manager_id;
-      }
+      // go to the company's default manager (story 24-8), never a dead pointer
+      // and never nothing.
+      const nextManager = await nextManagerForReports(
+        tx,
+        tenantId,
+        memberUserId,
+        member.manager_id,
+      );
 
       const reports = await tx.query<{ user_id: string }>(
         `update public.memberships
@@ -887,12 +917,13 @@ export class MembersService {
   }
 
   /**
-   * The owner sets (or clears) a member's "Reports to". Everything the DDL
-   * cannot express happens here, in one transaction under the tenant lock:
-   * the target is not an admin, the manager is an active enabled member of
-   * this company, the assignment closes no loop, and the branch stays within
-   * the 20-level cap. Returns the updated member, so the client sees the new
-   * chain and headcount immediately.
+   * The owner sets a member's "Reports to". Everything the DDL cannot express
+   * happens here, in one transaction under the tenant lock: the target is not
+   * an admin, the manager is an active enabled member of this company, the
+   * assignment closes no loop, and the branch stays within the 20-level cap.
+   * A request with no manager is not "unassigned" — it lands on the company's
+   * default manager (story 24-8). Returns the updated member, so the client
+   * sees the new chain and headcount immediately.
    */
   async setManager(
     caller: RequestUser,
@@ -954,12 +985,20 @@ export class MembersService {
         });
       }
 
+      // "No manager" is not a state (story 24-8): a clear hands the person to
+      // the company's default manager. Admins stay at the top with no pointer.
+      const targetManagerId =
+        member.role === 'company_admin'
+          ? null
+          : (managerId ??
+            (await resolveDefaultManager(tx, tenantId, memberUserId)));
+
       if (managerId !== null) {
         await assertManagerAssignable(tx, tenantId, memberUserId, managerId);
       }
 
       // A no-op assignment writes nothing and audits nothing.
-      if (member.manager_id === managerId) return;
+      if (member.manager_id === targetManagerId) return;
 
       // Capture the requesters BEFORE the write so the before/after diff
       // walks the same set (the walk itself re-derives the current tree).
@@ -972,7 +1011,7 @@ export class MembersService {
         await this.captureApprovalSnapshots(tx, tenantId, requesterIds);
       await tx.query(
         `update public.memberships set manager_id = $2 where id = $1`,
-        [member.id, managerId],
+        [member.id, targetManagerId],
       );
       await this.insertAuditRows(tx, {
         actorUserId: caller.userId,
@@ -981,7 +1020,7 @@ export class MembersService {
         targetUserIds: [memberUserId],
         details: {
           old_manager_id: member.manager_id,
-          new_manager_id: managerId,
+          new_manager_id: targetManagerId,
         },
       });
       await this.emitApprovalChanges(
@@ -1588,4 +1627,28 @@ export class MembersService {
       message: fallback,
     });
   }
+}
+
+/**
+ * Where a leaving manager's direct reports go (story 24-8): their own manager
+ * while that person still serves, otherwise the company's default manager.
+ * Never the person who is leaving.
+ */
+async function nextManagerForReports(
+  tx: PoolClient,
+  tenantId: string,
+  leavingUserId: string,
+  theirManagerId: string | null,
+): Promise<string | null> {
+  if (theirManagerId && theirManagerId !== leavingUserId) {
+    const managerRes = await tx.query<{ serves: boolean }>(
+      `select (m.status = 'active' and not u.disabled) as serves
+         from public.memberships m
+         join public.users u on u.id = m.user_id
+        where m.user_id = $1 and m.tenant_id = $2`,
+      [theirManagerId, tenantId],
+    );
+    if (managerRes.rows[0]?.serves) return theirManagerId;
+  }
+  return resolveDefaultManager(tx, tenantId, leavingUserId);
 }

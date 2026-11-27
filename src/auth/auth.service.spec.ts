@@ -954,6 +954,8 @@ describe('AuthService', () => {
       managerCycle?: boolean;
       /** How many managers stand above the chosen manager. */
       managerAncestors?: number;
+      /** The company's default manager (story 24-8). Default: owner-1. */
+      defaultManager?: string | null;
     }
 
     /**
@@ -1063,6 +1065,17 @@ describe('AuthService', () => {
           if (sql.includes('update public.users set name')) {
             nameFills.push(params as string[]);
             return Promise.resolve({ rows: [], rowCount: 1 });
+          }
+          // Story 24-8: the company's default manager.
+          if (sql.includes('order by (m.user_id = t.owner_id) desc')) {
+            return Promise.resolve(
+              opts.defaultManager === null
+                ? { rows: [], rowCount: 0 }
+                : {
+                    rows: [{ user_id: opts.defaultManager ?? 'owner-1' }],
+                    rowCount: 1,
+                  },
+            );
           }
           // "Reports to": the manager read and the cycle/depth probe.
           if (sql.includes('select m.status, u.disabled')) {
@@ -1200,6 +1213,7 @@ describe('AuthService', () => {
       expect(admin.skillCheckEq).toHaveBeenCalledWith('is_active', true);
       // The mint: one counter bump for a fresh number, free code on insert.
       expect(world.bumps).toEqual([4]);
+      // Story 24-8: no manager chosen means the company's default manager.
       expect(world.membershipInserts).toEqual([
         [
           'new-person-uuid',
@@ -1207,7 +1221,7 @@ describe('AuthService', () => {
           'employee',
           'EMP-004',
           adminUser.userId,
-          null,
+          'owner-1',
         ],
       ]);
       // Skills attach inside the same transaction.
