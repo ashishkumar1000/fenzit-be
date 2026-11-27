@@ -1067,7 +1067,7 @@ describe('AuthService', () => {
             return Promise.resolve({ rows: [], rowCount: 1 });
           }
           // Story 24-8: the company's default manager.
-          if (sql.includes('order by (m.user_id = t.owner_id) desc')) {
+          if (sql.includes('order by (m.user_id = t.created_by) desc')) {
             return Promise.resolve(
               opts.defaultManager === null
                 ? { rows: [], rowCount: 0 }

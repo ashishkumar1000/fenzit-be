@@ -170,7 +170,7 @@ function buildMembershipWrite(
                 : [],
         };
       }
-      if (sql.includes('order by (m.user_id = t.owner_id) desc')) {
+      if (sql.includes('order by (m.user_id = t.created_by) desc')) {
         // Story 24-8: the company's default manager.
         return {
           rows: [opts.defaultManager ?? 'u-owner'].map((user_id) => ({
@@ -2438,7 +2438,7 @@ describe('MembersService', () => {
           if (sql.includes('for update'))
             return { rows: opts.memberRow ? [opts.memberRow] : [] };
           if (sql.includes('as serves')) return { rows: [{ serves: true }] };
-          if (sql.includes('order by (m.user_id = t.owner_id) desc'))
+          if (sql.includes('order by (m.user_id = t.created_by) desc'))
             return { rows: [{ user_id: opts.defaultManager ?? 'u-owner' }] };
           if (sql.includes('count(*)::int'))
             return { rows: [{ n: opts.otherAdmins ?? 0 }] };

@@ -21,7 +21,7 @@ with active_admins as (
          m.user_id,
          row_number() over (
            partition by m.tenant_id
-           order by (m.user_id = t.owner_id) desc, m.created_at, m.user_id
+           order by (m.user_id = t.created_by) desc, m.created_at, m.user_id
          ) as priority
     from public.memberships m
     join public.users u on u.id = m.user_id

@@ -30,7 +30,7 @@ export async function resolveDefaultManager(
         and m.status = 'active'
         and not u.disabled
         and ($2::uuid is null or m.user_id <> $2)
-      order by (m.user_id = t.owner_id) desc, m.created_at, m.user_id
+      order by (m.user_id = t.created_by) desc, m.created_at, m.user_id
       limit 1`,
     [tenantId, excludeUserId],
   );
