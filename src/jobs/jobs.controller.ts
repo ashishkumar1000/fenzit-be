@@ -74,7 +74,7 @@ export class JobsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'List jobs: scope=today (default, IST day, date-reanchorable) | upcoming | overdue | history | all (every status, newest created first); filters by status and technician',
+      'List jobs: scope=today (default, IST day, date-reanchorable) | upcoming | overdue | history | all (every status, newest created first); filters by status and technician; teamOnly=true narrows to the people below the caller (any role; an empty team answers an empty page)',
   })
   @ApiResponse({ status: 200, description: 'Cursor-paginated job list' })
   @ApiResponse({ status: 400, description: 'Company not set up / bad cursor' })
@@ -82,7 +82,7 @@ export class JobsController {
   @ApiResponse({
     status: 404,
     description:
-      'technicianId belongs to another branch — a manager sees only their subtree',
+      'technicianId belongs to another branch — a manager sees only their subtree, and teamOnly=true only the caller’s team',
   })
   @ApiResponse({ status: 422, description: 'Validation error' })
   listJobs(@CurrentUser() user: RequestUser, @Query() query: ListJobsQueryDto) {

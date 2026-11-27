@@ -856,6 +856,7 @@ describe('UsersService', () => {
         chain: [],
         headcount: 0,
         directReports: 0,
+        members: [],
       });
       expect(pgQuery).not.toHaveBeenCalled();
       expectCompany(result);
@@ -1081,6 +1082,9 @@ describe('UsersService', () => {
         chain: [{ userId: 'manager-uuid', name: 'Priya' }],
         headcount: 2,
         directReports: 1,
+        // The directory walk answers empty in this stub — members is never
+        // absent, even when the second read has nothing to show.
+        members: [],
       });
     });
 
@@ -1099,7 +1103,188 @@ describe('UsersService', () => {
         chain: [],
         headcount: 0,
         directReports: 0,
+        members: [],
       });
+    });
+
+    it('24-5b: team.members lists the actionable subtree with photo links, name-ordered', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
+      presignSpy.mockClear();
+      pgQuery.mockImplementation((sql: string) => {
+        if (sql.includes('select u.node_id')) {
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'tech-uuid',
+                node_id: 'u-1',
+                depth: 1,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        if (sql.includes('m.employee_code')) {
+          return Promise.resolve({
+            rows: [
+              {
+                user_id: 'u-2',
+                name: 'Zara',
+                employee_code: 'EMP-002',
+                status: 'deactivated',
+                avatar_key: 'avatars/u-2.jpg',
+              },
+              {
+                user_id: 'u-1',
+                name: 'Anil',
+                employee_code: 'EMP-001',
+                status: 'active',
+                avatar_key: null,
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      // Name then id: two boots of the same tree read identically. `status`
+      // rides along so a picker offers active people only.
+      expect(result.team.members).toEqual([
+        {
+          userId: 'u-1',
+          name: 'Anil',
+          employeeCode: 'EMP-001',
+          status: 'active',
+          avatarUrl: null,
+        },
+        {
+          userId: 'u-2',
+          name: 'Zara',
+          employeeCode: 'EMP-002',
+          status: 'deactivated',
+          avatarUrl: 'https://signed.example/avatars/u-2.jpg',
+        },
+      ]);
+      expect(presignSpy).toHaveBeenCalledWith(
+        'avatars/u-2.jpg',
+        expect.any(Number),
+      );
+    });
+
+    it('24-5b: headcount counts the roster’s shape; members lists what the caller can act for', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
+      pgQuery.mockImplementation((sql: string) => {
+        // Two reports hang below the caller, but one of them sits under a
+        // disabled member: the hierarchy counts them, the scope prunes them.
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'tech-uuid',
+                node_id: 'u-1',
+                depth: 1,
+                disabled: false,
+              },
+              {
+                root_id: 'tech-uuid',
+                node_id: 'u-2',
+                depth: 2,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        if (sql.includes('m.employee_code')) {
+          return Promise.resolve({
+            rows: [
+              {
+                user_id: 'u-1',
+                name: 'Anil',
+                employee_code: 'EMP-001',
+                status: 'active',
+                avatar_key: null,
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      expect(result.team.headcount).toBe(2);
+      expect(result.team.members.map((m) => m.userId)).toEqual(['u-1']);
+    });
+
+    it('24-5b: a company admin gets no directory — the roster is GET /members', async () => {
+      mockAdmin({});
+      // The hierarchy walk's own two reads answer as one mock: the assertion
+      // below is that the DIRECTORY query is never issued for an admin.
+      pgQuery.mockImplementation((sql: string) => {
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'owner-uuid',
+                node_id: 'u-1',
+                depth: 1,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      expect(result.team.headcount).toBe(1);
+      expect(result.team.members).toEqual([]);
+      expect(
+        pgQuery.mock.calls.some((call: unknown[]) =>
+          String(call[0]).includes('m.employee_code'),
+        ),
+      ).toBe(false);
+    });
+
+    it('24-5b: a failed directory read keeps the hierarchy and answers the profile', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
+      pgQuery.mockImplementation((sql: string) => {
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'tech-uuid',
+                node_id: 'u-1',
+                depth: 1,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        if (sql.includes('m.employee_code')) {
+          return Promise.reject(new Error('pooler timeout'));
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      expect(result.team.headcount).toBe(1);
+      expect(result.team.members).toEqual([]);
     });
 
     it('profile jobs select carries the skill/template embeds (Story 4.5)', async () => {
@@ -1254,6 +1439,54 @@ describe('UsersService', () => {
         'user_id',
         'viewer-uuid',
       ]);
+    });
+
+    it('24-5b: a viewer with reports gets the same directory an employee does', async () => {
+      // The role test admits a viewer — a viewer may be a manager (D13).
+      mockAdmin({
+        ownRow: {
+          data: { ...ownOwnerRow, id: 'viewer-uuid', name: 'Vina' },
+          error: null,
+        },
+        ownMembership: {
+          data: { employee_code: 'EMP-009', status: 'active' },
+          error: null,
+        },
+      });
+      pgQuery.mockImplementation((sql: string) => {
+        if (sql.includes('select u.node_id'))
+          return Promise.resolve({ rows: [] });
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'viewer-uuid',
+                node_id: 'u-1',
+                depth: 1,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        if (sql.includes('m.employee_code')) {
+          return Promise.resolve({
+            rows: [
+              {
+                user_id: 'u-1',
+                name: 'Anil',
+                employee_code: 'EMP-001',
+                status: 'active',
+                avatar_key: null,
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(viewerUser, {});
+
+      expect(result.team.members.map((m) => m.userId)).toEqual(['u-1']);
     });
 
     it('serves a platform admin acting on a company: company data, platformAdmin true, no membership read', async () => {

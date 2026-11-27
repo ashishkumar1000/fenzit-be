@@ -779,6 +779,14 @@ describe('JobsService', () => {
       rawJwt: 'jwt',
     };
 
+    const viewer: RequestUser = {
+      userId: 'viewer-uuid',
+      tenantId: 'tenant-uuid',
+      role: Role.VIEWER,
+      platformAdmin: false,
+      rawJwt: 'jwt',
+    };
+
     // Chainable list builder: every filter/order returns the builder; .limit()
     // resolves to { data, error }. Returned so tests can inspect call args.
     function listChain(result: { data: unknown; error: unknown }) {
@@ -1114,7 +1122,7 @@ describe('JobsService', () => {
 
     it('widens a manager-employee to self plus their subtree', async () => {
       mockPgClient.query.mockResolvedValue({
-        rows: [{ node_id: 'tech-team' }],
+        rows: [{ user_id: 'tech-team' }],
       });
       const { builder } = mockListAdmin({ data: [], error: null });
 
@@ -1132,7 +1140,7 @@ describe('JobsService', () => {
 
     it('narrows to a technicianId inside the manager’s subtree', async () => {
       mockPgClient.query.mockResolvedValue({
-        rows: [{ node_id: 'tech-team' }],
+        rows: [{ user_id: 'tech-team' }],
       });
       const { builder } = mockListAdmin({ data: [], error: null });
 
@@ -1143,7 +1151,7 @@ describe('JobsService', () => {
 
     it('refuses a technicianId outside the manager’s subtree with 404', async () => {
       mockPgClient.query.mockResolvedValue({
-        rows: [{ node_id: 'tech-team' }],
+        rows: [{ user_id: 'tech-team' }],
       });
       mockListAdmin({ data: [], error: null });
 
@@ -1154,6 +1162,61 @@ describe('JobsService', () => {
       expect((err as NotFoundException).getResponse()).toMatchObject({
         error_code: 'RESOURCE_NOT_FOUND',
       });
+    });
+
+    it('teamOnly narrows a viewer to the people below them — never the company', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ user_id: 'tech-team' }],
+      });
+      const { builder } = mockListAdmin({ data: [], error: null });
+
+      await service.listJobs(viewer, { teamOnly: true });
+
+      expect(builder.in).toHaveBeenCalledWith('technician_id', ['tech-team']);
+      expect(builder.eq).not.toHaveBeenCalledWith(
+        'technician_id',
+        expect.anything(),
+      );
+    });
+
+    it('teamOnly with no reports answers an empty page, never the caller’s own jobs', async () => {
+      mockPgClient.query.mockResolvedValue({ rows: [] });
+      const { builder } = mockListAdmin({ data: [], error: null });
+
+      await service.listJobs(viewer, { teamOnly: true });
+
+      // The nil uuid is no membership, so the page is empty — self would have
+      // leaked the caller's own queue into a team view.
+      expect(builder.in).toHaveBeenCalledWith('technician_id', [
+        '00000000-0000-0000-0000-000000000000',
+      ]);
+    });
+
+    it('teamOnly refuses a technicianId outside the branch with 404', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [{ user_id: 'tech-team' }],
+      });
+      mockListAdmin({ data: [], error: null });
+
+      const err = await service
+        .listJobs(viewer, { teamOnly: true, technicianId: 'tech-other' })
+        .catch((error: unknown) => error);
+      expect(err).toBeInstanceOf(NotFoundException);
+    });
+
+    it('a viewer without teamOnly keeps the whole company (unchanged)', async () => {
+      const { builder } = mockListAdmin({ data: [], error: null });
+
+      await service.listJobs(viewer, {});
+
+      expect(builder.in).not.toHaveBeenCalledWith(
+        'technician_id',
+        expect.anything(),
+      );
+      expect(builder.eq).not.toHaveBeenCalledWith(
+        'technician_id',
+        expect.anything(),
+      );
     });
 
     it('applies the owner technicianId filter when provided', async () => {
@@ -1914,7 +1977,7 @@ describe('JobsService', () => {
 
     it('lets a manager-employee read a report’s job (subtree gate precedes signing)', async () => {
       mockPgClient.query.mockResolvedValue({
-        rows: [{ node_id: jobRow.technician_id }],
+        rows: [{ user_id: jobRow.technician_id }],
       });
       mockDetailAdmin({});
 
@@ -1925,7 +1988,7 @@ describe('JobsService', () => {
 
     it('404s a manager-employee for a job outside their subtree', async () => {
       mockPgClient.query.mockResolvedValue({
-        rows: [{ node_id: 'tech-team' }],
+        rows: [{ user_id: 'tech-team' }],
       });
       mockDetailAdmin({
         job: {

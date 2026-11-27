@@ -1,5 +1,6 @@
 import {
   Injectable,
+  ForbiddenException,
   Logger,
   NotFoundException,
   UnprocessableEntityException,
@@ -9,6 +10,8 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { ErrorCode } from '../common/enums/error-code.enum';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { readScopeFor } from '../common/permissions/permissions';
+import { readSubtreeMemberIds } from '../common/members/hierarchy';
 import { requireTenant, writeAuditRpc } from './attendance-rpc.helpers';
 import { tenantToday } from './enrolments.repository';
 import { pickWeeklyOffDays } from './me-summary.model';
@@ -234,13 +237,7 @@ export async function assertBalanceForApply(
       // — already turn disabled types away before this runs, so the
       // gate is dead code on live paths; it only keeps the two
       // derivations from ever disagreeing.
-      accruedFor(
-        type,
-        employment.joinDate,
-        fy,
-        today,
-        employment.exitDate,
-      ) +
+      accruedFor(type, employment.joinDate, fy, today, employment.exitDate) +
       carryForward -
       roundMoney(consumedForThisType.get(fy) ?? 0),
   );
@@ -373,13 +370,40 @@ export class LeaveBalanceService {
   }
 
   /** GET /attendance/leave/:employeeId/balances — any tenant employee's
-   *  rows; a foreign or unknown id answers 404 without leaking. */
+   *  rows for an admin; a manager reads their own branch (24-5b), because the
+   *  team detail sheet shows the same cards. A foreign, unknown or
+   *  out-of-branch id answers 404 without leaking; a member with no reports
+   *  keeps today's 403. */
   async readEmployeeBalances(
     user: RequestUser,
     employeeId: string,
   ): Promise<LeaveBalanceView[]> {
     const tenantId = requireTenant(user);
     return this.pg.withTransaction(async (tx) => {
+      if (readScopeFor(user.role, 'leave.read_all') === 'subtree') {
+        const descendants = await readSubtreeMemberIds(
+          tx,
+          tenantId,
+          user.userId,
+        );
+        if (descendants.length === 0) {
+          // Today's guard answer, verbatim: a member without reports must see
+          // no new surface (CAP-2).
+          throw new ForbiddenException({
+            error_code: ErrorCode.FORBIDDEN,
+            message: 'Insufficient permissions',
+          });
+        }
+        const allowed = [user.userId, ...descendants];
+        if (
+          !allowed.some((id) => id.toLowerCase() === employeeId.toLowerCase())
+        ) {
+          // Postgres compares uuids case-insensitively; so does the scope.
+          throw employeeNotFound();
+        }
+      }
+      // Existence is checked AFTER the branch gate, so a manager can never
+      // use this route to probe who exists elsewhere in the company.
       if (!(await employeeExistsInTenant(tx, tenantId, employeeId))) {
         throw employeeNotFound();
       }

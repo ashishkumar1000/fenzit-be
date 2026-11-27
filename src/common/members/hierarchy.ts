@@ -156,19 +156,23 @@ export async function readMemberHierarchy(
   return result;
 }
 
+/** One person below a manager, as the team directory serves them. */
+export interface SubtreeMember {
+  userId: string;
+  name: string | null;
+  employeeCode: string;
+  status: string;
+  /** Storage key of the photo; callers turn it into a link, never return it. */
+  avatarKey: string | null;
+}
+
 /**
- * Every live member below `managerId` (the reporting subtree), excluding the
- * manager themself. One capped, deduplicated walk so a corrupt loop written by
- * hand cannot spin; `removed` memberships are history and are not part of a
- * team. Callers add `self` when the scope is "my rows plus my team".
+ * The ONE definition of "the caller's branch": a capped recursive walk seeded
+ * at $1 (tenant) and $2 (manager), pruning `removed` memberships and disabled
+ * accounts at every rung. Both readers project from this same text, so a
+ * directory row and an access-scope id can never drift.
  */
-export async function readSubtreeMemberIds(
-  tx: Queryable,
-  tenantId: string,
-  managerId: string,
-): Promise<string[]> {
-  const result = await tx.query<{ node_id: string }>(
-    `with recursive down as (
+const SUBTREE_WALK = `with recursive down as (
        select m.user_id as node_id, 0 as depth
          from public.memberships m
          join public.users u on u.id = m.user_id
@@ -182,12 +186,78 @@ export async function readSubtreeMemberIds(
          join public.users cu on cu.id = c.user_id
         where d.depth < ${MAX_HIERARCHY_DEPTH + 1}
           and c.status <> 'removed' and not cu.disabled
-     )
-     select d.node_id from down d where d.depth > 0`,
+     )`;
+
+/**
+ * Every live member below `managerId` (the reporting subtree) with the fields
+ * a team directory shows, excluding the manager themself. `removed`
+ * memberships are history and a disabled account cannot act, so both are
+ * pruned at every rung — the same rows every team read is scoped to.
+ */
+export async function readSubtreeMemberDirectory(
+  tx: Queryable,
+  tenantId: string,
+  managerId: string,
+): Promise<SubtreeMember[]> {
+  const result = await tx.query<{
+    user_id: string;
+    name: string | null;
+    employee_code: string;
+    status: string;
+    avatar_key: string | null;
+  }>(
+    // The walk already prunes the seed and every rung; the projection repeats
+    // the liveness predicate so the row a caller sees can never be a removed
+    // membership (one membership row per person per company today, but the
+    // projection should not depend on that).
+    `${SUBTREE_WALK}
+     select m.user_id, u.name, m.employee_code, m.status::text as status,
+            u.avatar_key
+       from down d
+       join public.memberships m
+         on m.tenant_id = $1 and m.user_id = d.node_id
+        and m.status <> 'removed'
+       join public.users u on u.id = m.user_id
+      where d.depth > 0 and d.node_id <> $2::uuid`,
     [tenantId, managerId],
   );
-  // A loop can reach the same person at several depths; ids are the contract.
-  return [...new Set(result.rows.map((row) => row.node_id))];
+  // A hand-written loop can reach the same person at several depths; the
+  // directory lists each person once.
+  const byUser = new Map<string, SubtreeMember>();
+  for (const row of result.rows) {
+    if (byUser.has(row.user_id)) continue;
+    byUser.set(row.user_id, {
+      userId: row.user_id,
+      name: row.name,
+      employeeCode: row.employee_code,
+      status: row.status,
+      avatarKey: row.avatar_key,
+    });
+  }
+  return [...byUser.values()];
+}
+
+/**
+ * Every live member below `managerId`, excluding the manager themself.
+ * `removed` memberships are history and are not part of a team. Callers add
+ * `self` when the scope is "my rows plus my team".
+ */
+export async function readSubtreeMemberIds(
+  tx: Queryable,
+  tenantId: string,
+  managerId: string,
+): Promise<string[]> {
+  const result = await tx.query<{ user_id: string }>(
+    // The walk's node column IS the user id; the projection names it so.
+    `${SUBTREE_WALK}
+     select distinct d.node_id as user_id
+       from down d
+      where d.depth > 0 and d.node_id <> $2::uuid`,
+    [tenantId, managerId],
+  );
+  // `distinct` already answers each person once; the Set keeps the contract if
+  // a future projection drops it.
+  return [...new Set(result.rows.map((row) => row.user_id))];
 }
 
 /**

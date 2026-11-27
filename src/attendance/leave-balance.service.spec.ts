@@ -1,6 +1,7 @@
 import { SupabaseClientFactory } from '../common/factories/supabase-client.factory';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
+import { Role } from '../common/enums/role.enum';
 import {
   LeaveBalanceService,
   assertBalanceForApply,
@@ -68,6 +69,8 @@ function build(
     creditRows?: Array<Record<string, unknown>>;
     memberExists?: boolean;
     memberStatus?: string;
+    /** The subtree ids the 24-5b scope walk answers (empty = no reports). */
+    subtreeIds?: string[];
   } = {},
 ) {
   const queries: { sql: string; params?: unknown[] }[] = [];
@@ -138,6 +141,11 @@ function build(
           ),
         });
       }
+      // 24-5b — the caller's branch (readSubtreeMemberDirectory).
+      if (sql.includes('with recursive down as'))
+        return Promise.resolve({
+          rows: (opts.subtreeIds ?? []).map((user_id) => ({ user_id })),
+        });
       if (sql.includes('weekly_off_overrides'))
         return Promise.resolve({ rows: [] });
       if (sql.includes('weekly_off_defaults'))
@@ -369,7 +377,7 @@ describe('assertBalanceForApply — the apply-time ladder', () => {
     // this pins that the two derivations can never disagree).
     const { status, body } = await rejectionOf(
       assertBalanceForApply(
-        tx as unknown as PoolClient,
+        tx,
         TENANT,
         EMPLOYEE,
         { ...earned, enabled: false },
@@ -812,5 +820,63 @@ describe('applyCredit — the manual credit write', () => {
     await expect(
       service.applyCredit(user(ADMIN, 'company_admin'), dtoBase),
     ).resolves.toBeDefined();
+  });
+});
+
+describe('readEmployeeBalances — the caller’s branch (24-5b)', () => {
+  const REPORT = '55555555-5555-4555-8555-555555555555';
+  const OUTSIDER = '66666666-6666-4666-8666-666666666666';
+
+  it('an admin reads anyone in the company without walking a branch', async () => {
+    const { service, queries } = build({ subtreeIds: [REPORT] });
+
+    const rows = await service.readEmployeeBalances(
+      user(ADMIN, Role.COMPANY_ADMIN),
+      REPORT,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(queries.some((q) => q.sql.includes('with recursive down as'))).toBe(
+      false,
+    );
+  });
+
+  it('a manager reads a report and themself', async () => {
+    const { service } = build({ subtreeIds: [REPORT] });
+
+    await expect(
+      service.readEmployeeBalances(user(EMPLOYEE), REPORT),
+    ).resolves.toHaveLength(1);
+    await expect(
+      service.readEmployeeBalances(user(EMPLOYEE), EMPLOYEE),
+    ).resolves.toHaveLength(1);
+  });
+
+  it('an id outside the branch answers 404 BEFORE existence is checked', async () => {
+    const { service, queries } = build({ subtreeIds: [REPORT] });
+
+    const err = await rejectionOf(
+      service.readEmployeeBalances(user(EMPLOYEE), OUTSIDER),
+    );
+
+    expect(err.status).toBe(404);
+    expect(
+      queries.some(
+        (q) =>
+          q.sql.includes('count(*)') &&
+          q.sql.includes('from public.memberships'),
+      ),
+    ).toBe(false);
+  });
+
+  it('a member with no reports keeps today’s 403', async () => {
+    const { service } = build({ subtreeIds: [] });
+
+    const err = await rejectionOf(
+      service.readEmployeeBalances(user(EMPLOYEE), EMPLOYEE),
+    );
+
+    expect(err.status).toBe(403);
+    expect(err.body['error_code']).toBe('FORBIDDEN');
   });
 });

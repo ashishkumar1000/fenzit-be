@@ -27,7 +27,7 @@
  *   - 18:45  → the 09:56 check-in's late-shifted due (18:41) fires one
  *              5-minute tick late, and an 18:50 re-run absorbs it.
  * Also pinned: the tenant holiday D2 suppresses every employee arm but NOT
- * the pending alert (its count is tenant-wide, not per-day), the AD-25
+ * the pending alert (its count is per-recipient, not per-day), the AD-25
  * setup gate (tenant C has COMPLETE facts but never completes setup → it
  * stays notification-less), and per-tenant loop independence (AD-14: a
  * second fully-fact-armed tenant's reminders fire in the SAME ticks as the
@@ -223,7 +223,10 @@ const leaveRequest = async (
       `insert into public.leave_requests
          (tenant_id, employee_id, request_id, start_date, end_date, part, reason, created_by)
        values ($1, $2, gen_random_uuid(), $3, $3, $4, 'probe leave', $5) returning id`,
-      [TENANT, employeeId, D, part, OWNER],
+      // 24-5b: the filing actor is the employee themself. The reminder routes
+      // from the requester and EXCLUDES the actor, so filing "as the owner"
+      // here would (correctly) notify nobody.
+      [TENANT, employeeId, D, part, employeeId],
     )
   ).rows[0].id;
   await pool.query(
@@ -582,8 +585,8 @@ describe('attendance_run_reminders journey (19-1, real DB)', () => {
       );
       // Payloads + recipients + deep-link pairs exactly as the AD-13
       // registry and notifications_entity_pair_chk pin them: employee
-      // reminders carry an all-set attendance pair, the tenant-wide
-      // pending digest carries an all-NULL pair.
+      // reminders carry an all-set attendance pair, the routed pending
+      // digest carries an all-NULL pair.
       for (const row of rows) {
         switch (row['event_type']) {
           case 'attendance.reminder_checkin':

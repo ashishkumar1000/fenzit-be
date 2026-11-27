@@ -176,7 +176,7 @@ function buildMembershipWrite(
       // approval tree (before / after / activity check, in call order).
       if (sql.includes('with recursive down')) {
         return {
-          rows: (opts.subtreeIds ?? []).map((node_id) => ({ node_id })),
+          rows: (opts.subtreeIds ?? []).map((user_id) => ({ user_id })),
         };
       }
       if (sql.includes('select r.id, r.request_id, r.employee_id')) {
@@ -2396,7 +2396,7 @@ describe('MembersService', () => {
           if (sql.includes('attendance_lock_tenant')) return { rows: [] };
           if (sql.includes('with recursive down')) {
             return {
-              rows: (opts.subtreeIds ?? []).map((node_id) => ({ node_id })),
+              rows: (opts.subtreeIds ?? []).map((user_id) => ({ user_id })),
             };
           }
           if (sql.includes('select r.id, r.request_id, r.employee_id')) {

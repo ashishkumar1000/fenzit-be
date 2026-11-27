@@ -152,7 +152,7 @@ function txWithSubtree(ids: string[]) {
   return {
     query: jest.fn((sql: string) =>
       sql.includes('with recursive down')
-        ? Promise.resolve({ rows: ids.map((node_id) => ({ node_id })) })
+        ? Promise.resolve({ rows: ids.map((user_id) => ({ user_id })) })
         : Promise.resolve({ rows: [] }),
     ),
   } as unknown as PoolClient & { query: jest.Mock };
@@ -586,7 +586,7 @@ describe('LeaveReadService 24-5 — the per-row decision answer', () => {
       query: jest.fn((sql: string) => {
         if (sql.includes('with recursive down')) {
           return Promise.resolve({
-            rows: subtree.map((node_id) => ({ node_id })),
+            rows: subtree.map((user_id) => ({ user_id })),
           });
         }
         if (sql.includes('from public.memberships m')) {

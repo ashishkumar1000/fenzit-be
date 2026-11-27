@@ -224,8 +224,12 @@ export const ATTENDANCE_NOTIFICATION_EVENT_REGISTRY: Record<
     eventType: ATTENDANCE_NOTIFICATION_EVENT.PENDING_LEAVE_REMINDER,
     // NFR-10 wave 2. A request arriving after 10:00 stays silent until
     // tomorrow (FR-23's "once a day"): the key embeds the work date only.
+    // 24-5b (CAP-4/D7): the recipients are the RESOLVED approver set of each
+    // pending request — the same walk the decide path runs — so an admin's own
+    // filing notifies nobody and an unassigned employee falls back to the
+    // active admins. Each recipient's `pendingCount` is what THEY must decide.
     recipients:
-      'The tenant owner, once per day at 10:00 tenant wall time, when any pending leave day exists for the tenant.',
+      'The resolved approver of each pending request (the nearest eligible manager above the requester, or every active admin when the chain is unassigned), once per day at 10:00 tenant wall time, each seeing only the count they must decide.',
     payloadFields: ['pendingCount'],
     dedupeKeyShape:
       '<tenantId>:leave.pending_reminder:<recipientId>:<workDate>',

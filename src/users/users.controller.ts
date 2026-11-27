@@ -45,7 +45,11 @@ export class UsersController {
       'Technician gets own skills, own jobs, and own jobCounts. Every job ' +
       'row embeds technician (id, name, phone, skills) and customer (id, ' +
       'name, phone, address, city) summaries. jobsScope=today narrows the ' +
-      'jobs page to the current IST day window, sorted soonest-first.',
+      'jobs page to the current IST day window, sorted soonest-first. ' +
+      'team carries the caller’s place in the reporting tree (manager chain, ' +
+      'headcount, direct reports) and, for an employee or viewer with reports, ' +
+      'members: the live people below them, ordered by name — a company admin ' +
+      'reads the roster from GET /members instead.',
   })
   @ApiResponse({
     status: 200,

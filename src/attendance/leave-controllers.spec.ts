@@ -191,6 +191,8 @@ describe('role guard pins (spec §7)', () => {
       ['list', ['leave.read_all', 'leave.read_team']],
       ['summary', ['leave.read_all']],
       ['previewRevoke', ['leave.read_all']],
+      // 24-5b: the team detail sheet reads a report's balances.
+      ['employeeBalances', ['leave.read_all', 'leave.read_team']],
       ['readCoverage', ['leave.read_all', 'leave.read_team']],
       ['approve', ['leave.approve']],
       ['reject', ['leave.approve']],

@@ -114,7 +114,7 @@ function baseRouter(
     if (sql.includes('attendance_lock')) return { rows: [] };
     if (sql.includes('with recursive down')) {
       return {
-        rows: (overrides.subtree ?? [EMPLOYEE]).map((node_id) => ({ node_id })),
+        rows: (overrides.subtree ?? [EMPLOYEE]).map((user_id) => ({ user_id })),
       };
     }
     if (sql.includes('attendance_today'))

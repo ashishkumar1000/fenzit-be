@@ -169,7 +169,7 @@ export class ListLeaveQueryDto {
 
   @ApiPropertyOptional({
     description:
-      "Owner list only: window start, YYYY-MM-DD (tenant-local). Requests OVERLAPPING the window match — end_date >= from AND start_date <= to, both edges inclusive. from and to are sent together, from <= to (422 otherwise) — the calendar's month read.",
+      "Company list (admin or manager subtree): window start, YYYY-MM-DD (tenant-local). Requests OVERLAPPING the window match — end_date >= from AND start_date <= to, both edges inclusive. from and to are sent together, from <= to (422 otherwise) — the calendar's month read.",
     example: '2026-11-01',
   })
   @IsOptional()
@@ -178,7 +178,7 @@ export class ListLeaveQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'Owner list only: window end, YYYY-MM-DD (tenant-local); sent together with from, from <= to (422 otherwise).',
+      'Company list (admin or manager subtree): window end, YYYY-MM-DD (tenant-local); sent together with from, from <= to (422 otherwise).',
     example: '2026-11-30',
   })
   @IsOptional()
@@ -187,7 +187,7 @@ export class ListLeaveQueryDto {
 
   @ApiPropertyOptional({
     description:
-      "Owner list only: free-text needle over the person's name, their employee code and the request's reason — case-insensitive contains.",
+      "Company list (admin or manager subtree): free-text needle over the person's name, their employee code and the request's reason — case-insensitive contains.",
   })
   @IsOptional()
   @Transform(trimString)
@@ -202,11 +202,11 @@ export class ListLeaveQueryDto {
 }
 
 /**
- * The employee's own list binds a narrowed copy of the owner query: the 27-1
- * window and the free-text needle are owner-list capabilities (listMine
- * drops them), so this endpoint neither validates nor advertises from/to/q —
- * a client sending them there gets the same silent-strip every unknown key
- * gets.
+ * The employee's own list binds a narrowed copy of the company query: the
+ * 27-1 window and the free-text needle are company-list capabilities (admins
+ * and manager subtree reads; listMine drops them), so this endpoint neither
+ * validates nor advertises from/to/q — a client sending them there gets the
+ * same silent-strip every unknown key gets.
  */
 export class ListMeLeaveQueryDto extends OmitType(ListLeaveQueryDto, [
   'from',

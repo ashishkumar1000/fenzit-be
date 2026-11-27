@@ -65,11 +65,11 @@ export class LeaveController {
   ) {}
 
   @Get(':employeeId/balances')
-  @Can('leave.read_all')
+  @Can('leave.read_all', 'leave.read_team')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'One employee\u2019s derived leave balances for the current April-March FY — credits + accrued + carry-forward - consumed per accrual-bearing type',
+      'One employee\u2019s derived leave balances for the current April-March FY — credits + accrued + carry-forward - consumed per accrual-bearing type; a manager reads their own subtree',
   })
   @ApiOkResponse({
     type: [LeaveBalanceView],
@@ -77,8 +77,13 @@ export class LeaveController {
       'One row per accrual-bearing type (disabled ones included — their consumed days still count); Comp-Off never appears (no balance)',
   })
   @ApiResponse({
+    status: 403,
+    description: 'Not an admin, and the caller has no reports',
+  })
+  @ApiResponse({
     status: 404,
-    description: 'The employee is not in this company',
+    description:
+      'The employee is not in this company, not in the caller’s branch, or is not an employee (a viewer keeps no leave balance)',
   })
   employeeBalances(
     @CurrentUser() user: RequestUser,

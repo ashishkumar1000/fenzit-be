@@ -41,6 +41,12 @@ class ListJobsEchoController {
   } {
     return { status: query.status ?? null, scope: query.scope ?? null };
   }
+
+  /** The boolean filter, echoed alone so the dialect tests stay unchanged. */
+  @Get('jobs/team-only')
+  teamOnly(@Query() query: ListJobsQueryDto): { teamOnly: boolean | null } {
+    return { teamOnly: query.teamOnly ?? null };
+  }
 }
 
 describe('query-string dialect ListJobsQueryDto assumes', () => {
@@ -143,6 +149,26 @@ describe('query-string dialect ListJobsQueryDto assumes', () => {
       const res = await get('/jobs?status[]=bogus_status');
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ status: null, scope: null });
+    });
+  });
+
+  describe('teamOnly through the ValidationPipe', () => {
+    it('turns the string "true" into true and "false" into false', async () => {
+      const on = await get('/jobs/team-only?teamOnly=true');
+      expect(on.statusCode).toBe(200);
+      expect(on.json()).toEqual({ teamOnly: true });
+
+      const off = await get('/jobs/team-only?teamOnly=false');
+      expect(off.statusCode).toBe(200);
+      expect(off.json()).toEqual({ teamOnly: false });
+    });
+
+    it('rejects any other spelling with 422', async () => {
+      // Truthy little words are NOT booleans: a client must send true|false.
+      for (const value of ['1', '0', 'yes', 'TRUE']) {
+        const res = await get(`/jobs/team-only?teamOnly=${value}`);
+        expect(res.statusCode).toBe(422);
+      }
     });
   });
 

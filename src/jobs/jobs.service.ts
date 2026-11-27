@@ -75,6 +75,13 @@ import {
 // every getJobDetail call, never stored (AC#18).
 const ATTACHMENT_READ_URL_TTL_SECONDS = 3600; // 1 hour
 
+/**
+ * A uuid no membership can have: the `teamOnly` filter's empty-team branch.
+ * PostgREST turns `in()` with an empty list into an invalid filter, so an
+ * empty team asks for a sentinel id instead — an empty page, never a 500.
+ */
+const NO_TECHNICIAN_ID = '00000000-0000-0000-0000-000000000000';
+
 /** The job's stamped skill, as exposed on every job response (Story 4.5). */
 export interface JobSkillResponse {
   id: string;
@@ -504,6 +511,21 @@ export class JobsService {
       const ids = await readSubtreeMemberIds(tx, tenantId, user.userId);
       if (ids.length === 0) return null;
       return new Set([user.userId, ...ids]);
+    });
+  }
+
+  /**
+   * 24-5b — the caller's branch strictly below them, for every role. The
+   * manager team queue cannot use `teamScope`: that one answers null for a
+   * viewer's tenant-wide grant and for an empty team (both of which the list
+   * would read as "no narrowing"), while the queue must narrow either way.
+   */
+  private async subtreeScope(user: RequestUser): Promise<Set<string>> {
+    if (!user.tenantId) return new Set();
+    const tenantId = user.tenantId;
+    return this.pg.withTransaction(async (tx) => {
+      const ids = await readSubtreeMemberIds(tx, tenantId, user.userId);
+      return new Set(ids);
     });
   }
 
@@ -1381,10 +1403,31 @@ export class JobsService {
     // their own jobs (the technicianId param is ignored for them, as today);
     // a manager-employee sees their subtree and may filter inside it; admins
     // and viewers keep the whole company. Common to every scope.
-    if (readScopeFor(user.role, 'job.read_all') === 'subtree') {
+    if (query.teamOnly) {
+      // 24-5b — the manager team queue: the people BELOW the caller, for any
+      // role (a viewer's normal job scope is the whole company; asking for
+      // "my team" is a filter, never a narrowing of the role). Strict, so the
+      // caller's own jobs stay out and an empty team answers an empty page.
+      const team = await this.subtreeScope(user);
+      // Postgres compares uuids case-insensitively (the DTO accepts a loose
+      // uuid), so the membership test does too.
+      if (query.technicianId && !team.has(query.technicianId.toLowerCase())) {
+        // Another branch answers exactly like a missing job: no existence leak.
+        throw new NotFoundException({
+          error_code: ErrorCode.RESOURCE_NOT_FOUND,
+          message: 'Not found',
+        });
+      }
+      qb = query.technicianId
+        ? qb.eq('technician_id', query.technicianId)
+        : qb.in(
+            'technician_id',
+            team.size > 0 ? [...team] : [NO_TECHNICIAN_ID],
+          );
+    } else if (readScopeFor(user.role, 'job.read_all') === 'subtree') {
       const team = await this.teamScope(user);
       if (team) {
-        if (query.technicianId && !team.has(query.technicianId)) {
+        if (query.technicianId && !team.has(query.technicianId.toLowerCase())) {
           // Another branch answers exactly like a missing job: no existence leak.
           throw new NotFoundException({
             error_code: ErrorCode.RESOURCE_NOT_FOUND,

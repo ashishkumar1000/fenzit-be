@@ -12,6 +12,7 @@ import {
   emptyHierarchy,
   MemberHierarchy,
   readMemberHierarchy,
+  readSubtreeMemberDirectory,
 } from '../common/members/hierarchy';
 import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import {
@@ -100,6 +101,33 @@ export interface TechnicianSummary {
   avatarUrl: string | null;
 }
 
+/** One person in the caller's team directory (`GET /users/me` `team.members`). */
+export interface TeamMemberSummary {
+  userId: string;
+  name: string | null;
+  employeeCode: string;
+  /** `active` | `invited` | `deactivated`; an action picks an active person. */
+  status: string;
+  /** Short-lived link to the person's photo, or null when none is set. */
+  avatarUrl: string | null;
+}
+
+/**
+ * 24-5b — the caller's place in the tree plus the people below them. `members`
+ * is the ACTIONABLE subtree (the same rows every team read is scoped to), so
+ * it can be smaller than `headcount`, which counts the roster's shape: a
+ * disabled member's reports are counted there but pruned from the scope.
+ * Filled for employees and viewers only — an admin's roster is `GET /members`.
+ */
+export interface TeamSummary extends MemberHierarchy {
+  members: TeamMemberSummary[];
+}
+
+/** The empty block every profile carries when the caller has no team. */
+export function emptyTeamSummary(): TeamSummary {
+  return { ...emptyHierarchy(), members: [] };
+}
+
 interface UserProfileBase {
   id: string;
   employeeCode: string | null;
@@ -125,10 +153,10 @@ interface UserProfileBase {
    * who is not an admin can be told "you have a team" without a second
    * endpoint (`GET /members` stays owner-only). Empty for anyone with no
    * company; `headcount`/`directReports` > 0 is the server-endorsed gate for
-   * the team UI ("someone with no reports sees no new UI"). Read by the same
-   * helper `/members` uses, so the two cannot drift.
+   * the team UI ("someone with no reports sees no new UI"). 24-5b adds
+   * `members`, the directory those roles cannot read from `/members`.
    */
-  team: MemberHierarchy;
+  team: TeamSummary;
 }
 
 /**
@@ -322,17 +350,20 @@ export class UsersService {
   }
 
   /**
-   * 24-5/CAP-5 — the caller's own hierarchy. Same helper the admin member
-   * pages use, so `team.headcount` here and `headcount` on `GET /members`
-   * can never drift. A read failure degrades to the empty block: the profile
-   * is the app's boot call and must not 500 because a tree read failed.
+   * 24-5/CAP-5 — the caller's own hierarchy, plus (24-5b) the people below
+   * them. Same helper the admin member pages use, so `team.headcount` here and
+   * `headcount` on `GET /members` can never drift. A read failure degrades to
+   * the empty block: the profile is the app's boot call and must not 500
+   * because a tree read failed.
    */
   private async readOwnTeam(
     tenantId: string,
     userId: string,
-  ): Promise<MemberHierarchy> {
+    includeDirectory: boolean,
+  ): Promise<TeamSummary> {
+    let hierarchy: MemberHierarchy = emptyHierarchy();
     try {
-      return await this.pg.withTransaction(async (tx) => {
+      hierarchy = await this.pg.withTransaction(async (tx) => {
         const map = await readMemberHierarchy(tx, tenantId, [userId]);
         return map.get(userId) ?? emptyHierarchy();
       });
@@ -341,7 +372,54 @@ export class UsersService {
         error,
         userId,
       });
-      return emptyHierarchy();
+    }
+    // Nobody below the caller: nothing to list, and no second query.
+    if (!includeDirectory || hierarchy.headcount === 0) {
+      return { ...hierarchy, members: [] };
+    }
+    return {
+      ...hierarchy,
+      members: await this.readTeamMembers(tenantId, userId),
+    };
+  }
+
+  /**
+   * 24-5b — the caller's actionable subtree in directory form. Its own
+   * try/catch: a failed directory costs the picker, never the profile. Rows
+   * are name-then-id ordered so two boots of the same tree read identically.
+   */
+  private async readTeamMembers(
+    tenantId: string,
+    userId: string,
+  ): Promise<TeamMemberSummary[]> {
+    try {
+      const rows = await this.pg.withTransaction((tx) =>
+        readSubtreeMemberDirectory(tx, tenantId, userId),
+      );
+      const avatarUrls = await presignAvatarUrls(
+        this.storageService,
+        rows.map((row) => row.avatarKey),
+      );
+      return rows
+        .map((row) => ({
+          userId: row.userId,
+          name: row.name,
+          employeeCode: row.employeeCode,
+          status: row.status,
+          avatarUrl: avatarUrlFor(avatarUrls, row.avatarKey),
+        }))
+        .sort((a, b) => {
+          if (a.name === b.name) return a.userId.localeCompare(b.userId);
+          if (a.name === null) return 1;
+          if (b.name === null) return -1;
+          return a.name.localeCompare(b.name);
+        });
+    } catch (error: unknown) {
+      this.logger.warn('Failed to read the team directory for the profile', {
+        error,
+        userId,
+      });
+      return [];
     }
   }
 
@@ -404,10 +482,15 @@ export class UsersService {
 
     // 24-5/CAP-5: the caller's own place in the tree, so a manager who is not
     // an admin gets a server-endorsed "you have a team". Two indexed reads
-    // seeded at this one id (up-chain + down-tree) — no page-wide walk.
+    // seeded at this one id (up-chain + down-tree) — no page-wide walk. 24-5b
+    // adds the directory itself, for the roles that cannot call GET /members.
     const team = user.tenantId
-      ? await this.readOwnTeam(user.tenantId, user.userId)
-      : emptyHierarchy();
+      ? await this.readOwnTeam(
+          user.tenantId,
+          user.userId,
+          user.role === Role.EMPLOYEE || user.role === Role.VIEWER,
+        )
+      : emptyTeamSummary();
 
     const base: UserProfileBase = {
       id: ownRow.id,

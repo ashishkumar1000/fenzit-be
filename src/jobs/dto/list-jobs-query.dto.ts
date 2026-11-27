@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -113,6 +114,22 @@ export class ListJobsQueryDto {
   @IsOptional()
   @IsUUID('loose') // never '4'/'all' — real user ids fail 'all' (see leave.dto.ts)
   technicianId?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Restrict to the caller’s own reporting subtree — the people below them (the manager team queue). Strict: the caller’s own jobs are never included, and a caller with no reports gets an empty page. Omit it for the role’s normal scope (a viewer keeps the whole company).',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' || value === true
+      ? true
+      : value === 'false' || value === false
+        ? false
+        : value,
+  )
+  @IsBoolean()
+  teamOnly?: boolean;
 
   @ApiPropertyOptional({
     description: 'Opaque pagination cursor from a previous response',

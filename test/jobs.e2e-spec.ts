@@ -794,7 +794,7 @@ describe('Jobs (e2e)', () => {
 
     it('24-2 — a manager-employee is scoped to self plus their subtree', async () => {
       // techJwt() is OTHER_TECH_ID; TECH_ID is the report in its subtree.
-      subtreeRows = [{ node_id: TECH_ID }];
+      subtreeRows = [{ user_id: TECH_ID }];
       const { builder } = mockList({ data: [], error: null });
 
       const response = await app.inject({
