@@ -158,100 +158,170 @@ export function ownerHeadline(
   };
 }
 
-export interface OwnerPipeline {
-  pending: number;
-  pendingOverOneDay: number;
-  rejected: number;
-  rejectedWithReason: number;
-  rejectedWithoutReason: number;
-  approvalRate: number | null;
-  averageMinutesToDecision: number | null;
-  medianMinutesToDecision: number | null;
-  oldestPending: { id: string; jobNumber: string; submittedAt: string } | null;
+/** ── The exec-dashboard trend sections (2026-11-27 overview revamp) ────── */
+
+/** The overview's charts slice the window into this many equal buckets. */
+export const TREND_BUCKET_COUNT = 5;
+
+export interface WindowSlice {
+  from: string;
+  to: string;
 }
 
-export function ownerPipeline(
-  employeeJobs: ReportJob[],
-  nowMs: number,
-): OwnerPipeline {
-  const counts = countOutcomes(employeeJobs);
-  const pendingJobs = employeeJobs.filter((j) => outcomeOf(j) === 'pending');
-  const rejectedJobs = employeeJobs.filter((j) => outcomeOf(j) === 'rejected');
-  // Time to decision excludes cancelled jobs: a cancelled pending job carries a
-  // decided_at stamp, but a cancellation is not an approval decision — the wait
-  // figures must cover the same population the approval rate covers.
-  const minutes = employeeJobs
-    .filter((j) => outcomeOf(j) !== 'cancelled')
-    .map(minutesToDecision)
-    .filter((m): m is number => m !== null);
-  const oldest = [...pendingJobs].sort((a, b) =>
-    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
-  )[0];
-  return {
-    pending: counts.pending,
-    pendingOverOneDay: pendingJobs.filter(
-      (j) => nowMs - Date.parse(j.createdAt) > DAY_MS,
-    ).length,
-    rejected: counts.rejected,
-    rejectedWithReason: rejectedJobs.filter((j) => j.rejectionReason).length,
-    rejectedWithoutReason: rejectedJobs.filter((j) => !j.rejectionReason)
-      .length,
-    approvalRate: ratio(counts.approved, counts.approved + counts.rejected),
-    averageMinutesToDecision: average(minutes),
-    medianMinutesToDecision: median(minutes),
-    oldestPending: oldest
-      ? {
-          id: oldest.id,
-          jobNumber: oldest.jobNumber,
-          submittedAt: oldest.createdAt,
-        }
-      : null,
-  };
+/** Inclusive day count between two YYYY-MM-DD dates (from may equal to). */
+export function spanDaysInclusive(from: string, to: string): number {
+  return (
+    Math.floor(
+      (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /
+        DAY_MS,
+    ) + 1
+  );
 }
 
-export interface EmployeeRow extends OutcomeCounts {
-  employeeId: string;
-  name: string | null;
-  shareOfEmployeeCreated: number | null;
+function shiftDay(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS)
+    .toISOString()
+    .slice(0, 10);
 }
 
-/** Per-employee table for the owner (one row per creator with jobs in range). */
-export function perEmployee(
-  employeeJobs: ReportJob[],
-  members: ReadonlyMap<string, MemberFact>,
-): EmployeeRow[] {
-  const byCreator = new Map<string, ReportJob[]>();
-  for (const job of employeeJobs) {
-    const id = job.createdBy as string;
-    byCreator.set(id, [...(byCreator.get(id) ?? []), job]);
+/**
+ * The window cut into `count` equal day slices (the last one always ends at
+ * `to`). The overview's three charts share one slicing so their x-axes line
+ * up; five buckets over 30 days is the mock's weekly rhythm.
+ */
+export function sliceWindow(from: string, to: string, count: number): WindowSlice[] {
+  const span = spanDaysInclusive(from, to);
+  const sliceLen = Math.ceil(span / count);
+  const slices: WindowSlice[] = [];
+  let cursor = from;
+  for (let i = 0; i < count; i += 1) {
+    const end = shiftDay(cursor, sliceLen - 1);
+    const capped = end < to ? end : to;
+    slices.push({ from: cursor, to: capped });
+    if (capped === to) break;
+    cursor = shiftDay(capped, 1);
   }
-  const total = employeeJobs.length;
-  return [...byCreator.entries()]
-    .map(([employeeId, jobs]) => ({
-      employeeId,
-      name: members.get(employeeId)?.name ?? null,
-      shareOfEmployeeCreated: ratio(jobs.length, total),
-      ...countOutcomes(jobs),
-    }))
-    .sort(
-      (a, b) =>
-        b.created - a.created || (a.name ?? '').localeCompare(b.name ?? ''),
-    );
+  return slices;
 }
 
-/** Active employees with job creation switched on who created nothing in range. */
-export function employeesWithPermissionNoJobs(
+export interface CumulativeJobFlow {
+  employeeCreated: number;
+  employeeApproved: number;
+  employeeAutoApproved: number;
+  ownerCreated: number;
+}
+
+/**
+ * The headline counts accumulated as-of each cut instant (exclusive upper
+ * bounds, oldest first). The SAME definitions as ownerHeadline — the exec
+ * dashboard's rising lines are the headline accumulating over the window,
+ * never a second counting rule. Cumulative means cumulative: a job before
+ * an early cut is also before every later one, so it counts in every later
+ * bucket too (the same as-of semantics `workforceAtCuts` documents).
+ */
+export function cumulativeJobFlow(
+  jobs: ReportJob[],
   members: ReadonlyMap<string, MemberFact>,
-  creatorIds: ReadonlySet<string>,
-): Array<{ employeeId: string; name: string | null }> {
-  return [...members.entries()]
-    .filter(
-      ([id, f]) =>
-        f.role === 'employee' &&
-        f.status === 'active' &&
-        f.canCreateJobs &&
-        !creatorIds.has(id),
-    )
-    .map(([employeeId, f]) => ({ employeeId, name: f.name }))
-    .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+  cutsExclusive: Date[],
+): CumulativeJobFlow[] {
+  const counts = cutsExclusive.map(() => ({
+    employeeCreated: 0,
+    employeeApproved: 0,
+    employeeAutoApproved: 0,
+    ownerCreated: 0,
+  }));
+  for (const job of jobs) {
+    const at = Date.parse(job.createdAt);
+    const isEmployee = creatorKind(job.createdBy, members) === 'employee';
+    const outcome = isEmployee ? outcomeOf(job) : null;
+    // The cuts ascend, so the first cut past the job's creation is where its
+    // counts start — every later cut includes it too. A job created after
+    // the last cut belongs to no bucket.
+    const first = cutsExclusive.findIndex((cut) => at < cut.getTime());
+    // "Approved" is an as-of fact too: an approval that happened after a
+    // cut must not count in that cut's bucket (the same ruling
+    // workforceAtCuts applies to needsApproval). Auto-approval is
+    // instantaneous at creation, so it rides the creation date.
+    const approvedAt =
+      outcome === 'approved' && job.decidedAt !== null
+        ? Date.parse(job.decidedAt)
+        : null;
+    const approvedFirst =
+      approvedAt === null
+        ? counts.length
+        : cutsExclusive.findIndex((cut) => approvedAt < cut.getTime());
+    for (let i = first < 0 ? counts.length : first; i < counts.length; i += 1) {
+      const bucket = counts[i];
+      if (isEmployee) {
+        bucket.employeeCreated += 1;
+        if (i >= approvedFirst) bucket.employeeApproved += 1;
+        else if (outcome === 'auto_approved') bucket.employeeAutoApproved += 1;
+      } else {
+        bucket.ownerCreated += 1;
+      }
+    }
+  }
+  return counts;
+}
+
+export interface WorkforceMembershipRow {
+  /** ISO instant the membership was created (the invite). */
+  createdAt: string;
+  /** ISO instant of the row's last change — the removal stand-in. */
+  updatedAt: string;
+  status: 'invited' | 'active' | 'deactivated' | 'removed';
+}
+
+export interface WorkforceCounts {
+  totalEmployees: number;
+  activeEmployees: number;
+  pendingInvites: number;
+  needsApproval: number;
+}
+
+/**
+ * Workforce counts AS OF each cut instant (exclusive upper bounds, oldest
+ * first). Honest semantics, documented on the wire:
+ *  - `totalEmployees` grows from created_at and shrinks when a member is
+ *    `removed` before the cut (updated_at stands in for a removal stamp —
+ *    the table has no dedicated one).
+ *  - `activeEmployees` / `pendingInvites` back-project the CURRENT status:
+ *    the invited→active transition is not dated anywhere, so a member who is
+ *    active today counts as active across the whole window. The near-flat
+ *    lines the design shows are the true shape of that data.
+ *  - `needsApproval` is exact history: a job is pending at a cut when it was
+ *    created before it and not decided by it (a cancellation stamps
+ *    decided_at, so a cancelled job only counts while it was still waiting).
+ */
+export function workforceAtCuts(
+  memberships: WorkforceMembershipRow[],
+  jobs: ReportJob[],
+  cutsExclusive: Date[],
+): WorkforceCounts[] {
+  return cutsExclusive.map((cut) => {
+    const at = cut.getTime();
+    let totalEmployees = 0;
+    let activeEmployees = 0;
+    let pendingInvites = 0;
+    for (const m of memberships) {
+      if (Date.parse(m.createdAt) >= at) continue;
+      if (m.status === 'removed' && Date.parse(m.updatedAt) < at) continue;
+      totalEmployees += 1;
+      if (m.status === 'active') activeEmployees += 1;
+      else if (m.status === 'invited') pendingInvites += 1;
+    }
+    let needsApproval = 0;
+    for (const j of jobs) {
+      // A job that never waited for approval must never count: an
+      // auto-approved job (and an owner-created one, which is approved at
+      // creation) carries decided_at null for its whole life, and the pool
+      // is unfiltered by creator — only the current outcome says whether
+      // this row ever stood in the queue (review 2026-11-28).
+      if (outcomeOf(j) !== 'pending' && j.decidedAt === null) continue;
+      if (Date.parse(j.createdAt) >= at) continue;
+      if (j.decidedAt !== null && Date.parse(j.decidedAt) < at) continue;
+      needsApproval += 1;
+    }
+    return { totalEmployees, activeEmployees, pendingInvites, needsApproval };
+  });
 }

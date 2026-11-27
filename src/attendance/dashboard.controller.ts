@@ -8,7 +8,9 @@ import {
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { DashboardQueryDto } from './dto/dashboard-query.dto';
+import { TrendRangeDto } from './dto/trend-range.dto';
 import { DashboardService } from './dashboard';
+import { AttendanceTrendService } from './trend';
 import { Can } from '../common/decorators/can.decorator';
 
 /**
@@ -17,12 +19,18 @@ import { Can } from '../common/decorators/can.decorator';
  * (`readDayStatusGrid` over today's rows). Today only — no date params:
  * the tiles are a snapshot of `attendance_today()` (FR-24). No
  * idempotency header (AD-6's letter, the 18-2 read precedent).
+ *
+ * The 2026-11-27 exec dashboard adds `GET attendance/trend`: the SAME
+ * engine partition evaluated per day over a window (see trend.ts).
  */
 @ApiTags('Attendance')
 @ApiBearerAuth()
 @Controller('attendance')
 export class DashboardController {
-  constructor(private readonly dashboard: DashboardService) {}
+  constructor(
+    private readonly dashboard: DashboardService,
+    private readonly trendService: AttendanceTrendService,
+  ) {}
 
   @Get('dashboard')
   @Can('attendance.read')
@@ -43,5 +51,30 @@ export class DashboardController {
   })
   today(@CurrentUser() owner: RequestUser, @Query() query: DashboardQueryDto) {
     return this.dashboard.today(owner, query.officeId);
+  }
+
+  // The exec dashboard's daily distribution (2026-11-27): the pulse's
+  // partition over a whole window, one engine grid read. Same permission as
+  // the tiles — the chart is the tiles over time, nothing broader.
+  @Get('trend')
+  @Can('attendance.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Exec-dashboard attendance trend: the FR-24 bucket partition (tracked / checkedIn / notCheckedIn / shortDay / late / onLeave) for every day of a window, oldest first',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ range: { from, to }, days: [{ date, tracked, checkedIn, notCheckedIn, shortDay, late, onLeave }] } — the same partition as /attendance/dashboard, per day; honest zeros on days nobody was tracked',
+  })
+  @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })
+  @ApiResponse({
+    status: 422,
+    description:
+      'from/to not real YYYY-MM-DD dates, from after to, or the window longer than 62 days',
+  })
+  trend(@CurrentUser() owner: RequestUser, @Query() query: TrendRangeDto) {
+    return this.trendService.trend(owner, query.from, query.to);
   }
 }

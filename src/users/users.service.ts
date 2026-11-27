@@ -146,8 +146,16 @@ interface UserProfileBase {
   /**
    * The company's subscription end (UTC ISO-8601), or null with no company.
    * Shared by every role: the app decides who sees the roadblock.
+   * The 2026-11-27 overview banner also reads the plan facts — the display
+   * name, the billing cadence and the auto-renew note (tenants columns with
+   * per-company defaults, migration 20261127000006).
    */
-  subscription: { validUntil: string | null };
+  subscription: {
+    validUntil: string | null;
+    planName: string;
+    billingCycle: string;
+    autoRenews: boolean;
+  };
   /**
    * 24-5/CAP-5 — the caller's own place in the reporting tree, so a manager
    * who is not an admin can be told "you have a team" without a second
@@ -283,6 +291,9 @@ interface TenantRow {
   state_code: string;
   upi_vpa: string | null;
   validity_until: string | null;
+  plan_name: string;
+  billing_cycle: string;
+  auto_renews: boolean;
 }
 
 // PostgREST embeds a to-one/to-many related resource; normalize both possible
@@ -508,7 +519,12 @@ export class UsersService {
         : null,
       tenant: null,
       platformAdmin: user.platformAdmin,
-      subscription: { validUntil: null },
+      subscription: {
+        validUntil: null,
+        planName: 'Enterprise',
+        billingCycle: 'Annual',
+        autoRenews: true,
+      },
       team,
     };
 
@@ -537,7 +553,7 @@ export class UsersService {
     const { data: tenantRow, error: tenantError } = await admin
       .from('tenants')
       .select(
-        'id, company_name, gstin, address, state_code, upi_vpa, validity_until',
+        'id, company_name, gstin, address, state_code, upi_vpa, validity_until, plan_name, billing_cycle, auto_renews',
       )
       .eq('id', tenantId)
       .single<TenantRow>();
@@ -556,6 +572,9 @@ export class UsersService {
       validUntil: tenantRow.validity_until
         ? new Date(tenantRow.validity_until).toISOString()
         : null,
+      planName: tenantRow.plan_name,
+      billingCycle: tenantRow.billing_cycle,
+      autoRenews: tenantRow.auto_renews,
     };
 
     const tenant: TenantSummary = {

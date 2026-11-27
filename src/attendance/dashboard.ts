@@ -5,7 +5,10 @@ import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { requireTenant } from './attendance-rpc.helpers';
 import { tenantToday } from './enrolments.repository';
 import { readDayStatusGrid } from '../common/day-status/grid-reader';
-import { computeDayStatus } from '../common/day-status/day-status.model';
+import {
+  computeDayStatus,
+  type DayStatusOutcome,
+} from '../common/day-status/day-status.model';
 import { DashboardFlagReads } from './dashboard-flags';
 import {
   avatarUrlFor,
@@ -62,14 +65,37 @@ import type {
  *  minutes present) → shortDay; owner-adjudicated (rule 1) and the
  *  past-no-check-in grade (rule 9, no worked minutes) stay not checked
  *  in — the owner's word overrides the tile, always. */
-const CHECKED_IN_STATUSES = new Set([
+export const CHECKED_IN_STATUSES = new Set([
   'in_progress',
   'present',
   'half_day',
   'worked_on_holiday',
 ]);
 
-const ON_LEAVE_STATUSES = new Set(['leave', 'half_day_leave']);
+export const ON_LEAVE_STATUSES = new Set(['leave', 'half_day_leave']);
+
+/** The partition's one ruling (the 2026-10-02 story-20-2 flip, documented on
+ *  CHECKED_IN_STATUSES above), as a pure classifier both the pulse tiles and
+ *  the trend chart call — the rule lives HERE and is consumed, never
+ *  re-implemented: presence → checked in, leave → on leave, and the `absent`
+ *  status splits BY ORIGIN — the engine's rule-7 short-day grade (no owner
+ *  status override, worked minutes on the outcome) → short_day; everything
+ *  else is not_checked_in. */
+export function bucketOfOutcome(
+  outcome: Pick<DayStatusOutcome, 'status' | 'workedMinutes'>,
+  overrideStatus: string | null | undefined,
+): 'checked_in' | 'on_leave' | 'short_day' | 'not_checked_in' {
+  if (CHECKED_IN_STATUSES.has(outcome.status)) return 'checked_in';
+  if (ON_LEAVE_STATUSES.has(outcome.status)) return 'on_leave';
+  if (
+    outcome.status === 'absent' &&
+    overrideStatus == null &&
+    outcome.workedMinutes !== null
+  ) {
+    return 'short_day';
+  }
+  return 'not_checked_in';
+}
 
 interface TrackedTodayRow {
   employee_id: string;
@@ -197,19 +223,11 @@ export class DashboardService {
           // not_checked_in_yet, weekly_off, holiday, owner-adjudicated
           // `absent`, rule-9 `absent` — is not checked in. Rows MOVE,
           // never copy: one tracked row lands in exactly one bucket.
-          if (checkedIn) {
-            counts.checkedIn += 1;
-          } else if (ON_LEAVE_STATUSES.has(outcome.status)) {
-            counts.onLeave += 1;
-          } else if (
-            outcome.status === 'absent' &&
-            row.override?.status == null &&
-            outcome.workedMinutes !== null
-          ) {
-            counts.shortDay += 1;
-          } else {
-            counts.notCheckedIn += 1;
-          }
+          const bucket = bucketOfOutcome(outcome, row.override?.status);
+          if (bucket === 'checked_in') counts.checkedIn += 1;
+          else if (bucket === 'on_leave') counts.onLeave += 1;
+          else if (bucket === 'short_day') counts.shortDay += 1;
+          else counts.notCheckedIn += 1;
           // Late qualifies the CHECKED-IN rows only — a late flag can
           // never read against a not-checked-in or on-leave person.
           if (checkedIn && outcome.isLate) counts.late += 1;
@@ -218,17 +236,12 @@ export class DashboardService {
           // one wire row per tracked employee — with the detail lines the
           // list shows: how late, how long worked, when they checked out,
           // which half of the day their leave covers.
-          const pulseStatus: DashboardEmployeeStatus = checkedIn
-            ? outcome.isLate
-              ? 'late'
-              : 'checked_in'
-            : ON_LEAVE_STATUSES.has(outcome.status)
-              ? 'on_leave'
-              : outcome.status === 'absent' &&
-                  row.override?.status == null &&
-                  outcome.workedMinutes !== null
-                ? 'short_day'
-                : 'not_checked_in';
+          const pulseStatus: DashboardEmployeeStatus =
+            bucket === 'checked_in'
+              ? outcome.isLate
+                ? 'late'
+                : 'checked_in'
+              : bucket;
           // A presence row carries an instant by construction (rule 3/7/10
           // require a punch, or a times-only override supplied one) — the
           // null guard is for the type, never a real state.

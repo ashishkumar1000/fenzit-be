@@ -10,6 +10,7 @@ import { getIstDayRange } from '../common/utils/ist-day-range.util';
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { pageAllRows } from './page-all-rows';
 import type { MemberFact, ReportJob } from './job-report-rules';
+import type { WorkforceMembershipRow } from './job-report-rules';
 
 const logger = new Logger('JobReportData');
 
@@ -184,4 +185,61 @@ export async function loadWindowJobs(
     decidedAt: r.decided_at,
     rejectionReason: r.rejection_reason,
   }));
+}
+
+/** The pending-history pool needs a bounded look-back: two years of created
+ *  jobs is far beyond any honest "waiting for approval" age, and it keeps the
+ *  page read from growing without limit. */
+const PENDING_POOL_LOOKBACK_DAYS = 730;
+
+/**
+ * Every membership row of the company with its timestamps, removed ones
+ * included — the workforce chart's as-of counts read creation and removal
+ * from these rows (see workforceAtCuts for the exact semantics). Reads page
+ * by page (see page-all-rows.ts) so a long-history company is not silently
+ * cut at 1000 rows.
+ */
+export async function loadWorkforceMemberships(
+  admin: SupabaseClient,
+  tenantId: string,
+): Promise<WorkforceMembershipRow[]> {
+  const rows = await pageAllRows<{
+    status: WorkforceMembershipRow['status'];
+    created_at: string;
+    updated_at: string;
+  }>((from, to) =>
+    admin
+      .from('memberships')
+      .select('status, created_at, updated_at')
+      .eq('tenant_id', tenantId)
+      .order('user_id', { ascending: true })
+      .range(from, to),
+  );
+  return rows.map((r) => ({
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    status: r.status,
+  }));
+}
+
+/**
+ * The job pool the workforce chart's "Needs Approval" line reads its history
+ * from: everything created in the look-back up to the window's end, decided
+ * or not — workforceAtCuts derives each bucket's pending count from the
+ * created/decided stamps, so decided rows are part of the history too.
+ */
+export async function loadPendingHistoryPool(
+  admin: SupabaseClient,
+  tenantId: string,
+  window: ReportWindow,
+): Promise<ReportJob[]> {
+  const start = new Date(
+    window.start.getTime() - PENDING_POOL_LOOKBACK_DAYS * DAY_MS,
+  );
+  return loadWindowJobs(admin, tenantId, {
+    from: start.toISOString().slice(0, 10),
+    to: window.to,
+    start,
+    end: window.end,
+  });
 }

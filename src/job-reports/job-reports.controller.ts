@@ -27,7 +27,7 @@ export class JobReportsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Owner report: headline counts, approval pipeline and per-employee breakdown for an IST date window',
+      'Owner report: headline counts and the pending-approval count for an IST date window. `?charts=true` adds the exec dashboard\'s chart sections (trend + workforce) — the mobile summary and the jobs page\'s badge read the light default',
   })
   @ApiResponse({ status: 200, description: 'Owner report' })
   @ApiResponse({ status: 401, description: 'Missing/invalid JWT' })

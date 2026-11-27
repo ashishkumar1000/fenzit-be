@@ -9,39 +9,87 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import type { RequestUser } from '../common/interfaces/request-user.interface';
 import { JobReportRangeDto } from './dto/job-report-range.dto';
 import {
+  cumulativeJobFlow,
   countOutcomes,
   creatorKind,
-  employeesWithPermissionNoJobs,
   minutesToDecision,
   outcomeOf,
   ownerHeadline,
-  ownerPipeline,
-  perEmployee,
   ratio,
   average,
   median,
-  type EmployeeRow,
+  sliceWindow,
+  TREND_BUCKET_COUNT,
+  workforceAtCuts,
   type OutcomeCounts,
   type OwnerHeadline,
-  type OwnerPipeline,
+  type WindowSlice,
 } from './job-report-rules';
 import {
   loadMembers,
+  loadPendingHistoryPool,
   loadWindowJobs,
+  loadWorkforceMemberships,
   requireCompany,
   resolveReportWindow,
   type ReportWindow,
 } from './job-report-data';
+import { getIstDayRange } from '../common/utils/ist-day-range.util';
 
+export interface OwnerTrendBucket extends WindowSlice {
+  employeeCreated: number;
+  employeeApproved: number;
+  employeeAutoApproved: number;
+  ownerCreated: number;
+}
+
+export interface OwnerTrend {
+  /** Equal slices of the window, oldest first; counts cumulative AT each
+   *  slice's end — the exec dashboard's rising lines. */
+  buckets: OwnerTrendBucket[];
+  /** approved / (approved + rejected) over the window — the pipeline's
+   *  approval rate re-surfaced as the banner's turnaround efficiency. */
+  turnaroundEfficiency: number | null;
+}
+
+export interface OwnerWorkforceBucket extends WindowSlice {
+  totalEmployees: number;
+  activeEmployees: number;
+  pendingInvites: number;
+  needsApproval: number;
+}
+
+export interface OwnerWorkforce {
+  /** Equal slices of the window, oldest first; counts AS OF each slice's
+   *  end (see workforceAtCuts for the honest semantics). */
+  buckets: OwnerWorkforceBucket[];
+}
+
+/**
+ * The light owner report (2026-11-28 slimming): the mobile app's summary and
+ * the jobs page's waiting badge read only these, so the default response
+ * carries just them — the expensive chart sections ride the same endpoint
+ * only when `?charts=true` asks for them.
+ */
 export interface OwnerReportResponse {
   range: { from: string; to: string };
   headline: OwnerHeadline;
-  pipeline: OwnerPipeline;
-  perEmployee: EmployeeRow[];
-  employeesWithPermissionNoJobs: Array<{
-    employeeId: string;
-    name: string | null;
-  }>;
+  /**
+   * The pipeline object the mobile app reads (`pipeline.pending`, Epic 22) —
+   * only the waiting count survives the overview revamp; the rest of the old
+   * pipeline (aged pending, rejection splits, wait minutes, oldest job)
+   * retired with the overview cards it fed.
+   */
+  pipeline: { pending: number };
+}
+
+/** The exec dashboard's report: the light report plus the two chart
+ *  sections — `GET /job-reports/owner?charts=true`, the overview page's ask. */
+export interface OwnerExecReportResponse extends OwnerReportResponse {
+  /** 2026-11-27 exec dashboard: the cumulative job-flow chart + efficiency. */
+  trend: OwnerTrend;
+  /** 2026-11-27 exec dashboard: the workforce analytics chart. */
+  workforce: OwnerWorkforce;
 }
 
 export interface EmployeeReportResponse {
@@ -85,7 +133,7 @@ export class JobReportsService {
   async ownerReport(
     user: RequestUser,
     query: JobReportRangeDto,
-  ): Promise<OwnerReportResponse> {
+  ): Promise<OwnerReportResponse | OwnerExecReportResponse> {
     const tenantId = requireCompany(user);
     const window = resolveReportWindow(query);
     const admin = this.supabaseClientFactory.createAdmin();
@@ -95,17 +143,48 @@ export class JobReportsService {
     const employeeJobs = jobs.filter(
       (j) => creatorKind(j.createdBy, members) === 'employee',
     );
-    const creatorIds = new Set(employeeJobs.map((j) => j.createdBy as string));
-
-    return {
+    const counts = countOutcomes(employeeJobs);
+    // The turnaround rate the trend banner shows — the same approved /
+    // (approved + rejected) ratio the old pipeline carried, straight off the
+    // outcome counts.
+    const turnaroundEfficiency = ratio(
+      counts.approved,
+      counts.approved + counts.rejected,
+    );
+    const report: OwnerReportResponse = {
       range: { from: window.from, to: window.to },
       headline: ownerHeadline(jobs, members),
-      pipeline: ownerPipeline(employeeJobs, Date.now()),
-      perEmployee: perEmployee(employeeJobs, members),
-      employeesWithPermissionNoJobs: employeesWithPermissionNoJobs(
-        members,
-        creatorIds,
-      ),
+      pipeline: { pending: counts.pending },
+    };
+    // The chart sections' reads (workforce memberships + the pending history
+    // pool) only run when the overview page asks for them — the mobile
+    // summary and the jobs page's waiting badge must not pay for charts
+    // they never read (2026-11-28 slimming).
+    if (query.charts !== 'true') return report;
+
+    // The exec dashboard's slices: five equal cuts of the window, each
+    // bounded by the end of its last IST day (exclusive). One slicing serves
+    // both the job-flow and the workforce chart so the x-axes line up.
+    const slices = sliceWindow(window.from, window.to, TREND_BUCKET_COUNT);
+    const cuts = slices.map((s) =>
+      getIstDayRange(new Date(`${s.to}T06:30:00.000Z`)).end,
+    );
+    const [memberships, pendingPool] = await Promise.all([
+      loadWorkforceMemberships(admin, tenantId),
+      loadPendingHistoryPool(admin, tenantId, window),
+    ]);
+    const flow = cumulativeJobFlow(jobs, members, cuts);
+    const workforce = workforceAtCuts(memberships, pendingPool, cuts);
+
+    return {
+      ...report,
+      trend: {
+        buckets: slices.map((slice, i) => ({ ...slice, ...flow[i] })),
+        turnaroundEfficiency,
+      },
+      workforce: {
+        buckets: slices.map((slice, i) => ({ ...slice, ...workforce[i] })),
+      },
     };
   }
 

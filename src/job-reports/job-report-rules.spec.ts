@@ -2,16 +2,17 @@ import {
   average,
   countOutcomes,
   creatorKind,
-  employeesWithPermissionNoJobs,
+  cumulativeJobFlow,
   median,
   minutesToDecision,
   outcomeOf,
   ownerHeadline,
-  ownerPipeline,
-  perEmployee,
   ratio,
+  sliceWindow,
+  workforceAtCuts,
   type MemberFact,
   type ReportJob,
+  type WorkforceMembershipRow,
 } from './job-report-rules';
 
 const OWNER = 'owner';
@@ -203,107 +204,202 @@ describe('minutesToDecision: submission to decision', () => {
   });
 });
 
-describe('ownerPipeline', () => {
-  it('pending over 24h uses the strict boundary: exactly 24h is not over', () => {
-    const exactly = job({
-      createdBy: EMP_A,
-      status: 'pending_approval',
-      createdAt: HOURS(24),
-    });
-    const over = job({
-      createdBy: EMP_A,
-      status: 'pending_approval',
-      createdAt: HOURS(25),
-    });
-    const fresh = job({
-      createdBy: EMP_A,
-      status: 'pending_approval',
-      createdAt: HOURS(1),
-    });
-    const p = ownerPipeline([exactly, over, fresh], NOW);
-    expect(p.pending).toBe(3);
-    expect(p.pendingOverOneDay).toBe(1);
+describe('sliceWindow: the charts\' shared slicing', () => {
+  it('cuts a 30-day window into five equal six-day slices, oldest first', () => {
+    expect(sliceWindow('2026-10-14', '2026-11-12', 5)).toEqual([
+      { from: '2026-10-14', to: '2026-10-19' },
+      { from: '2026-10-20', to: '2026-10-25' },
+      { from: '2026-10-26', to: '2026-10-31' },
+      { from: '2026-11-01', to: '2026-11-06' },
+      { from: '2026-11-07', to: '2026-11-12' },
+    ]);
   });
-  it('rejected splits into with and without a reason', () => {
-    const p = ownerPipeline(
-      [
-        job({
-          createdBy: EMP_A,
-          status: 'rejected',
-          decidedAt: HOURS(1),
-          rejectionReason: 'Duplicate',
-        }),
-        job({ createdBy: EMP_A, status: 'rejected', decidedAt: HOURS(1) }),
-      ],
-      NOW,
-    );
-    expect(p).toMatchObject({
-      rejected: 2,
-      rejectedWithReason: 1,
-      rejectedWithoutReason: 1,
-    });
+  it('an uneven span makes the last slice shorter, never past `to`', () => {
+    const slices = sliceWindow('2026-11-01', '2026-11-07', 3);
+    expect(slices).toEqual([
+      { from: '2026-11-01', to: '2026-11-03' },
+      { from: '2026-11-04', to: '2026-11-06' },
+      { from: '2026-11-07', to: '2026-11-07' },
+    ]);
   });
-  it('approval rate counts only jobs that needed approval', () => {
-    const p = ownerPipeline(
-      [
-        job({ createdBy: EMP_A, status: 'scheduled', decidedAt: HOURS(1) }),
-        job({ createdBy: EMP_A, status: 'rejected', decidedAt: HOURS(1) }),
-        job({ createdBy: EMP_A, status: 'scheduled' }), // auto: not in the rate
-      ],
-      NOW,
-    );
-    expect(p.approvalRate).toBe(0.5);
-  });
-  it('oldest pending is the earliest submission, and null when none is pending', () => {
-    const newer = job({
-      createdBy: EMP_A,
-      status: 'pending_approval',
-      createdAt: HOURS(2),
-    });
-    const older = job({
-      createdBy: EMP_A,
-      status: 'pending_approval',
-      createdAt: HOURS(30),
-    });
-    expect(ownerPipeline([newer, older], NOW).oldestPending).toMatchObject({
-      id: older.id,
-      submittedAt: older.createdAt,
-    });
-    expect(ownerPipeline([], NOW).oldestPending).toBeNull();
+  it('a one-day window is one slice that starts and ends on the day', () => {
+    expect(sliceWindow('2026-11-12', '2026-11-12', 5)).toEqual([
+      { from: '2026-11-12', to: '2026-11-12' },
+    ]);
   });
 });
 
-describe('perEmployee and employees with permission but no jobs', () => {
-  it('one row per creator, with shares that add to the employee total, sorted by volume', () => {
-    const rows = perEmployee(
-      [
-        job({ createdBy: EMP_A, status: 'scheduled' }),
-        job({ createdBy: EMP_A, status: 'scheduled' }),
-        job({ createdBy: 'emp-c', status: 'pending_approval' }),
-      ],
-      members,
-    );
-    expect(rows.map((r) => [r.name, r.created])).toEqual([
-      ['Asha', 2],
-      ['Meena', 1],
-    ]);
-    expect(rows[0].shareOfEmployeeCreated).toBeCloseTo(0.6667, 4);
-    expect(rows[1].pending).toBe(1);
-  });
-  it('lists only active employees with creation on and no job in the window', () => {
-    const none = employeesWithPermissionNoJobs(members, new Set([EMP_A]));
-    expect(none).toEqual([{ employeeId: 'emp-c', name: 'Meena' }]);
-  });
-  it('a removed employee with creation on is not listed as a candidate', () => {
-    const map = new Map(members);
-    map.set('emp-x', {
-      role: 'employee',
-      name: 'Gone',
-      canCreateJobs: true,
-      status: 'removed',
+describe('cumulativeJobFlow: the headline accumulating to each cut', () => {
+  it('counts are cumulative at each cut, same split as the headline', () => {
+    const cuts = [
+      new Date('2026-11-11T06:30:00Z'),
+      new Date('2026-11-12T06:30:00Z'),
+    ];
+    const before = job({
+      createdBy: EMP_A,
+      status: 'scheduled',
+      createdAt: '2026-11-10T10:00:00Z',
     });
-    expect(employeesWithPermissionNoJobs(map, new Set())).not.toContainEqual(
-      expect.objectContaining({ employeeId: 'emp-x' }),
+    const approvedBefore = job({
+      createdBy: EMP_A,
+      status: 'scheduled',
+      decidedAt: '2026-11-10T11:00:00Z',
+      createdAt: '2026-11-10T09:00:00Z',
+    });
+    const ownerJob = job({
+      createdBy: null,
+      status: 'scheduled',
+      createdAt: '2026-11-10T12:00:00Z',
+    });
+    const secondDay = job({
+      createdBy: EMP_A,
+      status: 'pending_approval',
+      createdAt: '2026-11-11T20:00:00Z',
+    });
+    const flow = cumulativeJobFlow(
+      [before, approvedBefore, ownerJob, secondDay],
+      members,
+      cuts,
     );
+    expect(flow).toEqual([
+      {
+        employeeCreated: 2,
+        employeeApproved: 1,
+        employeeAutoApproved: 1,
+        ownerCreated: 1,
+      },
+      {
+        employeeCreated: 3,
+        employeeApproved: 1,
+        employeeAutoApproved: 1,
+        ownerCreated: 1,
+      },
+    ]);
+  });
+  it('an approval counts only in buckets past its decision, never before it', () => {
+    const cuts = [
+      new Date('2026-11-11T06:30:00Z'),
+      new Date('2026-11-12T06:30:00Z'),
+    ];
+    const createdEarly = job({
+      createdBy: EMP_A,
+      status: 'scheduled',
+      createdAt: '2026-11-10T09:00:00Z',
+      decidedAt: '2026-11-11T20:00:00Z', // after the first cut
+    });
+    const flow = cumulativeJobFlow([createdEarly], members, cuts);
+    // Bucket 1: the job exists but its approval had not happened yet.
+    expect(flow[0]).toMatchObject({ employeeCreated: 1, employeeApproved: 0 });
+    // Bucket 2: the decision instant is behind the cut — approved now.
+    expect(flow[1]).toMatchObject({ employeeCreated: 1, employeeApproved: 1 });
+  });
+
+  it('a job created at or after the cut belongs to a later bucket, and past-the-end jobs belong nowhere', () => {
+    const cuts = [new Date('2026-11-11T06:30:00Z')];
+    const atCut = job({
+      createdBy: EMP_A,
+      status: 'scheduled',
+      createdAt: '2026-11-11T06:30:00Z',
+    });
+    const longAfter = job({
+      createdBy: EMP_A,
+      status: 'scheduled',
+      createdAt: '2026-12-01T00:00:00Z',
+    });
+    expect(cumulativeJobFlow([atCut, longAfter], members, cuts)).toEqual([
+      {
+        employeeCreated: 0,
+        employeeApproved: 0,
+        employeeAutoApproved: 0,
+        ownerCreated: 0,
+      },
+    ]);
+  });
+});
+
+describe('workforceAtCuts: the as-of workforce counts', () => {
+  const cuts = [
+    new Date('2026-11-10T06:30:00Z'),
+    new Date('2026-11-12T06:30:00Z'),
+  ];
+  const membership = (
+    createdAt: string,
+    status: WorkforceMembershipRow['status'],
+    updatedAt = createdAt,
+  ): WorkforceMembershipRow => ({ createdAt, status, updatedAt });
+
+  it('total grows from the invite and shrinks on a removal before the cut', () => {
+    const memberships = [
+      membership('2026-11-01T00:00:00Z', 'active'),
+      membership('2026-11-11T00:00:00Z', 'removed', '2026-11-11T08:00:00Z'),
+    ];
+    const counts = workforceAtCuts(memberships, [], cuts);
+    expect(counts[0].totalEmployees).toBe(1);
+    // The second member was invited before the second cut but removed
+    // before it too — the removal stands in for the missing stamp.
+    expect(counts[1].totalEmployees).toBe(1);
+  });
+
+  it('active and invited back-project the current status; removed was never active', () => {
+    const memberships = [
+      membership('2026-11-01T00:00:00Z', 'active'),
+      membership('2026-11-01T00:00:00Z', 'invited'),
+      membership('2026-11-01T00:00:00Z', 'removed', '2026-11-05T00:00:00Z'),
+    ];
+    const [first] = workforceAtCuts(memberships, [], cuts);
+    expect(first).toMatchObject({
+      totalEmployees: 2,
+      activeEmployees: 1,
+      pendingInvites: 1,
+    });
+  });
+
+  it('needsApproval never counts a job that never waited — auto-approved or owner-created', () => {
+    const memberships = [membership('2026-11-01T00:00:00Z', 'active')];
+    const jobs = [
+      // Approval off: scheduled at creation, decided_at null for life.
+      job({
+        createdBy: EMP_A,
+        status: 'scheduled',
+        createdAt: '2026-11-09T00:00:00Z',
+      }),
+      // Owner-created: never enters the queue either.
+      job({
+        createdBy: null,
+        status: 'scheduled',
+        createdAt: '2026-11-09T00:00:00Z',
+      }),
+    ];
+    const counts = workforceAtCuts(memberships, jobs, cuts);
+    for (const c of counts) expect(c.needsApproval).toBe(0);
+  });
+
+  it('needsApproval is exact history: pending until decided, cancelled only while waiting', () => {
+    const memberships = [membership('2026-11-01T00:00:00Z', 'active')];
+    const jobs = [
+      job({
+        createdBy: EMP_A,
+        status: 'pending_approval',
+        createdAt: '2026-11-09T00:00:00Z',
+      }),
+      job({
+        createdBy: EMP_A,
+        status: 'cancelled',
+        decidedAt: '2026-11-11T00:00:00Z',
+        createdAt: '2026-11-09T00:00:00Z',
+      }),
+      job({
+        createdBy: EMP_A,
+        status: 'pending_approval',
+        createdAt: '2026-11-11T12:00:00Z',
+      }),
+    ];
+    const counts = workforceAtCuts(memberships, jobs, cuts);
+    // First cut: both early jobs are waiting (the cancelled one had no
+    // decision yet), and the third did not exist — 2.
+    expect(counts[0].needsApproval).toBe(2);
+    // Second cut: the first is still waiting, the cancelled one was decided
+    // by then, and the third is waiting — 2.
+    expect(counts[1].needsApproval).toBe(2);
   });
 });

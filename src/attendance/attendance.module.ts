@@ -26,6 +26,7 @@ import { PunchesController } from './punches.controller';
 import { CorrectionsService } from './corrections.service';
 import { CorrectionsController } from './corrections.controller';
 import { DashboardService } from './dashboard';
+import { AttendanceTrendService } from './trend';
 import { DashboardController } from './dashboard.controller';
 import { DashboardFlagReads } from './dashboard-flags';
 import { MonthlyService } from './monthly';
@@ -80,6 +81,7 @@ import { StorageModule } from '../storage/storage.module';
     CorrectionsService,
     DashboardService,
     DashboardFlagReads,
+    AttendanceTrendService,
     MonthlyService,
     ReminderJobMetricsBinder,
   ],

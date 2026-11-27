@@ -103,6 +103,12 @@ describe('UsersService', () => {
     address: '12 MG Road',
     state_code: 'MH',
     upi_vpa: null,
+    // The banner's plan facts (2026-11-27) — deliberately NOT the defaults
+    // the code falls back to, so a swapped mapping fails these tests.
+    validity_until: '2027-01-31T00:00:00Z',
+    plan_name: 'Growth',
+    billing_cycle: 'Monthly',
+    auto_renews: false,
   };
 
   const technicianListRows: StubMemberRow[] = [
@@ -538,6 +544,15 @@ describe('UsersService', () => {
       expect(result.employeeCode).toBe('EMP-001');
       expectCompany(result);
       expect(result.technicians[0].employeeCode).toBe('EMP-004');
+      // The banner's plan facts map from the tenants columns (review
+      // 2026-11-28: dropping the columns from the select or swapping the
+      // mapping used to ship with every test green).
+      expect(result.subscription).toEqual({
+        validUntil: '2027-01-31T00:00:00.000Z',
+        planName: 'Growth',
+        billingCycle: 'Monthly',
+        autoRenews: false,
+      });
       // Both membership selects (own row + roster) actually REQUEST the
       // column — reverting the select widening would otherwise stay suite-green.
       const memberSelects = membershipsHandler.select.mock.calls.map(
@@ -1502,6 +1517,14 @@ describe('UsersService', () => {
       expect(result.role).toBe(Role.PLATFORM_ADMIN);
       expect(result.platformAdmin).toBe(true);
       expect(result.tenant?.id).toBe('tenant-uuid');
+      // The plan facts come from the company's tenant row, not the admin's
+      // (non-)membership.
+      expect(result.subscription).toEqual({
+        validUntil: '2027-01-31T00:00:00.000Z',
+        planName: 'Growth',
+        billingCycle: 'Monthly',
+        autoRenews: false,
+      });
       // Fenzit staff have no membership, so no employee code or status of
       // their own — and nothing is read to look for one.
       expect(result.employeeCode).toBeNull();
@@ -1521,6 +1544,15 @@ describe('UsersService', () => {
       expect(result.role).toBe(Role.PLATFORM_ADMIN);
       expect(result.platformAdmin).toBe(true);
       expect(result.tenant).toBeNull();
+      // No company → no plan facts of its own; the documented defaults ride
+      // out (the FE defaults match, so an older backend never blanks the
+      // banner).
+      expect(result.subscription).toEqual({
+        validUntil: null,
+        planName: 'Enterprise',
+        billingCycle: 'Annual',
+        autoRenews: true,
+      });
       expectCompany(result);
       expect(result.technicians).toEqual([]);
       expect(from).toHaveBeenCalledTimes(1); // own identity row only
