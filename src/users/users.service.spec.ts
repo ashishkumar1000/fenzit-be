@@ -12,6 +12,7 @@ import { SupabaseClientFactory } from '../common/factories/supabase-client.facto
 import { CustomersService } from '../customers/customers.service';
 import { JobsService } from '../jobs/jobs.service';
 import { StorageService } from '../storage/storage.service';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { Role } from '../common/enums/role.enum';
 import {
@@ -50,6 +51,7 @@ function expectCompany(
 
 describe('UsersService', () => {
   let service: UsersService;
+  let pgQuery: jest.Mock;
   /** Signs a key as `https://signed.example/<key>`; tests read its calls. */
   const presignSpy = jest.fn((key: string) =>
     Promise.resolve(`https://signed.example/${key}`),
@@ -155,6 +157,8 @@ describe('UsersService', () => {
   }
 
   beforeEach(async () => {
+    // 24-5: the own-hierarchy walk (two reads); empty by default.
+    pgQuery = jest.fn().mockResolvedValue({ rows: [] });
     const mockFactory = { create: jest.fn(), createAdmin: jest.fn() };
     customersService = {
       listCustomers: jest.fn().mockResolvedValue(emptyCustomersPage),
@@ -179,6 +183,17 @@ describe('UsersService', () => {
         {
           provide: StorageService,
           useValue: { presignReadUrl: presignSpy },
+        },
+        {
+          // 24-5: the profile carries the caller's own hierarchy. The walk's
+          // two reads answer empty here; the hierarchy itself is pinned in
+          // common/members/hierarchy.spec.ts.
+          provide: PgPoolFactory,
+          useValue: {
+            withTransaction: jest.fn(async (fn: (tx: unknown) => unknown) =>
+              fn({ query: pgQuery }),
+            ),
+          },
         },
       ],
     }).compile();
@@ -834,6 +849,15 @@ describe('UsersService', () => {
       expect(result.role).toBeNull();
       expect(result.employeeCode).toBeNull();
       expect(result.tenant).toBeNull();
+      // 24-5: no company means no tree — the team block is empty, never absent.
+      expect(result.team).toEqual({
+        managerId: null,
+        managerName: null,
+        chain: [],
+        headcount: 0,
+        directReports: 0,
+      });
+      expect(pgQuery).not.toHaveBeenCalled();
       expectCompany(result);
       expect(result.technicians).toEqual([]);
       expect(result.technicianCount).toBe(0);
@@ -1005,6 +1029,76 @@ describe('UsersService', () => {
         completed: 0,
         cancelled: 0,
         pending: 0,
+      });
+    });
+
+    it('24-5: carries the caller\'s own reporting tree — the "you have a team" gate', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
+      pgQuery.mockImplementation((sql: string) => {
+        if (sql.includes('select u.node_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                node_id: 'tech-uuid',
+                ancestor_id: 'manager-uuid',
+                depth: 1,
+                name: 'Priya',
+              },
+            ],
+          });
+        }
+        if (sql.includes('select d.root_id')) {
+          return Promise.resolve({
+            rows: [
+              {
+                root_id: 'tech-uuid',
+                node_id: 'emp-2',
+                depth: 1,
+                disabled: false,
+              },
+              {
+                root_id: 'tech-uuid',
+                node_id: 'emp-3',
+                depth: 2,
+                disabled: false,
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      // The app shows the team surfaces only when this says the person has
+      // reports; it never reads /members (owner-only) to find out.
+      expect(result.team).toEqual({
+        managerId: 'manager-uuid',
+        managerName: 'Priya',
+        chain: [{ userId: 'manager-uuid', name: 'Priya' }],
+        headcount: 2,
+        directReports: 1,
+      });
+    });
+
+    it('24-5: a tree read failure still answers the profile, with an empty team', async () => {
+      mockAdmin({
+        ownRow: { data: ownTechnicianRow, error: null },
+        ownMembership: { data: technicianMembership, error: null },
+      });
+      pgQuery.mockRejectedValue(new Error('pooler timeout'));
+
+      const result = await service.getMyProfile(technicianUser, {});
+
+      expect(result.team).toEqual({
+        managerId: null,
+        managerName: null,
+        chain: [],
+        headcount: 0,
+        directReports: 0,
       });
     });
 

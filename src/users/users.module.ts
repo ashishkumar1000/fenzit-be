@@ -6,9 +6,16 @@ import { SupabaseModule } from '../supabase/supabase.module';
 import { StorageModule } from '../storage/storage.module';
 import { CustomersModule } from '../customers/customers.module';
 import { JobsModule } from '../jobs/jobs.module';
+import { PgModule } from '../common/pg/pg.module';
 
 @Module({
-  imports: [SupabaseModule, StorageModule, CustomersModule, JobsModule],
+  imports: [
+    SupabaseModule,
+    StorageModule,
+    CustomersModule,
+    JobsModule,
+    PgModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService, AvatarService],
   exports: [UsersService],

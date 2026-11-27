@@ -58,6 +58,45 @@ export function mayDecide(
   return false;
 }
 
+/**
+ * Why a row the caller can see is read-only (24-5/CAP-5). The client renders
+ * the plain-English explanation from the code and never re-runs the walk.
+ *
+ * - `not_pending` — already decided (or not yet submittable).
+ * - `higher_manager` — pending, but the caller sits above/outside the
+ *   resolved approver set: they may read the row, not act on it.
+ * - `unresolved` — pending, but nothing resolves (ownerless company or a
+ *   corrupt tree); an admin can still override, a manager cannot.
+ */
+export type DecisionReason = 'not_pending' | 'higher_manager' | 'unresolved';
+
+/** The per-row answer to "can I decide this?" — list and detail reads. */
+export interface DecisionView {
+  canDecide: boolean;
+  /** The read-only explanation; null when `canDecide` is true. */
+  reason: DecisionReason | null;
+}
+
+/**
+ * The per-row decision answer, computed from the SAME walk the POST uses, so
+ * a button shown here cannot disagree with the server's decision gate.
+ */
+export function decisionFor(
+  set: ApproverSet,
+  callerId: string,
+  callerIsAdmin: boolean,
+  pending: boolean,
+): DecisionView {
+  if (!pending) return { canDecide: false, reason: 'not_pending' };
+  if (mayDecide(set, callerId, callerIsAdmin)) {
+    return { canDecide: true, reason: null };
+  }
+  return {
+    canDecide: false,
+    reason: set.kind === 'unresolved' ? 'unresolved' : 'higher_manager',
+  };
+}
+
 /** One read of the company's memberships, reusable for several walks. */
 export async function loadApprovalTree(
   tx: PoolClient,

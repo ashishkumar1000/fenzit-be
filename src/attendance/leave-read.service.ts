@@ -26,6 +26,13 @@ import {
   REVOKE_SOURCE_STATES,
 } from './leave.constants';
 import {
+  decisionFor,
+  loadApprovalTree,
+  resolveApproversWithTree,
+  type ApproverSet,
+  type DecisionView,
+} from './approval-routing';
+import {
   leaveNotFound,
   toRequestView,
   type LeaveActionPreview,
@@ -200,6 +207,8 @@ export class LeaveReadService {
         cursor: query.cursor,
         limit: query.limit,
         scope: ME_LIST_SCOPE,
+        callerId: user.userId,
+        callerIsAdmin: user.role === Role.COMPANY_ADMIN || user.platformAdmin,
       }),
     );
   }
@@ -250,6 +259,8 @@ export class LeaveReadService {
         cursor: query.cursor,
         limit: query.limit,
         scope: OWNER_LIST_SCOPE,
+        callerId: owner.userId,
+        callerIsAdmin: owner.role === Role.COMPANY_ADMIN || owner.platformAdmin,
       });
     });
   }
@@ -638,6 +649,47 @@ export class LeaveReadService {
 
   // ----------------------------------------------------------------- list
 
+  /**
+   * 24-5/CAP-5 — one decision answer per list row. The walk is the same
+   * `resolveApproversWithTree` the decide POST runs (requester = the
+   * employee, actor = who filed it, so an on-behalf filing routes up from
+   * the subject), and it is computed once per distinct (employee, actor)
+   * pair rather than once per row. Only the tenant's live members take part;
+   * a manager sees `higher_manager` for a branch row they may read but not
+   * decide, which is exactly the read-only explanation CAP-5 asks for.
+   */
+  private async readPageDecisions(
+    tx: PoolClient,
+    tenantId: string,
+    rows: LeaveListRow[],
+    caller: { callerId: string; callerIsAdmin: boolean },
+  ): Promise<Map<string, DecisionView>> {
+    const decisions = new Map<string, DecisionView>();
+    const pending = rows.filter((row) => row.derived_status === 'pending');
+    for (const row of rows) {
+      if (row.derived_status !== 'pending') {
+        decisions.set(row.id, { canDecide: false, reason: 'not_pending' });
+      }
+    }
+    if (pending.length === 0) return decisions;
+
+    const tree = await loadApprovalTree(tx, tenantId);
+    const sets = new Map<string, ApproverSet>();
+    for (const row of pending) {
+      const key = `${row.employee_id}|${row.created_by}`;
+      let set = sets.get(key);
+      if (!set) {
+        set = resolveApproversWithTree(tree, row.employee_id, row.created_by);
+        sets.set(key, set);
+      }
+      decisions.set(
+        row.id,
+        decisionFor(set, caller.callerId, caller.callerIsAdmin, true),
+      );
+    }
+    return decisions;
+  }
+
   private async listTransact(
     tx: PoolClient,
     tenantId: string,
@@ -652,6 +704,9 @@ export class LeaveReadService {
       cursor?: string;
       limit?: number;
       scope: CursorScope;
+      /** 24-5: the reader, for the per-row decision answer. */
+      callerId: string;
+      callerIsAdmin: boolean;
     },
   ): Promise<{
     data: LeaveRequestView[];
@@ -727,6 +782,12 @@ export class LeaveReadService {
             await tenantToday(tx, tenantId),
           )
         : null;
+    // 24-5/CAP-5: the per-row "can I decide this?" answer, from ONE tree read
+    // for the whole page. A page with no pending rows pays nothing extra.
+    const decisions = await this.readPageDecisions(tx, tenantId, pageRows, {
+      callerId: input.callerId,
+      callerIsAdmin: input.callerIsAdmin,
+    });
     const data: LeaveRequestView[] = [];
     for (const row of pageRows) {
       const days: LeaveDayRow[] = daysByRequest.get(row.id) ?? [];
@@ -754,6 +815,7 @@ export class LeaveReadService {
         leaveTypeName: row.leave_type_name ?? undefined,
         officeName: officeNames?.get(row.employee_id) ?? undefined,
         employeeAvatarUrl: avatarUrlFor(avatarUrls, row.avatar_key),
+        decision: decisions.get(row.id),
       });
     }
     return { data, nextCursor, hasMore };

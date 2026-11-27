@@ -1,5 +1,6 @@
 import {
   approverRecipients,
+  decisionFor,
   mayDecide,
   resolveApproversWithTree,
   type ApprovalTree,
@@ -169,5 +170,47 @@ describe('mayDecide (24-3/CAP-3)', () => {
 
   it('nobody decides an unresolved request', () => {
     expect(mayDecide(unresolved, ADMIN, false)).toBe(false);
+  });
+});
+
+describe('decisionFor (24-5/CAP-5)', () => {
+  const single = { kind: 'single', userId: MANAGER } as const;
+  const fallback = { kind: 'fallback', userIds: [ADMIN, ADMIN_2] } as const;
+  const unresolved = { kind: 'unresolved', reason: 'ownerless' } as const;
+
+  it('answers canDecide for the resolved approver and any fallback admin', () => {
+    expect(decisionFor(single, MANAGER, false, true)).toEqual({
+      canDecide: true,
+      reason: null,
+    });
+    expect(decisionFor(fallback, ADMIN_2, false, true)).toEqual({
+      canDecide: true,
+      reason: null,
+    });
+  });
+
+  it('gives the read-only reason a higher manager needs', () => {
+    expect(decisionFor(single, TOP, false, true)).toEqual({
+      canDecide: false,
+      reason: 'higher_manager',
+    });
+  });
+
+  it('answers not_pending before anything else', () => {
+    expect(decisionFor(single, MANAGER, false, false)).toEqual({
+      canDecide: false,
+      reason: 'not_pending',
+    });
+  });
+
+  it('names an unresolved tree, while the admin override still decides', () => {
+    expect(decisionFor(unresolved, MANAGER, false, true)).toEqual({
+      canDecide: false,
+      reason: 'unresolved',
+    });
+    expect(decisionFor(unresolved, ADMIN, true, true)).toEqual({
+      canDecide: true,
+      reason: null,
+    });
   });
 });

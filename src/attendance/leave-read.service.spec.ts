@@ -566,6 +566,218 @@ describe('LeaveReadService listTransact wiring', () => {
   });
 });
 
+describe('LeaveReadService 24-5 — the per-row decision answer', () => {
+  const DETAIL_MANAGER = '88888888-8888-4888-8888-888888888888';
+
+  function treeMember(
+    user_id: string,
+    manager_id: string | null,
+    role = 'employee',
+    disabled = false,
+  ) {
+    return { user_id, manager_id, role, status: 'active', disabled };
+  }
+
+  function txWithTree(
+    treeRows: ReturnType<typeof treeMember>[],
+    subtree: string[] = [],
+  ) {
+    return {
+      query: jest.fn((sql: string) => {
+        if (sql.includes('with recursive down')) {
+          return Promise.resolve({
+            rows: subtree.map((node_id) => ({ node_id })),
+          });
+        }
+        if (sql.includes('from public.memberships m')) {
+          return Promise.resolve({ rows: treeRows });
+        }
+        return Promise.resolve({ rows: [] });
+      }),
+    } as unknown as PoolClient & { query: jest.Mock };
+  }
+
+  beforeEach(() => {
+    mockListLeaveRequests.mockReset();
+    mockFindDaysForRequests.mockReset();
+    mockFindOfficeNames.mockReset();
+    mockReadPageSpanFacts.mockReset();
+    // Delegate the facts batch to the real implementation: it answers one
+    // entry per requested employee, which is what listTransact asserts.
+    mockReadPageSpanFacts.mockImplementation(
+      (...args: Parameters<typeof repoActual.readPageSpanFacts>) =>
+        repoActual.readPageSpanFacts(...args),
+    );
+    mockFindDaysForRequests.mockResolvedValue(new Map());
+    mockFindOfficeNames.mockResolvedValue(new Map());
+  });
+
+  it('the resolved approver sees canDecide: true', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({
+        derived_status: 'pending',
+        employee_id: EMP,
+        created_by: EMP,
+      }),
+    ]);
+    const tx = txWithTree(
+      [treeMember(EMP, MANAGER), treeMember(MANAGER, null)],
+      [EMP],
+    );
+
+    const result = await serviceOver(tx).listForOwner(managerUser(), {
+      status: 'pending',
+    });
+
+    expect(result.data[0].decision).toEqual({ canDecide: true, reason: null });
+  });
+
+  it('a manager above the resolved approver sees the row read-only, with a reason', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({
+        derived_status: 'pending',
+        employee_id: EMP,
+        created_by: EMP,
+      }),
+    ]);
+    const tx = txWithTree(
+      [
+        treeMember(EMP, MANAGER),
+        treeMember(MANAGER, DETAIL_MANAGER),
+        treeMember(DETAIL_MANAGER, null),
+      ],
+      [EMP, MANAGER],
+    );
+
+    const result = await serviceOver(tx).listForOwner(
+      { ...managerUser(), userId: DETAIL_MANAGER },
+      { status: 'pending' },
+    );
+
+    expect(result.data[0].decision).toEqual({
+      canDecide: false,
+      reason: 'higher_manager',
+    });
+  });
+
+  it('an on-behalf filing routes from the subject, so the filer cannot decide it', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({
+        derived_status: 'pending',
+        employee_id: EMP,
+        // The manager filed on EMP's behalf: the actor is excluded from the
+        // walk, so the request goes to the next manager up.
+        created_by: MANAGER,
+      }),
+    ]);
+    const tx = txWithTree(
+      [
+        treeMember(EMP, MANAGER),
+        treeMember(MANAGER, DETAIL_MANAGER),
+        treeMember(DETAIL_MANAGER, null),
+      ],
+      [EMP],
+    );
+
+    const filer = await serviceOver(tx).listForOwner(managerUser(), {
+      status: 'pending',
+    });
+    expect(filer.data[0].decision).toEqual({
+      canDecide: false,
+      reason: 'higher_manager',
+    });
+
+    const above = await serviceOver(tx).listForOwner(
+      { ...managerUser(), userId: DETAIL_MANAGER },
+      { status: 'pending' },
+    );
+    expect(above.data[0].decision).toEqual({
+      canDecide: true,
+      reason: null,
+    });
+  });
+
+  it('a decided row answers not_pending without loading the tree', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({ derived_status: 'approved' }),
+    ]);
+    const tx = txWithTree([]);
+
+    const result = await serviceOver(tx).listForOwner(ownerUser(), {});
+    expect(result.data[0].decision).toEqual({
+      canDecide: false,
+      reason: 'not_pending',
+    });
+
+    const treeReads = tx.query.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes('from public.memberships m'),
+    );
+    expect(treeReads).toHaveLength(0);
+  });
+
+  it('a corrupt loop answers unresolved for a manager (an admin can still override)', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({
+        derived_status: 'pending',
+        employee_id: EMP,
+        created_by: EMP,
+      }),
+    ]);
+    // EMP -> A (disabled) -> EMP closes the loop the walk cannot resolve.
+    const tx = txWithTree(
+      [
+        treeMember(EMP, DETAIL_MANAGER),
+        treeMember(DETAIL_MANAGER, EMP, 'employee', true),
+      ],
+      [EMP],
+    );
+
+    const manager = await serviceOver(tx).listForOwner(managerUser(), {
+      status: 'pending',
+    });
+    expect(manager.data[0].decision).toEqual({
+      canDecide: false,
+      reason: 'unresolved',
+    });
+
+    const admin = await serviceOver(tx).listForOwner(ownerUser(), {
+      status: 'pending',
+    });
+    expect(admin.data[0].decision).toEqual({
+      canDecide: true,
+      reason: null,
+    });
+  });
+
+  it('the walk runs once per (employee, filer) pair, not once per row', async () => {
+    mockListLeaveRequests.mockResolvedValue([
+      listRow({ id: 'r1', derived_status: 'pending' }),
+      listRow({ id: 'r2', derived_status: 'pending' }),
+      listRow({ id: 'r3', derived_status: 'pending' }),
+    ]);
+    const tx = txWithTree(
+      [treeMember(EMP, MANAGER), treeMember(MANAGER, null)],
+      [EMP],
+    );
+
+    const result = await serviceOver(tx).listForOwner(managerUser(), {
+      status: 'pending',
+    });
+
+    expect(result.data.map((row) => row.decision)).toEqual([
+      { canDecide: true, reason: null },
+      { canDecide: true, reason: null },
+      { canDecide: true, reason: null },
+    ]);
+    const treeReads = tx.query.mock.calls.filter(
+      (call: unknown[]) =>
+        String(call[0]).includes('from public.memberships m') &&
+        !String(call[0]).includes('with recursive down'),
+    );
+    expect(treeReads).toHaveLength(1);
+  });
+});
+
 describe('LeaveReadService readSummary — the rail\u2019s team-size fact and the pills\u2019 counts', () => {
   it('answers the headcount plus the whole-tenant counts by derived status', async () => {
     mockCountActiveEmployees.mockReset();

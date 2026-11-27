@@ -9,6 +9,12 @@ import { ErrorCode } from '../common/enums/error-code.enum';
 import { Role } from '../common/enums/role.enum';
 import { listCompanyMembers } from '../common/members/company-members';
 import {
+  emptyHierarchy,
+  MemberHierarchy,
+  readMemberHierarchy,
+} from '../common/members/hierarchy';
+import { PgPoolFactory } from '../common/pg/pg-pool.factory';
+import {
   avatarUrlFor,
   presignAvatarUrls,
 } from '../common/members/member-avatars';
@@ -114,6 +120,15 @@ interface UserProfileBase {
    * Shared by every role: the app decides who sees the roadblock.
    */
   subscription: { validUntil: string | null };
+  /**
+   * 24-5/CAP-5 — the caller's own place in the reporting tree, so a manager
+   * who is not an admin can be told "you have a team" without a second
+   * endpoint (`GET /members` stays owner-only). Empty for anyone with no
+   * company; `headcount`/`directReports` > 0 is the server-endorsed gate for
+   * the team UI ("someone with no reports sees no new UI"). Read by the same
+   * helper `/members` uses, so the two cannot drift.
+   */
+  team: MemberHierarchy;
 }
 
 /**
@@ -288,6 +303,7 @@ export class UsersService {
     private readonly customersService: CustomersService,
     private readonly jobsService: JobsService,
     private readonly storageService: StorageService,
+    private readonly pg: PgPoolFactory,
   ) {}
 
   /**
@@ -303,6 +319,30 @@ export class UsersService {
       tenant: user.tenantId ? { id: user.tenantId } : null,
       platformAdmin: user.platformAdmin,
     };
+  }
+
+  /**
+   * 24-5/CAP-5 — the caller's own hierarchy. Same helper the admin member
+   * pages use, so `team.headcount` here and `headcount` on `GET /members`
+   * can never drift. A read failure degrades to the empty block: the profile
+   * is the app's boot call and must not 500 because a tree read failed.
+   */
+  private async readOwnTeam(
+    tenantId: string,
+    userId: string,
+  ): Promise<MemberHierarchy> {
+    try {
+      return await this.pg.withTransaction(async (tx) => {
+        const map = await readMemberHierarchy(tx, tenantId, [userId]);
+        return map.get(userId) ?? emptyHierarchy();
+      });
+    } catch (error: unknown) {
+      this.logger.warn('Failed to read own reporting tree for the profile', {
+        error,
+        userId,
+      });
+      return emptyHierarchy();
+    }
   }
 
   async getMyProfile(
@@ -362,6 +402,13 @@ export class UsersService {
       membership = memberRow;
     }
 
+    // 24-5/CAP-5: the caller's own place in the tree, so a manager who is not
+    // an admin gets a server-endorsed "you have a team". Two indexed reads
+    // seeded at this one id (up-chain + down-tree) — no page-wide walk.
+    const team = user.tenantId
+      ? await this.readOwnTeam(user.tenantId, user.userId)
+      : emptyHierarchy();
+
     const base: UserProfileBase = {
       id: ownRow.id,
       employeeCode: membership?.employee_code ?? null,
@@ -379,6 +426,7 @@ export class UsersService {
       tenant: null,
       platformAdmin: user.platformAdmin,
       subscription: { validUntil: null },
+      team,
     };
 
     // No company yet (a new sign-up, a removed member, or a platform admin who

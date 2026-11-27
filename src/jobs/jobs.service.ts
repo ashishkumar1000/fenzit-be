@@ -26,11 +26,13 @@ import { PaginatedResponse } from '../common/dto/paginated-response.dto';
 import {
   ADMIN_ROLE,
   approverRecipients,
+  decisionFor,
   loadApprovalTree,
   mayDecide,
   resolveApprovers,
   resolveApproversWithTree,
   type ApproverSet,
+  type DecisionView,
 } from '../attendance/approval-routing';
 import { lockTenantShared } from '../attendance/enrolments.repository';
 import {
@@ -129,6 +131,13 @@ export interface JobResponse {
   // 0-based index of current_step in the stamped template's steps. Null while
   // the job is fresh (no advance yet) and when the template data is unreadable.
   currentStepIndex: number | null;
+  /**
+   * 24-5/CAP-5 — "can I decide this job?". Present on list and detail reads;
+   * absent on write responses (the app re-reads). Answered by the same walk
+   * the decision POST runs, on the CREATOR's branch, so a manager above the
+   * resolved approver gets `false` + a reason instead of a client-side walk.
+   */
+  decision?: DecisionView;
 }
 
 /** A technician/customer profile embedded in the job-detail response. */
@@ -422,6 +431,69 @@ export class JobsService {
    * reports, so those callers keep today's behaviour exactly. Viewers are
    * deliberately not scoped here: `job.read_all` already covers the company.
    */
+  /**
+   * 24-5/CAP-5 — one decision answer per job row. The walk runs on the
+   * CREATOR's branch (a pending job routes from whoever submitted it), and
+   * the admin override is read from the live tree, exactly as
+   * `decidePendingJob` does it — so a button shown here can never disagree
+   * with the POST. A row with no creator is visible but nobody but an admin
+   * can decide it (`unresolved`).
+   */
+  private async readJobDecisions(
+    tenantId: string,
+    rows: { id: string; status: JobStatus; createdBy: string | null }[],
+    callerId: string,
+  ): Promise<Map<string, DecisionView>> {
+    const decisions = new Map<string, DecisionView>();
+    for (const row of rows) {
+      if (row.status !== JobStatus.PENDING_APPROVAL) {
+        decisions.set(row.id, { canDecide: false, reason: 'not_pending' });
+      }
+    }
+    const pending = rows.filter(
+      (row) => row.status === JobStatus.PENDING_APPROVAL,
+    );
+    if (pending.length === 0) return decisions;
+
+    try {
+      return await this.pg.withTransaction(async (tx) => {
+        const tree = await loadApprovalTree(tx, tenantId);
+        const caller = tree.get(callerId.toLowerCase());
+        const callerIsAdmin =
+          caller !== undefined &&
+          caller.status === 'active' &&
+          !caller.disabled &&
+          caller.role === ADMIN_ROLE;
+        const sets = new Map<string, ApproverSet>();
+        for (const row of pending) {
+          if (!row.createdBy) {
+            decisions.set(row.id, { canDecide: false, reason: 'unresolved' });
+            continue;
+          }
+          let set = sets.get(row.createdBy);
+          if (!set) {
+            set = resolveApproversWithTree(tree, row.createdBy, row.createdBy);
+            sets.set(row.createdBy, set);
+          }
+          decisions.set(
+            row.id,
+            decisionFor(set, callerId, callerIsAdmin, true),
+          );
+        }
+        return decisions;
+      });
+    } catch (error) {
+      this.logger.warn('Failed to read the reporting tree for job decisions', {
+        error,
+        tenantId,
+      });
+      for (const row of pending) {
+        decisions.set(row.id, { canDecide: false, reason: 'unresolved' });
+      }
+      return decisions;
+    }
+  }
+
   private async teamScope(user: RequestUser): Promise<Set<string> | null> {
     // The shared scope decision: a role that already reads the whole company
     // (admin, platform, viewer's job.read_all) is never narrowed (D13).
@@ -1379,8 +1451,22 @@ export class JobsService {
         ? encodeCursor(last.id, last[sortColumn], cursorScope)
         : null;
 
+    // 24-5/CAP-5: the per-row decide gate, from ONE tree read per page. Only
+    // pending rows can be decided, so a page with none pays nothing extra.
+    const decisions = await this.readJobDecisions(
+      user.tenantId,
+      pageRows.map((row) => ({
+        id: row.id,
+        status: row.status,
+        createdBy: row.created_by ?? null,
+      })),
+      user.userId,
+    );
     return new PaginatedResponse(
-      pageRows.map((row) => this.toResponse(row)),
+      pageRows.map((row) => ({
+        ...this.toResponse(row),
+        decision: decisions.get(row.id),
+      })),
       nextCursor,
     );
   }
@@ -1872,7 +1958,7 @@ export class JobsService {
       technicianAvatarKey,
     );
 
-    return this.toDetailResponse(
+    const detail = this.toDetailResponse(
       row,
       techRes.data,
       skills,
@@ -1881,6 +1967,21 @@ export class JobsService {
       attachments,
       technicianAvatarUrl,
     );
+    // 24-5/CAP-5: the decide gate for THIS row, from the same walk the POST
+    // runs. A read failure degrades to "not decidable" rather than a 500 —
+    // the detail itself already loaded.
+    const decisions = await this.readJobDecisions(
+      user.tenantId,
+      [
+        {
+          id: row.id,
+          status: row.status,
+          createdBy: row.created_by ?? null,
+        },
+      ],
+      user.userId,
+    );
+    return { ...detail, decision: decisions.get(row.id) };
   }
 
   private toDetailResponse(

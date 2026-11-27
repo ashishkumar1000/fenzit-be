@@ -876,9 +876,180 @@ describe('JobsService', () => {
         // null on the bare spec mock, same posture as technician.
         customer: null,
         currentStepIndex: null,
+        // 24-5 — every list row answers "can I decide this?"; a scheduled
+        // job is not pending, so it is read-only with a reason.
+        decision: { canDecide: false, reason: 'not_pending' },
       });
       expect(result.hasMore).toBe(false);
+      // A page with no pending row never loads the tree for a decision.
+      expect(mockPgClient.query).not.toHaveBeenCalled();
       expect(result.nextCursor).toBeNull();
+    });
+
+    // ---- 24-5/CAP-5: "can I decide this?" on every row -------------------
+    describe('decision', () => {
+      const EMP = '11111111-1111-4111-8111-111111111111';
+      const MGR = '22222222-2222-4222-8222-222222222222';
+      const MGR2 = '33333333-3333-4333-8333-333333333333';
+
+      const mgrUser: RequestUser = {
+        userId: MGR,
+        tenantId: 'tenant-uuid',
+        role: Role.EMPLOYEE,
+        platformAdmin: false,
+        rawJwt: 'jwt',
+      };
+      const mgr2User: RequestUser = { ...mgrUser, userId: MGR2 };
+
+      const member = (
+        user_id: string,
+        manager_id: string | null,
+        role = 'employee',
+        disabled = false,
+      ) => ({ user_id, manager_id, role, status: 'active', disabled });
+
+      function useTree(rows: ReturnType<typeof member>[]) {
+        mockPgClient.query.mockImplementation((sql: string) =>
+          typeof sql === 'string' && sql.includes('with recursive down')
+            ? Promise.resolve({ rows: [] })
+            : typeof sql === 'string' &&
+                sql.includes('from public.memberships m')
+              ? Promise.resolve({ rows })
+              : Promise.resolve({ rows: [] }),
+        );
+      }
+
+      const pendingRow = {
+        ...jobRow,
+        id: 'job-pending',
+        status: 'pending_approval',
+        created_by: EMP,
+      };
+
+      it('the resolved approver sees canDecide: true', async () => {
+        useTree([member(EMP, MGR), member(MGR, null)]);
+        mockListAdmin({ data: [pendingRow], error: null });
+
+        const result = await service.listJobs(mgrUser, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: true,
+          reason: null,
+        });
+      });
+
+      it('a manager above the resolved approver sees it read-only, with a reason', async () => {
+        useTree([member(EMP, MGR), member(MGR, MGR2), member(MGR2, null)]);
+        mockListAdmin({ data: [pendingRow], error: null });
+
+        const result = await service.listJobs(mgr2User, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: false,
+          reason: 'higher_manager',
+        });
+      });
+
+      it('an active admin keeps the override (live tree, not the token)', async () => {
+        useTree([
+          member(EMP, MGR),
+          member(MGR, null),
+          member('owner-uuid', null, 'company_admin'),
+        ]);
+        mockListAdmin({ data: [pendingRow], error: null });
+
+        const result = await service.listJobs(owner, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: true,
+          reason: null,
+        });
+      });
+
+      it('a disabled admin does not keep the override', async () => {
+        useTree([
+          member(EMP, MGR),
+          member(MGR, null),
+          member('owner-uuid', null, 'company_admin', true),
+        ]);
+        mockListAdmin({ data: [pendingRow], error: null });
+
+        const result = await service.listJobs(owner, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: false,
+          reason: 'higher_manager',
+        });
+      });
+
+      it('a pending job with no creator is unresolved for a manager', async () => {
+        useTree([member(MGR, null)]);
+        mockListAdmin({
+          data: [{ ...pendingRow, created_by: null }],
+          error: null,
+        });
+
+        const result = await service.listJobs(mgrUser, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: false,
+          reason: 'unresolved',
+        });
+      });
+
+      it('a tree read failure degrades to unresolved, never a 500', async () => {
+        // An admin caller has no subtree read to fail — only the tree read.
+        mockPgClient.query.mockRejectedValue(new Error('pooler timeout'));
+        mockListAdmin({ data: [pendingRow], error: null });
+
+        const result = await service.listJobs(owner, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data[0].decision).toEqual({
+          canDecide: false,
+          reason: 'unresolved',
+        });
+      });
+
+      it('the walk runs once per creator, not once per row', async () => {
+        useTree([member(EMP, MGR), member(MGR, null)]);
+        mockListAdmin({
+          data: [
+            { ...pendingRow, id: 'job-a' },
+            { ...pendingRow, id: 'job-b' },
+            { ...pendingRow, id: 'job-c' },
+          ],
+          error: null,
+        });
+
+        const result = await service.listJobs(mgrUser, {
+          scope: JobListScope.ALL,
+        });
+
+        expect(result.data.map((row) => row.decision)).toEqual([
+          { canDecide: true, reason: null },
+          { canDecide: true, reason: null },
+          { canDecide: true, reason: null },
+        ]);
+        const treeReads = mockPgClient.query.mock.calls.filter(
+          (call: unknown[]) =>
+            typeof call[0] === 'string' &&
+            call[0].includes('from public.memberships m') &&
+            !call[0].includes('with recursive down'),
+        );
+        expect(treeReads).toHaveLength(1);
+      });
     });
 
     it('sets nextCursor when a full page + 1 rows are returned', async () => {
@@ -1518,6 +1689,36 @@ describe('JobsService', () => {
       // Story 3.7 — completedAt rides on the detail response too (null for an
       // uncompleted job; the select-list trap is covered separately).
       expect(result.completedAt).toBeNull();
+    });
+
+    it('carries the 24-5 decision answer on the detail (active admin overrides)', async () => {
+      mockPgClient.query.mockResolvedValue({
+        rows: [
+          {
+            user_id: 'owner-uuid',
+            manager_id: null,
+            role: 'company_admin',
+            status: 'active',
+            disabled: false,
+          },
+        ],
+      });
+      mockDetailAdmin({
+        job: {
+          data: {
+            ...jobRow,
+            status: 'pending_approval',
+            created_by: '11111111-1111-4111-8111-111111111111',
+          },
+          error: null,
+        },
+      });
+
+      const result = await service.getJobDetail(owner, 'job-uuid');
+
+      // The detail sheet disables its action from this answer, not from a
+      // client-side walk; the admin override is read from the live tree.
+      expect(result.decision).toEqual({ canDecide: true, reason: null });
     });
 
     it('selects latitude/longitude from customers and maps them onto the detail response (Story 2.1)', async () => {

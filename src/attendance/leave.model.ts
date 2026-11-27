@@ -6,6 +6,7 @@ import {
   type LeaveDayState,
   type LeavePart,
 } from './leave.constants';
+import type { DecisionView } from './approval-routing';
 
 /**
  * Response shapes, the derived request status (D5 — THE single
@@ -77,6 +78,13 @@ export interface LeaveRequestView {
   workingDays: number;
   totalDays: number;
   dates: LeaveDateView[];
+  /**
+   * 24-5/CAP-5 — "can I decide this row?". Present on list reads; the
+   * server answers from the same walk the decide POST runs, so a manager
+   * above the resolved approver sees `false` with a reason instead of the
+   * client re-deriving the walk.
+   */
+  decision?: DecisionView;
   /** Write responses only (spec §4): the action's split array. */
   revokedDates?: string[];
   cancelledDates?: string[];
