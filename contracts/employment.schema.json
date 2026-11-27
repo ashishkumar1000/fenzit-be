@@ -1,0 +1,100 @@
+{
+  "type": "object",
+  "properties": {
+    "employeeCode": {
+      "type": "string",
+      "example": "EMP-001",
+      "nullable": true,
+      "maxLength": 50,
+      "description": "The tenant employee code. Once set it can be edited but never removed."
+    },
+    "joinDate": {
+      "type": "string",
+      "example": "2026-09-01",
+      "nullable": true,
+      "format": "date",
+      "description": "Date of joining"
+    },
+    "exitDate": {
+      "type": "string",
+      "example": "2026-10-10",
+      "nullable": true,
+      "format": "date",
+      "description": "Date of leaving; may be set on a removed member"
+    },
+    "pan": {
+      "type": "string",
+      "example": "ABCPE1234F",
+      "nullable": true,
+      "maxLength": 10,
+      "pattern": "^[A-Z]{5}[0-9]{4}[A-Z]$"
+    },
+    "dateOfBirth": {
+      "type": "string",
+      "example": "1995-04-12",
+      "nullable": true,
+      "format": "date"
+    },
+    "fatherName": {
+      "type": "string",
+      "example": "Ramesh Sharma",
+      "nullable": true,
+      "maxLength": 100
+    },
+    "motherName": {
+      "type": "string",
+      "example": "Sunita Sharma",
+      "nullable": true,
+      "maxLength": 100
+    },
+    "spouseName": {
+      "type": "string",
+      "example": "Meera Sharma",
+      "nullable": true,
+      "maxLength": 100
+    },
+    "pfAccountNumber": {
+      "type": "string",
+      "example": "PY/ABC/12345/000",
+      "nullable": true,
+      "maxLength": 50
+    },
+    "uanNumber": {
+      "type": "string",
+      "example": "101234567890",
+      "nullable": true,
+      "maxLength": 20
+    },
+    "designation": {
+      "type": "string",
+      "example": "Field Technician",
+      "nullable": true,
+      "maxLength": 100
+    },
+    "department": {
+      "type": "string",
+      "example": "Field Operations",
+      "nullable": true,
+      "maxLength": 100
+    },
+    "bankAccountNumber": {
+      "type": "string",
+      "example": "1234567890",
+      "nullable": true,
+      "maxLength": 35
+    },
+    "ifscCode": {
+      "type": "string",
+      "example": "HDFC0001234",
+      "nullable": true,
+      "maxLength": 11,
+      "pattern": "^[A-Z]{4}[A-Z0-9]{7}$"
+    },
+    "bankName": {
+      "type": "string",
+      "example": "HDFC Bank",
+      "nullable": true,
+      "maxLength": 100
+    }
+  }
+}

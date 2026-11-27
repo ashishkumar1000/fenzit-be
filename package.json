@@ -14,6 +14,7 @@
     "build": "nest build",
     "typecheck": "tsc -p tsconfig.build.json --noEmit --incremental false",
     "typecheck:super": "tsc -p scripts/tsconfig.super.json",
+    "contract:employment": "bun scripts/export-employment-schema.ts",
     "super": "bun scripts/super.tsx",
     "prepare": "husky",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
