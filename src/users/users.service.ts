@@ -440,15 +440,100 @@ export class UsersService {
   ): Promise<UserProfileResponse> {
     const admin = this.supabaseClientFactory.createAdmin();
 
-    const { data: ownRow, error: ownError } = await admin
+    // 2026-11-28 — the boot call's five head reads fire as ONE batch. The
+    // serial version paid a round trip per read, and the app renders nothing
+    // until this response lands. None of these reads consumes another's
+    // output: the own row, the membership, the reporting tree, the tenant
+    // facts and the business-type pick all key off ids the request already
+    // carries.
+    //
+    // Error contract: the four {data, error} reads resolve and are checked in
+    // order below. The business-type read rejects instead, so Promise.all is
+    // fail-fast on it: its shaped 500 preempts the sibling checks (and their
+    // logs) on a co-failure. The client body is the same 500 either way.
+    const ownRowQuery = admin
       .from('users')
       .select('id, name, country_code, phone_number, email, avatar_key')
       .eq('id', user.userId)
       .single<OwnUserRow>();
 
-    if (ownError || !ownRow) {
+    // The employee code, membership status and Epic-22 job switches live on
+    // the membership. A platform admin has none, and a person with no company
+    // has none yet.
+    type OwnMembershipRow = {
+      employee_code: string;
+      status: string;
+      can_create_jobs: boolean;
+      job_approval_required: boolean;
+    };
+    const membershipQuery =
+      user.tenantId && user.role !== Role.PLATFORM_ADMIN
+        ? admin
+            .from('memberships')
+            .select(
+              'employee_code, status, can_create_jobs, job_approval_required',
+            )
+            .eq('user_id', user.userId)
+            .eq('tenant_id', user.tenantId)
+            .maybeSingle<OwnMembershipRow>()
+        : null;
+
+    // 24-5/CAP-5: the caller's own place in the tree, so a manager who is not
+    // an admin gets a server-endorsed "you have a team". Two indexed reads
+    // seeded at this one id (up-chain + down-tree) — no page-wide walk. 24-5b
+    // adds the directory itself, for the roles that cannot call GET /members.
+    // Never throws — the tree's own catches degrade to an empty summary.
+    const teamQuery = user.tenantId
+      ? this.readOwnTeam(
+          user.tenantId,
+          user.userId,
+          user.role === Role.EMPLOYEE || user.role === Role.VIEWER,
+        )
+      : null;
+
+    const tenantQuery = user.tenantId
+      ? admin
+          .from('tenants')
+          .select(
+            'id, company_name, gstin, address, state_code, upi_vpa, validity_until, plan_name, billing_cycle, auto_renews',
+          )
+          .eq('id', user.tenantId)
+          .single<TenantRow>()
+      : null;
+
+    // Unlike the {data, error} reads above, loadTenantBusinessTypes throws on
+    // a PostgREST error. Shape that rejection into the same 500 as its
+    // siblings here — otherwise a raw error reaches the global filter and the
+    // client body changes. Promise.all is fail-fast, so this rejection still
+    // wins the batch; on a co-failure this log, not a sibling's, is recorded.
+    const businessTypesQuery = user.tenantId
+      ? loadTenantBusinessTypes(admin, user.tenantId).catch(
+          (error: unknown) => {
+            this.logger.error('Failed to fetch tenant business types:', {
+              error,
+              tenantId: user.tenantId,
+            });
+            throw new InternalServerErrorException({
+              error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+              message: 'Failed to fetch profile',
+            });
+          },
+        )
+      : null;
+
+    const [ownResult, memberResult, team, tenantResult, businessTypes] =
+      await Promise.all([
+        ownRowQuery,
+        membershipQuery,
+        teamQuery,
+        tenantQuery,
+        businessTypesQuery,
+      ]);
+
+    const ownRow = ownResult.data;
+    if (ownResult.error || !ownRow) {
       this.logger.error('Failed to fetch own user profile:', {
-        error: ownError,
+        error: ownResult.error,
         userId: user.userId,
       });
       throw new InternalServerErrorException({
@@ -457,51 +542,17 @@ export class UsersService {
       });
     }
 
-    // The employee code, membership status and Epic-22 job switches live on
-    // the membership. A platform admin has none, and a person with no company
-    // has none yet.
-    let membership: {
-      employee_code: string;
-      status: string;
-      can_create_jobs: boolean;
-      job_approval_required: boolean;
-    } | null = null;
-    if (user.tenantId && user.role !== Role.PLATFORM_ADMIN) {
-      const { data: memberRow, error: memberError } = await admin
-        .from('memberships')
-        .select('employee_code, status, can_create_jobs, job_approval_required')
-        .eq('user_id', user.userId)
-        .eq('tenant_id', user.tenantId)
-        .maybeSingle<{
-          employee_code: string;
-          status: string;
-          can_create_jobs: boolean;
-          job_approval_required: boolean;
-        }>();
-      if (memberError) {
-        this.logger.error('Failed to fetch own membership:', {
-          error: memberError,
-          userId: user.userId,
-        });
-        throw new InternalServerErrorException({
-          error_code: ErrorCode.INTERNAL_SERVER_ERROR,
-          message: 'Failed to fetch profile',
-        });
-      }
-      membership = memberRow;
+    const membership: OwnMembershipRow | null = memberResult?.data ?? null;
+    if (memberResult?.error) {
+      this.logger.error('Failed to fetch own membership:', {
+        error: memberResult.error,
+        userId: user.userId,
+      });
+      throw new InternalServerErrorException({
+        error_code: ErrorCode.INTERNAL_SERVER_ERROR,
+        message: 'Failed to fetch profile',
+      });
     }
-
-    // 24-5/CAP-5: the caller's own place in the tree, so a manager who is not
-    // an admin gets a server-endorsed "you have a team". Two indexed reads
-    // seeded at this one id (up-chain + down-tree) — no page-wide walk. 24-5b
-    // adds the directory itself, for the roles that cannot call GET /members.
-    const team = user.tenantId
-      ? await this.readOwnTeam(
-          user.tenantId,
-          user.userId,
-          user.role === Role.EMPLOYEE || user.role === Role.VIEWER,
-        )
-      : emptyTeamSummary();
 
     const base: UserProfileBase = {
       id: ownRow.id,
@@ -525,7 +576,7 @@ export class UsersService {
         billingCycle: 'Annual',
         autoRenews: true,
       },
-      team,
+      team: team ?? emptyTeamSummary(),
     };
 
     // No company yet (a new sign-up, a removed member, or a platform admin who
@@ -550,17 +601,10 @@ export class UsersService {
 
     const tenantId = user.tenantId;
 
-    const { data: tenantRow, error: tenantError } = await admin
-      .from('tenants')
-      .select(
-        'id, company_name, gstin, address, state_code, upi_vpa, validity_until, plan_name, billing_cycle, auto_renews',
-      )
-      .eq('id', tenantId)
-      .single<TenantRow>();
-
-    if (tenantError || !tenantRow) {
+    const tenantRow = tenantResult?.data ?? null;
+    if (tenantResult?.error || !tenantRow) {
       this.logger.error('Failed to fetch tenant for profile:', {
-        error: tenantError,
+        error: tenantResult?.error,
         tenantId,
       });
       throw new InternalServerErrorException({
@@ -584,7 +628,7 @@ export class UsersService {
       address: tenantRow.address,
       stateCode: tenantRow.state_code,
       upiVpa: tenantRow.upi_vpa,
-      businessTypes: await loadTenantBusinessTypes(admin, tenantId),
+      businessTypes: businessTypes ?? [],
     };
 
     if (user.role === Role.EMPLOYEE) {

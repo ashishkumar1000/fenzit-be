@@ -57,6 +57,18 @@ describe('Users (e2e)', () => {
     upi_vpa: null,
   };
 
+  // One chosen business type — the profile echoes it under tenant.businessTypes.
+  const businessTypeRows = [
+    {
+      business_types: {
+        id: '55555555-5555-4555-8555-555555555555',
+        code: 'plumbing',
+        label: 'Plumbing',
+        sort_order: 1,
+      },
+    },
+  ];
+
   // Per-test override — the pre-onboarding and technician tests reshape this.
   let ownUserRow: Record<string, unknown> = ownerRow;
 
@@ -91,6 +103,9 @@ describe('Users (e2e)', () => {
         'range',
         'not',
         'is',
+        // tenant_business_types ends its chain with .returns() — without it
+        // the profile's business-type read throws and /users/me 500s here.
+        'returns',
       ]) {
         builder[method] = jest.fn().mockReturnValue(builder);
       }
@@ -109,6 +124,12 @@ describe('Users (e2e)', () => {
       // Terminal `await` on any chain — every head-count/list resolves empty.
       builder.then = (resolve: (v: unknown) => void) =>
         resolve({ data: [], error: null, count: null });
+      // The profile's pick-list read is the one chain whose rows the route
+      // echoes; serve a chosen type so tenant.businessTypes is pinned.
+      if (table === 'tenant_business_types') {
+        builder.then = (resolve: (v: unknown) => void) =>
+          resolve({ data: businessTypeRows, error: null });
+      }
       return builder;
     });
 
@@ -242,6 +263,10 @@ describe('Users (e2e)', () => {
       expect(body.role).toBe('company_admin');
       expect(body.platformAdmin).toBe(false);
       expect(body.tenant.companyName).toBe('Fenzit Services');
+      // The batched pick-list read's value reaches the wire, in display order.
+      expect(body.tenant.businessTypes).toEqual([
+        { code: 'plumbing', label: 'Plumbing' },
+      ]);
       // The additive field this spec exists to pin over the wire: an exact
       // tenant-wide total, present as a number even when it is zero.
       expect(body).toHaveProperty('customerCount');
@@ -262,6 +287,8 @@ describe('Users (e2e)', () => {
         'cancelled',
         'completed',
         'overdue',
+        // Story 3.7 added the pending bucket; the unit spec's COUNT_KEYS pins it.
+        'pending',
         'today',
         'upcoming',
       ]);
@@ -318,6 +345,8 @@ describe('Users (e2e)', () => {
         overdue: 0,
         completed: 0,
         cancelled: 0,
+        // Story 3.7 added the pending bucket; the unit spec's COUNT_KEYS pins it.
+        pending: 0,
       });
       // Pre-onboarding: no tenant → the attendance-free default, still
       // present so the FE gate reads one stable field.

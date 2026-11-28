@@ -210,9 +210,31 @@ describe('UsersService', () => {
 
   // ---- per-table mock builders, mirroring the exact chains in users.service.ts ----
 
+  // A lazy stand-in for a supabase-js terminal: PostgREST starts its request
+  // when the builder is awaited, not when it is built. `onSubscribe` fires at
+  // that moment, so the batch test can pin WHEN a read starts.
+  function lazyResult(
+    result: DbResult | Promise<DbResult>,
+    onSubscribe?: () => void,
+  ) {
+    return {
+      then: (
+        resolve: (v: DbResult) => unknown,
+        reject?: (e: unknown) => unknown,
+      ) => {
+        onSubscribe?.();
+        return Promise.resolve(result).then(resolve, reject);
+      },
+    };
+  }
+
   // users.select(...).eq('id',...).single() — the caller's own identity row.
-  function usersTableHandler(ownResult: DbResult) {
-    const single = jest.fn().mockResolvedValue(ownResult);
+  // A promise is allowed so the batch test can hold this read open.
+  function usersTableHandler(
+    ownResult: DbResult | Promise<DbResult>,
+    onSubscribe?: () => void,
+  ) {
+    const single = jest.fn(() => lazyResult(ownResult, onSubscribe));
     const eqId = jest.fn().mockReturnValue({ single });
     return { select: jest.fn().mockReturnValue({ eq: eqId }), eqId };
   }
@@ -228,8 +250,9 @@ describe('UsersService', () => {
     ownMembership: DbResult,
     rosterResult: DbResult,
     batchResult: DbResult,
+    onSubscribe?: () => void,
   ) {
-    const maybeSingle = jest.fn().mockResolvedValue(ownMembership);
+    const maybeSingle = jest.fn(() => lazyResult(ownMembership, onSubscribe));
     const ownEqs: unknown[][] = [];
     const ownNode: Record<string, unknown> = { maybeSingle };
     ownNode['eq'] = jest.fn((...args: unknown[]) => {
@@ -260,8 +283,12 @@ describe('UsersService', () => {
   }
 
   // tenant_business_types: select(...).eq(...).eq(...).returns() — the awaited
-  // chain resolves to an empty pick list (no business types chosen).
-  function tenantBusinessTypesTableHandler() {
+  // chain resolves to the pick list (empty when the company chose none). An
+  // error result pins the profile's business-types 500.
+  function tenantBusinessTypesTableHandler(
+    result: DbResult = { data: [], error: null },
+    onSubscribe?: () => void,
+  ) {
     const builder: Record<string, unknown> = {};
     for (const m of ['select', 'eq', 'returns']) {
       builder[m] = jest.fn(() => builder);
@@ -269,12 +296,15 @@ describe('UsersService', () => {
     builder.then = (
       resolve: (v: unknown) => unknown,
       reject?: (e: unknown) => unknown,
-    ) => Promise.resolve({ data: [], error: null }).then(resolve, reject);
+    ) => {
+      onSubscribe?.();
+      return Promise.resolve(result).then(resolve, reject);
+    };
     return builder;
   }
 
-  function tenantsTableHandler(result: DbResult) {
-    const single = jest.fn().mockResolvedValue(result);
+  function tenantsTableHandler(result: DbResult, onSubscribe?: () => void) {
+    const single = jest.fn(() => lazyResult(result, onSubscribe));
     const eq = jest.fn().mockReturnValue({ single });
     return { select: jest.fn().mockReturnValue({ eq }) };
   }
@@ -362,7 +392,7 @@ describe('UsersService', () => {
   }
 
   function mockAdmin(opts: {
-    ownRow?: DbResult;
+    ownRow?: DbResult | Promise<DbResult>;
     tenant?: DbResult;
     /** Roster rows as the member reader returns them (memberRow(...)). */
     technicians?: DbResult;
@@ -374,6 +404,8 @@ describe('UsersService', () => {
     batchUsers?: DbResult;
     batchSkills?: DbResult;
     batchCustomers?: DbResult;
+    /** tenant_business_types rows (or an error) for the profile's pick list. */
+    businessTypes?: DbResult;
     /** 15-7 access view; null data maps to the profile's NO_ATTENDANCE default. */
     accessState?: DbResult;
   }) {
@@ -402,12 +434,17 @@ describe('UsersService', () => {
 
     const countBuilders: CountBuilder[] = [];
     const listBuilders: Array<Record<string, jest.Mock>> = [];
+    // Head reads (the batched five) record the moment they are awaited.
+    const headReadStarts: string[] = [];
 
-    const usersHandler = usersTableHandler(ownRow);
+    const usersHandler = usersTableHandler(ownRow, () =>
+      headReadStarts.push('users'),
+    );
     const membershipsHandler = membershipsTableHandler(
       ownMembership,
       technicians,
       batchUsers,
+      () => headReadStarts.push('memberships'),
     );
     const skillsHandler = userSkillsTableHandler(ownSkills, batchSkills);
     const customersHandler = customersTableHandler(batchCustomers);
@@ -415,9 +452,14 @@ describe('UsersService', () => {
     const from = jest.fn((table: string) => {
       if (table === 'users') return usersHandler;
       if (table === 'memberships') return membershipsHandler;
-      if (table === 'tenants') return tenantsTableHandler(tenant);
+      if (table === 'tenants')
+        return tenantsTableHandler(tenant, () =>
+          headReadStarts.push('tenants'),
+        );
       if (table === 'tenant_business_types')
-        return tenantBusinessTypesTableHandler();
+        return tenantBusinessTypesTableHandler(opts.businessTypes, () =>
+          headReadStarts.push('tenant_business_types'),
+        );
       if (table === 'user_skills') return skillsHandler;
       if (table === 'customers') return customersHandler;
       if (table === 'attendance_access_state') {
@@ -453,6 +495,7 @@ describe('UsersService', () => {
       from,
       countBuilders,
       listBuilders,
+      headReadStarts,
       usersHandler,
       membershipsHandler,
       skillsHandler,
@@ -655,6 +698,74 @@ describe('UsersService', () => {
         cancelled: 0,
         pending: 6,
       });
+    });
+
+    it('24-5: requests every head read in one batch, before the own row resolves', async () => {
+      // This change's whole effect is concurrency — the payload is identical,
+      // so only dispatch timing can pin it. Hold the own-row read open and
+      // assert its four siblings were already requested; a serial version
+      // fails here (and would leave the pending promise unresolved).
+      let releaseOwnRow!: () => void;
+      const ownRowGate = new Promise<DbResult>((resolve) => {
+        releaseOwnRow = () => resolve({ data: ownOwnerRow, error: null });
+      });
+      const { headReadStarts } = mockAdmin({ ownRow: ownRowGate });
+
+      const pendingProfile = service.getMyProfile(ownerUser, {});
+      await Promise.resolve();
+
+      // Every head read has STARTED while the own row is still pending.
+      // Building the four sibling builders is not enough to pass this: a
+      // supabase-js request starts when its builder is awaited, so the
+      // regression this guards — `await ownRowQuery` before the batch, for an
+      // early guard — leaves the siblings unstarted and fails here.
+      expect([...headReadStarts].sort()).toEqual([
+        'memberships',
+        'tenant_business_types',
+        'tenants',
+        'users',
+      ]);
+      // The reporting tree's transaction rides the same batch.
+      expect(pgQuery).toHaveBeenCalled();
+
+      releaseOwnRow();
+      const result = await pendingProfile;
+      expect(result.id).toBe('owner-uuid');
+    });
+
+    it('24-5/CAP-5: echoes the picked business types in display order', async () => {
+      mockAdmin({
+        // Deliberately out of order — the repo sorts on sort_order, and the
+        // Edit Profile picker preselects from this array.
+        businessTypes: {
+          data: [
+            {
+              business_types: {
+                id: 'bt-2',
+                code: 'retail',
+                label: 'Retail',
+                sort_order: 2,
+              },
+            },
+            {
+              business_types: {
+                id: 'bt-1',
+                code: 'plumbing',
+                label: 'Plumbing',
+                sort_order: 1,
+              },
+            },
+          ],
+          error: null,
+        },
+      });
+
+      const result = await service.getMyProfile(ownerUser, {});
+
+      expect(result.tenant?.businessTypes).toEqual([
+        { code: 'plumbing', label: 'Plumbing' },
+        { code: 'retail', label: 'Retail' },
+      ]);
     });
 
     it('carries the view-driven tenant attendance flag on the owner mirror', async () => {
@@ -922,6 +1033,19 @@ describe('UsersService', () => {
 
     it('throws 500 when the tenant fetch errors', async () => {
       mockAdmin({ tenant: { data: null, error: { code: '08006' } } });
+
+      await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+
+    it('throws 500 when the tenant business-types read errors', async () => {
+      // loadTenantBusinessTypes throws on a PostgREST error, unlike its
+      // {data, error} siblings. The batch's .catch must shape that into the
+      // same house 500 — a raw error would reach the global filter instead.
+      mockAdmin({
+        businessTypes: { data: null, error: { code: '08006' } },
+      });
 
       await expect(service.getMyProfile(ownerUser, {})).rejects.toThrow(
         InternalServerErrorException,
